@@ -36,6 +36,15 @@ await build({
 let contents = readFileSync(outfile, 'utf8');
 if (!contents.startsWith('#!')) {
   contents = '#!/usr/bin/env node\n' + contents;
+} else {
+  // esbuild sometimes prepends its own shebang even when we didn't ask for one.
+  // Collapse N leading shebang lines to a single one.
+  const lines = contents.split('\n');
+  const shebangs = [];
+  while (lines.length > 0 && /^#!/.test(lines[0])) {
+    shebangs.push(lines.shift());
+  }
+  contents = `${shebangs[0] || '#!/usr/bin/env node'}\n${lines.join('\n')}`;
 }
 writeFileSync(outfile, contents);
 

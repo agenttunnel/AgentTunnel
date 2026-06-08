@@ -46,6 +46,7 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
   const hintItems = useStore((s) => s.hintItems);
   const history = useStore((s) => s.history);
   const historyIndex = useStore((s) => s.historyIndex);
+  const contextEntries = useStore((s) => s.contextEntries);
 
   const setInputValue = useStore((s) => s.setInputValue);
   const setStatus = useStore((s) => s.setStatus);
@@ -247,6 +248,7 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
         phase={pipelinePhase}
         spin={SPINNER[spin] ?? ' '}
       />
+      {contextEntries.length > 0 ? <ContextBar entries={contextEntries} /> : null}
       {error ? (
         <Box paddingX={1}>
           <Text color="red">! {error}</Text>
@@ -310,6 +312,27 @@ function Header({
         {' '}
         {status === 'running' ? `${spin} ` : ''}
         {right}
+      </Text>
+    </Box>
+  );
+}
+
+function ContextBar({ entries }: { entries: { key: string; source: string; value: string }[] }): React.ReactElement {
+  const summary = entries
+    .slice(0, 6)
+    .map((e) => {
+      const firstLine = e.value.trim().split('\n')[0] ?? '';
+      const preview = firstLine.length > 40 ? firstLine.slice(0, 39) + '…' : firstLine;
+      const sourceMark = e.source === 'sub-agent' ? '↳' : e.source === 'orchestrator' ? '◆' : '·';
+      return `${sourceMark} ${e.key}: ${preview}`;
+    })
+    .join('  ');
+  const more = entries.length > 6 ? `  +${entries.length - 6} more` : '';
+  return (
+    <Box paddingX={1}>
+      <Text dimColor>
+        📓 {summary}
+        {more}
       </Text>
     </Box>
   );

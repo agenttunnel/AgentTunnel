@@ -12,6 +12,7 @@ import type {
   ViewMode,
 } from '../../types/index.js';
 import { defaultConfig } from '../../types/index.js';
+import type { ContextEntry } from '../SharedContext.js';
 
 let nextLineId = 1;
 let nextAgentId = 1;
@@ -36,6 +37,7 @@ export interface StoreState {
   pipelinePhase: PipelinePhase;
   models: string[];
   subAgents: SubAgentInfo[];
+  contextEntries: ContextEntry[];
   history: string[];
   historyIndex: number;
   showHints: boolean;
@@ -58,6 +60,7 @@ export interface StoreState {
   setModels: (m: string[]) => void;
   setPipelinePhase: (p: PipelinePhase) => void;
   setSubAgents: (agents: SubAgentInfo[]) => void;
+  setContextEntries: (entries: ContextEntry[]) => void;
   pushHistory: (entry: string) => void;
   setHistoryIndex: (n: number) => void;
   clear: () => void;
@@ -77,6 +80,7 @@ export const useStore = create<StoreState>((set) => ({
   pipelinePhase: { type: 'idle', label: 'idle' },
   models: [],
   subAgents: [],
+  contextEntries: [],
   history: [],
   historyIndex: -1,
   showHints: false,
@@ -135,6 +139,7 @@ export const useStore = create<StoreState>((set) => ({
   setModels: (models) => set({ models }),
   setPipelinePhase: (pipelinePhase) => set({ pipelinePhase, scrollOffset: 0 }),
   setSubAgents: (subAgents) => set({ subAgents }),
+  setContextEntries: (contextEntries) => set({ contextEntries }),
   pushHistory: (entry) =>
     set((s) => {
       if (entry.trim().length === 0) return s;
@@ -148,6 +153,7 @@ export const useStore = create<StoreState>((set) => ({
       error: null,
       scrollOffset: 0,
       subAgents: [],
+      contextEntries: [],
       pipelinePhase: { type: 'idle', label: 'idle' },
     }),
 
@@ -175,6 +181,7 @@ export function _resetStoreForTests(): void {
     pipelinePhase: { type: 'idle', label: 'idle' },
     models: [],
     subAgents: [],
+    contextEntries: [],
     history: [],
     historyIndex: -1,
     showHints: false,

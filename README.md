@@ -28,6 +28,7 @@ src/
   core/
     Pipeline.ts            # Multi-agent orchestration (orchestrator → executors)
     Session.ts             # opencode child_process wrapper with subscriber API
+    SharedContext.ts       # The orchestrator's structured notebook
     prompts.ts             # LLM system prompts (orchestrator / executor / reviewer)
     tools.ts               # ToolDefinition / ToolCall type contracts
     ToolRegistry.ts        # Tool-call line parser, validator, and registry
@@ -53,19 +54,32 @@ This separation makes it easy to swap the TUI for a web UI, add new tools to the
 
 The orchestrator LLM doesn't have native tool-calling bound to a JSON-schema API in a portable way across opencode versions. Instead, AgentTunnel uses an **out-of-band tool-call protocol** defined in the orchestrator's system prompt:
 
-1. The orchestrator's prompt lists the available tools (`dispatch_task`, `done`) with their JSON-Schema-style parameters.
+1. The orchestrator's prompt lists the available tools (`dispatch_task`, `update_context`, `done`) with their JSON-Schema-style parameters.
 2. The LLM emits tool calls as standalone lines:
    ```
-   __AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Add a vitest test for AnsiCleaner"}}
+   __AGENTTUNNEL_TOOL__ {"name":"update_context","arguments":{"key":"user_goal","value":"add a CLI for X"}}
+   __AGENTTUNNEL_TOOL__ {"name":"update_context","arguments":{"key":"constraints","value":"typescript, mit license"}}
+   __AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"...","context":["user_goal","constraints"]}}
    __AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"plan complete"}}
    ```
-3. `Pipeline.handleOrchestratorLine` routes each line through `parseToolCallLine` and `ToolRegistry.invoke`. Valid `dispatch_task` calls are queued for execution; `done` ends the planning phase.
-4. The queued tasks are then executed sequentially by `opencode run` sub-sessions.
+3. `Pipeline.handleOrchestratorLine` routes each line through `parseToolCallLine` and the pipeline's internal handlers. Valid `dispatch_task` calls are queued for execution; `update_context` writes to a shared notebook; `done` ends the planning phase.
+4. The queued tasks are then executed sequentially by `opencode run` sub-sessions. Sub-agents see only the context keys the orchestrator explicitly handed them, and they can call `note_finding` to write discoveries back to the same notebook.
+5. After all sub-agents finish, the orchestrator is invoked again with a summary of what the team did. It can dispatch follow-up tasks (e.g. a reviewer) or call `done` for the last time.
+
+### The team-leader model
+
+Think of the orchestrator as the team lead. It owns a **shared notebook** (`SharedContext`) — a key/value map of markdown entries. Sub-agents only see what the orchestrator hands them. This solves three problems with naive multi-agent setups:
+
+- **No context bloat in the task string.** Long content lives in the notebook once, referenced by key.
+- **No work duplication.** If two agents need the same fact, the orchestrator writes it once and references it from both `dispatch_task` calls.
+- **Findings flow back.** Sub-agents can append `note_finding` entries (with timestamps and authorship) that the orchestrator reads on the summary pass before dispatching follow-ups.
+
+The notebook is also surfaced in the TUI as a compact bar under the header so you can see what context the team is sharing.
 
 Adding a new tool (e.g. a `web_search` tool for the orchestrator) is a two-step change:
 
 1. Add a `ToolDefinition` in `prompts.ts` and include it in `ORCHESTRATOR_TOOLS`.
-2. Register a handler with `ToolRegistry.register` if the tool has side effects.
+2. If the tool mutates the shared notebook or has side effects beyond emitting events, add a handler in `Pipeline.handleOrchestratorToolCall` / `handleSubAgentToolCall`.
 
 The Pipeline will pick it up automatically.
 
@@ -151,11 +165,15 @@ Coverage today:
 - `core/state/store.test.ts` — `addOutput`, `clear`, `setRoleConfig`, `pushHistory`
 - `core/utils/AnsiCleaner.test.ts` — ANSI escape stripping
 - `core/ToolRegistry.test.ts` — `parseToolCallLine`, `validateToolCall`, `ToolRegistry.invoke`
+- `core/SharedContext.test.ts` — set / get / append / render
+- `core/Pipeline.test.ts` — orchestrator + sub-agent tool-call handlers
 
 ## Design Patterns
 
 - **Tool-call protocol over XML scraping.** The orchestrator emits structured `__AGENTTUNNEL_TOOL__` lines that are validated against a JSON-Schema-style definition. New tools are additive, not breaking.
 - **ToolRegistry as the extension point.** Adding a new capability is registering a handler. The pipeline and orchestrator prompt are unchanged.
+- **Shared notebook for cross-agent context.** The `SharedContext` class is the team lead's structured memory. Keys are first-class in the LLM contract (`update_context`, `dispatch_task.context: string[]`, `note_finding`). Sub-agents see only what they're handed.
+- **Summary pass as a control loop.** The pipeline re-invokes the orchestrator after each batch of sub-agents, with a transcript of what they reported. This is how the orchestrator decides to dispatch a reviewer, request follow-ups, or finish.
 - **Subscriber pattern for `Session` and `Pipeline`.** Both are decoupled from React and the store via a small event interface (`onOutput`, `onExit`, `on`). The UI subscribes once and forwards events into the store.
 - **Single source of truth.** The Zustand store is read-only from React's perspective; mutations go through actions defined in the store module.
 - **Module-level mutable state for cross-render trackers.** The `inCodeBlock` flag is intentionally outside the store so it survives across streaming chunks without causing re-renders.
