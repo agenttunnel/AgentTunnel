@@ -74,3 +74,15 @@ describe('Pipeline orchestrator tool calls', () => {
     expect(p.context.list()).toHaveLength(0);
   });
 });
+
+describe('Pipeline.killSubAgent', () => {
+  it('returns false for an unknown agent id', () => {
+    const p = makePipeline();
+    expect(p.killSubAgent('does-not-exist')).toBe(false);
+  });
+
+  it('returns false when there are no running agents', () => {
+    const p = makePipeline();
+    expect(p.killSubAgent('agent-1')).toBe(false);
+  });
+});

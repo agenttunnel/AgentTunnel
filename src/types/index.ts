@@ -1,6 +1,6 @@
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'failed';
 
-export type ViewMode = 'main' | 'config';
+export type ViewMode = 'main' | 'config' | 'sub-agents' | 'sub-agent-detail';
 
 export type OutputLineType =
   | 'user'

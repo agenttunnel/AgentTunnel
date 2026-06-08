@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { useStore } from '../../core/state/store.js';
 import type { RoleName } from '../../types/index.js';
@@ -19,13 +19,14 @@ type FieldKey = (typeof FIELDS)[number]['key'];
 
 interface ConfigPanelProps {
   onClose: () => void;
-  cols: number;
 }
 
-export function ConfigPanel({ onClose, cols }: ConfigPanelProps): React.ReactElement {
+export function ConfigPanel({ onClose }: ConfigPanelProps): React.ReactElement {
   const config = useStore((s) => s.config);
   const models = useStore((s) => s.models);
   const setRoleConfig = useStore((s) => s.setRoleConfig);
+  const { stdout } = useStdout();
+  const cols = stdout?.columns ?? 80;
 
   const [sectionIdx, setSectionIdx] = useState(0);
   const [fieldIdx, setFieldIdx] = useState(0);

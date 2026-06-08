@@ -6,11 +6,15 @@ import { Pipeline, listModels, attachStoreEvents } from '../core/Pipeline.js';
 import type { HintItem, OutputLine, OutputLineType } from '../types/index.js';
 import { parseMarkdownInline } from '../core/utils/markdown.js';
 import { ConfigPanel } from './components/ConfigPanel.js';
+import { SubAgentsView, SubAgentDetailView } from './components/SubAgentsView.jsx';
+import { PipelineProvider } from './PipelineContext.jsx';
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const HINTS: HintItem[] = [
   { command: '/config', description: 'Open the config panel' },
+  { command: '/sub-agents', description: 'List running sub-agents (x kill, l logs)' },
+  { command: '/log', description: 'Toggle showing sub-agent output in main log' },
   { command: '/clear', description: 'Clear the output buffer' },
   { command: '/help', description: 'Show available commands' },
   { command: '/exit', description: 'Quit AgentTunnel' },
@@ -29,42 +33,14 @@ interface AppProps {
 }
 
 export function App({ workspace, autoApprove, defaultModel }: AppProps): React.ReactElement {
-  const { exit } = useApp();
-  const { stdout } = useStdout();
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
-  const [spin, setSpin] = useState(0);
 
-  const status = useStore((s) => s.status);
-  const inputValue = useStore((s) => s.inputValue);
   const view = useStore((s) => s.view);
-  const output = useStore((s) => s.output);
-  const error = useStore((s) => s.error);
-  const scrollOffset = useStore((s) => s.scrollOffset);
-  const pipelinePhase = useStore((s) => s.pipelinePhase);
-  const showHints = useStore((s) => s.showHints);
-  const hintIndex = useStore((s) => s.hintIndex);
-  const hintItems = useStore((s) => s.hintItems);
-  const history = useStore((s) => s.history);
-  const historyIndex = useStore((s) => s.historyIndex);
-  const contextEntries = useStore((s) => s.contextEntries);
-
-  const setInputValue = useStore((s) => s.setInputValue);
-  const setStatus = useStore((s) => s.setStatus);
   const setView = useStore((s) => s.setView);
-  const setError = useStore((s) => s.setError);
-  const setScrollOffset = useStore((s) => s.setScrollOffset);
-  const setModels = useStore((s) => s.setModels);
-  const setShowHints = useStore((s) => s.setShowHints);
-  const setHintIndex = useStore((s) => s.setHintIndex);
-  const setHintItems = useStore((s) => s.setHintItems);
-  const addOutput = useStore((s) => s.addOutput);
-  const clearStore = useStore((s) => s.clear);
-  const pushHistory = useStore((s) => s.pushHistory);
-  const setHistoryIndex = useStore((s) => s.setHistoryIndex);
-  const setRoleConfig = useStore((s) => s.setRoleConfig);
 
-  const rows = stdout?.rows ?? 24;
-  const cols = stdout?.columns ?? 80;
+  const setRoleConfig = useStore((s) => s.setRoleConfig);
+  const setModels = useStore((s) => s.setModels);
+  const addOutput = useStore((s) => s.addOutput);
 
   useEffect(() => {
     if (defaultModel) {
@@ -81,6 +57,69 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
         addOutput('[init] could not enumerate models (is opencode installed?)', 'error');
       });
   }, []);
+
+  return (
+    <PipelineProvider value={{ pipeline }}>
+      {view === 'config' ? (
+        <ConfigPanel onClose={() => setView('main')} />
+      ) : view === 'sub-agents' ? (
+        <SubAgentsView onBack={() => setView('main')} />
+      ) : view === 'sub-agent-detail' ? (
+        <SubAgentDetailView onBack={() => setView('sub-agents')} />
+      ) : (
+        <MainView
+          workspace={workspace}
+          autoApprove={autoApprove}
+          pipeline={pipeline}
+          setPipeline={setPipeline}
+        />
+      )}
+    </PipelineProvider>
+  );
+}
+
+interface MainViewProps {
+  workspace: string;
+  autoApprove: boolean;
+  pipeline: Pipeline | null;
+  setPipeline: (p: Pipeline | null) => void;
+}
+
+function MainView({ workspace, autoApprove, pipeline, setPipeline }: MainViewProps): React.ReactElement {
+  const { exit } = useApp();
+  const { stdout } = useStdout();
+  const [spin, setSpin] = useState(0);
+
+  const status = useStore((s) => s.status);
+  const inputValue = useStore((s) => s.inputValue);
+  const output = useStore((s) => s.output);
+  const error = useStore((s) => s.error);
+  const scrollOffset = useStore((s) => s.scrollOffset);
+  const pipelinePhase = useStore((s) => s.pipelinePhase);
+  const showHints = useStore((s) => s.showHints);
+  const hintIndex = useStore((s) => s.hintIndex);
+  const hintItems = useStore((s) => s.hintItems);
+  const history = useStore((s) => s.history);
+  const historyIndex = useStore((s) => s.historyIndex);
+  const contextEntries = useStore((s) => s.contextEntries);
+  const showSubAgentLogsInMain = useStore((s) => s.showSubAgentLogsInMain);
+
+  const setInputValue = useStore((s) => s.setInputValue);
+  const setStatus = useStore((s) => s.setStatus);
+  const setView = useStore((s) => s.setView);
+  const setError = useStore((s) => s.setError);
+  const setScrollOffset = useStore((s) => s.setScrollOffset);
+  const setShowHints = useStore((s) => s.setShowHints);
+  const setHintIndex = useStore((s) => s.setHintIndex);
+  const setHintItems = useStore((s) => s.setHintItems);
+  const setShowSubAgentLogsInMain = useStore((s) => s.setShowSubAgentLogsInMain);
+  const addOutput = useStore((s) => s.addOutput);
+  const clearStore = useStore((s) => s.clear);
+  const pushHistory = useStore((s) => s.pushHistory);
+  const setHistoryIndex = useStore((s) => s.setHistoryIndex);
+
+  const rows = stdout?.rows ?? 24;
+  const cols = stdout?.columns ?? 80;
 
   useEffect(() => {
     if (status !== 'running') return;
@@ -105,8 +144,6 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
   }, [inputValue, showHints, hintIndex, setShowHints, setHintItems, setHintIndex]);
 
   useInput((input, key) => {
-    if (view === 'config') return;
-
     if (key.ctrl && input === 'c') {
       if (status === 'running' && pipeline) {
         pipeline.cancel();
@@ -125,7 +162,7 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
         return;
       }
       if (key.downArrow) {
-        setHintIndex(Math.min(hintItems.length - 1, hintIndex + 1));
+        setHintIndex(Math.min(Math.max(0, hintItems.length - 1), hintIndex + 1));
         return;
       }
       if (key.tab) {
@@ -194,11 +231,9 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
     void p.run(task);
   };
 
-  const handleSubmit = (value: string): void => {
-    const v = value.trim();
+  const executeCommand = (raw: string): void => {
+    const v = raw.trim();
     if (v.length === 0) return;
-    setInputValue('');
-    setShowHints(false);
 
     if (v === '/exit') {
       pipeline?.cancel();
@@ -210,11 +245,21 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
       return;
     }
     if (v === '/help') {
-      for (const h of HINTS) addOutput(`  ${h.command.padEnd(10)} ${h.description}`, 'system');
+      for (const h of HINTS) addOutput(`  ${h.command.padEnd(14)} ${h.description}`, 'system');
       return;
     }
     if (v === '/config') {
       setView('config');
+      return;
+    }
+    if (v === '/sub-agents') {
+      setView('sub-agents');
+      return;
+    }
+    if (v === '/log') {
+      const next = !showSubAgentLogsInMain;
+      setShowSubAgentLogsInMain(next);
+      addOutput(`[ui] sub-agent logs in main: ${next ? 'on' : 'off'}`, 'system');
       return;
     }
     if (v.startsWith('/')) {
@@ -224,21 +269,38 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
     startPipeline(v);
   };
 
-  if (view === 'config') {
-    return <ConfigPanel onClose={() => setView('main')} cols={cols} />;
-  }
+  const handleSubmit = (value: string): void => {
+    // If hints are showing and one is highlighted, treat Enter as "select that hint".
+    if (showHints) {
+      const h = hintItems[hintIndex];
+      if (h) {
+        setInputValue('');
+        setShowHints(false);
+        executeCommand(h.command);
+        return;
+      }
+    }
+    setInputValue('');
+    setShowHints(false);
+    executeCommand(value);
+  };
 
+  // Layout dimensions are computed here, BEFORE the JSX, so the useMemo below
+  // can use them without re-creating a new object on every render.
   const headerHeight = 1;
   const inputHeight = 1;
+  const contextBarHeight = contextEntries.length > 0 ? 1 : 0;
   const errorHeight = error ? 1 : 0;
   const hintsHeight = showHints ? Math.min(hintItems.length, 5) : 0;
-  const visibleRows = Math.max(3, rows - headerHeight - inputHeight - errorHeight - hintsHeight);
+  const visibleRows = Math.max(
+    3,
+    rows - headerHeight - inputHeight - errorHeight - hintsHeight - contextBarHeight,
+  );
 
-  const visible = useMemo(() => visibleLines(output, visibleRows, scrollOffset), [
-    output,
-    visibleRows,
-    scrollOffset,
-  ]);
+  const visible = useMemo(
+    () => visibleLines(output, visibleRows, scrollOffset),
+    [output, visibleRows, scrollOffset],
+  );
 
   return (
     <Box flexDirection="column" height={rows}>
@@ -254,8 +316,13 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
           <Text color="red">! {error}</Text>
         </Box>
       ) : null}
+      {showSubAgentLogsInMain ? (
+        <Box paddingX={1}>
+          <Text dimColor>↳ sub-agent output is also being shown in the main log</Text>
+        </Box>
+      ) : null}
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
-        {output.length === 0 ? <EmptyState cols={cols} /> : visible}
+        {output.length === 0 ? <EmptyState /> : visible}
         {scrollOffset > 0 ? (
           <Text dimColor>  ↑ {scrollOffset} line(s) above — PgDn to scroll down</Text>
         ) : null}
@@ -265,7 +332,7 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
           {hintItems.slice(0, 5).map((h, i) => (
             <Text key={h.command} inverse={i === hintIndex}>
               {' '}
-              {h.command.padEnd(10)} {h.description}
+              {h.command.padEnd(14)} {h.description}
             </Text>
           ))}
         </Box>
@@ -299,7 +366,7 @@ function Header({
   const progress = phase.progress ? ` ${phase.progress.current}/${phase.progress.total}` : '';
   const right = `${phase.label}${progress} • model=${model}`;
   const left = ' AgentTunnel ';
-  const pad = Math.max(0, cols - left.length - right.length);
+  const pad = Math.max(0, cols - left.length - right.length - 4);
   return (
     <Box>
       <Text backgroundColor="gray" color="white" bold>
@@ -338,7 +405,7 @@ function ContextBar({ entries }: { entries: { key: string; source: string; value
   );
 }
 
-function EmptyState({ cols }: { cols: number }): React.ReactElement {
+function EmptyState(): React.ReactElement {
   return (
     <Box flexDirection="column" paddingY={1}>
       <Text bold color="cyan">
@@ -346,7 +413,7 @@ function EmptyState({ cols }: { cols: number }): React.ReactElement {
       </Text>
       <Text dimColor>
         A multi-agent orchestrator for opencode. Describe a task below; the orchestrator will plan and
-        dispatch executor sub-agents.
+        dispatch executor sub-agents. Sub-agent logs are hidden by default — open /sub-agents to inspect.
       </Text>
       <Box flexDirection="column" marginTop={1}>
         <Text dimColor>Example tasks:</Text>
@@ -355,11 +422,11 @@ function EmptyState({ cols }: { cols: number }): React.ReactElement {
         ))}
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Text dimColor>Slash commands (type / to see):</Text>
+        <Text dimColor>Slash commands (type / to see, Tab/Enter to pick):</Text>
         {HINTS.map((h) => (
           <Text key={h.command} dimColor>
             {' '}
-            {h.command.padEnd(10)} {h.description}
+            {h.command.padEnd(14)} {h.description}
           </Text>
         ))}
       </Box>
@@ -397,12 +464,7 @@ function OutputLineView({ line }: { line: OutputLine }): React.ReactElement {
     <Text color={color}>
       {prefix}
       {segments.map((s, i) => (
-        <Text
-          key={i}
-          bold={s.bold}
-          dimColor={s.dim}
-          color={s.color ?? color}
-        >
+        <Text key={i} bold={s.bold} dimColor={s.dim} color={s.color ?? color}>
           {s.text}
         </Text>
       ))}

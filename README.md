@@ -36,8 +36,10 @@ src/
     utils/AnsiCleaner.ts   # ANSI escape stripping / splitting
     utils/markdown.ts      # Inline markdown parser returning styled segments
   ui/
-    App.tsx                # Root Ink component — layout, input, keyboard
+    App.tsx                # Top-level router — main / config / sub-agents views
+    PipelineContext.tsx    # React context exposing the active Pipeline to views
     components/ConfigPanel.tsx
+    components/SubAgentsView.tsx
 ```
 
 The architecture is intentionally layered:
@@ -132,14 +134,31 @@ Once running, type a task at the prompt. AgentTunnel spawns the orchestrator, wh
 
 ## Slash Commands
 
-Type `/` to see available commands:
+Type `/` to discover available commands. The hint popup supports:
+- **Tab** — autocomplete the highlighted hint into the input
+- **↑/↓** — navigate hints
+- **Enter** — execute the highlighted hint (or submit what you typed)
 
-| Command   | Description                  |
-| --------- | ---------------------------- |
-| `/config` | Open the config panel        |
-| `/clear`  | Clear the output buffer      |
-| `/help`   | Show in-app help             |
-| `/exit`   | Quit AgentTunnel             |
+| Command         | Description                                                       |
+| --------------- | ----------------------------------------------------------------- |
+| `/config`       | Open the config panel                                             |
+| `/sub-agents`   | Open the sub-agents view (x to kill, l for logs, ↑/↓ to navigate) |
+| `/log`          | Toggle showing sub-agent output inline in the main log            |
+| `/clear`        | Clear the output buffer                                           |
+| `/help`         | Show in-app help                                                  |
+| `/exit`         | Quit AgentTunnel                                                  |
+
+## Sub-agents view
+
+Sub-agents are listed in their own view (`/sub-agents`). Sub-agent output is hidden from the main log by default — open the view to inspect. Inside the view:
+
+- **↑ / ↓** — select an agent
+- **x** — kill the selected agent (sends SIGTERM, escalates to SIGKILL after 5 s)
+- **l** — open the selected agent's log detail
+- **space** — toggle inline sub-agent output in the main log
+- **Esc / q** — back to the main view
+
+The log detail view shows the agent's most recent lines (capped at 200) with a header showing the role, status, age, and full task.
 
 ## Development
 

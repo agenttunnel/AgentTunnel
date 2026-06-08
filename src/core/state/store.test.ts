@@ -68,4 +68,42 @@ describe('store', () => {
     useStore.getState().setRoleConfig('orchestrator', { harness: 'x', model: 'y' });
     expect(defaultConfig().orchestrator.model).toBe('');
   });
+
+  it('addSubAgentLog appends to per-agent log buffer', () => {
+    useStore.getState().addSubAgentLog('a1', 'hello', 'tool_output');
+    useStore.getState().addSubAgentLog('a1', 'world', 'tool_output');
+    const logs = useStore.getState().subAgentLogs;
+    expect(logs['a1']).toHaveLength(2);
+    expect(logs['a1']?.[0]?.text).toBe('hello');
+  });
+
+  it('addSubAgentLog does NOT add to main output by default', () => {
+    useStore.getState().addSubAgentLog('a1', 'hidden', 'tool_output');
+    expect(useStore.getState().output).toHaveLength(0);
+  });
+
+  it('addSubAgentLog mirrors to main output when toggle is on', () => {
+    useStore.getState().setShowSubAgentLogsInMain(true);
+    useStore.getState().addSubAgentLog('a1', 'visible', 'tool_output');
+    expect(useStore.getState().output.length).toBeGreaterThan(0);
+    expect(useStore.getState().output[0]?.text).toBe('visible');
+  });
+
+  it('addSubAgentLog caps each agent buffer at SUB_AGENT_LOG_CAP', () => {
+    const cap = 200;
+    for (let i = 0; i < cap + 50; i++) {
+      useStore.getState().addSubAgentLog('a1', `line-${i}`, 'tool_output');
+    }
+    const buf = useStore.getState().subAgentLogs['a1'] ?? [];
+    expect(buf).toHaveLength(cap);
+    expect(buf[buf.length - 1]?.text).toBe(`line-${cap + 49}`);
+  });
+
+  it('clear() resets sub-agent state but preserves current view', () => {
+    useStore.getState().addSubAgentLog('a1', 'x', 'tool_output');
+    useStore.getState().setView('sub-agents');
+    useStore.getState().clear();
+    expect(useStore.getState().subAgentLogs).toEqual({});
+    expect(useStore.getState().view).toBe('sub-agents');
+  });
 });

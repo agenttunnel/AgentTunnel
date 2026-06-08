@@ -32,6 +32,7 @@ export type PipelineEvent =
   | { type: 'output'; text: string; kind: 'assistant' | 'system' | 'tool_output' | 'error' }
   | { type: 'phaseChange'; phase: { type: string; label: string; progress?: { current: number; total: number } } }
   | { type: 'subAgentUpdate'; agents: SubAgentInfo[] }
+  | { type: 'subAgentOutput'; agentId: string; text: string }
   | { type: 'done'; ok: boolean; msg: string }
   | { type: 'toolCall'; call: ToolCall }
   | { type: 'contextUpdate'; entries: ContextEntry[] };
@@ -51,6 +52,7 @@ const MAX_AGENT_OUTPUT_LINES = 200;
 export class Pipeline {
   private orchestrator: Session | null = null;
   private currentSubAgent: Session | null = null;
+  private readonly subAgentSessions = new Map<string, Session>();
   private agents: SubAgentInfo[] = [];
   private dispatched: DispatchedTask[] = [];
   private running = false;
@@ -226,12 +228,13 @@ export class Pipeline {
       }
       return;
     }
-    if (clean.trim().length > 0) {
-      this.emit({
-        type: 'output',
-        text: clean,
-        kind: role === 'orchestrator' ? 'assistant' : 'tool_output',
-      });
+    if (clean.trim().length === 0) return;
+    if (role === 'orchestrator') {
+      this.emit({ type: 'output', text: clean, kind: 'assistant' });
+    } else if (agentId) {
+      // Sub-agent narrative is hidden from the main log. The store listens
+      // for subAgentOutput and writes it to the per-agent log buffer.
+      this.emit({ type: 'subAgentOutput', agentId, text: clean });
     }
   }
 
@@ -397,6 +400,7 @@ export class Pipeline {
       dangerouslySkipPermissions: this.options.dangerouslySkipPermissions ?? true,
     });
     this.currentSubAgent = session;
+    this.subAgentSessions.set(agent.id, session);
 
     const sysPrompt = task.role === 'executor' ? EXECUTOR_PROMPT : REVIEWER_PROMPT;
     const contextBlock = task.context.length > 0
@@ -436,6 +440,7 @@ export class Pipeline {
             kind: 'error',
           });
         }
+        this.subAgentSessions.delete(agent.id);
         if (this.currentSubAgent === session) this.currentSubAgent = null;
         resolve(code === 0);
       });
@@ -446,6 +451,7 @@ export class Pipeline {
         this.agents = [...this.agents];
         this.emit({ type: 'subAgentUpdate', agents: this.agents });
         this.emit({ type: 'output', text: `[${task.role}] failed: ${(err as Error).message}`, kind: 'error' });
+        this.subAgentSessions.delete(agent.id);
         if (this.currentSubAgent === session) this.currentSubAgent = null;
         resolve(false);
       });
@@ -456,7 +462,27 @@ export class Pipeline {
     this.cancelled = true;
     this.emit({ type: 'output', text: '[pipeline] cancel requested', kind: 'system' });
     this.orchestrator?.cancel();
-    this.currentSubAgent?.cancel();
+    for (const s of this.subAgentSessions.values()) s.cancel();
+    this.currentSubAgent = null;
+  }
+
+  /**
+   * Kill a single running sub-agent by id. Sends SIGTERM (then SIGKILL after 5s).
+   * The pipeline continues running any other queued sub-agents.
+   * Returns true if the agent was running and a kill was sent.
+   */
+  killSubAgent(agentId: string): boolean {
+    const session = this.subAgentSessions.get(agentId);
+    if (!session) return false;
+    const agent = this.agents.find((a) => a.id === agentId);
+    if (!agent || agent.status !== 'running') return false;
+    this.emit({
+      type: 'output',
+      text: `[ui] killing sub-agent ${agentId} (${agent.role})`,
+      kind: 'system',
+    });
+    session.cancel();
+    return true;
   }
 
   private finish(ok: boolean, msg: string): void {
@@ -504,6 +530,8 @@ export function attachStoreEvents(pipeline: Pipeline): () => void {
               ? 'tool_output'
               : 'assistant';
       useStore.getState().addOutput(ev.text, t);
+    } else if (ev.type === 'subAgentOutput') {
+      useStore.getState().addSubAgentLog(ev.agentId, ev.text, 'tool_output');
     } else if (ev.type === 'phaseChange') {
       useStore.getState().setPipelinePhase({
         type: ev.phase.type as never,
