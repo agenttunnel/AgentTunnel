@@ -35,30 +35,44 @@ interface AppProps {
   defaultModel: string | undefined;
 }
 
+export interface InitStatus {
+  workspace: string;
+  modelCount: number | null;
+  error: string | null;
+}
+
 export function App({ workspace, autoApprove, defaultModel }: AppProps): React.ReactElement {
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
+  const [initStatus, setInitStatus] = useState<InitStatus>({
+    workspace,
+    modelCount: null,
+    error: null,
+  });
 
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
 
   const setRoleConfig = useStore((s) => s.setRoleConfig);
   const setModels = useStore((s) => s.setModels);
-  const addOutput = useStore((s) => s.addOutput);
 
   useEffect(() => {
     if (defaultModel) {
       setRoleConfig('orchestrator', { harness: 'opencode', model: defaultModel });
     }
+    let cancelled = false;
     listModels('opencode', workspace)
       .then((models) => {
+        if (cancelled) return;
         setModels(models);
-        addOutput(`[init] workspace: ${workspace}`, 'system');
-        addOutput(`[init] discovered ${models.length} model(s)`, 'system');
-        addOutput('[init] type a task and press Enter, or / for commands', 'system');
+        setInitStatus({ workspace, modelCount: models.length, error: null });
       })
-      .catch(() => {
-        addOutput('[init] could not enumerate models (is opencode installed?)', 'error');
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setInitStatus({ workspace, modelCount: null, error: err.message });
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -75,6 +89,7 @@ export function App({ workspace, autoApprove, defaultModel }: AppProps): React.R
           autoApprove={autoApprove}
           pipeline={pipeline}
           setPipeline={setPipeline}
+          initStatus={initStatus}
         />
       )}
     </PipelineProvider>
@@ -86,9 +101,10 @@ interface MainViewProps {
   autoApprove: boolean;
   pipeline: Pipeline | null;
   setPipeline: (p: Pipeline | null) => void;
+  initStatus: InitStatus;
 }
 
-function MainView({ workspace, autoApprove, pipeline, setPipeline }: MainViewProps): React.ReactElement {
+function MainView({ workspace, autoApprove, pipeline, setPipeline, initStatus }: MainViewProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [spin, setSpin] = useState(0);
@@ -341,7 +357,7 @@ function MainView({ workspace, autoApprove, pipeline, setPipeline }: MainViewPro
           </Text>
         ) : null}
         <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
-          {output.length === 0 ? <EmptyState /> : visible}
+          {output.length === 0 ? <EmptyState initStatus={initStatus} /> : visible}
         </Box>
         {scrollOffset > 0 ? (
           <Text color={colors.dim}>
@@ -467,7 +483,7 @@ function ContextBar({ entries }: { entries: { key: string; source: string; value
   );
 }
 
-function EmptyState(): React.ReactElement {
+function EmptyState({ initStatus }: { initStatus: InitStatus }): React.ReactElement {
   return (
     <Box flexDirection="column" flexGrow={1} paddingY={1}>
       <Text bold color={colors.primary}>
@@ -487,7 +503,32 @@ function EmptyState(): React.ReactElement {
           </Text>
         ))}
       </Box>
+      <Box marginTop={1} flexDirection="column">
+        <InitStatusLine status={initStatus} />
+      </Box>
     </Box>
+  );
+}
+
+function InitStatusLine({ status }: { status: InitStatus }): React.ReactElement {
+  if (status.error) {
+    return (
+      <Text color={colors.danger}>
+        {`  ${glyphs.blockHalf} opencode unavailable — ${status.error}`}
+      </Text>
+    );
+  }
+  if (status.modelCount === null) {
+    return (
+      <Text color={colors.dim}>
+        {`  ${glyphs.blockHalf} loading models…`}
+      </Text>
+    );
+  }
+  return (
+    <Text color={colors.dim}>
+      {`  ${glyphs.blockHalf} workspace ${status.workspace}  ·  ${status.modelCount} model(s) available`}
+    </Text>
   );
 }
 
