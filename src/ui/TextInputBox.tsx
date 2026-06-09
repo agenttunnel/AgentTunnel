@@ -31,8 +31,7 @@ export function applyKey(prev: string, input: string, key: Key): { next: string;
     key.tab ||
     key.escape ||
     key.ctrl ||
-    key.meta ||
-    key.shift
+    key.meta
   ) {
     return null;
   }
@@ -90,18 +89,24 @@ export function TextInputBox({
   // (No tick state needed: useEffect above mirrors external `value`
   // changes into localValue, which drives the rendered output.)
   const showPlaceholder = localValue.length === 0 && placeholder.length > 0;
-  const cursor = localValue.length === 0 ? '' : ' ';
 
   return (
     <Box>
       {showPlaceholder ? (
-        <Text color={colors.dim}>{placeholder}</Text>
+        <>
+          <Text backgroundColor={colors.primary} color={colors.onPrimary}>
+            {' '}
+          </Text>
+          <Text color={colors.dim}>{placeholder}</Text>
+        </>
       ) : (
-        <Text color={colors.white}>{localValue}</Text>
+        <>
+          <Text color={colors.white}>{localValue}</Text>
+          <Text backgroundColor={colors.primary} color={colors.onPrimary}>
+            {' '}
+          </Text>
+        </>
       )}
-      <Text backgroundColor={colors.primary} color={colors.onPrimary}>
-        {cursor || ' '}
-      </Text>
     </Box>
   );
 }

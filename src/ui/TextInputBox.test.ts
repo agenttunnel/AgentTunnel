@@ -8,6 +8,10 @@ describe('TextInputBox.applyKey', () => {
     expect(applyKey('ab', 'c', k({}))).toEqual({ next: 'abc' });
   });
 
+  it('appends uppercase characters (shift modifier)', () => {
+    expect(applyKey('', 'A', k({ shift: true }))).toEqual({ next: 'A' });
+  });
+
   it('handles backspace by removing the last char', () => {
     expect(applyKey('abc', '', k({ backspace: true }))).toEqual({ next: 'ab' });
   });
