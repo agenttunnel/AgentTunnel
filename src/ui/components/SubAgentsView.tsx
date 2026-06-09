@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { useStore } from '../../core/state/store.js';
 import { usePipeline } from '../PipelineContext.jsx';
 import type { OutputLine, SubAgentInfo } from '../../types/index.js';
 import { parseMarkdownInline } from '../../core/utils/markdown.js';
+import { colors, glyphs, colorForStatus, colorForOutputType, prefixForOutputType } from '../theme.js';
 
 interface SubAgentsViewProps {
   onBack: () => void;
@@ -19,10 +20,9 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
   const setShowSubAgentLogsInMain = useStore((s) => s.setShowSubAgentLogsInMain);
   const pipeline = usePipeline();
   const { stdout } = useStdout();
-  const cols = stdout?.columns ?? 80;
   const rows = stdout?.rows ?? 24;
+  const cols = stdout?.columns ?? 80;
 
-  // Initialize / keep selection valid.
   useEffect(() => {
     if (subAgents.length === 0) {
       if (selectedSubAgentId !== null) setSelectedSubAgentId(null);
@@ -78,17 +78,18 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
   if (subAgents.length === 0) {
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text bold color="cyan">
-          Sub-agents
+        <Text bold color={colors.primary}>
+          {`${glyphs.blockFull} SUB-AGENTS`}
         </Text>
-        <Text dimColor>No sub-agents have been spawned yet.</Text>
-        <Text dimColor>Press Esc or q to return.</Text>
+        <Box borderStyle="single" borderColor={colors.dim} paddingX={1}>
+          <Text color={colors.grid}>No sub-agents have been spawned yet.</Text>
+        </Box>
+        <Text color={colors.dim}>{`${glyphs.chevron} Press Esc or q to return.`}</Text>
       </Box>
     );
   }
 
-  // Show as many agents as fit in the viewport, with the selected one always visible.
-  const maxRows = Math.max(3, rows - 6);
+  const maxRows = Math.max(3, rows - 8);
   const selectedIdx = subAgents.findIndex((a) => a.id === selectedSubAgentId);
   let start = 0;
   if (selectedIdx >= maxRows) start = selectedIdx - maxRows + 1;
@@ -98,16 +99,23 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box>
-        <Text bold color="cyan">
-          Sub-agents
+        <Text bold color={colors.primary}>
+          {`${glyphs.blockFull} SUB-AGENTS`}
         </Text>
-        <Text dimColor>{'  '}{subAgents.length} total · showing {start + 1}-{end}</Text>
+        <Text color={colors.dim}>
+          {`  ${subAgents.length} total · showing ${start + 1}-${end}`}
+        </Text>
       </Box>
-      <Text dimColor>
-        ↑/↓ select · x kill · l view logs · space toggle in-main · Esc/q back
+      <Text color={colors.dim}>
+        {glyphs.scanStart}
+        {glyphs.scanMid.repeat(Math.max(0, cols - 2))}
+        {glyphs.scanEnd}
       </Text>
-      <Text dimColor>
-        sub-agent output in main log: {showSubAgentLogsInMain ? 'on' : 'off'}
+      <Text color={colors.primary}>
+        {`${glyphs.chevron} ↑/↓ select · x kill · l view logs · space toggle in-main · Esc/q back`}
+      </Text>
+      <Text color={showSubAgentLogsInMain ? colors.accent : colors.dim}>
+        {`${glyphs.blockHalf} sub-agent output in main log: ${showSubAgentLogsInMain ? 'ON' : 'off'}`}
       </Text>
       <Box flexDirection="column" marginTop={1}>
         {visible.map((a) => (
@@ -115,7 +123,6 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
             key={a.id}
             agent={a}
             selected={a.id === selectedSubAgentId}
-            cols={cols}
           />
         ))}
       </Box>
@@ -123,28 +130,26 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
   );
 }
 
-function AgentRow({
-  agent,
-  selected,
-  cols,
-}: {
-  agent: SubAgentInfo;
-  selected: boolean;
-  cols: number;
-}): React.ReactElement {
-  const statusColor =
-    agent.status === 'running' ? 'yellow' : agent.status === 'completed' ? 'green' : 'red';
+function AgentRow({ agent, selected }: { agent: SubAgentInfo; selected: boolean }): React.ReactElement {
   const age = formatAge(agent.startedAt, agent.endedAt);
   const idShort = agent.id.length > 14 ? agent.id.slice(0, 13) + '…' : agent.id;
   const taskPreview = agent.task.length > 60 ? agent.task.slice(0, 59) + '…' : agent.task;
+  const statusColor = colorForStatus(agent.status);
+  const caret = selected ? glyphs.chevron : ' ';
   return (
     <Box>
-      <Text inverse={selected} color={selected ? 'cyan' : undefined}>
-        {' '}
-        {selected ? '▶' : ' '} {idShort.padEnd(14)} {agent.role.padEnd(10)}{' '}
+      <Text
+        backgroundColor={selected ? colors.primary : undefined}
+        color={selected ? colors.onPrimary : colors.dim}
+        bold={selected}
+      >
+        {` ${caret} ${idShort.padEnd(14)} ${agent.role.padEnd(10)} `}
       </Text>
-      <Text color={statusColor} inverse={selected}>
-        {' '}[{agent.status}] {age.padStart(6)} · {taskPreview}
+      <Text
+        backgroundColor={selected ? colors.primary : undefined}
+        color={selected ? colors.onPrimary : statusColor}
+      >
+        {` [${agent.status.toUpperCase()}] ${age.padStart(6)} · ${taskPreview}`}
       </Text>
     </Box>
   );
@@ -182,10 +187,10 @@ export function SubAgentDetailView({ onBack }: SubAgentDetailViewProps): React.R
   if (!agent) {
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text bold color="red">
-          Sub-agent not found
+        <Text bold color={colors.danger}>
+          {`${glyphs.blockFull} SUB-AGENT NOT FOUND`}
         </Text>
-        <Text dimColor>Press Esc or q to go back.</Text>
+        <Text color={colors.dim}>{`${glyphs.chevron} Press Esc or q to go back.`}</Text>
       </Box>
     );
   }
@@ -198,19 +203,19 @@ export function SubAgentDetailView({ onBack }: SubAgentDetailViewProps): React.R
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box>
-        <Text bold color="cyan">
-          {agent.id}
+        <Text bold color={colors.primary}>
+          {`${glyphs.blockFull} ${agent.id}`}
         </Text>
         <Text>
-          {'  '}
-          role=<Text color="magenta">{agent.role}</Text> status=<Text color={agent.status === 'running' ? 'yellow' : 'green'}>{agent.status}</Text>
+          {'  '}role=<Text color={colors.magenta}>{agent.role}</Text> status=
+          <Text color={colorForStatus(agent.status)}>{agent.status.toUpperCase()}</Text>
         </Text>
       </Box>
-      <Text dimColor>task: {agent.task}</Text>
-      <Text dimColor>
-        {log.length} log line(s) · showing {start + 1}-{start + slice.length} · Esc/q back
+      <Text color={colors.dim}>task: {agent.task}</Text>
+      <Text color={colors.primary}>
+        {`${glyphs.chevron} ${log.length} log line(s) · showing ${start + 1}-${start + slice.length} · Esc/q back`}
       </Text>
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={colors.dim} paddingX={1}>
         {slice.map((line) => (
           <LogLineView key={line.id} line={line} />
         ))}
@@ -222,18 +227,21 @@ export function SubAgentDetailView({ onBack }: SubAgentDetailViewProps): React.R
 function LogLineView({ line }: { line: OutputLine }): React.ReactElement {
   if (line.codeBlock) {
     return (
-      <Text backgroundColor="blackBright" color="white">
+      <Text backgroundColor={colors.surface} color={colors.primary}>
         {'  '}
+        {glyphs.blockHalf}
         {line.text}
       </Text>
     );
   }
+  const base = colorForOutputType(line.type);
+  const prefix = prefixForOutputType(line.type);
   const segments = parseMarkdownInline(line.text);
   return (
-    <Text dimColor>
-      {' '}
+    <Text color={base}>
+      {prefix}
       {segments.map((s, i) => (
-        <Text key={i} bold={s.bold} dimColor={s.dim} color={s.color}>
+        <Text key={i} bold={s.bold} dimColor={s.dim} color={s.color ?? base}>
           {s.text}
         </Text>
       ))}

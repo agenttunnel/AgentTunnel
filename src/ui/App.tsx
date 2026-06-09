@@ -1,15 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import TextInput from 'ink-text-input';
 import { useStore } from '../core/state/store.js';
 import { Pipeline, listModels, attachStoreEvents } from '../core/Pipeline.js';
-import type { HintItem, OutputLine, OutputLineType } from '../types/index.js';
+import type { HintItem, OutputLine } from '../types/index.js';
 import { parseMarkdownInline } from '../core/utils/markdown.js';
 import { ConfigPanel } from './components/ConfigPanel.js';
 import { SubAgentsView, SubAgentDetailView } from './components/SubAgentsView.jsx';
 import { PipelineProvider } from './PipelineContext.jsx';
+import { TextInputBox } from './TextInputBox.jsx';
+import {
+  colors,
+  glyphs,
+  borderForStatus,
+  colorForStatus,
+  colorForOutputType,
+  prefixForOutputType,
+  renderHeaderLine,
+} from './theme.js';
 
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
 
 const HINTS: HintItem[] = [
   { command: '/config', description: 'Open the config panel' },
@@ -287,14 +296,15 @@ function MainView({ workspace, autoApprove, pipeline, setPipeline }: MainViewPro
 
   // Layout dimensions are computed here, BEFORE the JSX, so the useMemo below
   // can use them without re-creating a new object on every render.
-  const headerHeight = 1;
+  const headerHeight = 2; // logo line + dim grid line
+  const footerHeight = 1; // scanline phase strip
   const inputHeight = 1;
   const contextBarHeight = contextEntries.length > 0 ? 1 : 0;
   const errorHeight = error ? 1 : 0;
   const hintsHeight = showHints ? Math.min(hintItems.length, 5) : 0;
   const visibleRows = Math.max(
     3,
-    rows - headerHeight - inputHeight - errorHeight - hintsHeight - contextBarHeight,
+    rows - headerHeight - inputHeight - errorHeight - hintsHeight - contextBarHeight - footerHeight,
   );
 
   const visible = useMemo(
@@ -304,47 +314,88 @@ function MainView({ workspace, autoApprove, pipeline, setPipeline }: MainViewPro
 
   return (
     <Box flexDirection="column" height={rows}>
-      <Header
-        cols={cols}
-        status={status}
-        phase={pipelinePhase}
-        spin={SPINNER[spin] ?? ' '}
-      />
-      {contextEntries.length > 0 ? <ContextBar entries={contextEntries} /> : null}
-      {error ? (
-        <Box paddingX={1}>
-          <Text color="red">! {error}</Text>
+      <Box flexShrink={0}>
+        <Header
+          cols={cols}
+          status={status}
+          phase={pipelinePhase}
+          spin={SPINNER[spin] ?? ' '}
+        />
+      </Box>
+      <Box
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        borderStyle="single"
+        borderColor={colors.dim}
+        paddingX={1}
+        marginX={0}
+        overflow="hidden"
+      >
+        {contextEntries.length > 0 ? <ContextBar entries={contextEntries} /> : null}
+        {error ? (
+          <Box>
+            <Text color={colors.danger} bold>
+              {`${glyphs.blockFull} ERROR `}
+            </Text>
+            <Text color={colors.danger}>{error}</Text>
+          </Box>
+        ) : null}
+        {showSubAgentLogsInMain ? (
+          <Text color={colors.accent}>
+            {`${glyphs.chevron} sub-agent output is mirrored into the main log`}
+          </Text>
+        ) : null}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
+          {output.length === 0 ? <EmptyState /> : visible}
         </Box>
-      ) : null}
-      {showSubAgentLogsInMain ? (
-        <Box paddingX={1}>
-          <Text dimColor>↳ sub-agent output is also being shown in the main log</Text>
-        </Box>
-      ) : null}
-      <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
-        {output.length === 0 ? <EmptyState /> : visible}
         {scrollOffset > 0 ? (
-          <Text dimColor>  ↑ {scrollOffset} line(s) above — PgDn to scroll down</Text>
+          <Text color={colors.dim}>
+            {`  ${glyphs.chevron} ${scrollOffset} line(s) above — PgDn to scroll down`}
+          </Text>
         ) : null}
       </Box>
       {showHints ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1} marginX={1}>
+        <Box
+          flexDirection="column"
+          flexShrink={0}
+          borderStyle="round"
+          borderColor={colors.primary}
+          paddingX={1}
+          marginX={1}
+        >
           {hintItems.slice(0, 5).map((h, i) => (
-            <Text key={h.command} inverse={i === hintIndex}>
+            <Text
+              key={h.command}
+              backgroundColor={i === hintIndex ? colors.primary : undefined}
+              color={i === hintIndex ? colors.onPrimary : colors.grid}
+            >
               {' '}
               {h.command.padEnd(14)} {h.description}
             </Text>
           ))}
         </Box>
       ) : null}
-      <Box borderStyle="round" borderColor={status === 'running' ? 'yellow' : 'gray'} paddingX={1} marginX={1}>
-        <Text color={status === 'running' ? 'yellow' : 'green'}>{status === 'running' ? '▶' : '❯'} </Text>
-        <TextInput
-          value={inputValue}
-          onChange={setInputValue}
-          onSubmit={handleSubmit}
-          placeholder={status === 'running' ? 'busy…' : 'type a task or / for commands'}
-        />
+      <Box flexShrink={0}>
+        <Footer cols={cols} status={status} phase={pipelinePhase.label} />
+      </Box>
+      <Box flexShrink={0}>
+        <Box
+          borderStyle="round"
+          borderColor={borderForStatus(status)}
+          paddingX={1}
+          marginX={1}
+        >
+          <Text color={colorForStatus(status)}>
+            {status === 'running' ? `${SPINNER[spin] ?? ' '} ` : `${glyphs.chevron} `}
+          </Text>
+          <TextInputBox
+            value={inputValue}
+            onChange={setInputValue}
+            onSubmit={handleSubmit}
+            placeholder={status === 'running' ? 'busy…' : 'type a task or / for commands'}
+          />
+        </Box>
       </Box>
     </Box>
   );
@@ -361,25 +412,42 @@ function Header({
   phase: { type: string; label: string; progress?: { current: number; total: number } };
   spin: string;
 }): React.ReactElement {
-  const color = status === 'running' ? 'yellow' : status === 'failed' ? 'red' : status === 'completed' ? 'green' : 'gray';
   const model = useStore((s) => s.config.orchestrator.model) || 'default';
   const progress = phase.progress ? ` ${phase.progress.current}/${phase.progress.total}` : '';
-  const right = `${phase.label}${progress} • model=${model}`;
-  const left = ' AgentTunnel ';
-  const pad = Math.max(0, cols - left.length - right.length - 4);
+  const statusLabel = `${phase.label}${progress}`;
+  const right = `${statusLabel} • model=${model || 'default'}`;
+  const running = status === 'running';
+
+  const spinIndex = Math.abs(typeof spin === 'number' ? spin : 0) % SPINNER.length;
+  const spinFrame = SPINNER[spinIndex] ?? ' ';
+
   return (
-    <Box>
-      <Text backgroundColor="gray" color="white" bold>
-        {left}
-      </Text>
-      <Text backgroundColor="gray" color="white">
-        {' '.repeat(pad)}
-      </Text>
-      <Text backgroundColor="gray" color="white">
-        {' '}
-        {status === 'running' ? `${spin} ` : ''}
-        {right}
-      </Text>
+    <Box flexDirection="column">
+      <Box>
+        <Text color={colors.primary} bold>
+          {running ? `${spinFrame} ` : `${glyphs.blockFull} `}
+        </Text>
+        <Text color={colors.primary} bold>
+          {`▰▰▰ AGENTTUNNEL ▰▰▰`}
+        </Text>
+        <Text color={colors.dim}>
+          {` ${glyphs.hLine.repeat(Math.max(0, cols - right.length - 28))} `}
+        </Text>
+        <Text color={colorForStatus(status)}>{right}</Text>
+      </Box>
+      <Text color={colors.dim}>{glyphs.hLine.repeat(Math.max(0, cols))}</Text>
+    </Box>
+  );
+}
+
+function Footer({ cols, status, phase }: { cols: number; status: 'idle' | 'running' | 'completed' | 'failed'; phase: string }): React.ReactElement {
+  const statusColor = colorForStatus(status);
+  return (
+    <Box paddingX={1}>
+      <Text color={colors.dim}>{glyphs.scanStart}</Text>
+      <Text color={statusColor}>{glyphs.scanMid.repeat(Math.max(2, cols - phase.length - 8))}</Text>
+      <Text color={colors.dim}>{glyphs.scanEnd}</Text>
+      <Text color={statusColor}>{` ${phase} `}</Text>
     </Box>
   );
 }
@@ -407,26 +475,28 @@ function ContextBar({ entries }: { entries: { key: string; source: string; value
 
 function EmptyState(): React.ReactElement {
   return (
-    <Box flexDirection="column" paddingY={1}>
-      <Text bold color="cyan">
-        AgentTunnel is ready
+    <Box flexDirection="column" flexGrow={1} paddingY={1}>
+      <Text bold color={colors.primary}>
+        {`${glyphs.blockFull} AGENTTUNNEL ONLINE`}
       </Text>
-      <Text dimColor>
-        A multi-agent orchestrator for opencode. Describe a task below; the orchestrator will plan and
-        dispatch executor sub-agents. Sub-agent logs are hidden by default — open /sub-agents to inspect.
+      <Text color={colors.grid}>
+        A multi-agent orchestrator for opencode. Describe a task below; the orchestrator will plan
+        and dispatch executor sub-agents. Sub-agent logs are hidden by default — open /sub-agents to
+        inspect.
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>Example tasks:</Text>
+        <Text color={colors.primary}>{`${glyphs.chevron} Example tasks`}</Text>
         {EXAMPLE_TASKS.map((t) => (
-          <Text key={t}> • {t}</Text>
+          <Text key={t} color={colors.white}>
+            {`  ${glyphs.blockHalf} ${t}`}
+          </Text>
         ))}
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Text dimColor>Slash commands (type / to see, Tab/Enter to pick):</Text>
+        <Text color={colors.primary}>{`${glyphs.chevron} Slash commands (type / to see, Tab/Enter to pick)`}</Text>
         {HINTS.map((h) => (
-          <Text key={h.command} dimColor>
-            {' '}
-            {h.command.padEnd(14)} {h.description}
+          <Text key={h.command} color={colors.grid}>
+            {`  ${h.command.padEnd(14)} ${h.description}`}
           </Text>
         ))}
       </Box>
@@ -451,14 +521,15 @@ function visibleLines(output: OutputLine[], rows: number, offset: number): React
 function OutputLineView({ line }: { line: OutputLine }): React.ReactElement {
   if (line.codeBlock) {
     return (
-      <Text backgroundColor="blackBright" color="white">
+      <Text backgroundColor={colors.surface} color={colors.primary}>
         {'  '}
+        {glyphs.blockHalf}
         {line.text}
       </Text>
     );
   }
-  const color = colorForType(line.type);
-  const prefix = prefixForType(line.type);
+  const color = colorForOutputType(line.type);
+  const prefix = prefixForOutputType(line.type);
   const segments = parseMarkdownInline(line.text);
   return (
     <Text color={color}>
@@ -470,38 +541,4 @@ function OutputLineView({ line }: { line: OutputLine }): React.ReactElement {
       ))}
     </Text>
   );
-}
-
-function colorForType(t: OutputLineType): string | undefined {
-  switch (t) {
-    case 'user':
-      return 'green';
-    case 'assistant':
-      return 'cyan';
-    case 'system':
-      return 'gray';
-    case 'error':
-      return 'red';
-    case 'tool':
-      return 'magenta';
-    case 'tool_output':
-      return 'white';
-  }
-}
-
-function prefixForType(t: OutputLineType): string {
-  switch (t) {
-    case 'user':
-      return ' › ';
-    case 'assistant':
-      return ' ● ';
-    case 'system':
-      return ' · ';
-    case 'error':
-      return ' ! ';
-    case 'tool':
-      return ' ⚙ ';
-    case 'tool_output':
-      return '   ';
-  }
 }

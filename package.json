@@ -36,7 +36,6 @@
   "license": "MIT",
   "dependencies": {
     "ink": "^7.0.5",
-    "ink-text-input": "^6.0.0",
     "react": "^19.2.0",
     "zustand": "^5.0.0"
   },

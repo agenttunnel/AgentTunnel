@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
-import TextInput from 'ink-text-input';
+import { TextInputBox } from '../TextInputBox.jsx';
 import { useStore } from '../../core/state/store.js';
 import type { RoleName } from '../../types/index.js';
+import { colors, glyphs } from '../theme.js';
 
 const SECTIONS: { key: RoleName; label: string }[] = [
   { key: 'orchestrator', label: 'Orchestrator' },
@@ -99,27 +100,45 @@ export function ConfigPanel({ onClose }: ConfigPanelProps): React.ReactElement {
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold color="cyan">
-        Config
+      <Text bold color={colors.primary}>
+        {`${glyphs.blockFull} CONFIG`}
       </Text>
-      <Text dimColor>↑/↓ navigate • Enter edit/pick • Esc back</Text>
+      <Text color={colors.dim}>
+        {glyphs.scanStart}
+        {glyphs.scanMid.repeat(Math.max(0, cols - 2))}
+        {glyphs.scanEnd}
+      </Text>
+      <Text color={colors.primary}>
+        {`${glyphs.chevron} ↑/↓ navigate • Enter edit/pick • Esc back`}
+      </Text>
       <Box flexDirection="column" marginTop={1}>
         {SECTIONS.map((sec, si) => {
           const role = config[sec.key];
+          const isCurrentSection = si === sectionIdx;
           return (
-            <Box key={sec.key} flexDirection="column" marginBottom={1}>
-              <Text bold color={si === sectionIdx ? 'yellow' : undefined}>
-                {sec.label}
+            <Box
+              key={sec.key}
+              flexDirection="column"
+              marginBottom={1}
+              borderStyle={isCurrentSection ? 'round' : 'single'}
+              borderColor={isCurrentSection ? colors.primary : colors.dim}
+              paddingX={1}
+            >
+              <Text bold color={isCurrentSection ? colors.accent : colors.primary}>
+                {`${isCurrentSection ? glyphs.chevron : glyphs.blockHalf} ${sec.label}`}
               </Text>
               {FIELDS.map((fld, fi) => {
                 const isCurrent = si === sectionIdx && fi === fieldIdx;
                 return (
                   <Box key={fld.key} marginLeft={2}>
-                    <Text color={isCurrent ? 'green' : 'gray'}>
-                      {isCurrent ? '▶' : ' '} {fld.label.padEnd(8)}
+                    <Text
+                      color={isCurrent ? colors.accent : colors.grid}
+                      bold={isCurrent}
+                    >
+                      {`${isCurrent ? glyphs.chevron : ' '} ${fld.label.padEnd(8)}`}
                     </Text>
                     {editing && isCurrent ? (
-                      <TextInput
+                      <TextInputBox
                         value={editValue}
                         onChange={setEditValue}
                         onSubmit={(v) => {
@@ -128,7 +147,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps): React.ReactElement {
                         }}
                       />
                     ) : (
-                      <Text color={role[fld.key] ? undefined : 'gray'}>
+                      <Text color={role[fld.key] ? colors.white : colors.dim}>
                         {role[fld.key] || `(no ${fld.key})`}
                       </Text>
                     )}
@@ -139,13 +158,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps): React.ReactElement {
           );
         })}
       </Box>
-      {modelPickerOpen ? (
-        <ModelPicker
-          models={models}
-          selected={modelPickIdx}
-          cols={cols}
-        />
-      ) : null}
+      {modelPickerOpen ? <ModelPicker models={models} selected={modelPickIdx} cols={cols} /> : null}
     </Box>
   );
 }
@@ -161,9 +174,11 @@ function ModelPicker({
 }): React.ReactElement {
   if (models.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-        <Text color="yellow">No models discovered. Run `opencode models` to verify.</Text>
-        <Text dimColor>Esc to close</Text>
+      <Box flexDirection="column" borderStyle="round" borderColor={colors.accent} paddingX={1}>
+        <Text color={colors.accent}>
+          {`${glyphs.blockFull} No models discovered. Run \`opencode models\` to verify.`}
+        </Text>
+        <Text color={colors.dim}>Esc to close</Text>
       </Box>
     );
   }
@@ -172,25 +187,28 @@ function ModelPicker({
   const end = Math.min(models.length, start + max);
   const visible = models.slice(start, end);
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
-      <Text bold color="cyan">
-        Select model
+    <Box flexDirection="column" borderStyle="round" borderColor={colors.primary} paddingX={1}>
+      <Text bold color={colors.primary}>
+        {`${glyphs.blockFull} SELECT MODEL`}
       </Text>
       {visible.map((m, i) => {
         const realIdx = start + i;
         return (
-          <Text key={m} inverse={realIdx === selected} color={realIdx === selected ? 'cyan' : undefined}>
-            {' '}
-            {m}
+          <Text
+            key={m}
+            backgroundColor={realIdx === selected ? colors.primary : undefined}
+            color={realIdx === selected ? colors.onPrimary : colors.white}
+          >
+            {` ${realIdx === selected ? glyphs.chevron : ' '} ${m}`}
           </Text>
         );
       })}
       {models.length > max ? (
-        <Text dimColor>
-          showing {start + 1}-{end} of {models.length}
+        <Text color={colors.dim}>
+          {`showing ${start + 1}-${end} of ${models.length}`}
         </Text>
       ) : null}
-      <Text dimColor>↑/↓ move • Enter select • Esc close</Text>
+      <Text color={colors.dim}>↑/↓ move • Enter select • Esc close</Text>
     </Box>
   );
 }

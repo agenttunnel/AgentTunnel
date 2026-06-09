@@ -17,7 +17,6 @@ await build({
   outfile,
   external: [
     'ink',
-    'ink-text-input',
     'react',
     'react-dom',
     'zustand',

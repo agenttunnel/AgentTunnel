@@ -8,3 +8,5 @@ coverage/
 .vscode/
 .idea/
 *.tsbuildinfo
+__pycache__/
+sum.*
