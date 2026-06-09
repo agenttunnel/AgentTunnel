@@ -10,7 +10,13 @@ import {
 import { stripAnsi } from './utils/AnsiCleaner.js';
 import { parseToolCallLine } from './ToolRegistry.js';
 import { SharedContext, type ContextEntry } from './SharedContext.js';
-import type { AppConfig, RoleName, SubAgentInfo } from '../types/index.js';
+import type {
+  AppConfig,
+  PipelineInfo,
+  RoleName,
+  SubAgentInfo,
+  TaskExecutionMode,
+} from '../types/index.js';
 import { useStore } from './state/store.js';
 import type { ToolCall } from './tools.js';
 
@@ -19,6 +25,7 @@ export interface PipelineOptions {
   config: AppConfig;
   onPhaseChange?: (phase: { type: string; label: string; progress?: { current: number; total: number } }) => void;
   onSubAgentUpdate?: (agents: SubAgentInfo[]) => void;
+  onPipelineUpdate?: (pipelines: PipelineInfo[]) => void;
   onDone?: (ok: boolean, msg: string) => void;
   onContextUpdate?: (entries: ContextEntry[]) => void;
   harness?: string;
@@ -33,6 +40,7 @@ export type PipelineEvent =
   | { type: 'phaseChange'; phase: { type: string; label: string; progress?: { current: number; total: number } } }
   | { type: 'subAgentUpdate'; agents: SubAgentInfo[] }
   | { type: 'subAgentOutput'; agentId: string; text: string }
+  | { type: 'pipelineUpdate'; pipelines: PipelineInfo[] }
   | { type: 'done'; ok: boolean; msg: string }
   | { type: 'toolCall'; call: ToolCall }
   | { type: 'contextUpdate'; entries: ContextEntry[] };
@@ -43,18 +51,30 @@ export interface DispatchedTask {
   role: RoleName;
   task: string;
   context: string[];
-  /** ID of the sub-agent that produced this task (undefined for first-pass dispatches). */
-  fromAgentId?: string;
+  /** Id of the named pipeline this task belongs to. */
+  pipelineId: string;
+  /** Mode the task's pipeline was declared with. */
+  mode: TaskExecutionMode;
+  /** Pipeline ids that must complete before this task's pipeline starts. */
+  dependsOn: string[];
 }
 
 const MAX_AGENT_OUTPUT_LINES = 200;
+
+let nextPipelineIdx = 1;
+function freshPipelineId(): string {
+  return `pipe-${nextPipelineIdx++}-${Date.now().toString(36)}`;
+}
 
 export class Pipeline {
   private orchestrator: Session | null = null;
   private currentSubAgent: Session | null = null;
   private readonly subAgentSessions = new Map<string, Session>();
   private agents: SubAgentInfo[] = [];
-  private dispatched: DispatchedTask[] = [];
+  /** Tasks queued in the current orchestrator pass. */
+  private pendingTasks: DispatchedTask[] = [];
+  /** Pipelines built from the current pass (and earlier passes in the run). */
+  private pipelines: PipelineInfo[] = [];
   private running = false;
   private cancelled = false;
   private listeners = new Set<Listener>();
@@ -88,6 +108,10 @@ export class Pipeline {
     this.emit({ type: 'contextUpdate', entries: this.context.list() });
   }
 
+  private emitPipelines(): void {
+    this.emit({ type: 'pipelineUpdate', pipelines: this.pipelines.map((p) => ({ ...p })) });
+  }
+
   async run(userTask: string): Promise<void> {
     if (this.running) {
       this.emit({ type: 'output', text: '[pipeline] already running, ignoring new task', kind: 'system' });
@@ -96,27 +120,34 @@ export class Pipeline {
     this.running = true;
     this.cancelled = false;
     this.agents = [];
-    this.dispatched = [];
+    this.pendingTasks = [];
+    this.pipelines = [];
 
     this.emit({ type: 'phaseChange', phase: { type: 'orchestrating', label: 'orchestrator planning' } });
     this.emit({ type: 'output', text: '[pipeline] dispatching orchestrator', kind: 'system' });
     this.emit({ type: 'output', text: `Available tools: ${ORCHESTRATOR_TOOLS.map((t) => t.name).join(', ')}`, kind: 'system' });
     this.emitContext();
+    this.emitPipelines();
 
     try {
       while (this.orchestratorPasses < this.maxOrchestratorPasses) {
-        const dispatchedBefore = this.dispatched.length;
+        const pipelinesBefore = this.pipelines.length;
         const exits = await this.runOrchestratorPass(userTask, this.orchestratorPasses);
-        if (this.cancelled || !exits.ok) {
+        if (this.cancelled) {
+          this.finish(false, 'cancelled');
+          return;
+        }
+        if (!exits.ok) {
           this.finish(false, exits.msg);
           return;
         }
-        if (this.dispatched.length === dispatchedBefore) {
-          // orchestrator did not dispatch anything new — finish
+        if (this.pipelines.length === pipelinesBefore) {
+          // Orchestrator did not dispatch anything new — finish.
           this.finish(true, this.context.list().length > 0 ? 'orchestrator finished' : 'orchestrator: no tasks');
           return;
         }
-        const ok = await this.runAllExecutors();
+        // Run the new pipelines concurrently.
+        const ok = await this.runNewPipelines(pipelinesBefore);
         if (this.cancelled) {
           this.finish(false, 'cancelled');
           return;
@@ -134,11 +165,6 @@ export class Pipeline {
     }
   }
 
-  /**
-   * Run the orchestrator LLM once. Returns ok=true if it exited cleanly.
-   * The orchestrator can either dispatch tasks (which are queued) or call `done`
-   * to indicate it has no more work.
-   */
   private runOrchestratorPass(userTask: string, pass: number): Promise<{ ok: boolean; msg: string }> {
     return new Promise((resolve) => {
       const session = new Session({
@@ -157,7 +183,7 @@ export class Pipeline {
       if (!isFirst) {
         this.emit({
           type: 'output',
-          text: `[pipeline] orchestrator pass #${pass + 1} (reviewing ${this.dispatched.length} task(s))`,
+          text: `[pipeline] orchestrator pass #${pass + 1} (reviewing ${this.pipelines.reduce((n, p) => n + p.taskIds.length, 0)} task(s))`,
           kind: 'system',
         });
       }
@@ -194,20 +220,20 @@ export class Pipeline {
 
   private buildSummaryPassPrompt(): string {
     const summary = this.context.renderSummary();
-    const recent = this.dispatched
-      .slice(-5)
-      .map((d) => `- [${d.role}] ${truncate(d.task, 100)}`)
+    const recent = this.pipelines
+      .slice(-6)
+      .map((p) => `- [${p.mode}] ${p.name} (${p.taskIds.length} task(s), ${p.status})`)
       .join('\n');
     return [
       `${ORCHESTRATOR_PROMPT}`,
       ``,
       `## Summary pass`,
       ``,
-      `This is not the first pass. Below is what sub-agents have reported.`,
+      `This is not the first pass. Below is what the team has done.`,
       `Use it to decide whether to dispatch follow-up tasks (e.g. a reviewer)`,
       `or to call \`done\`.`,
       ``,
-      `### Recent tasks`,
+      `### Recent pipelines`,
       recent,
       ``,
       `### Shared context`,
@@ -232,8 +258,6 @@ export class Pipeline {
     if (role === 'orchestrator') {
       this.emit({ type: 'output', text: clean, kind: 'assistant' });
     } else if (agentId) {
-      // Sub-agent narrative is hidden from the main log. The store listens
-      // for subAgentOutput and writes it to the per-agent log buffer.
       this.emit({ type: 'subAgentOutput', agentId, text: clean });
     }
   }
@@ -248,28 +272,14 @@ export class Pipeline {
     this.handleSubAgentToolCall(call, agentId);
   }
 
+  /** Test-only: current pipelines snapshot. */
+  _testPipelines(): PipelineInfo[] {
+    return this.pipelines.map((p) => ({ ...p }));
+  }
+
   private handleOrchestratorToolCall(call: ToolCall): void {
     if (call.name === 'dispatch_task') {
-      const role = String(call.arguments.role ?? '');
-      const task = String(call.arguments.task ?? '');
-      const contextRaw = call.arguments.context;
-      const context = Array.isArray(contextRaw)
-        ? contextRaw.filter((k): k is string => typeof k === 'string')
-        : [];
-      if ((role === 'executor' || role === 'reviewer') && task.length > 0) {
-        this.dispatched.push({ role: role as RoleName, task, context });
-        this.emit({
-          type: 'output',
-          text: `[orchestrator] → ${role}: ${truncate(task, 80)}${context.length > 0 ? ` (context: ${context.join(', ')})` : ''}`,
-          kind: 'system',
-        });
-      } else {
-        this.emit({
-          type: 'output',
-          text: `[orchestrator] invalid dispatch_task arguments: ${JSON.stringify(call.arguments)}`,
-          kind: 'error',
-        });
-      }
+      this.acceptDispatch(call);
     } else if (call.name === 'update_context') {
       const key = String(call.arguments.key ?? '');
       const value = String(call.arguments.value ?? '');
@@ -294,7 +304,6 @@ export class Pipeline {
         text: `[orchestrator] done (${String(call.arguments.reason ?? 'complete')})`,
         kind: 'system',
       });
-      // done is implicit — empty dispatched array after this pass will end the pipeline
     } else {
       this.emit({
         type: 'output',
@@ -302,6 +311,71 @@ export class Pipeline {
         kind: 'error',
       });
     }
+  }
+
+  private acceptDispatch(call: ToolCall): void {
+    const role = String(call.arguments.role ?? '');
+    const task = String(call.arguments.task ?? '');
+    const pipelineId = String(call.arguments.pipeline ?? '') || freshPipelineId();
+    const mode = (call.arguments.mode === 'sequential' ? 'sequential' : 'parallel') as TaskExecutionMode;
+    const dependsOnRaw = call.arguments.depends_on;
+    const dependsOn = Array.isArray(dependsOnRaw)
+      ? dependsOnRaw.filter((d): d is string => typeof d === 'string')
+      : [];
+    const contextRaw = call.arguments.context;
+    const context = Array.isArray(contextRaw)
+      ? contextRaw.filter((k): k is string => typeof k === 'string')
+      : [];
+
+    if ((role !== 'executor' && role !== 'reviewer') || task.length === 0) {
+      this.emit({
+        type: 'output',
+        text: `[orchestrator] invalid dispatch_task arguments: ${JSON.stringify(call.arguments)}`,
+        kind: 'error',
+      });
+      return;
+    }
+
+    // Find or create the pipeline.
+    let pipeline = this.pipelines.find((p) => p.id === pipelineId);
+    if (!pipeline) {
+      pipeline = {
+        id: pipelineId,
+        name: pipelineId,
+        mode,
+        dependsOn,
+        taskIds: [],
+        status: 'idle',
+      };
+      this.pipelines.push(pipeline);
+    } else {
+      // First-declared mode/dependsOn wins. Subsequent dispatches into the
+      // same pipeline id only contribute their task.
+      if (pipeline.mode !== mode || JSON.stringify(pipeline.dependsOn) !== JSON.stringify(dependsOn)) {
+        this.emit({
+          type: 'output',
+          text: `[orchestrator] pipeline "${pipelineId}" already exists; ignoring redeclaration of mode/depends_on`,
+          kind: 'system',
+        });
+      }
+    }
+
+    const taskEntry: DispatchedTask = {
+      role: role as RoleName,
+      task,
+      context,
+      pipelineId,
+      mode,
+      dependsOn,
+    };
+    this.pendingTasks.push(taskEntry);
+    pipeline.taskIds.push(`t-${this.pendingTasks.length - 1}`);
+    this.emitPipelines();
+    this.emit({
+      type: 'output',
+      text: `[orchestrator] → ${role}@${pipelineId}${mode === 'sequential' ? ' (seq)' : ''}${dependsOn.length > 0 ? ` after [${dependsOn.join(', ')}]` : ''}: ${truncate(task, 60)}`,
+      kind: 'system',
+    });
   }
 
   private handleSubAgentToolCall(call: ToolCall, agentId: string): void {
@@ -323,59 +397,156 @@ export class Pipeline {
           kind: 'error',
         });
       }
-    } else if (call.name === 'update_context') {
-      // sub-agents shouldn't write to the orchestrator's notebook directly,
-      // but if they try, treat it as a note_finding for safety.
-      const key = String(call.arguments.key ?? '');
-      const value = String(call.arguments.value ?? '');
-      try {
-        this.context.append(key, value, agentId);
-        this.emitContext();
-      } catch {
-        // ignore
-      }
     } else if (call.name === 'done') {
-      this.emit({
-        type: 'output',
-        text: `[${agentId}] done`,
-        kind: 'system',
-      });
+      this.emit({ type: 'output', text: `[${agentId}] done`, kind: 'system' });
     }
-    // other tools from sub-agents are ignored — they have no handlers in this pipeline
   }
 
-  private async runAllExecutors(): Promise<boolean> {
-    const startIdx = this.dispatched.length === 0 ? 0 : Math.max(0, this.dispatched.length - this.dispatched.length);
-    const newTasks = this.dispatched.slice(startIdx);
+  /**
+   * Run the pipelines added since `startIdx`, respecting dependencies and
+   * parallel/sequential mode. Returns true iff all pipelines ended in
+   * `completed` status.
+   */
+  private async runNewPipelines(startIdx: number): Promise<boolean> {
+    const targets = this.pipelines.slice(startIdx);
+    if (targets.length === 0) return true;
 
-    this.emit({
-      type: 'phaseChange',
-      phase: {
-        type: 'executing',
-        label: `executors (0/${newTasks.length})`,
-        progress: { current: 0, total: newTasks.length },
-      },
-    });
+    // Index for fast lookup
+    const byId = new Map<string, PipelineInfo>();
+    for (const p of this.pipelines) byId.set(p.id, p);
 
-    let okCount = 0;
-    for (let i = 0; i < newTasks.length; i++) {
-      if (this.cancelled) break;
-      const task = newTasks[i];
-      if (!task) continue;
+    // State: which pipelines are done, which are running.
+    const completed = new Set<string>();
+    const running = new Set<string>();
+    let allOk = true;
+
+    // Build a closure that runs a single pipeline and resolves when done.
+    const runPipeline = (p: PipelineInfo): Promise<void> =>
+      new Promise<void>((resolve) => {
+        p.status = 'running';
+        p.startedAt = Date.now();
+        this.emitPipelines();
+        this.runPipelineInternal(p).then(
+          (ok) => {
+            p.status = ok ? 'completed' : 'failed';
+            p.endedAt = Date.now();
+            completed.add(p.id);
+            running.delete(p.id);
+            this.emitPipelines();
+            resolve();
+          },
+          (err) => {
+            this.emit({ type: 'output', text: `[pipeline ${p.id}] error: ${(err as Error).message}`, kind: 'error' });
+            p.status = 'failed';
+            p.endedAt = Date.now();
+            completed.add(p.id);
+            running.delete(p.id);
+            this.emitPipelines();
+            resolve();
+          },
+        );
+      });
+
+    // Loop: at each step, find pipelines that are ready (deps satisfied, not
+    // yet started, not running), launch them all, then wait for any to
+    // finish before re-checking.
+    const totalCount = targets.length;
+    let doneCount = 0;
+
+    while (doneCount < totalCount) {
+      if (this.cancelled) {
+        allOk = false;
+        break;
+      }
+      const ready: PipelineInfo[] = [];
+      for (const p of targets) {
+        if (running.has(p.id) || completed.has(p.id)) continue;
+        const depsMet = p.dependsOn.every((dep) => completed.has(dep));
+        if (depsMet) ready.push(p);
+      }
+      if (ready.length === 0 && running.size === 0) {
+        // No progress possible — remaining pipelines have unsatisfiable deps.
+        this.emit({
+          type: 'output',
+          text: `[pipeline] deadlock: some pipelines have unsatisfiable dependencies`,
+          kind: 'error',
+        });
+        for (const p of targets) {
+          if (!completed.has(p.id)) {
+            p.status = 'failed';
+            p.endedAt = Date.now();
+          }
+        }
+        this.emitPipelines();
+        allOk = false;
+        break;
+      }
+      // Launch all ready pipelines concurrently.
+      for (const p of ready) {
+        running.add(p.id);
+        void runPipeline(p);
+      }
+      // Update progress label.
       this.emit({
         type: 'phaseChange',
         phase: {
           type: 'executing',
-          label: `executors (${i + 1}/${newTasks.length})`,
-          progress: { current: i + 1, total: newTasks.length },
+          label: `pipelines (${doneCount}/${totalCount})`,
+          progress: { current: doneCount, total: totalCount },
         },
       });
-      const ok = await this.runOne(task);
-      if (ok) okCount++;
+      // Wait for one to finish (or all to finish).
+      // We use Promise.race by building a promise per running pipeline.
+      if (running.size > 0) {
+        await new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (cancelledOrDone(this.cancelled, running.size)) {
+              clearInterval(check);
+              resolve();
+            }
+          }, 50);
+        });
+        // Recount done
+        doneCount = targets.filter((p) => completed.has(p.id)).length;
+      } else {
+        break;
+      }
     }
 
-    if (this.cancelled) return false;
-    return okCount === newTasks.length;
+    if (allOk) {
+      for (const p of targets) {
+        if (p.status === 'failed') {
+          allOk = false;
+          break;
+        }
+      }
+    }
+    return allOk;
+  }
+
+  /** Run all tasks within a single named pipeline, parallel or sequential. */
+  private async runPipelineInternal(p: PipelineInfo): Promise<boolean> {
+    // Find this pipeline's tasks (in dispatch order).
+    const tasks = this.pendingTasks.filter((t) => t.pipelineId === p.id);
+
+    this.emit({
+      type: 'output',
+      text: `[pipeline ${p.id}] starting (${p.mode}, ${tasks.length} task(s))`,
+      kind: 'system',
+    });
+
+    if (p.mode === 'sequential') {
+      let ok = true;
+      for (const t of tasks) {
+        if (this.cancelled) return false;
+        const taskOk = await this.runOne(t);
+        if (!taskOk) ok = false;
+      }
+      return ok;
+    }
+    // Parallel — run all at once.
+    const results = await Promise.all(tasks.map((t) => this.runOne(t)));
+    return results.every(Boolean);
   }
 
   private async runOne(task: DispatchedTask): Promise<boolean> {
@@ -386,6 +557,7 @@ export class Pipeline {
       task: task.task,
       output: [],
       startedAt: Date.now(),
+      pipelineId: task.pipelineId,
     };
     this.agents = [...this.agents, agent];
     this.emit({ type: 'subAgentUpdate', agents: this.agents });
@@ -418,7 +590,6 @@ export class Pipeline {
     return new Promise<boolean>((resolve) => {
       session.onOutput((line) => {
         const clean = stripAnsi(line);
-        // Cap each agent's buffer to MAX_AGENT_OUTPUT_LINES
         if (agent.output.length < MAX_AGENT_OUTPUT_LINES) {
           agent.output = [...agent.output, clean];
         } else {
@@ -468,8 +639,7 @@ export class Pipeline {
 
   /**
    * Kill a single running sub-agent by id. Sends SIGTERM (then SIGKILL after 5s).
-   * The pipeline continues running any other queued sub-agents.
-   * Returns true if the agent was running and a kill was sent.
+   * The pipeline continues running any other in-flight sub-agents.
    */
   killSubAgent(agentId: string): boolean {
     const session = this.subAgentSessions.get(agentId);
@@ -496,6 +666,10 @@ export class Pipeline {
     });
     this.emit({ type: 'done', ok, msg });
   }
+}
+
+function cancelledOrDone(cancelled: boolean, running: number): boolean {
+  return cancelled || running === 0;
 }
 
 export async function listModels(harness = 'opencode', cwd = process.cwd()): Promise<string[]> {
@@ -543,6 +717,8 @@ export function attachStoreEvents(pipeline: Pipeline): () => void {
       else useStore.getState().setStatus('running');
     } else if (ev.type === 'subAgentUpdate') {
       useStore.getState().setSubAgents(ev.agents);
+    } else if (ev.type === 'pipelineUpdate') {
+      useStore.getState().setPipelines(ev.pipelines);
     } else if (ev.type === 'contextUpdate') {
       useStore.getState().setContextEntries(ev.entries);
     } else if (ev.type === 'done') {

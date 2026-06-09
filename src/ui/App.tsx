@@ -29,12 +29,6 @@ const HINTS: HintItem[] = [
   { command: '/exit', description: 'Quit AgentTunnel' },
 ];
 
-const EXAMPLE_TASKS = [
-  'Add a vitest test for the AnsiCleaner utility',
-  'Refactor the Session class to support a --format json flag',
-  'Audit the codebase for any remaining `any` types',
-];
-
 interface AppProps {
   workspace: string;
   autoApprove: boolean;
@@ -480,21 +474,14 @@ function EmptyState(): React.ReactElement {
         {`${glyphs.blockFull} AGENTTUNNEL ONLINE`}
       </Text>
       <Text color={colors.grid}>
-        A multi-agent orchestrator for opencode. Describe a task below; the orchestrator will plan
-        and dispatch executor sub-agents. Sub-agent logs are hidden by default — open /sub-agents to
-        inspect.
+        {`${glyphs.chevron} type a task below and press Enter — the orchestrator will plan, dispatch sub-agents, and report back`}
       </Text>
-      <Box flexDirection="column" marginTop={1}>
-        <Text color={colors.primary}>{`${glyphs.chevron} Example tasks`}</Text>
-        {EXAMPLE_TASKS.map((t) => (
-          <Text key={t} color={colors.white}>
-            {`  ${glyphs.blockHalf} ${t}`}
-          </Text>
-        ))}
-      </Box>
+      <Text color={colors.grid}>
+        {`${glyphs.chevron} type / to discover commands (Tab to autocomplete, Enter to pick)`}
+      </Text>
       <Box marginTop={1} flexDirection="column">
-        <Text color={colors.primary}>{`${glyphs.chevron} Slash commands (type / to see, Tab/Enter to pick)`}</Text>
-        {HINTS.map((h) => (
+        <Text color={colors.primary}>{`${glyphs.chevron} Quick start`}</Text>
+        {HINTS.slice(0, 4).map((h) => (
           <Text key={h.command} color={colors.grid}>
             {`  ${h.command.padEnd(14)} ${h.description}`}
           </Text>

@@ -78,6 +78,26 @@ Think of the orchestrator as the team lead. It owns a **shared notebook** (`Shar
 
 The notebook is also surfaced in the TUI as a compact bar under the header so you can see what context the team is sharing.
 
+### Parallel and sequential pipelines
+
+Sub-agents are grouped into **named pipelines**. Tasks sharing a pipeline id are scheduled together; tasks in different pipelines run concurrently by default.
+
+- `dispatch_task(role, task, pipeline, mode)` — `mode` is `parallel` (default) or `sequential`.
+- `dispatch_task(..., depends_on=["other_pipeline"])` — gates this pipeline on the completion of one or more other pipelines.
+
+A typical plan looks like:
+
+```
+dispatch_task pipeline="research" task="gather info on A"   # parallel
+dispatch_task pipeline="research" task="gather info on B"   # parallel
+dispatch_task pipeline="review"  task="check the docs"      # parallel, no deps
+dispatch_task pipeline="code"    mode="sequential"
+            depends_on=["research"]
+            task="implement feature"                         # waits for research
+```
+
+The scheduler launches all pipelines concurrently, then sequences tasks within each pipeline according to its `mode`. When a pipeline with `depends_on` is reached, the scheduler waits for the upstream pipelines to complete before starting it.
+
 Adding a new tool (e.g. a `web_search` tool for the orchestrator) is a two-step change:
 
 1. Add a `ToolDefinition` in `prompts.ts` and include it in `ORCHESTRATOR_TOOLS`.

@@ -34,6 +34,19 @@ export interface PipelinePhase {
   progress?: { current: number; total: number };
 }
 
+export type TaskExecutionMode = 'parallel' | 'sequential';
+
+export interface PipelineInfo {
+  id: string;
+  name: string;
+  mode: TaskExecutionMode;
+  dependsOn: string[];
+  taskIds: string[];
+  status: SessionStatus;
+  startedAt?: number;
+  endedAt?: number;
+}
+
 export interface RoleConfig {
   harness: string;
   model: string;
@@ -61,6 +74,7 @@ export interface SubAgentInfo {
   output: string[];
   startedAt: number;
   endedAt?: number;
+  pipelineId?: string;
 }
 
 export function defaultConfig(): AppConfig {

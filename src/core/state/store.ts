@@ -4,6 +4,7 @@ import type {
   HintItem,
   OutputLine,
   OutputLineType,
+  PipelineInfo,
   PipelinePhase,
   RoleConfig,
   RoleName,
@@ -39,6 +40,7 @@ export interface StoreState {
   pipelinePhase: PipelinePhase;
   models: string[];
   subAgents: SubAgentInfo[];
+  pipelines: PipelineInfo[];
   contextEntries: ContextEntry[];
   history: string[];
   historyIndex: number;
@@ -70,6 +72,7 @@ export interface StoreState {
   setModels: (m: string[]) => void;
   setPipelinePhase: (p: PipelinePhase) => void;
   setSubAgents: (agents: SubAgentInfo[]) => void;
+  setPipelines: (pipelines: PipelineInfo[]) => void;
   setContextEntries: (entries: ContextEntry[]) => void;
   pushHistory: (entry: string) => void;
   setHistoryIndex: (n: number) => void;
@@ -96,6 +99,7 @@ export const useStore = create<StoreState>((set) => ({
   pipelinePhase: { type: 'idle', label: 'idle' },
   models: [],
   subAgents: [],
+  pipelines: [],
   contextEntries: [],
   history: [],
   historyIndex: -1,
@@ -178,6 +182,7 @@ export const useStore = create<StoreState>((set) => ({
   setModels: (models) => set({ models }),
   setPipelinePhase: (pipelinePhase) => set({ pipelinePhase, scrollOffset: 0 }),
   setSubAgents: (subAgents) => set({ subAgents }),
+  setPipelines: (pipelines) => set({ pipelines }),
   setContextEntries: (contextEntries) => set({ contextEntries }),
   pushHistory: (entry) =>
     set((s) => {
@@ -196,6 +201,7 @@ export const useStore = create<StoreState>((set) => ({
       error: null,
       scrollOffset: 0,
       subAgents: [],
+      pipelines: [],
       contextEntries: [],
       pipelinePhase: { type: 'idle', label: 'idle' },
       selectedSubAgentId: null,
@@ -227,6 +233,7 @@ export function _resetStoreForTests(): void {
     pipelinePhase: { type: 'idle', label: 'idle' },
     models: [],
     subAgents: [],
+    pipelines: [],
     contextEntries: [],
     history: [],
     historyIndex: -1,

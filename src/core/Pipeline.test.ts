@@ -38,7 +38,6 @@ describe('Pipeline orchestrator tool calls', () => {
         context: ['user_goal'],
       },
     });
-    // The pipeline exposes dispatched via internal state; for now verify the context was rendered properly
     const rendered = p.context.renderForPrompt(['user_goal']);
     expect(rendered).toContain('X');
   });
@@ -48,9 +47,8 @@ describe('Pipeline orchestrator tool calls', () => {
       name: 'dispatch_task',
       arguments: { role: 'janitor', task: 'sweep' },
     });
-    // No easy way to assert from outside without exposing dispatched, but the
-    // call should not throw and should not create a context entry.
     expect(p.context.list()).toHaveLength(0);
+    expect(p._testPipelines()).toHaveLength(0);
   });
 
   it('sub-agent note_finding appends to existing or creates new', () => {
@@ -72,6 +70,89 @@ describe('Pipeline orchestrator tool calls', () => {
   it('sub-agent done is a no-op for context', () => {
     p._testHandleSubAgentCall({ name: 'done', arguments: {} }, 'agent-1');
     expect(p.context.list()).toHaveLength(0);
+  });
+});
+
+describe('Pipeline scheduling (named pipelines, parallel/sequential)', () => {
+  let p: Pipeline;
+  beforeEach(() => {
+    p = makePipeline();
+  });
+
+  it('dispatches with same pipeline id group into one pipeline', () => {
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'a', pipeline: 'research' },
+    });
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'b', pipeline: 'research' },
+    });
+    const pipes = p._testPipelines();
+    expect(pipes).toHaveLength(1);
+    expect(pipes[0]?.id).toBe('research');
+    expect(pipes[0]?.taskIds).toHaveLength(2);
+  });
+
+  it('different pipeline ids create separate pipelines', () => {
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'a', pipeline: 'a' },
+    });
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'b', pipeline: 'b' },
+    });
+    const pipes = p._testPipelines();
+    expect(pipes).toHaveLength(2);
+    expect(pipes.map((x) => x.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('captures mode and depends_on from first dispatch', () => {
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: {
+        role: 'executor',
+        task: 'a',
+        pipeline: 'code',
+        mode: 'sequential',
+        depends_on: ['research'],
+      },
+    });
+    const pipes = p._testPipelines();
+    expect(pipes[0]?.mode).toBe('sequential');
+    expect(pipes[0]?.dependsOn).toEqual(['research']);
+  });
+
+  it('default mode is parallel when omitted', () => {
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'a', pipeline: 'p' },
+    });
+    expect(p._testPipelines()[0]?.mode).toBe('parallel');
+  });
+
+  it('no pipeline id gets an auto-generated one', () => {
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'a' },
+    });
+    expect(p._testPipelines()[0]?.id).toMatch(/^pipe-/);
+  });
+
+  it('re-declaring mode/depends_on on the same pipeline is ignored', () => {
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'a', pipeline: 'p', mode: 'parallel' },
+    });
+    p._testHandleOrchestratorCall({
+      name: 'dispatch_task',
+      arguments: { role: 'executor', task: 'b', pipeline: 'p', mode: 'sequential', depends_on: ['x'] },
+    });
+    const pipe = p._testPipelines()[0];
+    expect(pipe?.mode).toBe('parallel');
+    expect(pipe?.dependsOn).toEqual([]);
+    expect(pipe?.taskIds).toHaveLength(2);
   });
 });
 

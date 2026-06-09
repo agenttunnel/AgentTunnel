@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { useStore } from '../../core/state/store.js';
 import { usePipeline } from '../PipelineContext.jsx';
-import type { OutputLine, SubAgentInfo } from '../../types/index.js';
+import type { OutputLine, PipelineInfo, SubAgentInfo } from '../../types/index.js';
 import { parseMarkdownInline } from '../../core/utils/markdown.js';
 import { colors, glyphs, colorForStatus, colorForOutputType, prefixForOutputType } from '../theme.js';
 
@@ -12,6 +12,7 @@ interface SubAgentsViewProps {
 
 export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElement {
   const subAgents = useStore((s) => s.subAgents);
+  const pipelines = useStore((s) => s.pipelines);
   const selectedSubAgentId = useStore((s) => s.selectedSubAgentId);
   const setSelectedSubAgentId = useStore((s) => s.setSelectedSubAgentId);
   const setViewAgentId = useStore((s) => s.setViewAgentId);
@@ -89,12 +90,67 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
     );
   }
 
-  const maxRows = Math.max(3, rows - 8);
-  const selectedIdx = subAgents.findIndex((a) => a.id === selectedSubAgentId);
-  let start = 0;
-  if (selectedIdx >= maxRows) start = selectedIdx - maxRows + 1;
-  const end = Math.min(subAgents.length, start + maxRows);
-  const visible = subAgents.slice(start, end);
+  const maxRows = Math.max(3, rows - 10);
+  // Group agents by pipeline id, preserving order within each group.
+  const groups = groupByPipeline(subAgents, pipelines);
+  const totalAgents = subAgents.length;
+  let consumed = 0;
+  const visibleBlocks: React.ReactElement[] = [];
+  let selectedRendered = false;
+
+  for (const group of groups) {
+    const pipeline: PipelineInfo | undefined = group.pipeline;
+    const headerLines = pipeline ? 1 : 0;
+    const remaining = maxRows - consumed - headerLines;
+    if (remaining <= 0 && !selectedRendered) {
+      // try to keep at least the selected agent visible
+    }
+    if (pipeline) {
+      const doneCount = group.agents.filter((a) => a.status === 'completed').length;
+      const failedCount = group.agents.filter((a) => a.status === 'failed').length;
+      const okColor = failedCount > 0 ? colors.danger : colorForStatus(pipeline.status);
+      const modeLabel = pipeline.mode === 'sequential' ? 'seq' : 'par';
+      visibleBlocks.push(
+        <Box key={`h-${pipeline.id}`}>
+          <Text color={colors.accent} bold>
+            {` ${glyphs.chevron} `}
+          </Text>
+          <Text color={colors.primary} bold>
+            {pipeline.name}
+          </Text>
+          <Text color={colors.dim}>
+            {`  [${modeLabel}] ${doneCount}/${group.agents.length} done`}
+          </Text>
+          <Text color={okColor}>{`  ${pipeline.status}`}</Text>
+          {pipeline.dependsOn.length > 0 ? (
+            <Text color={colors.grid}>
+              {`  after [${pipeline.dependsOn.join(', ')}]`}
+            </Text>
+          ) : null}
+        </Box>,
+      );
+      consumed += 1;
+    }
+    const agentsToShow = group.agents.slice(0, Math.max(0, maxRows - consumed));
+    for (const a of agentsToShow) {
+      visibleBlocks.push(
+        <AgentRow
+          key={a.id}
+          agent={a}
+          selected={a.id === selectedSubAgentId}
+        />,
+      );
+      consumed += 1;
+      if (a.id === selectedSubAgentId) selectedRendered = true;
+    }
+    if (group.agents.length > agentsToShow.length) {
+      visibleBlocks.push(
+        <Text key={`more-${group.pipeline?.id ?? '?'}`} color={colors.dim}>
+          {`  ${glyphs.blockHalf} +${group.agents.length - agentsToShow.length} more in this pipeline`}
+        </Text>,
+      );
+    }
+  }
 
   return (
     <Box flexDirection="column" paddingX={1}>
@@ -103,7 +159,7 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
           {`${glyphs.blockFull} SUB-AGENTS`}
         </Text>
         <Text color={colors.dim}>
-          {`  ${subAgents.length} total · showing ${start + 1}-${end}`}
+          {`  ${groups.length} pipeline(s) · ${totalAgents} agent(s)`}
         </Text>
       </Box>
       <Text color={colors.dim}>
@@ -118,16 +174,40 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
         {`${glyphs.blockHalf} sub-agent output in main log: ${showSubAgentLogsInMain ? 'ON' : 'off'}`}
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        {visible.map((a) => (
-          <AgentRow
-            key={a.id}
-            agent={a}
-            selected={a.id === selectedSubAgentId}
-          />
-        ))}
+        {visibleBlocks}
       </Box>
     </Box>
   );
+}
+
+interface PipelineGroup {
+  pipeline?: PipelineInfo;
+  agents: SubAgentInfo[];
+}
+
+function groupByPipeline(
+  agents: SubAgentInfo[],
+  pipelines: PipelineInfo[],
+): PipelineGroup[] {
+  const byPipe = new Map<string, SubAgentInfo[]>();
+  const orphan: SubAgentInfo[] = [];
+  for (const a of agents) {
+    const id = a.pipelineId ?? '';
+    if (id) {
+      const arr = byPipe.get(id) ?? [];
+      arr.push(a);
+      byPipe.set(id, arr);
+    } else {
+      orphan.push(a);
+    }
+  }
+  const result: PipelineGroup[] = [];
+  for (const p of pipelines) {
+    const arr = byPipe.get(p.id);
+    if (arr && arr.length > 0) result.push({ pipeline: p, agents: arr });
+  }
+  if (orphan.length > 0) result.push({ pipeline: undefined, agents: orphan });
+  return result;
 }
 
 function AgentRow({ agent, selected }: { agent: SubAgentInfo; selected: boolean }): React.ReactElement {

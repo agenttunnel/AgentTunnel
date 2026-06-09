@@ -3,7 +3,7 @@ import type { ToolDefinition } from './tools.js';
 export const DISPATCH_TASK_TOOL: ToolDefinition = {
   name: 'dispatch_task',
   description:
-    'Dispatch a single concrete subtask to an executor sub-agent. The agent will implement the task in the workspace and report back. Use the optional "context" argument to hand the agent specific context keys from the shared notebook.',
+    'Dispatch a single concrete subtask to an executor sub-agent. Tasks are grouped into named pipelines. Tasks in the same pipeline run together according to the pipeline mode (parallel or sequential). Different pipelines run concurrently. Use the optional "depends_on" argument to gate a pipeline on the completion of other named pipelines.',
   parameters: {
     type: 'object',
     properties: {
@@ -19,15 +19,32 @@ export const DISPATCH_TASK_TOOL: ToolDefinition = {
           'A self-contained, concrete task description. Include file paths, function signatures, and expected output.',
         required: true,
       },
+      pipeline: {
+        type: 'string',
+        description:
+          'Lower-snake-case pipeline id. Tasks with the same pipeline id are grouped together. If omitted, a unique auto-id is used.',
+        required: false,
+      },
+      mode: {
+        type: 'enum',
+        description:
+          'How tasks within THIS pipeline are scheduled. "parallel" (default) runs them concurrently. "sequential" runs them in dispatch order. Different pipelines are always parallel to each other unless depends_on is set.',
+        enum: ['parallel', 'sequential'],
+        required: false,
+      },
+      depends_on: {
+        type: 'array',
+        description:
+          'Optional list of pipeline ids that must complete before this task\'s pipeline starts. Use this to compose pipelines into a larger DAG.',
+        required: false,
+        items: { type: 'string', description: 'A pipeline id declared by an earlier dispatch_task call.' },
+      },
       context: {
         type: 'array',
         description:
-          'Optional list of context keys (lower_snake_case) to inject into the agent\'s prompt. The agent will see the values verbatim. Use this instead of repeating long content in the "task" string.',
+          'Optional list of context keys (lower_snake_case) to inject into the agent\'s prompt. The agent will see the values verbatim.',
         required: false,
-        items: {
-          type: 'string',
-          description: 'A key previously set via update_context.',
-        },
+        items: { type: 'string', description: 'A key previously set via update_context.' },
       },
     },
     required: ['role', 'task'],
@@ -162,23 +179,27 @@ export const ORCHESTRATOR_PROMPT = `You are the orchestrator of a multi-agent co
 ## How to lead
 
 1. **Read the user's task carefully.** Distinguish the actual goal from incidental detail.
-2. **Write the goal and any stable facts to the shared notebook** with \`update_context\`. Use short, lower_snake_case keys (e.g. \`user_goal\`, \`constraints\`, \`design_decisions\`, \`file_map\`).
-3. **Break the work into a small ordered list of subtasks.** Prefer 1-5 tasks.
-4. **Dispatch each subtask** with \`dispatch_task\`. For each one:
-   - Make the \`task\` string self-contained: file paths, function signatures, expected output.
-   - Use the \`context\` argument to hand the sub-agent ONLY the notebook entries it needs. Don't dump the whole notebook.
-   - Order matters — later agents can build on what earlier ones wrote.
-5. **After all sub-agents finish**, you will be called a second time with a transcript of what they did and any findings they wrote. Use that to either:
-   - Dispatch follow-up tasks (e.g. a reviewer to check earlier work), or
-   - Call \`done\` with a short reason.
-6. **Call \`done\`** when you are finished dispatching. If the task is trivial you may call it immediately.
+2. **Write the goal and any stable facts to the shared notebook** with \`update_context\`. Use short, lower_snake_case keys.
+3. **Design your team.** Break the work into one or more **named pipelines** of subtasks:
+   - Use multiple pipelines when subtasks are independent and benefit from running concurrently.
+   - Use a single sequential pipeline for strict ordering.
+   - Use a \`depends_on\` edge to gate a pipeline on another pipeline's completion.
+4. **Dispatch each subtask** with \`dispatch_task\`:
+   - Set \`pipeline\` to a lower_snake_case id. Tasks sharing an id are grouped.
+   - Set \`mode\` to \`parallel\` (default; tasks in this pipeline run concurrently) or \`sequential\` (tasks run in dispatch order).
+   - Set \`depends_on\` to a list of pipeline ids that must complete before this pipeline starts. Leave empty to run with no upstream.
+   - Use the \`context\` argument to hand the sub-agent ONLY the notebook entries it needs.
+5. **After all pipelines finish**, you will be called a second time with a transcript of what they did. You may:
+   - Dispatch follow-up tasks (e.g. a reviewer) — they become new pipelines.
+   - Call \`done\` to finish.
 
-## Notebook etiquette
+## Patterns
 
-- Keys are \`[a-z][a-z0-9_]*\`.
-- Don't repeat content already in the notebook across tasks. Update once, reference by key.
-- Keep entries tight. Sub-agents will see them verbatim; long rambling notes waste their context budget.
-- Prefer multiple small keys (\`user_goal\`, \`constraints\`, \`api_contract\`) to one giant blob.
+- **Fan-out research, then implement:**
+  - pipeline "research" (parallel): two agents gather info on two topics
+  - pipeline "implement" (sequential), depends_on=["research"]: one agent implements
+- **Parallel independent workstreams:** A and B have no overlap → just two pipelines, no \`depends_on\`.
+- **Strictly linear work:** one pipeline, mode \`sequential\`. Don't use \`depends_on\`.
 
 ${renderToolCallInstructions(ORCHESTRATOR_TOOLS)}`;
 
