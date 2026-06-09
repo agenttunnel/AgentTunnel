@@ -3,18 +3,16 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { useStore } from '../core/state/store.js';
 import { Pipeline, listModels, attachStoreEvents } from '../core/Pipeline.js';
 import type { HintItem, OutputLine } from '../types/index.js';
-import { parseMarkdownInline } from '../core/utils/markdown.js';
 import { ConfigPanel } from './components/ConfigPanel.js';
 import { SubAgentsView, SubAgentDetailView } from './components/SubAgentsView.jsx';
 import { PipelineProvider } from './PipelineContext.jsx';
 import { TextInputBox } from './TextInputBox.jsx';
+import { MarkdownLine } from './MarkdownLine.jsx';
 import {
   colors,
   glyphs,
   borderForStatus,
   colorForStatus,
-  colorForOutputType,
-  prefixForOutputType,
   renderHeaderLine,
 } from './theme.js';
 
@@ -540,33 +538,8 @@ function visibleLines(output: OutputLine[], rows: number, offset: number): React
   return (
     <>
       {slice.map((line) => (
-        <OutputLineView key={line.id} line={line} />
+        <MarkdownLine key={line.id} line={line} />
       ))}
     </>
-  );
-}
-
-function OutputLineView({ line }: { line: OutputLine }): React.ReactElement {
-  if (line.codeBlock) {
-    return (
-      <Text backgroundColor={colors.surface} color={colors.primary}>
-        {'  '}
-        {glyphs.blockHalf}
-        {line.text}
-      </Text>
-    );
-  }
-  const color = colorForOutputType(line.type);
-  const prefix = prefixForOutputType(line.type);
-  const segments = parseMarkdownInline(line.text);
-  return (
-    <Text color={color}>
-      {prefix}
-      {segments.map((s, i) => (
-        <Text key={i} bold={s.bold} dimColor={s.dim} color={s.color ?? color}>
-          {s.text}
-        </Text>
-      ))}
-    </Text>
   );
 }

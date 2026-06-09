@@ -3,8 +3,8 @@ import { Box, Text, useInput, useStdout } from 'ink';
 import { useStore } from '../../core/state/store.js';
 import { usePipeline } from '../PipelineContext.jsx';
 import type { OutputLine, PipelineInfo, SubAgentInfo } from '../../types/index.js';
-import { parseMarkdownInline } from '../../core/utils/markdown.js';
-import { colors, glyphs, colorForStatus, colorForOutputType, prefixForOutputType } from '../theme.js';
+import { colors, glyphs, colorForStatus } from '../theme.js';
+import { MarkdownLine } from '../MarkdownLine.jsx';
 
 interface SubAgentsViewProps {
   onBack: () => void;
@@ -305,26 +305,5 @@ export function SubAgentDetailView({ onBack }: SubAgentDetailViewProps): React.R
 }
 
 function LogLineView({ line }: { line: OutputLine }): React.ReactElement {
-  if (line.codeBlock) {
-    return (
-      <Text backgroundColor={colors.surface} color={colors.primary}>
-        {'  '}
-        {glyphs.blockHalf}
-        {line.text}
-      </Text>
-    );
-  }
-  const base = colorForOutputType(line.type);
-  const prefix = prefixForOutputType(line.type);
-  const segments = parseMarkdownInline(line.text);
-  return (
-    <Text color={base}>
-      {prefix}
-      {segments.map((s, i) => (
-        <Text key={i} bold={s.bold} dimColor={s.dim} color={s.color ?? base}>
-          {s.text}
-        </Text>
-      ))}
-    </Text>
-  );
+  return <MarkdownLine line={line} dim />;
 }

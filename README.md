@@ -15,7 +15,7 @@ A full-screen terminal UI wrapper for [opencode](https://opencode.ai) AI coding 
 - **Config panel** for per-role harness and model selection, populated from `opencode models`.
 - **Command hints** — type `/` to discover and autocomplete slash-commands.
 - **Keyboard-first** — `Ctrl+C` to cancel, `↑/↓` for history, `PgUp/PgDn` to scroll, `Tab` to autocomplete, `Esc` to leave views.
-- **Markdown rendering** — inline bold, inline code, headings, and horizontal rules are colorized inline.
+- **Markdown rendering** — inline bold, italic, strikethrough, code, and links, plus block-level headings, bullet/ordered lists (with nesting), blockquotes, horizontal rules, and GFM table rows — all colorized and laid out in the Tron palette.
 - **Graceful cancel** — sends `SIGTERM`, escalates to `SIGKILL` after 5 s, surfaces a system message.
 - **Zero runtime deps beyond `ink`, `ink-text-input`, `react`, and `zustand`.**
 
