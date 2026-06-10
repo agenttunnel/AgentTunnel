@@ -178,7 +178,12 @@ export class Session {
       this.stdoutBuf = '';
     }
     if (this.stderrBuf.length > 0) {
-      this.emit({ kind: 'stderr', line: this.stderrBuf });
+      const stderrMode = this.options.onStderr ?? 'separate';
+      if (stderrMode === 'merge') {
+        this.emit({ kind: 'stdout', line: this.stderrBuf });
+      } else if (stderrMode === 'separate') {
+        this.emit({ kind: 'stderr', line: this.stderrBuf });
+      }
       this.stderrBuf = '';
     }
   }

@@ -21,8 +21,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') out.help = true;
-    else if (a === '-w' || a === '--workspace') out.workspace = argv[++i] ?? out.workspace;
-    else if (a === '-m' || a === '--model') out.model = argv[++i];
+    else if (a === '-w' || a === '--workspace') { const next = argv[i + 1]; if (next && !next.startsWith('-')) out.workspace = argv[++i] ?? out.workspace; }
+    else if (a === '-m' || a === '--model') { const next = argv[i + 1]; if (next && !next.startsWith('-')) out.model = argv[++i]; }
     else if (a === '--yes' || a === '--auto-approve') out.autoApprove = true;
     else if (a === '--') {
       // ignore remainder

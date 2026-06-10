@@ -19,6 +19,7 @@ let nextLineId = 1;
 let nextAgentId = 1;
 let inCodeBlock = false;
 let inCodeBlockBuf = '';
+let inCodeBlockType: OutputLineType = 'system';
 
 interface EditingField {
   section: RoleName;
@@ -113,11 +114,18 @@ export const useStore = create<StoreState>((set) => ({
   addOutput: (text, type) => {
     const lines = text.split('\n');
     const produced: OutputLine[] = [];
+
+    if (inCodeBlockBuf.length > 0 && type !== inCodeBlockType) {
+      produced.push(makeLine(inCodeBlockBuf, inCodeBlockType, true));
+      inCodeBlockBuf = '';
+      inCodeBlock = false;
+    }
+
     for (const raw of lines) {
       if (inCodeBlockBuf.length > 0) {
         inCodeBlockBuf += '\n' + raw;
         if (/```/.test(raw)) {
-          produced.push(makeLine(inCodeBlockBuf, type, true));
+          produced.push(makeLine(inCodeBlockBuf, inCodeBlockType, true));
           inCodeBlockBuf = '';
           inCodeBlock = false;
         }
@@ -126,8 +134,9 @@ export const useStore = create<StoreState>((set) => ({
 
       if (/^```/.test(raw)) {
         inCodeBlockBuf = raw;
+        inCodeBlockType = type;
         if (/(^```\s*$)|(```.*```)/.test(raw) && raw.trim().endsWith('```') && raw.trim() !== '```') {
-          produced.push(makeLine(inCodeBlockBuf, type, true));
+          produced.push(makeLine(inCodeBlockBuf, inCodeBlockType, true));
           inCodeBlockBuf = '';
           inCodeBlock = false;
         } else {

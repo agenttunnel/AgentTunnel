@@ -123,6 +123,11 @@ export function renderHeaderLine(cols: number, statusLabel: string, model: strin
   const left = `▰▰▰ AGENTTUNNEL ▰▰▰`;
   const right = `${statusLabel} • model=${model || 'default'}`;
   const minPad = 2;
+  const totalLen = left.length + right.length + minPad;
+  if (cols < totalLen) {
+    const maxRight = Math.max(0, cols - left.length - minPad);
+    return `${left} ${right.slice(0, maxRight)}`;
+  }
   const available = Math.max(0, cols - left.length - right.length - minPad);
   const pad = '─'.repeat(available);
   return `${left} ${pad} ${right}`;

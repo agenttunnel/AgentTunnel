@@ -102,8 +102,48 @@ export function SubAgentsView({ onBack }: SubAgentsViewProps): React.ReactElemen
     const pipeline: PipelineInfo | undefined = group.pipeline;
     const headerLines = pipeline ? 1 : 0;
     const remaining = maxRows - consumed - headerLines;
-    if (remaining <= 0 && !selectedRendered) {
-      // try to keep at least the selected agent visible
+    if (remaining <= 0) {
+      if (!selectedRendered) {
+        const selectedInGroup = group.agents.find((a) => a.id === selectedSubAgentId);
+        if (selectedInGroup) {
+          if (pipeline) {
+            const doneCount = group.agents.filter((a) => a.status === 'completed').length;
+            const failedCount = group.agents.filter((a) => a.status === 'failed').length;
+            const okColor = failedCount > 0 ? colors.danger : colorForStatus(pipeline.status);
+            const modeLabel = pipeline.mode === 'sequential' ? 'seq' : 'par';
+            visibleBlocks.push(
+              <Box key={`h-${pipeline.id}`}>
+                <Text color={colors.accent} bold>
+                  {` ${glyphs.chevron} `}
+                </Text>
+                <Text color={colors.primary} bold>
+                  {pipeline.name}
+                </Text>
+                <Text color={colors.dim}>
+                  {`  [${modeLabel}] ${doneCount}/${group.agents.length} done`}
+                </Text>
+                <Text color={okColor}>{`  ${pipeline.status}`}</Text>
+                {pipeline.dependsOn.length > 0 ? (
+                  <Text color={colors.grid}>
+                    {`  after [${pipeline.dependsOn.join(', ')}]`}
+                  </Text>
+                ) : null}
+              </Box>,
+            );
+            consumed += 1;
+          }
+          visibleBlocks.push(
+            <AgentRow
+              key={selectedInGroup.id}
+              agent={selectedInGroup}
+              selected={true}
+            />,
+          );
+          consumed += 1;
+          selectedRendered = true;
+        }
+      }
+      continue;
     }
     if (pipeline) {
       const doneCount = group.agents.filter((a) => a.status === 'completed').length;
@@ -205,6 +245,10 @@ function groupByPipeline(
   for (const p of pipelines) {
     const arr = byPipe.get(p.id);
     if (arr && arr.length > 0) result.push({ pipeline: p, agents: arr });
+    byPipe.delete(p.id);
+  }
+  for (const arr of byPipe.values()) {
+    orphan.push(...arr);
   }
   if (orphan.length > 0) result.push({ pipeline: undefined, agents: orphan });
   return result;

@@ -426,8 +426,7 @@ function Header({
   const right = `${statusLabel} • model=${model || 'default'}`;
   const running = status === 'running';
 
-  const spinIndex = Math.abs(typeof spin === 'number' ? spin : 0) % SPINNER.length;
-  const spinFrame = SPINNER[spinIndex] ?? ' ';
+  const spinFrame = spin;
 
   return (
     <Box flexDirection="column">

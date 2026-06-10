@@ -223,7 +223,7 @@ const QUOTE_PATTERN = /^(\s*)>\s?(.*)$/;
 // A horizontal rule: three or more of - * _ (optionally with spaces) on a line by themselves.
 // We match the three characters case (`- - -`) as well as the contiguous case (`---`).
 const RULE_PATTERN = /^\s*(?:[-*_]\s*){3,}$|^\s*-{3,}\s*$|^\s*\*{3,}\s*$|^\s*_{3,}\s*$/;
-const TABLE_ROW_PATTERN = /^\s*\|?\s*([^|]+?)\s*(\|\s*([^|]+?)\s*)+\|?\s*$/;
+const TABLE_ROW_PATTERN = /^\s*\|([^|]+)\s*(\|\s*([^|]+)\s*)+\|?\s*$/;
 const TABLE_ALIGN_PATTERN = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
 
 /**

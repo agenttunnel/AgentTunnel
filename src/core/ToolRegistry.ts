@@ -16,7 +16,7 @@ export function parseToolCallLine(line: string): ToolCall | null {
   const name = obj.name;
   const args = obj.arguments;
   if (typeof name !== 'string') return null;
-  if (!args || typeof args !== 'object') return null;
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
   return { name, arguments: args as Record<string, unknown> };
 }
 
@@ -94,7 +94,7 @@ export class ToolRegistry {
     try {
       return await entry.handler(call);
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
 }

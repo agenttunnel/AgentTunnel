@@ -122,6 +122,7 @@ export class Pipeline {
     this.agents = [];
     this.pendingTasks = [];
     this.pipelines = [];
+    this.orchestratorPasses = 0;
 
     this.emit({ type: 'phaseChange', phase: { type: 'orchestrating', label: 'orchestrator planning' } });
     this.emit({ type: 'output', text: '[pipeline] dispatching orchestrator', kind: 'system' });
@@ -416,7 +417,9 @@ export class Pipeline {
     for (const p of this.pipelines) byId.set(p.id, p);
 
     // State: which pipelines are done, which are running.
-    const completed = new Set<string>();
+    const completed = new Set<string>(
+      this.pipelines.filter((p) => p.status === 'completed').map((p) => p.id),
+    );
     const running = new Set<string>();
     let allOk = true;
 
@@ -682,7 +685,7 @@ export async function listModels(harness = 'opencode', cwd = process.cwd()): Pro
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (c: string) => (out += c));
     child.on('error', () => resolve([]));
-    child.on('exit', () => {
+    child.on('close', () => {
       const models = out
         .split('\n')
         .map((l) => l.trim())
