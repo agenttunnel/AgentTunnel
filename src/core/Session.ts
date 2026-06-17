@@ -117,7 +117,7 @@ export class Session {
     const cwd = opts.cwd ?? this.options.cwd ?? process.cwd();
     const env = { ...process.env, ...(this.options.env ?? {}) };
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const child = spawn(harness, args, {
         cwd,
         env,
@@ -137,6 +137,8 @@ export class Session {
 
       child.on('error', (err) => {
         this.emit({ kind: 'error', err });
+        this.child = null;
+        reject(err);
       });
 
       child.on('exit', (code, signal) => {

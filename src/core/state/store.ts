@@ -229,6 +229,7 @@ export function _resetStoreForTests(): void {
   nextAgentId = 1;
   inCodeBlock = false;
   inCodeBlockBuf = '';
+  inCodeBlockType = 'system';
   useStore.setState({
     output: [],
     subAgentLogs: {},

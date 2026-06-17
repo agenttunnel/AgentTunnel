@@ -220,7 +220,10 @@ export class Pipeline {
   }
 
   private buildSummaryPassPrompt(): string {
-    const summary = this.context.renderSummary();
+    const allKeys = this.context.list().map((e) => e.key);
+    const fullContext = allKeys.length > 0
+      ? this.context.renderForPrompt(allKeys)
+      : '(no shared context yet)';
     const recent = this.pipelines
       .slice(-6)
       .map((p) => `- [${p.mode}] ${p.name} (${p.taskIds.length} task(s), ${p.status})`)
@@ -237,10 +240,8 @@ export class Pipeline {
       `### Recent pipelines`,
       recent,
       ``,
-      `### Shared context`,
-      '```',
-      summary,
-      '```',
+      `### Shared context (full)`,
+      fullContext,
     ].join('\n');
   }
 
@@ -498,12 +499,13 @@ export class Pipeline {
           progress: { current: doneCount, total: totalCount },
         },
       });
-      // Wait for one to finish (or all to finish).
-      // We use Promise.race by building a promise per running pipeline.
+      // Wait for any running pipeline to finish, then recheck
+      // which pipelines are now ready (DAG-based scheduling).
       if (running.size > 0) {
+        const started = running.size;
         await new Promise<void>((resolve) => {
           const check = setInterval(() => {
-            if (cancelledOrDone(this.cancelled, running.size)) {
+            if (this.cancelled || running.size < started) {
               clearInterval(check);
               resolve();
             }
@@ -614,6 +616,8 @@ export class Pipeline {
             kind: 'error',
           });
         }
+        captureSubAgentResult(this.context, agent, task);
+        this.emitContext();
         this.subAgentSessions.delete(agent.id);
         if (this.currentSubAgent === session) this.currentSubAgent = null;
         resolve(code === 0);
@@ -625,6 +629,8 @@ export class Pipeline {
         this.agents = [...this.agents];
         this.emit({ type: 'subAgentUpdate', agents: this.agents });
         this.emit({ type: 'output', text: `[${task.role}] failed: ${(err as Error).message}`, kind: 'error' });
+        captureSubAgentResult(this.context, agent, task);
+        this.emitContext();
         this.subAgentSessions.delete(agent.id);
         if (this.currentSubAgent === session) this.currentSubAgent = null;
         resolve(false);
@@ -671,8 +677,16 @@ export class Pipeline {
   }
 }
 
-function cancelledOrDone(cancelled: boolean, running: number): boolean {
-  return cancelled || running === 0;
+function captureSubAgentResult(context: SharedContext, agent: SubAgentInfo, task: DispatchedTask): void {
+  const key = `result_${task.pipelineId}`;
+  const output = agent.output.slice(-100).join('\n');
+  const header = `## ${agent.role} "${agent.id}" — ${agent.status}\n\n**Task:** ${task.task}\n`;
+  const body = header + (output ? `\n**Output (last 100 lines):**\n\n${output}` : '\n*(no output)*');
+  try {
+    context.append(key, body, agent.id);
+  } catch {
+    // key validation can fail for unusual pipeline ids
+  }
 }
 
 export async function listModels(harness = 'opencode', cwd = process.cwd()): Promise<string[]> {

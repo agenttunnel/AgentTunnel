@@ -24,9 +24,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (a === '-w' || a === '--workspace') { const next = argv[i + 1]; if (next && !next.startsWith('-')) out.workspace = argv[++i] ?? out.workspace; }
     else if (a === '-m' || a === '--model') { const next = argv[i + 1]; if (next && !next.startsWith('-')) out.model = argv[++i]; }
     else if (a === '--yes' || a === '--auto-approve') out.autoApprove = true;
-    else if (a === '--') {
-      // ignore remainder
-    } else if (a && a.startsWith('-')) {
+    else if (a === '--') break;
+    else if (a && a.startsWith('-')) {
       console.error(`Unknown option: ${a}`);
       process.exit(2);
     }
