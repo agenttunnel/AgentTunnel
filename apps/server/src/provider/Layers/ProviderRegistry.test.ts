@@ -1715,11 +1715,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             decodeServerSettings(
               deepMerge(encodedDefaultServerSettings, {
                 providers: {
-                  codex: { enabled: true, binaryPath: firstMissing },
+                  codex: { enabled: false },
                   claudeAgent: { enabled: false },
                   cursor: { enabled: false },
                   grok: { enabled: false },
                   opencode: { enabled: false },
+                  agenttunnel: { enabled: false },
+                },
+                // AgentTunnel is the only provider synthesized from legacy
+                // settings; other runtimes must be declared explicitly.
+                providerInstances: {
+                  codex: {
+                    driver: "codex",
+                    config: { enabled: true, binaryPath: firstMissing },
+                  },
                 },
               }),
             ),
@@ -1791,9 +1800,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // fires `syncLiveSources`, which subscribes and launches a fresh
             // background refresh on the rebuilt instance.
             yield* serverSettings.updateSettings({
-              providers: {
-                codex: { enabled: true, binaryPath: secondMissing },
-              },
+              providerInstances: {
+                codex: {
+                  driver: "codex",
+                  config: { enabled: true, binaryPath: secondMissing },
+                },
+              } as unknown as ContractServerSettings["providerInstances"],
             });
 
             // Poll until the injected process boundary observes the new
@@ -1902,6 +1914,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                     grok: {
                       enabled: false,
                     },
+                    agenttunnel: {
+                      enabled: false,
+                    },
                   },
                 }),
               ),
@@ -1967,19 +1982,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 (provider) => provider.instanceId === ProviderInstanceId.make("cursor"),
               );
 
+              // AgentTunnel is the only provider materialized from legacy
+              // settings. Individual runtimes are not instances unless they
+              // are explicitly configured, so no cursor probe can ever run.
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
-                "claudeAgent",
-                "codex",
-                "cursor",
-                "grok",
-                "opencode",
+                "agenttunnel",
               ]);
-              assert.strictEqual(cursorProvider?.enabled, false);
-              assert.strictEqual(cursorProvider?.status, "disabled");
-              assert.strictEqual(
-                cursorProvider?.message,
-                "Cursor is disabled in T3 Code settings.",
-              );
+              assert.strictEqual(cursorProvider, undefined);
               assert.strictEqual(cursorSpawned, false);
             }).pipe(Effect.provide(runtimeServices));
           }),

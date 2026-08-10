@@ -7,6 +7,7 @@ import { ThreadEnvMode } from "./environment.ts";
 import {
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
+  DEFAULT_MODEL_BY_PROVIDER,
   ProviderOptionSelections,
 } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
@@ -564,6 +565,92 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+/**
+ * AgentTunnel settings. AgentTunnel is a workflow provider rather than a
+ * single model session, so each role gets an independent harness/model pair.
+ */
+export const AgentTunnelSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    orchestratorHarness: makeBinaryPathSetting("opencode").pipe(
+      Schema.annotateKey({
+        title: "Orchestrator harness",
+        description: "CLI used to plan the workflow and dispatch sub-agents.",
+        providerSettingsForm: { placeholder: "opencode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    executorHarness: makeBinaryPathSetting("opencode").pipe(
+      Schema.annotateKey({
+        title: "Executor harness",
+        description: "CLI used by implementation sub-agents.",
+        providerSettingsForm: { placeholder: "opencode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    reviewerHarness: makeBinaryPathSetting("opencode").pipe(
+      Schema.annotateKey({
+        title: "Reviewer harness",
+        description: "CLI used by review sub-agents.",
+        providerSettingsForm: { placeholder: "opencode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    orchestratorModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Orchestrator model",
+        description: "Optional model override for workflow planning.",
+        providerSettingsForm: { placeholder: "Use the selected model", clearWhenEmpty: "omit" },
+      }),
+    ),
+    executorModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Executor model",
+        description: "Optional model override for executor agents.",
+        providerSettingsForm: { placeholder: "Use the orchestrator model", clearWhenEmpty: "omit" },
+      }),
+    ),
+    reviewerModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Reviewer model",
+        description: "Optional model override for reviewer agents.",
+        providerSettingsForm: { placeholder: "Use the orchestrator model", clearWhenEmpty: "omit" },
+      }),
+    ),
+    maxOrchestratorPasses: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(4)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    dangerouslySkipPermissions: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Skip harness permissions",
+        description: "Pass the harness non-interactive permission bypass flag for child agents.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: [
+      "orchestratorHarness",
+      "executorHarness",
+      "reviewerHarness",
+      "orchestratorModel",
+      "executorModel",
+      "reviewerModel",
+      "dangerouslySkipPermissions",
+    ],
+  },
+);
+export type AgentTunnelSettings = typeof AgentTunnelSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -687,8 +774,10 @@ export const ServerSettings = Schema.Struct({
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
-        instanceId: ProviderInstanceId.make("codex"),
-        model: DEFAULT_TEXT_GENERATION_MODEL,
+        instanceId: ProviderInstanceId.make("agenttunnel"),
+        model:
+          DEFAULT_MODEL_BY_PROVIDER[ProviderDriverKind.make("agenttunnel")] ??
+          DEFAULT_TEXT_GENERATION_MODEL,
         options: [
           {
             id: "reasoningEffort",
@@ -717,6 +806,7 @@ export const ServerSettings = Schema.Struct({
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    agenttunnel: AgentTunnelSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -870,6 +960,19 @@ const OpenCodeSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const AgentTunnelSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  orchestratorHarness: Schema.optionalKey(TrimmedString),
+  executorHarness: Schema.optionalKey(TrimmedString),
+  reviewerHarness: Schema.optionalKey(TrimmedString),
+  orchestratorModel: Schema.optionalKey(TrimmedString),
+  executorModel: Schema.optionalKey(TrimmedString),
+  reviewerModel: Schema.optionalKey(TrimmedString),
+  maxOrchestratorPasses: Schema.optionalKey(Schema.Int),
+  dangerouslySkipPermissions: Schema.optionalKey(Schema.Boolean),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
@@ -911,6 +1014,7 @@ export const ServerSettingsPatch = Schema.Struct({
       cursor: Schema.optionalKey(CursorSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
+      agenttunnel: Schema.optionalKey(AgentTunnelSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

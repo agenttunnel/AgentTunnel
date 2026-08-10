@@ -35,26 +35,9 @@ export const PROVIDER_OPTIONS: Array<{
   /** Shown on the model picker sidebar when relevant */
   pickerSidebarBadge?: "new" | "soon";
 }> = [
-  { value: ProviderDriverKind.make("codex"), label: "Codex", available: true },
-  { value: ProviderDriverKind.make("claudeAgent"), label: "Claude", available: true },
-  {
-    value: ProviderDriverKind.make("opencode"),
-    label: "OpenCode",
-    available: true,
-    pickerSidebarBadge: "new",
-  },
-  {
-    value: ProviderDriverKind.make("cursor"),
-    label: "Cursor",
-    available: true,
-    pickerSidebarBadge: "new",
-  },
-  {
-    value: ProviderDriverKind.make("grok"),
-    label: "Grok",
-    available: true,
-    pickerSidebarBadge: "new",
-  },
+  // AgentTunnel is the primary runtime. Individual provider runtimes are
+  // configured inside AgentTunnel's role settings, never selected directly.
+  { value: ProviderDriverKind.make("agenttunnel"), label: "AgentTunnel", available: true },
 ];
 
 export type WorkLogToolLifecycleStatus =

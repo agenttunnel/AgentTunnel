@@ -13,12 +13,11 @@
  *      yet to an explicit `providerInstances` entry.
  *
  * This module bridges (2) into (1) and wires the resulting map into a
- * mutable registry. For every built-in driver whose id is not already
- * present in `providerInstances` (keyed on
- * `defaultInstanceIdForDriver(driverKind)` — literally the driver kind as a
- * routing slug), we synthesize an envelope from the legacy field. The
- * registry decodes both flavours through the same `configSchema` and ends
- * up with one uniform `ProviderInstance` per entry.
+ * mutable registry. AgentTunnel is the primary provider, so only its legacy
+ * mirror is synthesized automatically. Every other driver is opt-in: it is
+ * materialized only when the user authors an explicit `providerInstances`
+ * entry. The registry decodes both flavours through the same `configSchema`
+ * and ends up with one uniform `ProviderInstance` per entry.
  *
  * Explicit `providerInstances` entries always win — users can already
  * override the legacy `providers.<kind>` blob by authoring a
@@ -76,6 +75,13 @@ export const deriveProviderInstanceConfigMap = (
   const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
   for (const driver of BUILT_IN_DRIVERS) {
+    // AgentTunnel is the primary provider. Individual provider instances
+    // are only materialized when a user explicitly configures them in
+    // `providerInstances`; the legacy mirrors stay opt-in.
+    if (driver.driverKind !== "agenttunnel") {
+      continue;
+    }
+
     const instanceId = defaultInstanceIdForDriver(driver.driverKind);
     if (instanceId in merged) {
       // Explicit `providerInstances` entry for this slot — user-authored

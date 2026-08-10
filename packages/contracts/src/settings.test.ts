@@ -169,10 +169,10 @@ describe("ClientSettings sidebar", () => {
 });
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
-  it("defaults text generation to Luna at low reasoning effort", () => {
+  it("defaults text generation to AgentTunnel's default model", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-5.6-luna",
+      instanceId: ProviderInstanceId.make("agenttunnel"),
+      model: "openai/gpt-5",
       options: [{ id: "reasoningEffort", value: "low" }],
     });
   });
@@ -184,9 +184,10 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providerInstances).toEqual({});
-    // Legacy `providers` struct is still hydrated with its per-driver defaults
-    // so existing call sites keep working through the migration.
+    // AgentTunnel is the primary provider and the default text-generation
+    // target; the legacy mirrors remain hydrated for individual providers.
     expect(decoded.providers.codex.enabled).toBe(true);
+    expect(decoded.providers.agenttunnel.enabled).toBe(true);
   });
 
   it("decodes a multi-instance map mixing first-party and fork drivers", () => {

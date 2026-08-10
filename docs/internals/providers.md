@@ -7,15 +7,16 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with five entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with six entries:
 
-| Driver kind   | Driver source                           |
-| ------------- | --------------------------------------- |
-| `codex`       | [`Drivers/CodexDriver.ts`][codex]       |
-| `claudeAgent` | [`Drivers/ClaudeDriver.ts`][claude]     |
-| `cursor`      | [`Drivers/CursorDriver.ts`][cursor]     |
-| `grok`        | [`Drivers/GrokDriver.ts`][grok]         |
-| `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode] |
+| Driver kind   | Driver source                                 |
+| ------------- | --------------------------------------------- |
+| `codex`       | [`Drivers/CodexDriver.ts`][codex]             |
+| `claudeAgent` | [`Drivers/ClaudeDriver.ts`][claude]           |
+| `cursor`      | [`Drivers/CursorDriver.ts`][cursor]           |
+| `grok`        | [`Drivers/GrokDriver.ts`][grok]               |
+| `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode]       |
+| `agenttunnel` | [`Drivers/AgentTunnelDriver.ts`][agenttunnel] |
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
 adapter in a child scope. Adapter implementations live beside them in
@@ -74,8 +75,8 @@ active text-generation work can extend process reuse. Changes to the provider co
 environment replace the instance and start a new discovery. Changes to unrelated settings only
 update snapshot enrichment. Other providers retain their existing refresh policy.
 
-T3 Code does not own an external OpenCode process. Native configuration changes there can require
-an external reload or restart before T3 Code's next refresh sees them.
+AgentTunnel does not own an external OpenCode process. Native configuration changes there can require
+an external reload or restart before AgentTunnel's next refresh sees them.
 
 The shared server's idle shutdown does not clear the catalog. Failed discovery keeps the last
 known models, slash commands, and skills through the registry's existing merge rules. A successful
@@ -95,33 +96,20 @@ probes, respect the `enableProviderUpdateChecks` setting, and never fail a provi
 Codex and Claude drivers apply the classification to every snapshot with `applyModelManifest`;
 driver kinds absent from the manifest have no legacy concept.
 
-## Attachment access
+## AgentTunnel workflow driver
 
-The server stores uploaded attachments in its attachment directory, outside the project workspace.
-`ProviderService` adds the absolute path of each attachment to the turn text, then passes every
-attachment to the provider adapter. Each adapter decides what its provider ingests natively:
+`agenttunnel` presents one T3 thread as a workflow coordinator. Its server-side adapter launches an
+orchestrator CLI process, parses `__AGENTTUNNEL_TOOL__` actions, and schedules executor/reviewer CLI
+processes in named pipelines. Pipelines can run in parallel, run sequentially, or wait on other
+pipelines. The adapter maps the workflow coordinator to a `local_workflow` task and each child to a
+`local_agent` task with `parentAgentId`, phase metadata, progress, and terminal status. The existing
+chat timeline and Agents panel therefore render the workflow without a client-specific transport.
 
-- Codex, Claude, Cursor, and Grok send images as native image inputs and skip generic files. For
-  these providers, generic files reach the agent only as file paths in the turn text.
-- OpenCode sends PNG/JPEG/GIF/WebP images, text files, and PDFs up to 20 MB as native file parts
-  with their real mime type. Everything else (ZIP and other binaries, image formats model APIs
-  reject, oversized files) falls back to the file path in the turn text, like the other providers.
-
-Claude receives the attachment directory as an allowed additional directory. Codex keeps its
-configured sandbox policy, so access depends on that policy and the selected runtime mode. OpenCode
-allows all paths in full-access mode and requests approval for directories outside the workspace in
-restricted modes. Cursor and Grok use their own provider permission rules.
-
-The server does not copy attachments into a project or bypass provider approval rules. If an agent
-cannot read an attachment, the user must approve the access or select a runtime mode that permits it.
-
-Updated attachment schemas tolerate unknown attachment members, but old image-only clients still
-cannot decode messages that contain file attachments. Client file-picking rollouts must account for
-this limit.
-
-Do not run an old image-only server against state that contains file attachments. Replay decodes
-each persisted event before projection. A file-bearing event can make `ProjectionPipeline` bootstrap
-and `OrchestrationEngine` startup fail for the entire environment, not only the affected thread.
+AgentTunnel is enabled by default and is the primary provider for fresh installations; the other
+built-in providers are opt-in. Configure the orchestrator, executor, and reviewer harness paths in
+provider settings. The default harness is `opencode` for all three roles. AgentTunnel child sessions
+are currently non-interactive and use the configured permission-bypass setting; approval and user-input
+requests are not yet routed through the T3 request surface.
 
 ## How provider work is requested
 
@@ -166,6 +154,7 @@ when a request opens (approval) or user input is requested, via
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
 [opencode-server-owner]: ../../apps/server/src/provider/OpenCodeServerOwner.ts
+[agenttunnel]: ../../apps/server/src/provider/Drivers/AgentTunnelDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts
 [registry]: ../../apps/server/src/provider/Services/ProviderAdapterRegistry.ts

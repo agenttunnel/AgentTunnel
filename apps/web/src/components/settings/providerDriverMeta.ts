@@ -1,4 +1,5 @@
 import {
+  AgentTunnelSettings,
   ClaudeSettings,
   CodexSettings,
   CursorSettings,
@@ -7,6 +8,8 @@ import {
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
+import React from "react";
+import { Bot } from "lucide-react";
 import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -34,7 +37,15 @@ export interface ProviderClientDefinition {
   readonly badgeLabel?: string;
 }
 
+const AgentTunnelIcon: Icon = (props) => React.createElement(Bot, props);
+
 export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
+  {
+    value: ProviderDriverKind.make("agenttunnel"),
+    label: "AgentTunnel",
+    icon: AgentTunnelIcon,
+    settingsSchema: AgentTunnelSettings,
+  },
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",

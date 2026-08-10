@@ -14,11 +14,11 @@ import * as Result from "effect/Result";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   isProviderDriverKind,
+  ProviderDriverKind,
   resolveProviderInstanceEnabled,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
-  type ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -38,6 +38,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { DriverOption } from "./providerDriverMeta";
 import { providerSettingsTabClassName } from "./providerSettingsTabs";
+import { AgentTunnelSettingsSection } from "./AgentTunnelSettingsSection";
 import { ProviderSettingsForm } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon, providerInstanceInitials } from "../chat/ProviderInstanceIcon";
@@ -889,7 +890,13 @@ export function ProviderInstanceCard({
               />
             </div>
 
-            {driverOption ? (
+            {driverKind === ProviderDriverKind.make("agenttunnel") ? (
+              <AgentTunnelSettingsSection
+                config={instance.config}
+                models={modelsForDisplay}
+                onChange={updateConfig}
+              />
+            ) : driverOption ? (
               <ProviderSettingsForm
                 definition={driverOption}
                 value={instance.config}

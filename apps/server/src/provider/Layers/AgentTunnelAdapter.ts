@@ -1,0 +1,668 @@
+import {
+  EventId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  RuntimeItemId,
+  RuntimeTaskId,
+  ThreadId,
+  TurnId,
+  type AgentTunnelSettings,
+  type ProviderInstanceEnvironment,
+  type ProviderRuntimeEvent,
+  type ProviderSession,
+  type TaskWorkflowPhase,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
+  ProviderAdapterSessionNotFoundError,
+  ProviderAdapterValidationError,
+  type ProviderAdapterError,
+} from "../Errors.ts";
+import { ServerConfig } from "../../config.ts";
+import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import {
+  type AgentTunnelEvent,
+  AgentTunnelProcessError,
+  type AgentTunnelProcessHandle,
+  type AgentTunnelProcessRunner,
+  runAgentTunnel,
+} from "../agentTunnel/Orchestrator.ts";
+import {
+  buildAgentTunnelSpawnArgs,
+  isOpenCodeHarness,
+  parseOpenCodeJsonLine,
+} from "../agentTunnel/opencodeTransport.ts";
+
+const PROVIDER = ProviderDriverKind.make("agenttunnel");
+const RESUME_VERSION = 1;
+
+interface AgentTunnelAgentMetadata {
+  readonly role: "executor" | "reviewer";
+  readonly task: string;
+  readonly pipelineId: string;
+  readonly agentIndex: number;
+  readonly phaseIndex: number;
+  readonly model?: string;
+}
+
+interface AgentTunnelSessionContext {
+  session: ProviderSession;
+  readonly cwd: string;
+  readonly approvalPolicy: string | undefined;
+  readonly sandboxMode: string | undefined;
+  readonly cancelled: Ref.Ref<boolean>;
+  readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
+  readonly agents: Map<string, AgentTunnelAgentMetadata>;
+  workflowTitle: string | undefined;
+  workflowId: string | undefined;
+  activeTurnId: TurnId | undefined;
+  stopped: boolean;
+}
+
+export interface AgentTunnelAdapterOptions {
+  readonly instanceId: ProviderInstanceId;
+  readonly environment?: ProviderInstanceEnvironment;
+  /** Optional per-thread NDJSON trace writer (provider-native event log). */
+  readonly nativeEventLogger?: EventNdjsonLogger;
+}
+
+const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/** Adapter that exposes AgentTunnel's multi-process workflow as one T3 thread. */
+export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(function* (
+  settings: AgentTunnelSettings,
+  options: AgentTunnelAdapterOptions,
+): Effect.fn.Return<
+  ProviderAdapterShape<ProviderAdapterError>,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | ServerConfig | Scope.Scope
+> {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const crypto = yield* Crypto.Crypto;
+  const serverConfig = yield* ServerConfig;
+  const runtimeScope = yield* Scope.make();
+  const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
+  const sessions = new Map<ThreadId, AgentTunnelSessionContext>();
+  const activeProcesses = new Map<ThreadId, Map<string, AgentTunnelProcessHandle["kill"]>>();
+  const environment = mergeProviderInstanceEnvironment(options.environment);
+
+  const randomUuid = crypto.randomUUIDv4.pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "crypto.randomUUIDv4",
+          detail: String(cause),
+          cause,
+        }),
+    ),
+  );
+  const eventId = randomUuid.pipe(Effect.map(EventId.make));
+  const buildEventBase = Effect.fn("AgentTunnelAdapter.buildEventBase")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId?: TurnId | undefined;
+    readonly itemId?: string | undefined;
+  }) {
+    return {
+      eventId: yield* eventId,
+      provider: PROVIDER,
+      providerInstanceId: options.instanceId,
+      threadId: input.threadId,
+      createdAt: yield* nowIso,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
+    };
+  });
+
+  const emit = (event: ProviderRuntimeEvent) =>
+    Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+
+  const emitEvent = Effect.fn("AgentTunnelAdapter.emitEvent")(function* (
+    threadId: ThreadId,
+    turnId: TurnId | undefined,
+    event: AgentTunnelEvent,
+  ) {
+    const context = sessions.get(threadId);
+    if (!context) return;
+
+    switch (event.type) {
+      case "workflow.started": {
+        context.workflowTitle = event.title;
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId, itemId: event.workflowId })),
+          type: "task.started",
+          payload: {
+            taskId: RuntimeTaskId.make(event.workflowId),
+            description: event.title,
+            taskType: "local_workflow",
+            title: event.title,
+            role: "orchestrator",
+            workflowName: "AgentTunnel",
+            ...(event.model ? { model: event.model } : {}),
+          },
+        });
+        return;
+      }
+      case "workflow.progress": {
+        const phases: ReadonlyArray<TaskWorkflowPhase> = event.phases.map((phase) => ({
+          index: phase.index,
+          title: phase.title,
+        }));
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId, itemId: event.workflowId })),
+          type: "task.progress",
+          payload: {
+            taskId: RuntimeTaskId.make(event.workflowId),
+            description: context.workflowTitle ?? "AgentTunnel workflow",
+            ...(event.summary ? { summary: event.summary } : {}),
+            status: "running",
+            phases,
+            taskType: "local_workflow",
+            title: context.workflowTitle ?? "AgentTunnel workflow",
+            workflowName: "AgentTunnel",
+          },
+        });
+        return;
+      }
+      case "workflow.completed": {
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId, itemId: event.workflowId })),
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.make(event.workflowId),
+            status: event.status === "stopped" ? "stopped" : event.status,
+            summary: event.summary,
+            taskType: "local_workflow",
+            title: context.workflowTitle ?? "AgentTunnel workflow",
+            workflowName: "AgentTunnel",
+          },
+        });
+        return;
+      }
+      case "orchestrator.output": {
+        if (event.text.length === 0) return;
+        const workflowId = context.workflowId ?? "agenttunnel";
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId,
+            turnId,
+            itemId: `agenttunnel:${workflowId}:assistant`,
+          })),
+          type: "content.delta",
+          payload: {
+            streamKind: "assistant_text",
+            delta: `${event.text}\n`,
+          },
+        });
+        return;
+      }
+      case "agent.started": {
+        context.agents.set(event.agentId, {
+          role: event.role,
+          task: event.task,
+          pipelineId: event.pipelineId,
+          agentIndex: event.agentIndex,
+          phaseIndex: event.phaseIndex,
+          ...(event.model ? { model: event.model } : {}),
+        });
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId, itemId: event.agentId })),
+          type: "task.started",
+          payload: {
+            taskId: RuntimeTaskId.make(event.agentId),
+            description: event.task,
+            taskType: "local_agent",
+            title: event.task,
+            role: event.role,
+            parentAgentId: event.workflowId,
+            workflowName: "AgentTunnel",
+            agentIndex: event.agentIndex,
+            phaseIndex: event.phaseIndex,
+            phaseTitle: event.pipelineId,
+            ...(event.model ? { model: event.model } : {}),
+            timelineBypass: true,
+          },
+        });
+        return;
+      }
+      case "agent.progress": {
+        const metadata = context.agents.get(event.agentId);
+        if (!metadata) return;
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId, itemId: event.agentId })),
+          type: "task.progress",
+          payload: {
+            taskId: RuntimeTaskId.make(event.agentId),
+            description: metadata.task,
+            summary: event.summary,
+            taskType: "local_agent",
+            title: metadata.task,
+            role: metadata.role,
+            parentAgentId: event.workflowId,
+            workflowName: "AgentTunnel",
+            agentIndex: metadata.agentIndex,
+            phaseIndex: metadata.phaseIndex,
+            phaseTitle: metadata.pipelineId,
+            ...(metadata.model ? { model: metadata.model } : {}),
+            timelineBypass: true,
+          },
+        });
+        return;
+      }
+      case "agent.completed": {
+        const metadata = context.agents.get(event.agentId);
+        if (!metadata) return;
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId, itemId: event.agentId })),
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.make(event.agentId),
+            status: event.status === "stopped" ? "stopped" : event.status,
+            ...(event.summary ? { summary: event.summary } : {}),
+            taskType: "local_agent",
+            title: metadata.task,
+            role: metadata.role,
+            parentAgentId: event.workflowId,
+            workflowName: "AgentTunnel",
+            agentIndex: metadata.agentIndex,
+            phaseIndex: metadata.phaseIndex,
+            phaseTitle: metadata.pipelineId,
+            ...(metadata.model ? { model: metadata.model } : {}),
+            timelineBypass: true,
+          },
+        });
+        return;
+      }
+    }
+  });
+
+  const killThreadProcesses = Effect.fn("AgentTunnelAdapter.killThreadProcesses")(function* (
+    threadId: ThreadId,
+  ) {
+    const processes = activeProcesses.get(threadId);
+    if (!processes) return;
+    yield* Effect.forEach([...processes.values()], (process) => process.pipe(Effect.ignore), {
+      concurrency: "unbounded",
+      discard: true,
+    });
+  });
+
+  const processError = (cause: unknown) =>
+    new AgentTunnelProcessError({
+      detail: String(cause),
+      cause,
+    });
+
+  const nativeEventLogger = options.nativeEventLogger;
+  const writeNativeLine = (threadId: ThreadId, processId: string, line: string) =>
+    nativeEventLogger
+      ? Effect.gen(function* () {
+          const observedAt = yield* nowIso;
+          yield* nativeEventLogger.write(
+            {
+              observedAt,
+              event: {
+                provider: PROVIDER,
+                providerInstanceId: options.instanceId,
+                threadId,
+                processId,
+                line,
+              },
+            },
+            threadId,
+          );
+        })
+      : Effect.void;
+
+  const processRunner: AgentTunnelProcessRunner = {
+    spawn: (spec) =>
+      Effect.gen(function* () {
+        const args = buildAgentTunnelSpawnArgs(spec);
+        yield* Effect.logInfo("AgentTunnel spawning harness", {
+          scope: "agenttunnel.adapter",
+          processId: spec.id,
+          threadId: spec.threadId,
+          harness: spec.harness,
+          args: args.join(" "),
+          cwd: spec.cwd,
+        });
+        const child = yield* spawner
+          .spawn(
+            ChildProcess.make(spec.harness, args, {
+              cwd: spec.cwd,
+              env: environment,
+              extendEnv: true,
+              detached: false,
+              stdin: "ignore",
+            }),
+          )
+          .pipe(Effect.mapError(processError));
+        yield* Effect.logInfo("AgentTunnel harness started", {
+          scope: "agenttunnel.adapter",
+          processId: spec.id,
+          pid: Number(child.pid),
+          harness: spec.harness,
+        });
+        const processes = activeProcesses.get(ThreadId.make(spec.threadId)) ?? new Map();
+        activeProcesses.set(ThreadId.make(spec.threadId), processes);
+        const kill = child
+          .kill({ killSignal: "SIGTERM", forceKillAfter: "5 seconds" })
+          .pipe(Effect.mapError(processError), Effect.asVoid);
+        processes.set(spec.id, kill);
+        const exitCode = child.exitCode.pipe(
+          Effect.mapError(processError),
+          Effect.map(Number),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              processes.delete(spec.id);
+              if (processes.size === 0) activeProcesses.delete(ThreadId.make(spec.threadId));
+            }),
+          ),
+        );
+        const threadId = ThreadId.make(spec.threadId);
+        const observedLines = child.all.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.tap((line) => writeNativeLine(threadId, spec.id, line).pipe(Effect.orDie)),
+        );
+        const lines = isOpenCodeHarness(spec.harness)
+          ? observedLines.pipe(
+              Stream.flatMap((line) => Stream.fromIterable(parseOpenCodeJsonLine(line))),
+              Stream.mapError(processError),
+            )
+          : observedLines.pipe(Stream.mapError(processError));
+        return {
+          pid: Number(child.pid),
+          lines,
+          exitCode,
+          kill,
+        } satisfies AgentTunnelProcessHandle;
+      }),
+  };
+
+  const ensureSession = Effect.fn("AgentTunnelAdapter.ensureSession")(function* (
+    threadId: ThreadId,
+  ) {
+    const context = sessions.get(threadId);
+    if (!context) {
+      return yield* new ProviderAdapterSessionNotFoundError({
+        provider: PROVIDER,
+        threadId,
+      });
+    }
+    if (context.stopped) {
+      return yield* new ProviderAdapterSessionClosedError({
+        provider: PROVIDER,
+        threadId,
+      });
+    }
+    return context;
+  });
+
+  const completeTurn = Effect.fn("AgentTunnelAdapter.completeTurn")(function* (
+    context: AgentTunnelSessionContext,
+    threadId: ThreadId,
+    turnId: TurnId,
+    status: "completed" | "failed" | "stopped",
+    summary: string,
+  ) {
+    if (context.activeTurnId !== turnId) return;
+    context.activeTurnId = undefined;
+    const { activeTurnId: _activeTurnId, lastError: _lastError, ...sessionBase } = context.session;
+    context.session = {
+      ...sessionBase,
+      status: "ready",
+      updatedAt: yield* nowIso,
+      ...(status === "failed" ? { lastError: summary } : {}),
+    };
+    yield* emit({
+      ...(yield* buildEventBase({ threadId, turnId })),
+      type: "turn.completed",
+      payload: {
+        state: status === "stopped" ? "cancelled" : status,
+        ...(status === "failed" ? { errorMessage: summary } : {}),
+      },
+    });
+  });
+
+  const startSession: ProviderAdapterShape<ProviderAdapterError>["startSession"] = Effect.fn(
+    "AgentTunnelAdapter.startSession",
+  )(function* (input) {
+    const existing = sessions.get(input.threadId);
+    if (existing && !existing.stopped) return existing.session;
+
+    const now = yield* nowIso;
+    const model =
+      input.modelSelection?.instanceId === options.instanceId
+        ? input.modelSelection.model
+        : undefined;
+    const session: ProviderSession = {
+      provider: PROVIDER,
+      providerInstanceId: options.instanceId,
+      status: "ready",
+      runtimeMode: input.runtimeMode,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(model ? { model } : {}),
+      threadId: input.threadId,
+      resumeCursor: input.resumeCursor ?? { schemaVersion: RESUME_VERSION },
+      createdAt: now,
+      updatedAt: now,
+    };
+    const context: AgentTunnelSessionContext = {
+      session,
+      cwd: input.cwd ?? serverConfig.cwd,
+      approvalPolicy: input.approvalPolicy,
+      sandboxMode: input.sandboxMode,
+      cancelled: yield* Ref.make(false),
+      turns: [],
+      agents: new Map(),
+      workflowTitle: undefined,
+      workflowId: undefined,
+      activeTurnId: undefined,
+      stopped: false,
+    };
+    sessions.set(input.threadId, context);
+    yield* emit({
+      ...(yield* buildEventBase({ threadId: input.threadId })),
+      type: "session.started",
+      payload: { message: "AgentTunnel session ready" },
+    });
+    yield* emit({
+      ...(yield* buildEventBase({ threadId: input.threadId })),
+      type: "thread.started",
+      payload: {},
+    });
+    return session;
+  });
+
+  const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = Effect.fn(
+    "AgentTunnelAdapter.sendTurn",
+  )(function* (input) {
+    const context = yield* ensureSession(input.threadId);
+    if (context.activeTurnId) {
+      return yield* new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation: "sendTurn",
+        issue: "AgentTunnel only accepts one active workflow per thread.",
+      });
+    }
+
+    const turnId = TurnId.make(yield* randomUuid);
+    const workflowId = `agenttunnel_${input.threadId}_${turnId}`;
+    const model =
+      input.modelSelection?.instanceId === options.instanceId
+        ? input.modelSelection.model
+        : context.session.model;
+    const effectiveSettings: AgentTunnelSettings = {
+      ...settings,
+      dangerouslySkipPermissions:
+        settings.dangerouslySkipPermissions ||
+        context.approvalPolicy === "never" ||
+        context.sandboxMode === "danger-full-access",
+    };
+    context.activeTurnId = turnId;
+    context.workflowTitle = input.input ?? "AgentTunnel workflow";
+    context.workflowId = workflowId;
+    context.agents.clear();
+    context.session = {
+      ...context.session,
+      status: "running",
+      ...(model ? { model } : {}),
+      activeTurnId: turnId,
+      updatedAt: yield* nowIso,
+    };
+    context.turns.push({ id: turnId, items: [] });
+    yield* Ref.set(context.cancelled, false);
+    yield* emit({
+      ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
+      type: "turn.started",
+      payload: model ? { model } : {},
+    });
+
+    const run = Effect.gen(function* () {
+      const result = yield* Effect.exit(
+        runAgentTunnel({
+          threadId: input.threadId,
+          workflowId,
+          userTask: input.input ?? "",
+          cwd: context.cwd,
+          ...(model ? { model } : {}),
+          settings: effectiveSettings,
+          process: processRunner,
+          emit: (event) => emitEvent(input.threadId, turnId, event).pipe(Effect.orDie),
+          isCancelled: Ref.get(context.cancelled),
+        }),
+      );
+      if (result._tag === "Failure") {
+        const detail = Cause.pretty(result.cause);
+        yield* emit({
+          ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
+          type: "runtime.error",
+          payload: { message: detail, class: "provider_error" },
+        });
+        yield* completeTurn(context, input.threadId, turnId, "failed", detail);
+        return;
+      }
+      yield* completeTurn(
+        context,
+        input.threadId,
+        turnId,
+        result.value.status,
+        result.value.summary,
+      );
+    }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+    yield* Effect.forkIn(run, runtimeScope);
+
+    return { threadId: input.threadId, turnId };
+  });
+
+  const interruptTurn: ProviderAdapterShape<ProviderAdapterError>["interruptTurn"] = Effect.fn(
+    "AgentTunnelAdapter.interruptTurn",
+  )(function* (threadId) {
+    const context = yield* ensureSession(threadId);
+    yield* Ref.set(context.cancelled, true);
+    yield* killThreadProcesses(threadId);
+  });
+
+  const stopSession: ProviderAdapterShape<ProviderAdapterError>["stopSession"] = Effect.fn(
+    "AgentTunnelAdapter.stopSession",
+  )(function* (threadId) {
+    const context = yield* ensureSession(threadId);
+    context.stopped = true;
+    yield* Ref.set(context.cancelled, true);
+    yield* killThreadProcesses(threadId);
+    sessions.delete(threadId);
+    yield* emit({
+      ...(yield* buildEventBase({ threadId })),
+      type: "session.exited",
+      payload: { reason: "AgentTunnel session stopped.", recoverable: false, exitKind: "graceful" },
+    });
+  });
+
+  const unsupportedRequest = (operation: string) =>
+    Effect.fail(
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: operation,
+        detail:
+          "AgentTunnel runs non-interactive child sessions; interactive requests are not supported yet.",
+      }),
+    );
+
+  const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = () =>
+    unsupportedRequest("respondToRequest");
+  const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] = () =>
+    unsupportedRequest("respondToUserInput");
+
+  const listSessions: ProviderAdapterShape<ProviderAdapterError>["listSessions"] = () =>
+    Effect.succeed([...sessions.values()].map((context) => context.session));
+  const hasSession: ProviderAdapterShape<ProviderAdapterError>["hasSession"] = (threadId) =>
+    Effect.succeed(sessions.has(threadId));
+
+  const readThread: ProviderAdapterShape<ProviderAdapterError>["readThread"] = Effect.fn(
+    "AgentTunnelAdapter.readThread",
+  )(function* (threadId) {
+    const context = yield* ensureSession(threadId);
+    return { threadId, turns: context.turns };
+  });
+
+  const rollbackThread: ProviderAdapterShape<ProviderAdapterError>["rollbackThread"] = Effect.fn(
+    "AgentTunnelAdapter.rollbackThread",
+  )(function* (threadId, numTurns) {
+    const context = yield* ensureSession(threadId);
+    if (numTurns > 0) context.turns.splice(Math.max(0, context.turns.length - numTurns));
+    return { threadId, turns: context.turns };
+  });
+
+  const stopAll: ProviderAdapterShape<ProviderAdapterError>["stopAll"] = () =>
+    Effect.forEach([...sessions.keys()], (threadId) => stopSession(threadId).pipe(Effect.ignore), {
+      concurrency: "unbounded",
+      discard: true,
+    });
+
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      yield* Effect.forEach([...sessions.keys()], (threadId) => killThreadProcesses(threadId), {
+        concurrency: "unbounded",
+        discard: true,
+      });
+      yield* Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore);
+      yield* Queue.shutdown(runtimeEvents).pipe(Effect.ignore);
+    }),
+  );
+
+  return {
+    provider: PROVIDER,
+    capabilities: { sessionModelSwitch: "in-session" },
+    startSession,
+    sendTurn,
+    interruptTurn,
+    respondToRequest,
+    respondToUserInput,
+    stopSession,
+    listSessions,
+    hasSession,
+    readThread,
+    rollbackThread,
+    stopAll,
+    get streamEvents() {
+      return Stream.fromQueue(runtimeEvents);
+    },
+  } satisfies ProviderAdapterShape<ProviderAdapterError>;
+});
+
+export { PROVIDER as AGENT_TUNNEL_PROVIDER };
