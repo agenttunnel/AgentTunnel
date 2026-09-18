@@ -1,0 +1,40 @@
+name: AgentTunnel CI
+
+# Builds the web client and server bundle on every push and pull request so a
+# broken build is caught before release. The desktop installers are built by
+# the AgentTunnel Release workflow.
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: agenttunnel-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build web and server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Setup vp
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+      - name: Install dependencies
+        run: vp install
+      - name: Build server bundle
+        run: vp run --filter t3 build:bundle
+      - name: Build web client
+        run: vp run --filter @t3tools/web build
