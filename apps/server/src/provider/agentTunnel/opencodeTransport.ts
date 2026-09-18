@@ -25,7 +25,10 @@ export function buildAgentTunnelSpawnArgs(spec: AgentTunnelProcessSpec): string[
   if (spec.dangerouslySkipPermissions) {
     args.push(isOpenCodeHarness(spec.harness) ? "--auto" : "--dangerously-skip-permissions");
   }
-  if (isOpenCodeHarness(spec.harness)) args.push("--format", "json", "--thinking");
+  if (isOpenCodeHarness(spec.harness)) {
+    args.push("--format", "json", "--thinking");
+    if (spec.variant) args.push("--variant", spec.variant);
+  }
   args.push(spec.prompt);
   return args;
 }

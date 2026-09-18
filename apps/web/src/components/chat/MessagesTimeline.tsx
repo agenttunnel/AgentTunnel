@@ -52,6 +52,7 @@ import {
   resolveFileDiffPath,
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
+import { AgentWorkflowMessage } from "../AgentWorkflowMessage";
 import {
   BotIcon,
   CheckIcon,
@@ -150,6 +151,8 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
+  /** AgentTunnel threads render assistant turns in the workflow style. */
+  agentWorkflowThread: boolean;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onFileDownload: (attachment: ChatFileAttachment) => void;
@@ -157,7 +160,7 @@ interface TimelineRowSharedState {
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
   agentPanelModel: AgentPanelModel;
-  onOpenAgents: () => void;
+  onOpenAgents: (agentId?: string) => void;
 }
 
 interface TimelineRowActivityState {
@@ -238,6 +241,7 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  agentWorkflowThread?: boolean;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   contentInsetEndAdjustment: number;
@@ -284,6 +288,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
+  agentWorkflowThread = false,
   anchorMessageId,
   onAnchorReady,
   contentInsetEndAdjustment,
@@ -534,6 +539,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      agentWorkflowThread,
       onRevertUserMessage,
       onImageExpand,
       onFileDownload,
@@ -551,6 +557,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      agentWorkflowThread,
       onRevertUserMessage,
       onImageExpand,
       onFileDownload,
@@ -1205,14 +1212,25 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <ChatMarkdown
-          text={messageText}
-          cwd={ctx.markdownCwd}
-          threadRef={ctx.threadRef ?? undefined}
-          isStreaming={Boolean(row.message.streaming)}
-          lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
-          skills={ctx.skills}
-        />
+        {ctx.agentWorkflowThread ? (
+          <AgentWorkflowMessage
+            text={messageText}
+            cwd={ctx.markdownCwd}
+            threadRef={ctx.threadRef ?? undefined}
+            isStreaming={Boolean(row.message.streaming)}
+            lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
+            skills={ctx.skills}
+          />
+        ) : (
+          <ChatMarkdown
+            text={messageText}
+            cwd={ctx.markdownCwd}
+            threadRef={ctx.threadRef ?? undefined}
+            isStreaming={Boolean(row.message.streaming)}
+            lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
+            skills={ctx.skills}
+          />
+        )}
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}
@@ -2623,34 +2641,52 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
       : "✓ completed";
 
   return (
-    <button
-      type="button"
-      onClick={onOpenAgents}
-      className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-left text-[13px] transition hover:bg-accent/50"
-    >
-      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
-      <WorkEntryIconSvg name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate">
-        <span className="font-medium">{lead}</span>
-        {workflowName ? <span className="text-muted-foreground"> · {workflowName}</span> : null}
-      </span>
-      <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
-        {phases.length > 0 ? (
-          <span className="flex items-center gap-1.5">
-            {failed > 0 ? (
-              <span className="text-destructive-foreground">{failed} failed</span>
-            ) : null}
-            {phases.map((phase, index) => (
-              <span key={phase.index} className="flex items-center gap-1">
+    <div className="flex w-full flex-col rounded-md border border-border/60 bg-card/50 text-[13px]">
+      <button
+        type="button"
+        onClick={() => onOpenAgents()}
+        className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition hover:bg-accent/50"
+      >
+        <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
+        <WorkEntryIconSvg name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 truncate">
+          <span className="font-medium">{lead}</span>
+          {workflowName ? <span className="text-muted-foreground"> · {workflowName}</span> : null}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
+          {phases.length === 0 ? <span>{status}</span> : null}
+          {totalTokens > 0 ? (
+            <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
+          ) : null}
+          <span className="text-info-foreground">{live ? "Open Agents ▸" : "View ▸"}</span>
+        </span>
+      </button>
+      {phases.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border/50 px-2.5 py-1.5">
+          {failed > 0 ? (
+            <span className="font-mono text-[.7rem] text-destructive-foreground">
+              {failed} failed
+            </span>
+          ) : null}
+          {phases.map((phase, index) => {
+            const target =
+              phase.members.find(
+                (member) => member.status === "running" || member.status === "pending",
+              ) ?? phase.members[0];
+            return (
+              <span key={phase.index} className="flex items-center gap-1.5">
                 {index > 0 ? (
                   <ChevronRightIcon
                     aria-hidden
                     className="size-3 shrink-0 text-muted-foreground/40"
                   />
                 ) : null}
-                <span
+                <button
+                  type="button"
+                  onClick={() => (target ? onOpenAgents(target.id) : onOpenAgents())}
+                  aria-label={`Open ${phase.title} agents`}
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-sm border px-1.5 py-px",
+                    "inline-flex max-w-44 items-center gap-1 rounded-sm border px-1.5 py-px font-mono text-[.7rem] hover:bg-accent/50",
                     phase.state === "running"
                       ? "border-info/40 text-info-foreground"
                       : phase.state === "done"
@@ -2661,23 +2697,17 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
                   <span aria-hidden>
                     {phase.state === "done" ? "✓" : phase.state === "running" ? "●" : "○"}
                   </span>
-                  <span className="max-w-24 truncate">{phase.title}</span>
+                  <span className="truncate">{phase.title}</span>
                   <span className="tabular-nums text-muted-foreground/60">
                     {phase.settledCount}/{phase.members.length}
                   </span>
-                </span>
+                </button>
               </span>
-            ))}
-          </span>
-        ) : (
-          <span>{status}</span>
-        )}
-        {totalTokens > 0 ? (
-          <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
-        ) : null}
-        <span className="text-info-foreground">{live ? "Open Agents ▸" : "View ▸"}</span>
-      </span>
-    </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 });
 

@@ -167,9 +167,14 @@ function modelsFromInventory(
       const slug = `${provider.id}/${modelId}`;
       if (seen.has(slug)) continue;
       seen.add(slug);
+      const subProvider =
+        typeof provider.name === "string" && provider.name.trim().length > 0
+          ? provider.name.trim()
+          : provider.id;
       models.push({
         slug,
         name: typeof model.name === "string" && model.name.trim().length > 0 ? model.name : slug,
+        subProvider,
         isCustom: false,
         capabilities: null,
       });
@@ -191,6 +196,7 @@ interface OpenCodeInventoryLike {
     readonly connected: ReadonlyArray<string>;
     readonly all: ReadonlyArray<{
       readonly id: string;
+      readonly name?: string;
       readonly models: Record<string, { readonly name?: string }>;
     }>;
   };

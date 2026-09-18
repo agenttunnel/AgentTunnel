@@ -69,6 +69,13 @@ it("buildAgentTunnelSpawnArgs keeps --format json without a model or bypass", ()
   ]);
 });
 
+it("buildAgentTunnelSpawnArgs passes the reasoning variant to opencode", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(spec({ dangerouslySkipPermissions: false, variant: "high" })),
+    ["run", "--format", "json", "--thinking", "--variant", "high", "do the thing"],
+  );
+});
+
 it("buildAgentTunnelSpawnArgs uses --dangerously-skip-permissions and no json for claude harness", () => {
   NodeAssert.deepEqual(
     buildAgentTunnelSpawnArgs(spec({ harness: "claude", model: "claude-sonnet-4-5" })),

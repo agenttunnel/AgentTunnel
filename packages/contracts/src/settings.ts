@@ -620,6 +620,30 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "Use the orchestrator model", clearWhenEmpty: "omit" },
       }),
     ),
+    orchestratorVariant: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Orchestrator reasoning",
+        description: "Optional reasoning-effort variant passed to the orchestrator harness.",
+        providerSettingsForm: { placeholder: "Default", clearWhenEmpty: "omit" },
+      }),
+    ),
+    executorVariant: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Executor reasoning",
+        description: "Optional reasoning-effort variant passed to executor harnesses.",
+        providerSettingsForm: { placeholder: "Default", clearWhenEmpty: "omit" },
+      }),
+    ),
+    reviewerVariant: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Reviewer reasoning",
+        description: "Optional reasoning-effort variant passed to reviewer harnesses.",
+        providerSettingsForm: { placeholder: "Default", clearWhenEmpty: "omit" },
+      }),
+    ),
     maxOrchestratorPasses: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 })).pipe(
       Schema.withDecodingDefault(Effect.succeed(4)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -645,6 +669,9 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       "orchestratorModel",
       "executorModel",
       "reviewerModel",
+      "orchestratorVariant",
+      "executorVariant",
+      "reviewerVariant",
       "dangerouslySkipPermissions",
     ],
   },
@@ -968,6 +995,9 @@ const AgentTunnelSettingsPatch = Schema.Struct({
   orchestratorModel: Schema.optionalKey(TrimmedString),
   executorModel: Schema.optionalKey(TrimmedString),
   reviewerModel: Schema.optionalKey(TrimmedString),
+  orchestratorVariant: Schema.optionalKey(TrimmedString),
+  executorVariant: Schema.optionalKey(TrimmedString),
+  reviewerVariant: Schema.optionalKey(TrimmedString),
   maxOrchestratorPasses: Schema.optionalKey(Schema.Int),
   dangerouslySkipPermissions: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),

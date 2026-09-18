@@ -755,10 +755,12 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  focusRequest = null,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  focusRequest?: { readonly agentId: string; readonly nonce: number } | null;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const selectedThreadIdRef = useRef(threadId);
@@ -766,6 +768,11 @@ export function AgentsPanel({
     selectedThreadIdRef.current = threadId;
     setSelectedAgentId(null);
   }
+  useEffect(() => {
+    if (focusRequest) {
+      setSelectedAgentId(focusRequest.agentId);
+    }
+  }, [focusRequest]);
   const selectedAgent = selectedAgentId ? findAgentById(model, selectedAgentId) : null;
   const running = liveAgents(model);
 

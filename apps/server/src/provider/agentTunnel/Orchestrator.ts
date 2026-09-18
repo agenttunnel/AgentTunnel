@@ -17,6 +17,7 @@ export interface AgentTunnelProcessSpec {
   readonly threadId: string;
   readonly harness: string;
   readonly model?: string;
+  readonly variant?: string;
   readonly cwd: string;
   readonly prompt: string;
   readonly dangerouslySkipPermissions: boolean;
@@ -546,6 +547,9 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         ...(options.settings.orchestratorModel || options.model
           ? { model: options.settings.orchestratorModel || options.model }
           : {}),
+        ...(options.settings.orchestratorVariant
+          ? { variant: options.settings.orchestratorVariant }
+          : {}),
         cwd: options.cwd,
         prompt:
           pass === 0
@@ -617,6 +621,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       task.role === "executor"
         ? options.settings.executorHarness
         : options.settings.reviewerHarness;
+    const variant =
+      task.role === "executor"
+        ? options.settings.executorVariant
+        : options.settings.reviewerVariant;
     const output: string[] = [];
 
     yield* emit({
@@ -673,6 +681,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         threadId: options.threadId,
         harness,
         ...(model ? { model } : {}),
+        ...(variant ? { variant } : {}),
         cwd: options.cwd,
         prompt,
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,

@@ -709,6 +709,10 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 
 const AGENT_TUNNEL_PROVIDER_KIND = "agenttunnel";
 
+export function isAgentTunnelProviderKind(kind: string | null): boolean {
+  return kind === AGENT_TUNNEL_PROVIDER_KIND;
+}
+
 /**
  * Auto-open decision for the agent-management split. AgentTunnel threads with
  * a live roster open the Agents surface once, unless the user already
@@ -722,7 +726,7 @@ export function shouldAutoOpenAgentsPanel(input: {
   readonly alreadyAutoOpened: boolean;
 }): boolean {
   return (
-    input.providerKind === AGENT_TUNNEL_PROVIDER_KIND &&
+    isAgentTunnelProviderKind(input.providerKind) &&
     input.hasAgents &&
     !input.sheetMode &&
     input.configuredSurfaceCount === 0 &&

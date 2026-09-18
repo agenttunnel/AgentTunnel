@@ -13,6 +13,7 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 import {
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -124,6 +125,13 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { AgentTunnelRoleConfigBar } from "../AgentTunnelRoleConfigBar";
+import {
+  readAgentTunnelRoles,
+  agentTunnelHarnessProviderKind,
+  AGENT_TUNNEL_HARNESS_OPTIONS,
+  AGENT_TUNNEL_REASONING_OPTIONS,
+} from "../agentTunnelRoles.logic";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -674,6 +682,21 @@ export interface ChatComposerProps {
   ) => void;
 
   onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
+  onAgentTunnelRoleModelSelect?: (
+    instanceId: ProviderInstanceId,
+    roleId: string,
+    model: string,
+  ) => void;
+  onAgentTunnelRoleHarnessSelect?: (
+    instanceId: ProviderInstanceId,
+    roleId: string,
+    harness: string,
+  ) => void;
+  onAgentTunnelRoleReasoningSelect?: (
+    instanceId: ProviderInstanceId,
+    roleId: string,
+    variant: string,
+  ) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -754,6 +777,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
+    onAgentTunnelRoleModelSelect,
+    onAgentTunnelRoleHarnessSelect,
+    onAgentTunnelRoleReasoningSelect,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -1041,6 +1067,40 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // disabled.
   const selectedProvider: ProviderDriverKind =
     selectedProviderEntry?.driverKind ?? requestedDriverKind;
+
+  const [activeWorkflowRoleId, setActiveWorkflowRoleId] = useState<string | null>(null);
+  const workflowRoles = useMemo(() => {
+    if (selectedProviderEntry?.driverKind !== "agenttunnel") {
+      return undefined;
+    }
+    const instanceConfig = settings.providerInstances[selectedProviderEntry.instanceId]?.config;
+    const legacyConfig =
+      selectedProviderEntry.instanceId ===
+      defaultInstanceIdForDriver(selectedProviderEntry.driverKind)
+        ? settings.providers.agenttunnel
+        : undefined;
+    return readAgentTunnelRoles(
+      (instanceConfig ?? legacyConfig) as Record<string, unknown> | undefined,
+    );
+  }, [selectedProviderEntry, settings]);
+  const workflowHarnesses = useMemo(() => {
+    if (!workflowRoles) {
+      return undefined;
+    }
+    const enabledKinds = new Set(
+      providerInstanceEntries
+        .filter((entry) => entry.enabled)
+        .map((entry) => entry.driverKind as string),
+    );
+    const selectedHarnesses = new Set(workflowRoles.map((role) => role.harness));
+    return AGENT_TUNNEL_HARNESS_OPTIONS.filter((option) => {
+      if (selectedHarnesses.has(option.value)) {
+        return true;
+      }
+      const kind = agentTunnelHarnessProviderKind(option.value);
+      return kind !== null && enabledKinds.has(kind);
+    });
+  }, [providerInstanceEntries, workflowRoles]);
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,
@@ -3952,6 +4012,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               message={providerInputSubmissionError ?? composerSubmissionError}
             />
 
+            {workflowRoles ? <AgentTunnelRoleConfigBar roles={workflowRoles} /> : null}
+
             {/* Bottom toolbar */}
             {isComposerCollapsedMobile || isComposerApprovalState ? null : (
               <div
@@ -3998,9 +4060,39 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         : {})}
                       onOpenChange={(open) => {
                         setIsComposerModelPickerOpen(open);
+                        if (!open) {
+                          setActiveWorkflowRoleId(null);
+                        }
                       }}
                       getModelDisabledReason={getModelDisabledReason}
                       onInstanceModelChange={onProviderModelSelect}
+                      {...(workflowRoles ? { workflowRoles } : {})}
+                      {...(activeWorkflowRoleId != null ? { activeWorkflowRoleId } : {})}
+                      onWorkflowRoleChange={setActiveWorkflowRoleId}
+                      {...(onAgentTunnelRoleModelSelect
+                        ? {
+                            onWorkflowRoleSelect: (
+                              roleId: string,
+                              instanceId: ProviderInstanceId,
+                              model: string,
+                            ) => onAgentTunnelRoleModelSelect(instanceId, roleId, model),
+                          }
+                        : {})}
+                      {...(workflowHarnesses ? { workflowHarnesses } : {})}
+                      size="large"
+                      {...(onAgentTunnelRoleHarnessSelect
+                        ? {
+                            onWorkflowRoleHarnessSelect: (roleId: string, harness: string) =>
+                              onAgentTunnelRoleHarnessSelect(selectedInstanceId, roleId, harness),
+                          }
+                        : {})}
+                      workflowReasoningOptions={AGENT_TUNNEL_REASONING_OPTIONS}
+                      {...(onAgentTunnelRoleReasoningSelect
+                        ? {
+                            onWorkflowRoleReasoningSelect: (roleId: string, variant: string) =>
+                              onAgentTunnelRoleReasoningSelect(selectedInstanceId, roleId, variant),
+                          }
+                        : {})}
                     />
                   )}
 

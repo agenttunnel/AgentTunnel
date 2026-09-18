@@ -3,7 +3,6 @@ import {
   Bot,
   Check,
   ChevronDown,
-  ChevronRight,
   Eye,
   FilePen,
   Globe,
@@ -19,6 +18,7 @@ import { useState } from "react";
 import { cn } from "~/lib/utils";
 
 import ChatMarkdown from "./ChatMarkdown";
+import { ThinkingBlock } from "./ThinkingBlock";
 import { foldAgentLogEntries, type AgentLogBlock } from "./AgentLogView.logic";
 
 function toolIcon(tool: string): LucideIcon {
@@ -52,32 +52,6 @@ function MarkdownBlock({ text }: { text: string }) {
   return (
     <div className="text-xs leading-relaxed text-foreground/90">
       <ChatMarkdown text={text} cwd={undefined} />
-    </div>
-  );
-}
-
-function ReasoningBlock({ text }: { text: string }) {
-  const [open, setOpen] = useState(true);
-  return (
-    <div className="ms-2 border-s border-border/60 ps-3">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-1 text-left text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70 hover:text-muted-foreground"
-      >
-        {open ? (
-          <ChevronDown aria-hidden className="size-3 shrink-0" />
-        ) : (
-          <ChevronRight aria-hidden className="size-3 shrink-0" />
-        )}
-        Thinking
-      </button>
-      {open ? (
-        <div className="pt-1 opacity-75">
-          <ChatMarkdown text={text} cwd={undefined} />
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -168,7 +142,7 @@ function LogBlockView({ block }: { block: AgentLogBlock }) {
     case "markdown":
       return <MarkdownBlock text={block.text} />;
     case "reasoning":
-      return <ReasoningBlock text={block.text} />;
+      return <ThinkingBlock text={block.text} />;
     case "tool":
       return <ToolCallBlock entry={block} />;
     case "raw":

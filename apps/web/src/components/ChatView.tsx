@@ -170,6 +170,18 @@ import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
+import { ContextPanel } from "./ContextPanel";
+import {
+  agentTunnelRoleHarnessKey,
+  agentTunnelRoleModelKey,
+  agentTunnelRoleVariantKey,
+  applyAgentTunnelRoleHarness,
+  applyAgentTunnelRoleModel,
+  applyAgentTunnelRoleVariant,
+  readAgentTunnelRoles,
+} from "./agentTunnelRoles.logic";
+import { getDriverOption } from "./settings/providerDriverMeta";
+import { buildProviderInstanceUpdatePatch } from "./settings/SettingsPanels.logic";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -210,6 +222,7 @@ import {
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
+  useUpdateEnvironmentSettings,
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -322,7 +335,11 @@ import {
   hasDismissedResumeCompaction,
   shouldOfferResumeCompaction,
 } from "./chat/ContextWindowMeter.logic";
-import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "../lib/contextWindow";
+import {
+  deriveLatestContextWindowSnapshot,
+  formatContextWindowTokens,
+  formatProviderDisplayName,
+} from "../lib/contextWindow";
 import { ThreadSyncStatusPill } from "./chat/ThreadSyncStatusPill";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
@@ -347,6 +364,7 @@ import {
   scheduleEnvironmentReconnectWarning,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  isAgentTunnelProviderKind,
   shouldAutoOpenAgentsPanel,
   shouldDockDraftHeroForSubmission,
   shouldReleaseTimelineAnchorForToolActivity,
@@ -1377,6 +1395,7 @@ function ChatViewContent(props: ChatViewProps) {
   }, [routeKind, routeThreadRef, routeThreadState]);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const settings = useEnvironmentSettings(environmentId);
+  const updateSettings = useUpdateEnvironmentSettings(environmentId);
   // New-thread defaults live in the primary environment's settings.json (the
   // settings UI never writes to remote environments), so read them from the
   // primary server rather than the thread's environment.
@@ -1465,6 +1484,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
     null,
   );
+  const [agentsPanelFocus, setAgentsPanelFocus] = useState<{
+    readonly agentId: string;
+    readonly nonce: number;
+  } | null>(null);
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
@@ -2898,6 +2921,41 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  // Context surface data: the active instance's display name and the
+  // AgentTunnel role overrides. Instance config resolution matches the
+  // composer so both surfaces agree on each role's effective model.
+  const activeProviderInstanceEntry = useMemo(() => {
+    if (activeProviderInstanceId === null) return null;
+    return (
+      applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings).find(
+        (entry) => entry.instanceId === activeProviderInstanceId,
+      ) ?? null
+    );
+  }, [activeProviderInstanceId, providerStatuses, settings]);
+  const contextProviderLabel =
+    activeProviderInstanceEntry?.displayName ??
+    getDriverOption(selectedProvider)?.label ??
+    formatProviderDisplayName(selectedProvider);
+  const contextSurfaceAvailable = isAgentTunnelProviderKind(selectedProvider);
+  const activeAgentTunnelRoles = useMemo(() => {
+    if (!contextSurfaceAvailable) return [];
+    const entries = applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(providerStatuses),
+      settings,
+    );
+    const entry =
+      entries.find((candidate) => candidate.instanceId === activeProviderInstanceId) ??
+      entries.find((candidate) => candidate.driverKind === "agenttunnel");
+    if (entry === undefined || entry.driverKind !== "agenttunnel") return [];
+    const instanceConfig = settings.providerInstances[entry.instanceId]?.config;
+    const legacyConfig =
+      entry.instanceId === defaultInstanceIdForDriver(entry.driverKind)
+        ? settings.providers.agenttunnel
+        : undefined;
+    return readAgentTunnelRoles(
+      (instanceConfig ?? legacyConfig) as Record<string, unknown> | undefined,
+    );
+  }, [activeProviderInstanceId, contextSurfaceAvailable, providerStatuses, settings]);
   const [resumeCompactionPermanentlyDismissed, setResumeCompactionPermanentlyDismissed] =
     useLocalStorage(
       `t3code:resume-compaction-dismissed:${environmentId}:${activeProviderInstanceId ?? "claudeAgent"}`,
@@ -3546,9 +3604,19 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
-  const addAgentsSurface = useCallback(() => {
+  const addAgentsSurface = useCallback(
+    (agentId?: string) => {
+      if (!activeThreadRef) return;
+      if (agentId !== undefined) {
+        setAgentsPanelFocus((current) => ({ agentId, nonce: (current?.nonce ?? 0) + 1 }));
+      }
+      useRightPanelStore.getState().open(activeThreadRef, "agents");
+    },
+    [activeThreadRef],
+  );
+  const addContextSurface = useCallback(() => {
     if (!activeThreadRef) return;
-    useRightPanelStore.getState().open(activeThreadRef, "agents");
+    useRightPanelStore.getState().open(activeThreadRef, "context");
   }, [activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
@@ -6822,6 +6890,63 @@ function ChatViewContent(props: ChatViewProps) {
       settings,
     ],
   );
+  const updateAgentTunnelRoleConfig = useCallback(
+    (
+      instanceId: ProviderInstanceId,
+      mutate: (config: Record<string, unknown>) => Record<string, unknown>,
+    ) => {
+      const driver = ProviderDriverKind.make("agenttunnel");
+      const isDefault = instanceId === defaultInstanceIdForDriver(driver);
+      const existing = settings.providerInstances[instanceId];
+      const baseConfig = (existing?.config ??
+        (isDefault ? settings.providers.agenttunnel : {})) as Record<string, unknown>;
+      const config = mutate(baseConfig);
+      updateSettings(
+        buildProviderInstanceUpdatePatch({
+          settings,
+          instanceId,
+          instance: { ...existing, driver, config },
+          driver,
+          isDefault,
+        }),
+      );
+      scheduleComposerFocus();
+    },
+    [scheduleComposerFocus, settings, updateSettings],
+  );
+  const onAgentTunnelRoleModelSelect = useCallback(
+    (instanceId: ProviderInstanceId, roleId: string, model: string) => {
+      if (agentTunnelRoleModelKey(roleId) === null) {
+        return;
+      }
+      updateAgentTunnelRoleConfig(instanceId, (config) =>
+        applyAgentTunnelRoleModel(config, roleId, model),
+      );
+    },
+    [updateAgentTunnelRoleConfig],
+  );
+  const onAgentTunnelRoleHarnessSelect = useCallback(
+    (instanceId: ProviderInstanceId, roleId: string, harness: string) => {
+      if (agentTunnelRoleHarnessKey(roleId) === null) {
+        return;
+      }
+      updateAgentTunnelRoleConfig(instanceId, (config) =>
+        applyAgentTunnelRoleHarness(config, roleId, harness),
+      );
+    },
+    [updateAgentTunnelRoleConfig],
+  );
+  const onAgentTunnelRoleReasoningSelect = useCallback(
+    (instanceId: ProviderInstanceId, roleId: string, variant: string) => {
+      if (agentTunnelRoleVariantKey(roleId) === null) {
+        return;
+      }
+      updateAgentTunnelRoleConfig(instanceId, (config) =>
+        applyAgentTunnelRoleVariant(config, roleId, variant),
+      );
+    },
+    [updateAgentTunnelRoleConfig],
+  );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -7022,6 +7147,17 @@ function ChatViewContent(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        focusRequest={agentsPanelFocus}
+      />
+    ) : activeRightPanelSurface?.kind === "context" ? (
+      <ContextPanel
+        model={agentPanelModel}
+        contextWindow={activeContextWindow}
+        thread={activeThread}
+        providerLabel={contextProviderLabel}
+        modelLabel={activeThread.modelSelection.model || null}
+        roles={activeAgentTunnelRoles}
+        timestampFormat={timestampFormat}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
@@ -7171,6 +7307,7 @@ function ChatViewContent(props: ChatViewProps) {
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                agentWorkflowThread={isAgentTunnelProviderKind(selectedProvider)}
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
                 contentInsetEndAdjustment={composerOverlayHeight}
@@ -7338,6 +7475,9 @@ function ChatViewContent(props: ChatViewProps) {
                               onChangeActivePendingUserInputCustomAnswer
                             }
                             onProviderModelSelect={onProviderModelSelect}
+                            onAgentTunnelRoleModelSelect={onAgentTunnelRoleModelSelect}
+                            onAgentTunnelRoleHarnessSelect={onAgentTunnelRoleHarnessSelect}
+                            onAgentTunnelRoleReasoningSelect={onAgentTunnelRoleReasoningSelect}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}
@@ -7499,12 +7639,14 @@ function ChatViewContent(props: ChatViewProps) {
           onAddFiles={addFilesSurface}
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
+          onAddContext={addContextSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           agentsAvailable
+          contextAvailable={contextSurfaceAvailable}
           pullRequestStatuses={pullRequestTabStatuses}
           liveAgentCount={agentPanelModel.liveCount}
         >
@@ -7539,12 +7681,14 @@ function ChatViewContent(props: ChatViewProps) {
             onAddFiles={addFilesSurface}
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
+            onAddContext={addContextSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             agentsAvailable
+            contextAvailable={contextSurfaceAvailable}
             pullRequestStatuses={pullRequestTabStatuses}
             liveAgentCount={agentPanelModel.liveCount}
           >

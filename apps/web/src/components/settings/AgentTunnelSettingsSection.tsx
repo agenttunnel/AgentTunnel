@@ -5,6 +5,10 @@ import { Bot, ShieldCheck, Workflow } from "lucide-react";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import {
+  AGENT_TUNNEL_HARNESS_OPTIONS as SUPPORTED_HARNESSES,
+  AGENT_TUNNEL_REASONING_OPTIONS,
+} from "../agentTunnelRoles.logic";
 
 const ROLES = [
   {
@@ -23,16 +27,6 @@ const ROLES = [
     description: "Inspects completed work for correctness, consistency, and tests.",
   },
 ] as const;
-
-type RoleKey = (typeof ROLES)[number]["key"];
-
-const SUPPORTED_HARNESSES: ReadonlyArray<{ readonly value: string; readonly label: string }> = [
-  { value: "opencode", label: "OpenCode" },
-  { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude Code" },
-  { value: "cursor-agent", label: "Cursor" },
-  { value: "grok", label: "Grok Build" },
-];
 
 interface AgentTunnelSettingsSectionProps {
   readonly config: unknown;
@@ -81,8 +75,10 @@ function RoleSettings({
 }) {
   const harnessKey = `${role.key}Harness`;
   const modelKey = `${role.key}Model`;
+  const variantKey = `${role.key}Variant`;
   const harness = readConfigString(config, harnessKey) || "opencode";
   const model = readConfigString(config, modelKey);
+  const variant = readConfigString(config, variantKey);
   const harnessOptions =
     SUPPORTED_HARNESSES.find((entry) => entry.value === harness) === undefined
       ? [...SUPPORTED_HARNESSES, { value: harness, label: `${harness} (custom)` }]
@@ -137,6 +133,27 @@ function RoleSettings({
           </Select>
           <span className="mt-1 block text-xs text-muted-foreground">
             Optional per-role override of the workflow model selected in the composer.
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-foreground">Reasoning</span>
+          <Select
+            value={variant}
+            onValueChange={(next) => writeConfigValue(config, onChange, variantKey, next ?? "")}
+          >
+            <SelectTrigger className="mt-1.5">
+              <SelectValue placeholder="Default" />
+            </SelectTrigger>
+            <SelectPopup className="max-h-72 w-[min(24rem,calc(100vw-3rem))]">
+              {AGENT_TUNNEL_REASONING_OPTIONS.map((entry) => (
+                <SelectItem key={entry.value || "default"} value={entry.value}>
+                  {entry.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Reasoning effort passed to the harness (opencode `--variant`).
           </span>
         </label>
       </div>

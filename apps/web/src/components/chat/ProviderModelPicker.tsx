@@ -18,7 +18,7 @@ import {
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
-import { ComposerControl, ComposerControlChevron } from "./ComposerControl";
+import { ComposerControl } from "./ComposerControl";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   /**
@@ -44,6 +44,23 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   onOpenChange?: (open: boolean) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  /** Per-role model assignment for workflow providers (AgentTunnel). */
+  workflowRoles?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly model: string | null;
+    readonly harness: string;
+    readonly variant: string | null;
+  }>;
+  activeWorkflowRoleId?: string | null;
+  onWorkflowRoleChange?: (roleId: string | null) => void;
+  onWorkflowRoleSelect?: (roleId: string, instanceId: ProviderInstanceId, model: string) => void;
+  workflowHarnesses?: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  onWorkflowRoleHarnessSelect?: (roleId: string, harness: string) => void;
+  workflowReasoningOptions?: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+  onWorkflowRoleReasoningSelect?: (roleId: string, variant: string) => void;
+  /** Composer uses the modal-sized picker. */
+  size?: "default" | "large";
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
@@ -64,10 +81,18 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const selectedModel =
     selectedInstanceOptions.find((option) => option.slug === props.model) ??
     (activeEntry?.driverKind === "opencode" ? undefined : selectedInstanceOptions[0]);
-  const triggerTitle = selectedModel ? getTriggerDisplayModelName(selectedModel) : props.model;
-  const triggerLabel = selectedModel
-    ? `${getTriggerDisplayModelLabel(selectedModel)}${selectedModel.isUnavailable ? " (Unavailable)" : ""}`
-    : props.model;
+  const triggerTitle =
+    activeEntry?.driverKind === "agenttunnel"
+      ? "Model config"
+      : selectedModel
+        ? getTriggerDisplayModelName(selectedModel)
+        : props.model;
+  const triggerLabel =
+    activeEntry?.driverKind === "agenttunnel"
+      ? "Model config"
+      : selectedModel
+        ? `${getTriggerDisplayModelLabel(selectedModel)}${selectedModel.isUnavailable ? " (Unavailable)" : ""}`
+        : props.model;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
 
@@ -135,6 +160,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   return (
     <Popover
       open={isMenuOpen}
+      modal
       onOpenChange={(open) => {
         if (props.disabled) {
           setIsMenuOpen(false);
@@ -186,9 +212,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             </Badge>
           ) : null}
         </span>
-        <span aria-hidden="true" className="flex items-center">
-          <ComposerControlChevron />
-        </span>
       </PopoverTrigger>
       <PopoverPopup
         align="start"
@@ -208,6 +231,27 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           {...(props.getModelDisabledReason
             ? { getModelDisabledReason: props.getModelDisabledReason }
             : {})}
+          {...(props.workflowRoles ? { workflowRoles: props.workflowRoles } : {})}
+          {...(props.activeWorkflowRoleId != null
+            ? { activeWorkflowRoleId: props.activeWorkflowRoleId }
+            : {})}
+          {...(props.onWorkflowRoleChange
+            ? { onWorkflowRoleChange: props.onWorkflowRoleChange }
+            : {})}
+          {...(props.onWorkflowRoleSelect
+            ? { onWorkflowRoleModelSelect: props.onWorkflowRoleSelect }
+            : {})}
+          {...(props.workflowHarnesses ? { workflowHarnesses: props.workflowHarnesses } : {})}
+          {...(props.onWorkflowRoleHarnessSelect
+            ? { onWorkflowRoleHarnessSelect: props.onWorkflowRoleHarnessSelect }
+            : {})}
+          {...(props.workflowReasoningOptions
+            ? { workflowReasoningOptions: props.workflowReasoningOptions }
+            : {})}
+          {...(props.onWorkflowRoleReasoningSelect
+            ? { onWorkflowRoleReasoningSelect: props.onWorkflowRoleReasoningSelect }
+            : {})}
+          {...(props.size ? { size: props.size } : {})}
           onInstanceModelChange={handleInstanceModelChange}
         />
       </PopoverPopup>

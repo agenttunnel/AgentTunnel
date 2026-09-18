@@ -74,6 +74,15 @@ export function shouldIncludeModelPickerOption(input: {
 
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
 
+function workflowRoleChipClass(active: boolean): string {
+  return cn(
+    "inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[.68rem]",
+    active
+      ? "border-info/40 bg-info/10 text-info-foreground"
+      : "border-border/60 text-muted-foreground hover:bg-accent/40",
+  );
+}
+
 function ModelListSeparator() {
   return <div className="h-0.5" />;
 }
@@ -109,6 +118,37 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onRequestClose?: () => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  /**
+   * Per-role model assignment for workflow providers (AgentTunnel). When set,
+   * a role strip renders above the list and a model click assigns it to the
+   * active role instead of changing the thread model.
+   */
+  workflowRoles?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly model: string | null;
+    readonly harness: string;
+    readonly variant: string | null;
+  }>;
+  activeWorkflowRoleId?: string | null;
+  onWorkflowRoleChange?: (roleId: string | null) => void;
+  onWorkflowRoleModelSelect?: (
+    roleId: string,
+    instanceId: ProviderInstanceId,
+    model: string,
+  ) => void;
+  workflowHarnesses?: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+  }>;
+  onWorkflowRoleHarnessSelect?: (roleId: string, harness: string) => void;
+  workflowReasoningOptions?: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+  }>;
+  onWorkflowRoleReasoningSelect?: (roleId: string, variant: string) => void;
+  /** "large" is the composer's modal-sized picker. */
+  size?: "default" | "large";
 }) {
   const {
     keybindings: providedKeybindings,
@@ -116,10 +156,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     instanceEntries,
     getModelDisabledReason,
     onInstanceModelChange,
+    activeWorkflowRoleId = null,
+    onWorkflowRoleModelSelect,
   } = props;
   const [searchQuery, setSearchQuery] = useState("");
   const [showTopScrollFade, setShowTopScrollFade] = useState(false);
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
+  const activeWorkflowRole =
+    props.workflowRoles?.find((role) => role.id === activeWorkflowRoleId) ?? null;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const modelListRef = useRef<LegendListRef | null>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
@@ -469,11 +513,23 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       // (slug casing etc.). Custom instances share their driver's
       // normalization rules, so pass the driver kind here.
       const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
-      if (resolvedModel) {
-        onInstanceModelChange(instanceId, resolvedModel);
+      if (!resolvedModel) {
+        return;
       }
+      if (activeWorkflowRoleId !== null && onWorkflowRoleModelSelect) {
+        onWorkflowRoleModelSelect(activeWorkflowRoleId, instanceId, resolvedModel);
+        return;
+      }
+      onInstanceModelChange(instanceId, resolvedModel);
     },
-    [entryByInstanceId, getModelDisabledReason, modelOptionsByInstance, onInstanceModelChange],
+    [
+      activeWorkflowRoleId,
+      entryByInstanceId,
+      getModelDisabledReason,
+      modelOptionsByInstance,
+      onInstanceModelChange,
+      onWorkflowRoleModelSelect,
+    ],
   );
 
   const toggleFavorite = useCallback(
@@ -635,7 +691,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   return (
     <TooltipProvider delay={0}>
       <div
-        className="relative flex h-screen max-h-86.5 w-screen max-w-90 flex-row overflow-hidden"
+        className={cn(
+          "relative flex flex-row overflow-hidden",
+          props.size === "large"
+            ? "h-[min(88dvh,46rem)] max-h-[min(88dvh,46rem)] w-[min(94vw,52rem)] max-w-[min(94vw,52rem)]"
+            : "h-screen max-h-86.5 w-screen max-w-90",
+        )}
         data-model-picker-content="true"
       >
         {/* Sidebar */}
@@ -703,7 +764,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   ref={searchInputRef}
                   className="[&_input]:h-6.5 [&_input]:font-sans [&_input]:leading-6.5"
                   inputClassName="rounded-none bg-transparent text-sm"
-                  placeholder="Search models..."
+                  placeholder={
+                    activeWorkflowRole
+                      ? `Assign a model to ${activeWorkflowRole.label}...`
+                      : "Search models..."
+                  }
                   showTrigger={false}
                   startAddon={
                     <SearchIcon className="-translate-x-0.5 size-4 shrink-0 text-muted-foreground opacity-70" />
@@ -745,6 +810,103 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 />
               </div>
             </div>
+
+            {/* Workflow role strip */}
+            {props.workflowRoles && props.workflowRoles.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3 pb-2">
+                <span className="pe-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+                  Roles
+                </span>
+                <button
+                  type="button"
+                  onClick={() => props.onWorkflowRoleChange?.(null)}
+                  aria-pressed={activeWorkflowRole === null}
+                  className={workflowRoleChipClass(activeWorkflowRole === null)}
+                >
+                  Thread model
+                </button>
+                {props.workflowRoles.map((role) => (
+                  <button
+                    key={role.id}
+                    type="button"
+                    onClick={() => props.onWorkflowRoleChange?.(role.id)}
+                    aria-pressed={activeWorkflowRole?.id === role.id}
+                    className={workflowRoleChipClass(activeWorkflowRole?.id === role.id)}
+                  >
+                    {role.label}
+                    {role.model ? (
+                      <span className="text-muted-foreground/70">
+                        {" · "}
+                        {role.model.split("/").pop()}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Workflow role harness */}
+            {activeWorkflowRole && props.workflowHarnesses && props.workflowHarnesses.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3 pb-2 pt-2">
+                <span className="pe-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+                  Harness
+                </span>
+                {props.workflowHarnesses.map((harness) => (
+                  <button
+                    key={harness.value}
+                    type="button"
+                    onClick={() =>
+                      props.onWorkflowRoleHarnessSelect?.(activeWorkflowRole.id, harness.value)
+                    }
+                    aria-pressed={activeWorkflowRole.harness === harness.value}
+                    className={workflowRoleChipClass(activeWorkflowRole.harness === harness.value)}
+                  >
+                    {harness.label}
+                  </button>
+                ))}
+                {props.workflowHarnesses.some(
+                  (harness) => harness.value === activeWorkflowRole.harness,
+                ) ? null : (
+                  <span className="font-mono text-[.65rem] text-muted-foreground/70">
+                    {activeWorkflowRole.harness.split(/[\\/]/).pop()}
+                  </span>
+                )}
+              </div>
+            ) : null}
+
+            {/* Workflow role reasoning */}
+            {activeWorkflowRole &&
+            props.workflowReasoningOptions &&
+            props.workflowReasoningOptions.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3 pb-2 pt-2">
+                <span className="pe-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+                  Reasoning
+                </span>
+                {props.workflowReasoningOptions.map((option) => {
+                  const active = (activeWorkflowRole.variant ?? "") === option.value;
+                  return (
+                    <button
+                      key={option.value || "default"}
+                      type="button"
+                      onClick={() =>
+                        props.onWorkflowRoleReasoningSelect?.(activeWorkflowRole.id, option.value)
+                      }
+                      aria-pressed={active}
+                      className={workflowRoleChipClass(active)}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+                {props.workflowReasoningOptions.some(
+                  (option) => option.value === (activeWorkflowRole.variant ?? ""),
+                ) ? null : (
+                  <span className="font-mono text-[.65rem] text-muted-foreground/70">
+                    {activeWorkflowRole.variant}
+                  </span>
+                )}
+              </div>
+            ) : null}
 
             {/* Model list */}
             <div className="relative min-h-0 flex-1 overflow-hidden pr-px">
