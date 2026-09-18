@@ -189,7 +189,7 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
         if (!manifest) continue;
 
         const declared = {
-          ...(manifest.dependencies ?? {}),
+          ...manifest.dependencies,
           ...(manifest.optionalDependencies ?? {}),
           ...(manifest.peerDependencies ?? {}),
         };
