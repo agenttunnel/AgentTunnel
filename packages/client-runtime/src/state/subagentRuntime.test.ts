@@ -241,17 +241,17 @@ describe("foldSubagentActivities", () => {
   });
 
   it("bounds repeated strings and dedupes the activity ring", () => {
-    const long = "x".repeat(500);
+    const long = "x".repeat(900);
     const rows = [activity("task.started", { taskId: "task-8", taskType: "local_agent" })];
-    for (let i = 0; i < 30; i += 1) {
-      rows.push(activity("task.progress", { taskId: "task-8", summary: `${long}-${i}` }));
+    for (let i = 0; i < 220; i += 1) {
+      rows.push(activity("task.progress", { taskId: "task-8", summary: `${i}-${long}` }));
     }
-    rows.push(activity("task.progress", { taskId: "task-8", summary: `${long}-29` }));
+    rows.push(activity("task.progress", { taskId: "task-8", summary: `219-${long}` }));
     const agents = fold(rows);
     const agent = agents[0]!;
-    expect(agent.recentActivity.length).toBeLessThanOrEqual(24);
+    expect(agent.recentActivity.length).toBeLessThanOrEqual(200);
     for (const entry of agent.recentActivity) {
-      expect(entry.summary.length).toBeLessThanOrEqual(240);
+      expect(entry.summary.length).toBeLessThanOrEqual(400);
     }
     // Consecutive identical summaries dedupe (truncation makes them equal).
     const summaries = agent.recentActivity.map((entry) => entry.summary);

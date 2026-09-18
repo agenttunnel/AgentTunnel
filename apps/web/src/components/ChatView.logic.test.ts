@@ -35,6 +35,7 @@ import {
   shoulderTabReserve,
   startNewThreadForProject,
   shouldDockDraftHeroForSubmission,
+  shouldAutoOpenAgentsPanel,
   shouldReleaseTimelineAnchorForToolActivity,
   shouldShowBranchMismatchBanner,
   shouldShowPlanFollowUpPrompt,
@@ -947,5 +948,28 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
+  });
+});
+
+describe("shouldAutoOpenAgentsPanel", () => {
+  const base = {
+    providerKind: "agenttunnel",
+    hasAgents: true,
+    sheetMode: false,
+    configuredSurfaceCount: 0,
+    alreadyAutoOpened: false,
+  };
+
+  it("opens the agents panel once for an AgentTunnel thread with agents", () => {
+    expect(shouldAutoOpenAgentsPanel(base)).toBe(true);
+  });
+
+  it("never fights a configured panel, sheet layout, other providers, or a repeat", () => {
+    expect(shouldAutoOpenAgentsPanel({ ...base, configuredSurfaceCount: 1 })).toBe(false);
+    expect(shouldAutoOpenAgentsPanel({ ...base, sheetMode: true })).toBe(false);
+    expect(shouldAutoOpenAgentsPanel({ ...base, providerKind: "codex" })).toBe(false);
+    expect(shouldAutoOpenAgentsPanel({ ...base, providerKind: null })).toBe(false);
+    expect(shouldAutoOpenAgentsPanel({ ...base, hasAgents: false })).toBe(false);
+    expect(shouldAutoOpenAgentsPanel({ ...base, alreadyAutoOpened: true })).toBe(false);
   });
 });

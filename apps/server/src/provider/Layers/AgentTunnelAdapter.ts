@@ -1,5 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import {
   EventId,
+  OrchestrationAgentLogEntry,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeItemId,
@@ -19,8 +21,11 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
@@ -45,10 +50,13 @@ import {
   buildAgentTunnelSpawnArgs,
   isOpenCodeHarness,
   parseOpenCodeJsonLine,
+  parseOpenCodeLogLine,
 } from "../agentTunnel/opencodeTransport.ts";
 
 const PROVIDER = ProviderDriverKind.make("agenttunnel");
 const RESUME_VERSION = 1;
+const MAX_AGENT_LOG_BYTES = 1024 * 1024;
+const encodeLogEntry = Schema.encodeSync(Schema.fromJsonString(OrchestrationAgentLogEntry));
 
 interface AgentTunnelAgentMetadata {
   readonly role: "executor" | "reviewer";
@@ -67,6 +75,8 @@ interface AgentTunnelSessionContext {
   readonly cancelled: Ref.Ref<boolean>;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
   readonly agents: Map<string, AgentTunnelAgentMetadata>;
+  readonly agentLogBytes: Map<string, number>;
+  readonly agentRawLogBytes: Map<string, number>;
   workflowTitle: string | undefined;
   workflowId: string | undefined;
   activeTurnId: TurnId | undefined;
@@ -101,6 +111,70 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
   const sessions = new Map<ThreadId, AgentTunnelSessionContext>();
   const activeProcesses = new Map<ThreadId, Map<string, AgentTunnelProcessHandle["kill"]>>();
   const environment = mergeProviderInstanceEnvironment(options.environment);
+  const agentOutputRoot = NodePath.join(serverConfig.providerLogsDir, "agent-output");
+  const agentOutputDir = (threadId: string) =>
+    NodePath.join(agentOutputRoot, threadId.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  const agentLogPath = (threadId: string, agentId: string, suffix: string) =>
+    NodePath.join(
+      agentOutputDir(threadId),
+      `${agentId.replace(/[^a-zA-Z0-9_-]/g, "_")}${suffix}.log`,
+    );
+  const agentOutputPath = (threadId: string, agentId: string) =>
+    agentLogPath(threadId, agentId, "");
+  const appendLogFile = (threadId: ThreadId, agentId: string, filePath: string, text: string) =>
+    Effect.tryPromise(async () => {
+      await NodeFSP.mkdir(NodePath.dirname(filePath), { recursive: true });
+      await NodeFSP.appendFile(filePath, text, "utf8");
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("AgentTunnel agent log write failed", {
+          scope: "agenttunnel.adapter",
+          threadId,
+          agentId,
+          cause,
+        }),
+      ),
+    );
+  const appendAgentLogEntries = (
+    threadId: ThreadId,
+    agentId: string,
+    rawLine: string,
+    openCode: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const context = sessions.get(threadId);
+      const outputPath = agentOutputPath(threadId, agentId);
+      const entries = openCode
+        ? parseOpenCodeLogLine(rawLine)
+        : [{ kind: "raw" as const, text: rawLine }];
+      for (const entry of entries) {
+        const line = `${encodeLogEntry(entry)}\n`;
+        const written = context?.agentLogBytes.get(agentId) ?? 0;
+        const bytes = Buffer.byteLength(line, "utf8");
+        if (written + bytes > MAX_AGENT_LOG_BYTES) {
+          return;
+        }
+        context?.agentLogBytes.set(agentId, written + bytes);
+        yield* appendLogFile(threadId, agentId, outputPath, line);
+      }
+      if (!openCode) {
+        return;
+      }
+      // The raw stdout/stderr stream, verbatim, for the "Raw" view.
+      const rawPath = agentLogPath(threadId, agentId, ".raw");
+      const writtenRaw = context?.agentRawLogBytes.get(agentId) ?? 0;
+      const rawText = `${rawLine}\n`;
+      const rawBytes = Buffer.byteLength(rawText, "utf8");
+      if (writtenRaw + rawBytes > MAX_AGENT_LOG_BYTES) {
+        return;
+      }
+      context?.agentRawLogBytes.set(agentId, writtenRaw + rawBytes);
+      yield* appendLogFile(threadId, agentId, rawPath, rawText);
+    });
+  const clearAgentOutput = (threadId: ThreadId) =>
+    Effect.tryPromise(() =>
+      NodeFSP.rm(agentOutputDir(threadId), { recursive: true, force: true }),
+    ).pipe(Effect.ignore);
 
   const randomUuid = crypto.randomUUIDv4.pipe(
     Effect.mapError(
@@ -276,6 +350,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             taskId: RuntimeTaskId.make(event.agentId),
             status: event.status === "stopped" ? "stopped" : event.status,
             ...(event.summary ? { summary: event.summary } : {}),
+            outputFile: agentOutputPath(threadId, event.agentId),
             taskType: "local_agent",
             title: metadata.task,
             role: metadata.role,
@@ -377,12 +452,16 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ),
         );
         const threadId = ThreadId.make(spec.threadId);
+        const openCode = isOpenCodeHarness(spec.harness);
         const observedLines = child.all.pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.tap((line) => writeNativeLine(threadId, spec.id, line).pipe(Effect.orDie)),
+          Stream.tap((line) =>
+            appendAgentLogEntries(threadId, spec.id, line, openCode).pipe(Effect.orDie),
+          ),
         );
-        const lines = isOpenCodeHarness(spec.harness)
+        const lines = openCode
           ? observedLines.pipe(
               Stream.flatMap((line) => Stream.fromIterable(parseOpenCodeJsonLine(line))),
               Stream.mapError(processError),
@@ -473,6 +552,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       cancelled: yield* Ref.make(false),
       turns: [],
       agents: new Map(),
+      agentLogBytes: new Map(),
+      agentRawLogBytes: new Map(),
       workflowTitle: undefined,
       workflowId: undefined,
       activeTurnId: undefined,
@@ -523,6 +604,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.workflowTitle = input.input ?? "AgentTunnel workflow";
     context.workflowId = workflowId;
     context.agents.clear();
+    context.agentLogBytes.clear();
+    context.agentRawLogBytes.clear();
+    yield* clearAgentOutput(input.threadId);
     context.session = {
       ...context.session,
       status: "running",

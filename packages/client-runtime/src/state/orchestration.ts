@@ -19,6 +19,15 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 300_000,
       idleTtlMs: 300_000,
     }),
+    agentOutput: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:agent-output",
+      tag: ORCHESTRATION_WS_METHODS.getAgentOutput,
+      // Subagent logs grow while the agent runs: poll only while a drill-in
+      // view is mounted, which is when the atom is subscribed.
+      staleTimeMs: 0,
+      idleTtlMs: 60_000,
+      refreshIntervalMs: 2_000,
+    }),
     fullThreadDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:full-thread-diff",
       tag: ORCHESTRATION_WS_METHODS.getFullThreadDiff,

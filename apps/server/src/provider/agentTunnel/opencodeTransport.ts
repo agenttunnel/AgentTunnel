@@ -1,3 +1,5 @@
+import type { OrchestrationAgentLogEntry } from "@t3tools/contracts";
+
 import type { AgentTunnelProcessSpec } from "./Orchestrator.ts";
 
 /**
@@ -23,15 +25,21 @@ export function buildAgentTunnelSpawnArgs(spec: AgentTunnelProcessSpec): string[
   if (spec.dangerouslySkipPermissions) {
     args.push(isOpenCodeHarness(spec.harness) ? "--auto" : "--dangerously-skip-permissions");
   }
-  if (isOpenCodeHarness(spec.harness)) args.push("--format", "json");
+  if (isOpenCodeHarness(spec.harness)) args.push("--format", "json", "--thinking");
   args.push(spec.prompt);
   return args;
 }
 
 const TOOL_SUMMARY_MAX = 100;
+const TOOL_TITLE_MAX = 200;
+const TOOL_BODY_MAX = 8_000;
+
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
 
 function truncateSummary(value: string): string {
-  return value.length <= TOOL_SUMMARY_MAX ? value : `${value.slice(0, TOOL_SUMMARY_MAX - 1)}…`;
+  return truncate(value, TOOL_SUMMARY_MAX);
 }
 
 function summarizeToolInput(input: unknown): string {
@@ -42,14 +50,29 @@ function summarizeToolInput(input: unknown): string {
   return truncateSummary(JSON.stringify(record));
 }
 
+function formatToolInput(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  try {
+    const json = JSON.stringify(input, null, 2);
+    return json === undefined ? undefined : truncate(json, TOOL_BODY_MAX);
+  } catch {
+    return undefined;
+  }
+}
+
+export type AgentLogEntry = OrchestrationAgentLogEntry;
+
 interface OpenCodeToolUseState {
   readonly title?: unknown;
   readonly input?: unknown;
+  readonly output?: unknown;
+  readonly error?: unknown;
   readonly status?: unknown;
 }
 
 interface OpenCodeToolUsePart {
   readonly tool?: unknown;
+  readonly callID?: unknown;
   readonly state?: OpenCodeToolUseState;
 }
 
@@ -60,38 +83,114 @@ interface OpenCodePart {
 interface OpenCodeEvent {
   readonly type?: unknown;
   readonly part?: unknown;
+  readonly error?: unknown;
 }
 
-function splitTextLines(text: string): ReadonlyArray<string> {
-  return text.split("\n").filter((line) => line.length > 0);
+function isToolStatus(value: unknown): value is "pending" | "running" | "completed" | "error" {
+  return value === "pending" || value === "running" || value === "completed" || value === "error";
 }
 
-export function parseOpenCodeJsonLine(raw: string): ReadonlyArray<string> {
+function errorMessage(error: unknown): string | undefined {
+  if (typeof error === "string" && error.length > 0) return error;
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as Record<string, unknown>;
+  const data = record.data;
+  if (data && typeof data === "object") {
+    const message = (data as Record<string, unknown>).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  if (typeof record.message === "string" && record.message.length > 0) return record.message;
+  if (typeof record.name === "string" && record.name.length > 0) return record.name;
+  return undefined;
+}
+
+/**
+ * Structured log entries for one raw harness line. OpenCode's `run --format
+ * json` stream is translated into typed entries; anything else stays a raw
+ * line so non-opencode harnesses still produce a readable log.
+ */
+export function parseOpenCodeLogLine(raw: string): ReadonlyArray<AgentLogEntry> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [raw];
+    return [{ kind: "raw", text: raw }];
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [raw];
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [{ kind: "raw", text: raw }];
+  }
 
   const event = parsed as OpenCodeEvent;
-  if (event.type === "text") {
+  if (event.type === "text" || event.type === "reasoning") {
     const text = (event.part as OpenCodePart | undefined)?.text;
-    return typeof text === "string" ? splitTextLines(text) : [];
+    if (typeof text !== "string" || text.length === 0) return [];
+    return event.type === "text" ? [{ kind: "text", text }] : [{ kind: "reasoning", text }];
   }
   if (event.type === "tool_use") {
     const part = event.part as OpenCodeToolUsePart | undefined;
     if (!part) return [];
     const tool = typeof part.tool === "string" && part.tool.length > 0 ? part.tool : "tool";
     const state = part.state;
+    const status = isToolStatus(state?.status) ? state.status : "completed";
     const title =
       typeof state?.title === "string" && state.title.length > 0
-        ? state.title
+        ? truncate(state.title, TOOL_TITLE_MAX)
         : summarizeToolInput(state?.input);
-    return typeof title === "string" && title.length > 0
-      ? [`→ ${tool}: ${truncateSummary(title)}`]
-      : [`→ ${tool}`];
+    const input = formatToolInput(state?.input);
+    const output =
+      typeof state?.output === "string" && state.output.length > 0
+        ? truncate(state.output, TOOL_BODY_MAX)
+        : undefined;
+    const error =
+      typeof state?.error === "string" && state.error.length > 0
+        ? truncate(state.error, TOOL_BODY_MAX)
+        : undefined;
+    return [
+      {
+        kind: "tool",
+        tool,
+        title,
+        status,
+        ...(typeof part.callID === "string" && part.callID.length > 0
+          ? { callId: part.callID }
+          : {}),
+        ...(input === undefined ? {} : { input }),
+        ...(output === undefined ? {} : { output }),
+        ...(error === undefined ? {} : { error }),
+      },
+    ];
+  }
+  if (event.type === "error") {
+    const message = errorMessage(event.error);
+    return message === undefined ? [] : [{ kind: "error", text: truncate(message, TOOL_BODY_MAX) }];
   }
   return [];
+}
+
+function splitTextLines(text: string): ReadonlyArray<string> {
+  return text.split("\n").filter((line) => line.length > 0);
+}
+
+/** Display lines for the orchestrator chat message, derived from log entries. */
+export function parseOpenCodeJsonLine(raw: string): ReadonlyArray<string> {
+  const lines: string[] = [];
+  for (const entry of parseOpenCodeLogLine(raw)) {
+    switch (entry.kind) {
+      case "text":
+        lines.push(...splitTextLines(entry.text));
+        break;
+      case "tool":
+        lines.push(entry.title.length > 0 ? `→ ${entry.tool}: ${entry.title}` : `→ ${entry.tool}`);
+        break;
+      case "error":
+        lines.push(`✗ ${truncateSummary(entry.text)}`);
+        break;
+      case "raw":
+        lines.push(entry.text);
+        break;
+      case "reasoning":
+        break;
+    }
+  }
+  return lines;
 }

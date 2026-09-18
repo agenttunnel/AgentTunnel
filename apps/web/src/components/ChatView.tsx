@@ -347,6 +347,7 @@ import {
   scheduleEnvironmentReconnectWarning,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  shouldAutoOpenAgentsPanel,
   shouldDockDraftHeroForSubmission,
   shouldReleaseTimelineAnchorForToolActivity,
   shouldShowBranchMismatchBanner,
@@ -2343,6 +2344,31 @@ function ChatViewContent(props: ChatViewProps) {
       }),
     [agentSessionLive, threadActivities],
   );
+  const autoOpenedAgentsThreadKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeThreadRef || activeThreadKey === null) {
+      return;
+    }
+    const shouldOpen = shouldAutoOpenAgentsPanel({
+      providerKind: selectedProvider,
+      hasAgents: agentPanelModel.hasAgents,
+      sheetMode: shouldUseRightPanelSheet,
+      configuredSurfaceCount: rightPanelState.surfaces.length,
+      alreadyAutoOpened: autoOpenedAgentsThreadKeysRef.current.has(activeThreadKey),
+    });
+    if (!shouldOpen) {
+      return;
+    }
+    autoOpenedAgentsThreadKeysRef.current.add(activeThreadKey);
+    useRightPanelStore.getState().open(activeThreadRef, "agents");
+  }, [
+    activeThreadKey,
+    activeThreadRef,
+    agentPanelModel.hasAgents,
+    rightPanelState.surfaces.length,
+    selectedProvider,
+    shouldUseRightPanelSheet,
+  ]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],

@@ -104,8 +104,8 @@ export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return status === "pending" || status === "running" || status === "waiting";
 }
 
-const RECENT_ACTIVITY_LIMIT = 24;
-const SUMMARY_CHAR_LIMIT = 240;
+const RECENT_ACTIVITY_LIMIT = 200;
+const SUMMARY_CHAR_LIMIT = 400;
 const ROSTER_LIMIT = 100;
 
 /**

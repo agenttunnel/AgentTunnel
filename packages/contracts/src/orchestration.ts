@@ -27,6 +27,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getWorkflowScript: "orchestration.getWorkflowScript",
+  getAgentOutput: "orchestration.getAgentOutput",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -1746,6 +1747,78 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedErrorClass
   }
 }
 
+export const OrchestrationGetAgentOutputInput = Schema.Struct({
+  /** Absolute path from the subagent's task payload outputFile. The server
+   * re-derives containment; the client value is a hint, never trusted. */
+  outputPath: TrimmedNonEmptyString,
+});
+export type OrchestrationGetAgentOutputInput = typeof OrchestrationGetAgentOutputInput.Type;
+
+export const OrchestrationAgentLogEntry = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("text"), text: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("reasoning"), text: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("raw"), text: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("error"), text: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("tool"),
+    tool: Schema.String,
+    title: Schema.String,
+    status: Schema.Literals(["pending", "running", "completed", "error"]),
+    callId: Schema.optional(Schema.String),
+    input: Schema.optional(Schema.String),
+    output: Schema.optional(Schema.String),
+    error: Schema.optional(Schema.String),
+  }),
+]);
+export type OrchestrationAgentLogEntry = typeof OrchestrationAgentLogEntry.Type;
+
+export const OrchestrationAgentRawOutput = Schema.Struct({
+  contents: Schema.String,
+  truncated: Schema.Boolean,
+});
+export type OrchestrationAgentRawOutput = typeof OrchestrationAgentRawOutput.Type;
+
+export const OrchestrationGetAgentOutputResult = Schema.Struct({
+  outputPath: TrimmedNonEmptyString,
+  entries: Schema.Array(OrchestrationAgentLogEntry),
+  raw: Schema.optional(OrchestrationAgentRawOutput),
+  truncated: Schema.Boolean,
+});
+export type OrchestrationGetAgentOutputResult = typeof OrchestrationGetAgentOutputResult.Type;
+
+const AGENT_OUTPUT_ERROR_MESSAGES = {
+  "invalid-path": "Subagent output must be an absolute .log path.",
+  "root-unavailable": "Subagent output root unavailable.",
+  "not-found": "Subagent output not found.",
+  "outside-root": "Subagent output path is outside the outputs root.",
+  "not-log": "Resolved output is not a .log file.",
+  "not-regular-file": "Subagent output is not a regular file.",
+  "changed-during-read": "Subagent output changed between resolution and open.",
+  "read-failed": "Subagent output read failed.",
+} as const;
+
+export class OrchestrationGetAgentOutputError extends Schema.TaggedErrorClass<OrchestrationGetAgentOutputError>()(
+  "OrchestrationGetAgentOutputError",
+  {
+    reason: Schema.Literals([
+      "invalid-path",
+      "root-unavailable",
+      "not-found",
+      "outside-root",
+      "not-log",
+      "not-regular-file",
+      "changed-during-read",
+      "read-failed",
+    ]),
+    outputPath: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return AGENT_OUTPUT_ERROR_MESSAGES[this.reason];
+  }
+}
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -1754,6 +1827,10 @@ export const OrchestrationRpcSchemas = {
   getWorkflowScript: {
     input: OrchestrationGetWorkflowScriptInput,
     output: OrchestrationGetWorkflowScriptResult,
+  },
+  getAgentOutput: {
+    input: OrchestrationGetAgentOutputInput,
+    output: OrchestrationGetAgentOutputResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,

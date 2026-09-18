@@ -706,3 +706,26 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
   );
 }
+
+const AGENT_TUNNEL_PROVIDER_KIND = "agenttunnel";
+
+/**
+ * Auto-open decision for the agent-management split. AgentTunnel threads with
+ * a live roster open the Agents surface once, unless the user already
+ * configured the panel for this thread or dismissed it earlier this session.
+ */
+export function shouldAutoOpenAgentsPanel(input: {
+  readonly providerKind: string | null;
+  readonly hasAgents: boolean;
+  readonly sheetMode: boolean;
+  readonly configuredSurfaceCount: number;
+  readonly alreadyAutoOpened: boolean;
+}): boolean {
+  return (
+    input.providerKind === AGENT_TUNNEL_PROVIDER_KIND &&
+    input.hasAgents &&
+    !input.sheetMode &&
+    input.configuredSurfaceCount === 0 &&
+    !input.alreadyAutoOpened
+  );
+}

@@ -6,6 +6,7 @@ import {
   buildAgentTunnelSpawnArgs,
   isOpenCodeHarness,
   parseOpenCodeJsonLine,
+  parseOpenCodeLogLine,
 } from "./opencodeTransport.ts";
 
 function spec(overrides: Partial<AgentTunnelProcessSpec> = {}): AgentTunnelProcessSpec {
@@ -35,6 +36,7 @@ it("buildAgentTunnelSpawnArgs uses opencode --auto and --format json for opencod
     "--auto",
     "--format",
     "json",
+    "--thinking",
     "do the thing",
   ]);
 });
@@ -42,7 +44,7 @@ it("buildAgentTunnelSpawnArgs uses opencode --auto and --format json for opencod
 it("buildAgentTunnelSpawnArgs omits --auto when permissions are not bypassed", () => {
   NodeAssert.deepEqual(
     buildAgentTunnelSpawnArgs(spec({ dangerouslySkipPermissions: false, model: "m1" })),
-    ["run", "-m", "m1", "--format", "json", "do the thing"],
+    ["run", "-m", "m1", "--format", "json", "--thinking", "do the thing"],
   );
 });
 
@@ -52,6 +54,7 @@ it("buildAgentTunnelSpawnArgs keeps --format json even without a model", () => {
     "--auto",
     "--format",
     "json",
+    "--thinking",
     "do the thing",
   ]);
 });
@@ -61,6 +64,7 @@ it("buildAgentTunnelSpawnArgs keeps --format json without a model or bypass", ()
     "run",
     "--format",
     "json",
+    "--thinking",
     "do the thing",
   ]);
 });
@@ -141,4 +145,82 @@ it("parseOpenCodeJsonLine drops step_start and step_finish events", () => {
 it("parseOpenCodeJsonLine returns an array of valid JSON arrays/booleans as raw lines", () => {
   NodeAssert.deepEqual(parseOpenCodeJsonLine("[1,2,3]"), ["[1,2,3]"]);
   NodeAssert.deepEqual(parseOpenCodeJsonLine("true"), ["true"]);
+});
+
+it("parseOpenCodeJsonLine surfaces harness error events", () => {
+  const line = JSON.stringify({
+    type: "error",
+    error: { name: "ProviderError", data: { message: "rate limited" } },
+  });
+  NodeAssert.deepEqual(parseOpenCodeJsonLine(line), ["\u2717 rate limited"]);
+});
+
+it("parseOpenCodeLogLine keeps reasoning parts with their raw text", () => {
+  const line = JSON.stringify({
+    type: "reasoning",
+    part: { type: "reasoning", text: "Weighing options." },
+  });
+  NodeAssert.deepEqual(parseOpenCodeLogLine(line), [
+    { kind: "reasoning", text: "Weighing options." },
+  ]);
+});
+
+it("parseOpenCodeLogLine captures tool calls with status, input, and output", () => {
+  const line = JSON.stringify({
+    type: "tool_use",
+    part: {
+      type: "tool",
+      callID: "call-1",
+      tool: "bash",
+      state: {
+        status: "completed",
+        title: "echo hello",
+        input: { command: "echo hello" },
+        output: "hello\n",
+      },
+    },
+  });
+  NodeAssert.deepEqual(parseOpenCodeLogLine(line), [
+    {
+      kind: "tool",
+      tool: "bash",
+      title: "echo hello",
+      status: "completed",
+      callId: "call-1",
+      input: '{\n  "command": "echo hello"\n}',
+      output: "hello\n",
+    },
+  ]);
+});
+
+it("parseOpenCodeLogLine captures tool errors and text parts", () => {
+  const failed = JSON.stringify({
+    type: "tool_use",
+    part: {
+      type: "tool",
+      tool: "read",
+      state: { status: "error", error: "file not found", input: { path: "/nope" } },
+    },
+  });
+  NodeAssert.deepEqual(parseOpenCodeLogLine(failed), [
+    {
+      kind: "tool",
+      tool: "read",
+      title: "/nope",
+      status: "error",
+      input: '{\n  "path": "/nope"\n}',
+      error: "file not found",
+    },
+  ]);
+  NodeAssert.deepEqual(
+    parseOpenCodeLogLine(JSON.stringify({ type: "text", part: { text: "done" } })),
+    [{ kind: "text", text: "done" }],
+  );
+});
+
+it("parseOpenCodeLogLine passes non-JSON through and drops step events", () => {
+  NodeAssert.deepEqual(parseOpenCodeLogLine("stderr banner"), [
+    { kind: "raw", text: "stderr banner" },
+  ]);
+  NodeAssert.deepEqual(parseOpenCodeLogLine(JSON.stringify({ type: "step_finish", part: {} })), []);
 });
