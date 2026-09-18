@@ -160,6 +160,7 @@ function SubagentLogLines({ agent }: { agent: RuntimeSubagent }) {
   const hasError = agent.error !== null && agent.error.length > 0;
   const hasProgress = agent.progress !== null && agent.progress.length > 0;
   const hasAny = hasResult || hasError || hasProgress || entries.length > 0;
+  const entryKeyCounts = new Map<string, number>();
 
   if (!hasAny) {
     return <div className="text-xs text-muted-foreground">No activity recorded yet.</div>;
@@ -175,9 +176,12 @@ function SubagentLogLines({ agent }: { agent: RuntimeSubagent }) {
       ) : null}
       {entries.map((entry, index) => {
         const isLast = index === entries.length - 1;
+        const baseKey = `${entry.at}\u0000${entry.summary}`;
+        const occurrence = entryKeyCounts.get(baseKey) ?? 0;
+        entryKeyCounts.set(baseKey, occurrence + 1);
         return (
           <div
-            key={`${entry.at}-${index}`}
+            key={`${baseKey}\u0000${occurrence}`}
             className="flex items-start gap-2 font-mono text-[.7rem] leading-relaxed"
           >
             <span className="shrink-0 tabular-nums text-muted-foreground/50">

@@ -167,8 +167,17 @@ describe("EnvironmentProviderSettings routing", () => {
 
     expect(commands.refresh).toHaveBeenCalledWith({ environmentId, input: {} });
 
-    const providerCard = visitElements(
+    const codexRow = visitElements(
       panel,
+      (element) =>
+        element.props.instanceId === codexId && typeof element.props.onSelect === "function",
+    );
+    expect(codexRow).not.toBeNull();
+    (codexRow?.props.onSelect as (() => void) | undefined)?.();
+
+    const editorPanel = renderPanel();
+    const providerCard = visitElements(
+      editorPanel,
       (element) =>
         element.props.instanceId === codexId && typeof element.props.onRunUpdate === "function",
     );
