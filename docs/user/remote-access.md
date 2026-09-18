@@ -130,15 +130,15 @@ Use this when you want the desktop app to start or reuse AgentTunnel on another 
 2. Under **Remote Environments**, choose **Add environment**.
 3. Select the SSH launch flow.
 4. Enter the SSH target, such as `user@example.com`.
-5. Confirm the launch. The desktop app probes the host, starts or reuses a remote T3 server, opens a local port forward, and saves the environment.
+5. Confirm the launch. The desktop app probes the host, starts or reuses a remote AgentTunnel server, opens a local port forward, and saves the environment.
 
-After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint. The remote host still owns the actual T3 server, projects, files, git state, terminals, and provider sessions.
+After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint. The remote host still owns the actual AgentTunnel server, projects, files, git state, terminals, and provider sessions.
 
 SSH launch is a desktop feature because it needs local process and SSH access. Once the environment is paired and saved, it uses the same environment list and connection model as direct LAN, Tailscale, HTTPS, or future tunnel-backed environments.
 
 #### SSH Launch Troubleshooting
 
-The desktop SSH launcher connects with a non-interactive `sh` session, writes a small launcher script under `~/.t3/ssh-launch/<host-key>/`, starts or reuses a remote T3 server, and forwards the remote loopback port back to your desktop.
+The desktop SSH launcher connects with a non-interactive `sh` session, writes a small launcher script under `~/.t3/ssh-launch/<host-key>/`, starts or reuses a remote AgentTunnel server, and forwards the remote loopback port back to your desktop.
 
 The remote host must have a compatible Node.js runtime. AgentTunnel uses the server package's `engines.node` requirement:
 

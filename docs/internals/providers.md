@@ -1,8 +1,8 @@
 # Provider architecture
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using AgentTunnel? See [docs/user](../user/).
 
-A provider is the agent runtime that does the actual work. T3 Code supports several, and the
+A provider is the agent runtime that does the actual work. AgentTunnel supports several, and the
 orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
@@ -98,7 +98,7 @@ driver kinds absent from the manifest have no legacy concept.
 
 ## AgentTunnel workflow driver
 
-`agenttunnel` presents one T3 thread as a workflow coordinator. Its server-side adapter launches an
+`agenttunnel` presents one AgentTunnel thread as a workflow coordinator. Its server-side adapter launches an
 orchestrator CLI process, parses `__AGENTTUNNEL_TOOL__` actions, and schedules executor/reviewer CLI
 processes in named pipelines. Pipelines can run in parallel, run sequentially, or wait on other
 pipelines. The adapter maps the workflow coordinator to a `local_workflow` task and each child to a
@@ -109,7 +109,7 @@ AgentTunnel is enabled by default and is the primary provider for fresh installa
 built-in providers are opt-in. Configure the orchestrator, executor, and reviewer harness paths in
 provider settings. The default harness is `opencode` for all three roles. AgentTunnel child sessions
 are currently non-interactive and use the configured permission-bypass setting; approval and user-input
-requests are not yet routed through the T3 request surface.
+requests are not yet routed through the AgentTunnel request surface.
 
 ## How provider work is requested
 

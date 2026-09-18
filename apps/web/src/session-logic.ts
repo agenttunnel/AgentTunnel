@@ -93,6 +93,7 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   isWorkflowCoordinator?: boolean;
   /** Shell/monitor/plan tasks: ordinary work-log rows, never spawn CTAs. */
   isBackgroundTask?: boolean;
+  parentAgentId?: string;
 }
 
 const derivedWorkLogEntryByActivity = new WeakMap<
@@ -1011,6 +1012,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (
     isTaskActivity &&
+    typeof payload?.parentAgentId === "string" &&
+    payload.parentAgentId.length > 0
+  ) {
+    entry.parentAgentId = payload.parentAgentId;
+  }
+  if (
+    isTaskActivity &&
     (payload?.taskType === "local_workflow" ||
       (typeof payload?.workflowName === "string" && payload.workflowName.length > 0))
   ) {
@@ -1034,6 +1042,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
  */
 function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
   const taskId = entry.taskId ?? "";
+  const parentAgentId = entry.parentAgentId;
+  if (parentAgentId && parentAgentId.length > 0) {
+    return `wf:${parentAgentId}`;
+  }
   const workflowSlot = taskId.indexOf(":wf:");
   if (workflowSlot !== -1) {
     return `wf:${taskId.slice(0, workflowSlot)}`;

@@ -7,12 +7,13 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import type { ServerConfig } from "../../config.ts";
+import { ServerConfig } from "../../config.ts";
 import { makeAgentTunnelTextGeneration } from "../../textGeneration/AgentTunnelTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAgentTunnelAdapter } from "../Layers/AgentTunnelAdapter.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { OpenCodeRuntime } from "../opencodeRuntime.ts";
+import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -32,7 +33,8 @@ export type AgentTunnelDriverEnv =
   | Crypto.Crypto
   | OpenCodeRuntime
   | ProviderEventLoggers
-  | ServerConfig;
+  | ServerConfig
+  | OpenCodeServerOwner.OpenCodeServerOwner;
 
 const decodeSettings = Schema.decodeSync(AgentTunnelSettings);
 
@@ -54,6 +56,7 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
     Effect.gen(function* () {
       const openCodeRuntime = yield* OpenCodeRuntime;
       const eventLoggers = yield* ProviderEventLoggers;
+      const serverConfig = yield* ServerConfig;
       const processEnvironment = mergeProviderInstanceEnvironment(environment);
       const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
       const inventoryExit = enabled
@@ -61,6 +64,7 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
             openCodeRuntime
               .loadInventoryFromCli({
                 binaryPath: config.orchestratorHarness,
+                cwd: serverConfig.cwd,
                 environment: processEnvironment,
               })
               // A wedged or interactive harness CLI must never block the
@@ -112,9 +116,14 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
         ...(environment ? { environment } : {}),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
-      const textGeneration = yield* makeAgentTunnelTextGeneration(config, processEnvironment, {
-        availableModels: models.map((model) => model.slug),
+      const serverOwner = yield* OpenCodeServerOwner.make({
+        binaryPath: config.orchestratorHarness,
+        directory: serverConfig.cwd,
+        environment: processEnvironment,
       });
+      const textGeneration = yield* makeAgentTunnelTextGeneration(config, undefined, {
+        availableModels: models.map((model) => model.slug),
+      }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,

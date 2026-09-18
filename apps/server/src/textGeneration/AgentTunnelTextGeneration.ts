@@ -9,6 +9,7 @@ import * as Scope from "effect/Scope";
 
 import { ServerConfig } from "../config.ts";
 import { OpenCodeRuntime } from "../provider/opencodeRuntime.ts";
+import * as OpenCodeServerOwner from "../provider/OpenCodeServerOwner.ts";
 import { makeOpenCodeTextGeneration } from "./OpenCodeTextGeneration.ts";
 import type * as TextGeneration from "./TextGeneration.ts";
 
@@ -37,18 +38,18 @@ interface ModelSelectionInput {
  */
 export const makeAgentTunnelTextGeneration = Effect.fn("makeAgentTunnelTextGeneration")(function* (
   settings: AgentTunnelSettings,
-  environment?: NodeJS.ProcessEnv,
+  _environment?: NodeJS.ProcessEnv,
   options?: AgentTunnelTextGenerationOptions,
 ): Effect.fn.Return<
   TextGeneration.TextGeneration["Service"],
   never,
-  OpenCodeRuntime | ServerConfig | Scope.Scope
+  OpenCodeRuntime | ServerConfig | OpenCodeServerOwner.OpenCodeServerOwner | Scope.Scope
 > {
   const openCodeSettings = decodeOpenCodeSettings({
     binaryPath: settings.orchestratorHarness,
     customModels: settings.customModels,
   });
-  const base = yield* makeOpenCodeTextGeneration(openCodeSettings, environment);
+  const base = yield* makeOpenCodeTextGeneration(openCodeSettings);
 
   const availableModels = options?.availableModels ?? [];
   const available = new Set(availableModels);

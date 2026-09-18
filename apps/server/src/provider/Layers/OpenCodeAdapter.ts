@@ -833,7 +833,7 @@ export function makeOpenCodeAdapter(
     );
     let messageIdEpochMillis = -1;
     let messageIdCounter = 0;
-    // T3 supplies the message ID to match prompt admission events. Keep OpenCode's sortable native shape so equal-time messages retain their upstream order.
+    // AgentTunnel supplies the message ID to match prompt admission events. Keep OpenCode's sortable native shape so equal-time messages retain their upstream order.
     const makeOpenCodeMessageId = Effect.fn("makeOpenCodeMessageId")(function* () {
       const epochMillis = DateTime.toEpochMillis(yield* DateTime.now);
       if (epochMillis !== messageIdEpochMillis) {
@@ -1111,7 +1111,7 @@ export function makeOpenCodeAdapter(
         return;
       }
       const detail =
-        "OpenCode accepted the prompt, but T3 Code could not confirm its message or session status.";
+        "OpenCode accepted the prompt, but AgentTunnel could not confirm its message or session status.";
       const abortExit = yield* Effect.exit(
         runOpenCodeSdk("session.abort", (signal) =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }, { signal }),

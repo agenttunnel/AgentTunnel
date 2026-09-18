@@ -21,8 +21,8 @@ import {
 } from "./preview.ts";
 import {
   ProviderInstanceConfig,
+  ProviderDriverKind,
   ProviderInstanceId,
-  type ProviderDriverKind,
 } from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -535,7 +535,7 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Server URL",
-        description: "Leave blank to let T3 Code spawn the server when needed.",
+        description: "Leave blank to let AgentTunnel spawn the server when needed.",
         providerSettingsForm: {
           placeholder: "http://127.0.0.1:4096",
           clearWhenEmpty: "omit",

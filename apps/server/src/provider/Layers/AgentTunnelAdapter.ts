@@ -71,6 +71,8 @@ interface AgentTunnelSessionContext {
   workflowId: string | undefined;
   activeTurnId: TurnId | undefined;
   stopped: boolean;
+  readonly threadHistory: Array<{ readonly task: string; readonly summary?: string }>;
+  lastSharedContextDump: string | undefined;
 }
 
 export interface AgentTunnelAdapterOptions {
@@ -82,7 +84,7 @@ export interface AgentTunnelAdapterOptions {
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-/** Adapter that exposes AgentTunnel's multi-process workflow as one T3 thread. */
+/** Adapter that exposes AgentTunnel's multi-process workflow as one AgentTunnel thread. */
 export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(function* (
   settings: AgentTunnelSettings,
   options: AgentTunnelAdapterOptions,
@@ -196,6 +198,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       case "orchestrator.output": {
         if (event.text.length === 0) return;
         const workflowId = context.workflowId ?? "agenttunnel";
+        const delta = event.text.endsWith("\n") ? event.text : `${event.text}\n`;
         yield* emit({
           ...(yield* buildEventBase({
             threadId,
@@ -205,7 +208,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           type: "content.delta",
           payload: {
             streamKind: "assistant_text",
-            delta: `${event.text}\n`,
+            delta,
           },
         });
         return;
@@ -474,6 +477,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       workflowId: undefined,
       activeTurnId: undefined,
       stopped: false,
+      threadHistory: [],
+      lastSharedContextDump: undefined,
     };
     sessions.set(input.threadId, context);
     yield* emit({
@@ -545,6 +550,12 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           process: processRunner,
           emit: (event) => emitEvent(input.threadId, turnId, event).pipe(Effect.orDie),
           isCancelled: Ref.get(context.cancelled),
+          ...(context.threadHistory.length > 0
+            ? { threadHistory: [...context.threadHistory] }
+            : {}),
+          ...(context.lastSharedContextDump
+            ? { priorSharedContext: context.lastSharedContextDump }
+            : {}),
         }),
       );
       if (result._tag === "Failure") {
@@ -554,15 +565,29 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           type: "runtime.error",
           payload: { message: detail, class: "provider_error" },
         });
+        context.threadHistory.push({
+          task: input.input ?? "",
+          summary: `failed: ${detail.slice(0, 200)}`,
+        });
+        if (context.threadHistory.length > 10) context.threadHistory.shift();
         yield* completeTurn(context, input.threadId, turnId, "failed", detail);
         return;
+      }
+      const workflowResult = result.value;
+      context.threadHistory.push({
+        task: input.input ?? "",
+        summary: workflowResult.summary.slice(0, 300),
+      });
+      if (context.threadHistory.length > 10) context.threadHistory.shift();
+      if (workflowResult.contextDump) {
+        context.lastSharedContextDump = workflowResult.contextDump;
       }
       yield* completeTurn(
         context,
         input.threadId,
         turnId,
-        result.value.status,
-        result.value.summary,
+        workflowResult.status,
+        workflowResult.summary,
       );
     }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
     yield* Effect.forkIn(run, runtimeScope);

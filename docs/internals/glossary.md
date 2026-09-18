@@ -1,8 +1,8 @@
 # Glossary
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using AgentTunnel? See [docs/user](../user/).
 
-This is a living glossary for T3 Code. It explains what common terms mean in this codebase.
+This is a living glossary for AgentTunnel. It explains what common terms mean in this codebase.
 
 ## Table of contents
 
@@ -149,7 +149,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 
 #### Environment theme
 
-A theme an environment's machine publishes for clients to follow, one file per theme under `themes/` in that environment's state directory; the filename is the theme id. [environmentTheme.ts][25] watches the directory and streams the set over `subscribeServerConfig`; clients render each as a library card, generating a full palette when the file carries seed colors and using the palette directly when it is a standard exported theme file. A desktop that retints its apps when the system theme changes rewrites its file, so T3 Code follows along without a restart. See [environment-theme.md][26].
+A theme an environment's machine publishes for clients to follow, one file per theme under `themes/` in that environment's state directory; the filename is the theme id. [environmentTheme.ts][25] watches the directory and streams the set over `subscribeServerConfig`; clients render each as a library card, generating a full palette when the file carries seed colors and using the palette directly when it is a standard exported theme file. A desktop that retints its apps when the system theme changes rewrites its file, so AgentTunnel follows along without a restart. See [environment-theme.md][26].
 
 #### Default theme
 
@@ -158,7 +158,7 @@ as the set-generation) and set with `t3 theme set <id>`. Web and desktop clients
 once — live when connected, on the next connect otherwise — so setting it switches them, while a
 theme a user picks in Settings afterwards sticks until the next set; mobile keeps its own
 appearance settings. Naming a published [environment theme](#environment-theme) is how a desktop
-ships T3 Code already matching it.
+ships AgentTunnel already matching it.
 
 ## Practical Shortcuts
 

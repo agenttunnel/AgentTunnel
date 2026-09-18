@@ -1,6 +1,6 @@
 # T3 Connect
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using AgentTunnel? See [docs/user](../user/).
 
 T3 Connect uses one Clerk application for web, desktop, and mobile authentication. The relay verifies
 two kinds of bearer credential: template JWTs generated from the `t3-relay` template with the shared
@@ -119,7 +119,7 @@ t3 connect logout
 `t3 connect login` opens the Clerk authorization flow and stores the CLI credential without enabling
 cloud exposure. `t3 connect link` installs the pinned managed `cloudflared` binary when needed,
 authorizes when needed, and records durable intent to expose the environment. It works without a
-running T3 server. The next `t3 serve` or `t3 start` reconciles the relay link and launches the
+running AgentTunnel server. The next `t3 serve` or `t3 start` reconciles the relay link and launches the
 managed tunnel. `t3 connect unlink` records disabled intent immediately, stops a reachable running
 connector, and attempts to revoke the relay-side environment record. It retains the stored CLI
 authorization so `t3 connect link` can re-enable exposure without another browser flow. `t3 connect
@@ -229,7 +229,7 @@ binary from another:
 ```sh
 VITE_DEV_SERVER_URL=http://127.0.0.1:5733 \
 T3CODE_PORT=13773 \
-  "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)"
+  "/Applications/AgentTunnel (Alpha).app/Contents/MacOS/AgentTunnel (Alpha)"
 ```
 
 After changing Associated Domains, bump the build version before rebuilding; macOS may otherwise
@@ -238,8 +238,8 @@ reuse stale Shared Web Credentials metadata for the same app/version pair.
 Verify the installed bundle before testing:
 
 ```sh
-codesign --verify --deep --strict "/Applications/T3 Code (Alpha).app"
-codesign -d --entitlements :- "/Applications/T3 Code (Alpha).app"
+codesign --verify --deep --strict "/Applications/AgentTunnel (Alpha).app"
+codesign -d --entitlements :- "/Applications/AgentTunnel (Alpha).app"
 ```
 
 The current mobile UI uses Clerk's native authentication view. If a future mobile browser OAuth

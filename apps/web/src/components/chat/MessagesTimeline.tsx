@@ -2603,6 +2603,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   const livePhase = workflowGroup?.phases.find((phase) => phase.state === "running");
   const workflowName =
     workflowGroup?.workflow.workflowName ?? workflowGroup?.workflow.title ?? null;
+  const phases = workflowGroup?.phases ?? [];
 
   // One steady in-flight presentation (monitoring-pill rule): waiting and
   // stalled agents read as working; only settled states differentiate.
@@ -2634,7 +2635,43 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
         {workflowName ? <span className="text-muted-foreground"> · {workflowName}</span> : null}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
-        <span>{status}</span>
+        {phases.length > 0 ? (
+          <span className="flex items-center gap-1.5">
+            {failed > 0 ? (
+              <span className="text-destructive-foreground">{failed} failed</span>
+            ) : null}
+            {phases.map((phase, index) => (
+              <span key={phase.index} className="flex items-center gap-1">
+                {index > 0 ? (
+                  <ChevronRightIcon
+                    aria-hidden
+                    className="size-3 shrink-0 text-muted-foreground/40"
+                  />
+                ) : null}
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-sm border px-1.5 py-px",
+                    phase.state === "running"
+                      ? "border-info/40 text-info-foreground"
+                      : phase.state === "done"
+                        ? "border-success/30 text-success-foreground"
+                        : "border-border/50 text-muted-foreground/70",
+                  )}
+                >
+                  <span aria-hidden>
+                    {phase.state === "done" ? "✓" : phase.state === "running" ? "●" : "○"}
+                  </span>
+                  <span className="max-w-24 truncate">{phase.title}</span>
+                  <span className="tabular-nums text-muted-foreground/60">
+                    {phase.settledCount}/{phase.members.length}
+                  </span>
+                </span>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span>{status}</span>
+        )}
         {totalTokens > 0 ? (
           <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
         ) : null}

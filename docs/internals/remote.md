@@ -1,6 +1,6 @@
 # Remote Architecture
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using AgentTunnel? See [docs/user](../user/).
 
 Remote environments are shipped, not planned. Direct, bearer-paired, relay-tunneled, Tailscale, and
 desktop-managed SSH access all exist today. This document describes the model they share and where
@@ -9,7 +9,7 @@ each piece lives. For the user-facing setup guide see
 
 ## The model
 
-T3 has one runtime boundary: a client talks to a T3 server over HTTP and WebSocket, and the server
+AgentTunnel has one runtime boundary: a client talks to an AgentTunnel server over HTTP and WebSocket, and the server
 owns orchestration, providers, terminals, git, and filesystem operations. Remoteness is expressed at
 the connection layer, never by splitting the runtime.
 
@@ -24,9 +24,9 @@ the connection layer, never by splitting the runtime.
 │  direct ws/wss, relay tunnel,                │
 │  Tailscale serve, desktop-managed ssh        │
 └───────────────┬──────────────────────────────┘
-                │ connects to one T3 server
+                │ connects to one AgentTunnel server
 ┌───────────────▼──────────────────────────────┐
-│ Execution environment = one T3 server        │
+│ Execution environment = AgentTunnel server   │
 │  identity, providers, projects/threads,      │
 │  terminals, git, filesystem                  │
 └──────────────────────────────────────────────┘
@@ -34,7 +34,7 @@ the connection layer, never by splitting the runtime.
 
 ### ExecutionEnvironment
 
-One running T3 server instance. It owns provider availability and auth, model availability, projects
+One running AgentTunnel server instance. It owns provider availability and auth, model availability, projects
 and threads, terminal processes, filesystem access, git operations, and server settings.
 
 It is identified by a stable `environmentId`, persisted by the server at `<stateDir>/environment-id`
@@ -94,7 +94,7 @@ Endpoint providers contribute advertised endpoints without becoming part of the 
 model: core owns environments, pairing, and connection lifecycle, and providers return normalized
 `AdvertisedEndpoint` records.
 
-Tailscale is the first provider, and T3 manages more than discovery. When `tailscaleServeEnabled` is
+Tailscale is the first provider, and AgentTunnel manages more than discovery. When `tailscaleServeEnabled` is
 set, the server acquires a Tailscale serve mapping for its actual listening port at startup with
 `ensureTailscaleServe` and releases it with `disableTailscaleServe` on scope close
 (`apps/server/src/server.ts`, using [`@t3tools/tailscale`](../../packages/tailscale/src/tailscale.ts)).
@@ -131,7 +131,7 @@ project in one environment.
 
 ## Access methods
 
-Access answers one question: how does the client speak WebSocket to a T3 server? It does not answer
+Access answers one question: how does the client speak WebSocket to an AgentTunnel server? It does not answer
 how the server got started or who manages the process.
 
 ### Direct WebSocket access
@@ -151,7 +151,7 @@ Worker itself. See [t3-connect.md](./t3-connect.md).
 
 ### Tailscale access
 
-A T3-managed `tailscale serve` mapping exposes the server on the tailnet over HTTPS, and the
+An AgentTunnel-managed `tailscale serve` mapping exposes the server on the tailnet over HTTPS, and the
 resulting private-network endpoints are advertised for pairing. Connection then follows the ordinary
 bearer path.
 
@@ -161,7 +161,7 @@ SSH is an access and launch helper, not a separate environment type. `DesktopSsh
 ([apps/desktop/src/ssh/DesktopSshEnvironment.ts][sshenv]) exposes `discoverHosts`,
 `ensureEnvironment`, and `disconnectEnvironment`. It discovers targets from SSH config and known
 hosts, owns password/askpass prompts, and delegates lifecycle to `SshEnvironmentManager` in
-[packages/ssh/src/tunnel.ts][sshtunnel], which resolves the target, launches or reuses the remote T3
+[packages/ssh/src/tunnel.ts][sshtunnel], which resolves the target, launches or reuses the remote AgentTunnel
 server, opens a local tunnel, checks HTTP readiness, optionally issues a remote pairing token, and
 returns local HTTP/WS endpoints. Disconnect closes the tunnel and stops the remote server if the
 launcher started it; a server that was already running (marked `external`) is left running.
@@ -177,10 +177,10 @@ before reconnecting the WebSocket client.
 
 ## Launch methods
 
-Launch answers a different question: how does a T3 server come to exist on the target machine? Keep
+Launch answers a different question: how does an AgentTunnel server come to exist on the target machine? Keep
 it separate from access.
 
-- **Pre-existing server.** The operator already runs T3 and the client connects directly or through a
+- **Pre-existing server.** The operator already runs AgentTunnel and the client connects directly or through a
   tunnel.
 - **Desktop-managed remote launch over SSH.** Desktop probes the machine, launches or reuses a remote
   server, forwards a port, and the renderer connects normally. The saved environment records that it

@@ -22,7 +22,7 @@ import {
   formatSubagentTokenCount,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
+import { Bot, Braces, Check, ChevronDown, ChevronRight, PanelRightOpen, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -137,8 +137,92 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
+/**
+ * Formats a timestamp for the activity log: trims to HH:MM:SS for compactness.
+ */
+function formatLogTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+/**
+ * Expandable subagent log detail. Shows the agent's task, lifecycle events,
+ * current activity, and any accumulated activity entries as a readable log.
+ */
+function SubagentActivityLog({ agent }: { agent: RuntimeSubagent }) {
+  const entries = agent.recentActivity;
+  const hasResult = agent.result !== null && agent.result.length > 0;
+  const hasError = agent.error !== null && agent.error.length > 0;
+  const hasProgress = agent.progress !== null && agent.progress.length > 0;
+  const hasEntries = entries.length > 0;
+  const hasAny = hasResult || hasError || hasProgress || hasEntries;
+
+  if (!hasAny) {
+    return (
+      <div className="px-3 pb-2 pt-1 text-xs text-muted-foreground">No activity recorded yet.</div>
+    );
+  }
+
+  return (
+    <div className="max-h-56 overflow-auto border-t border-border/40 px-2 py-1.5">
+      <div className="flex flex-col gap-1">
+        {hasProgress ? (
+          <div className="flex items-start gap-2 font-mono text-[.7rem] leading-relaxed">
+            <span className="shrink-0 text-muted-foreground/50">now</span>
+            <span className="min-w-0 break-words text-muted-foreground/90">{agent.progress}</span>
+          </div>
+        ) : null}
+        {entries.map((entry, index) => {
+          const isLast = index === entries.length - 1;
+          return (
+            <div
+              key={`${entry.at}-${index}`}
+              className="flex items-start gap-2 font-mono text-[.7rem] leading-relaxed"
+            >
+              <span className="shrink-0 tabular-nums text-muted-foreground/50">
+                {formatLogTime(entry.at)}
+              </span>
+              <span
+                className={cn(
+                  "min-w-0 break-words",
+                  isLast && hasError
+                    ? "text-destructive-foreground/80"
+                    : "text-muted-foreground/80",
+                )}
+              >
+                {entry.summary}
+              </span>
+            </div>
+          );
+        })}
+        {hasResult ? (
+          <div className="flex items-start gap-2 font-mono text-[.7rem] leading-relaxed">
+            <span className="shrink-0 text-success-foreground/60">done</span>
+            <span className="min-w-0 break-words text-muted-foreground/90">{agent.result}</span>
+          </div>
+        ) : null}
+        {hasError ? (
+          <div className="flex items-start gap-2 font-mono text-[.7rem] leading-relaxed">
+            <span className="shrink-0 text-destructive-foreground/60">error</span>
+            <span className="min-w-0 break-words text-destructive-foreground/90">
+              {agent.error}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** Flat agent row. Clickable to expand inline activity log. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+  const [expanded, setExpanded] = useState(false);
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
@@ -152,40 +236,60 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
+  const hasLogs = agent.recentActivity.length > 0;
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
-      <span className="col-start-1 row-start-1 flex items-center">
-        <StatusDot status={agent.status} />
-      </span>
-      <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
-        <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
-        {role ? (
-          <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-            {role}
-          </span>
-        ) : null}
-      </span>
-      <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
-        <span className="inline-flex items-center gap-1">
-          <AgentElapsed agent={agent} />
-          {agent.status === "completed" ? (
-            <Check aria-hidden className="size-3 text-success" />
-          ) : null}
-        </span>
-      </span>
-      <span
+    <div>
+      <button
+        type="button"
+        onClick={() => hasLogs && setExpanded((value) => !value)}
         className={cn(
-          "col-start-2 col-end-4 row-start-2 block truncate text-xs",
-          agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+          "grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left",
+          hasLogs && "hover:bg-accent/40 cursor-pointer",
         )}
       >
-        {activity ?? visuals.label}
-      </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
-        {metadata.join(" · ")}
-      </span>
-      <span className="sr-only">{visuals.label}</span>
+        <span className="col-start-1 row-start-1 flex items-center">
+          <StatusDot status={agent.status} />
+        </span>
+        <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
+          {role ? (
+            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+              {role}
+            </span>
+          ) : null}
+          {hasLogs ? (
+            <PanelRightOpen
+              aria-hidden
+              className={cn(
+                "size-3 shrink-0 text-muted-foreground/50 transition-transform",
+                expanded && "rotate-90",
+              )}
+            />
+          ) : null}
+        </span>
+        <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
+          <span className="inline-flex items-center gap-1">
+            <AgentElapsed agent={agent} />
+            {agent.status === "completed" ? (
+              <Check aria-hidden className="size-3 text-success" />
+            ) : null}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "col-start-2 col-end-4 row-start-2 block truncate text-xs",
+            agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+        >
+          {activity ?? visuals.label}
+        </span>
+        <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+          {metadata.join(" · ")}
+        </span>
+        <span className="sr-only">{visuals.label}</span>
+      </button>
+      {expanded && hasLogs ? <SubagentActivityLog agent={agent} /> : null}
     </div>
   );
 }

@@ -255,10 +255,10 @@
         <div class="eyebrow">Implemented architecture</div>
         <h1>T3 Connect Control Plane and Managed Endpoint Flow</h1>
         <p class="lede">
-          T3 Connect links a locally authorized T3 environment to a signed-in cloud user, provisions
-          a managed HTTPS/WSS endpoint for that environment, and brokers proof-bound remote
-          connections. The local environment remains the authority that issues environment access
-          credentials. The hosted relay stores links, reconciles managed endpoint resources,
+          T3 Connect links a locally authorized AgentTunnel environment to a signed-in cloud user,
+          provisions a managed HTTPS/WSS endpoint for that environment, and brokers proof-bound
+          remote connections. The local environment remains the authority that issues environment
+          access credentials. The hosted relay stores links, reconciles managed endpoint resources,
           validates signed proofs, and delivers agent-activity notifications.
         </p>
         <div class="badge-row">
@@ -353,7 +353,7 @@ flowchart LR
 
   Clerk["Clerk<br/>user identity and OAuth"]
 
-  subgraph Relay["T3 Code Relay on Cloudflare"]
+  subgraph Relay["AgentTunnel Relay on Cloudflare"]
     Worker["Relay Worker<br/>HTTP API"]
     Queue["APNs delivery queue<br/>with dead-letter queue"]
     Hyperdrive["Hyperdrive"]
@@ -364,7 +364,7 @@ flowchart LR
   APNs["Apple Push Notification service"]
   Traces["Axiom OTLP traces"]
 
-  subgraph Local["Linked T3 environment"]
+  subgraph Local["Linked AgentTunnel environment"]
     Env["Environment server<br/>local auth authority"]
     RelayClient["Relay client<br/>cloudflared implementation"]
     Secrets["Server secret store<br/>keys + relay config"]
@@ -601,7 +601,7 @@ sequenceDiagram
   CLI->>Clerk: Browser PKCE authorization-code flow
   Clerk-->>CLI: OAuth access and refresh tokens
   CLI->>CLI: Persist desired cloud-link state
-  U->>S: Start T3 environment server
+  U->>S: Start AgentTunnel environment server
   S->>R: Create challenge and submit local signed proof
   R-->>S: Managed endpoint config and connector token
   S->>RC: Start relay client
