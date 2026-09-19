@@ -9,7 +9,9 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -129,6 +131,123 @@ const makeFakePi = (): Effect.Effect<FakePi, never, Scope.Scope> =>
     );
 
     return { spawner };
+  });
+
+/**
+ * A pi RPC child whose first `prompt` is left unanswered until the test calls
+ * `rejectFirstPrompt`, which answers it `success:false` with an empty error
+ * string. `abort` is answered immediately while that prompt is still pending,
+ * so a test can interrupt during prompt admission. Later prompts run to
+ * completion.
+ */
+const makeInterruptibleFakePi = (): Effect.Effect<
+  {
+    readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
+    readonly awaitFirstPrompt: Effect.Effect<void>;
+    readonly rejectFirstPrompt: Effect.Effect<void>;
+  },
+  never,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const stdout = yield* Queue.unbounded<Uint8Array>();
+    const incoming = yield* Queue.unbounded<piRuntime.PiRpcValue>();
+    const buffer = yield* Ref.make("");
+    const promptCount = yield* Ref.make(0);
+    const firstPromptSeen = yield* Deferred.make<void>();
+    const firstPromptId = yield* Ref.make<unknown>(undefined);
+
+    const emit = (value: unknown) => Queue.offer(stdout, frameBytes(value)).pipe(Effect.asVoid);
+
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() =>
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(4242),
+          exitCode: Effect.never,
+          isRunning: Effect.succeed(true),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.forEach((chunk: Uint8Array) =>
+            Effect.gen(function* () {
+              const next = (yield* Ref.get(buffer)) + new TextDecoder().decode(chunk);
+              const { lines, rest } = piRuntime.splitPiJsonLines(next);
+              yield* Ref.set(buffer, rest);
+              for (const line of lines) {
+                const command = piRuntime.decodePiJsonLine(line);
+                if (command !== undefined) {
+                  yield* Queue.offer(incoming, command);
+                }
+              }
+            }),
+          ),
+          stdout: Stream.fromQueue(stdout),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      ),
+    );
+
+    yield* Stream.fromQueue(incoming).pipe(
+      Stream.runForEach((command) =>
+        Effect.gen(function* () {
+          if (command.type === "get_state") {
+            yield* emit({
+              id: command.id,
+              type: "response",
+              command: "get_state",
+              success: true,
+              data: { sessionId: "thread-abc" },
+            });
+            return;
+          }
+          if (command.type === "abort") {
+            yield* emit({ id: command.id, type: "response", command: "abort", success: true });
+            return;
+          }
+          if (command.type !== "prompt") {
+            return;
+          }
+          const count = yield* Ref.updateAndGet(promptCount, (n) => n + 1);
+          if (count === 1) {
+            yield* Ref.set(firstPromptId, command.id);
+            yield* Deferred.succeed(firstPromptSeen, void 0);
+            return;
+          }
+          yield* emit({
+            id: command.id,
+            type: "response",
+            command: "prompt",
+            success: true,
+          });
+          yield* emit({ type: "agent_start" });
+          yield* emit({ type: "message_start", message: { role: "assistant" } });
+          yield* emit({
+            type: "message_end",
+            message: { role: "assistant", stopReason: "stop" },
+          });
+          yield* emit({ type: "turn_end", message: { stopReason: "stop" } });
+          yield* emit({ type: "agent_end", willRetry: false });
+        }),
+      ),
+      Effect.forkScoped,
+    );
+
+    return {
+      spawner,
+      awaitFirstPrompt: Deferred.await(firstPromptSeen),
+      rejectFirstPrompt: Effect.gen(function* () {
+        const id = yield* Ref.get(firstPromptId);
+        yield* emit({
+          id,
+          type: "response",
+          command: "prompt",
+          success: false,
+          error: "",
+        });
+      }),
+    };
   });
 
 const adapterServices = Layer.mergeAll(
@@ -400,6 +519,68 @@ describe("makePiAdapter sendTurn rejection", () => {
         const afterSecond = yield* Ref.get(events);
         expect(afterSecond.filter((event) => event.type === "turn.started")).toHaveLength(2);
         expect(second.turnId).not.toBe(firstTurnId);
+      }),
+    ),
+  );
+});
+
+describe("makePiAdapter interrupt during prompt admission", () => {
+  it.effect("a rejected prompt after an interrupt does not abort the next turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeInterruptibleFakePi();
+        const adapter = yield* makePiAdapter(
+          decodePiSettings({ enabled: true, binaryPath: "pi" }),
+        ).pipe(
+          Effect.provide(adapterServices),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+
+        const events = yield* Ref.make<ReadonlyArray<ProviderRuntimeEvent>>([]);
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Ref.update(events, (list) => [...list, event])),
+          Effect.forkScoped,
+        );
+
+        const threadId = ThreadId.make("thread-pi-interrupt-reject");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("pi"),
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const pending = yield* adapter.sendTurn({ threadId, input: "hello" }).pipe(
+          Effect.result,
+          Effect.forkChild,
+        );
+        yield* fake.awaitFirstPrompt;
+        yield* adapter.interruptTurn(threadId);
+        yield* fake.rejectFirstPrompt;
+
+        const rejected = yield* Fiber.join(pending);
+        expect(rejected._tag).toBe("Failure");
+
+        yield* settle;
+        const afterReject = yield* Ref.get(events);
+        const sessions = yield* adapter.listSessions();
+        expect(sessions[0]?.status).toBe("ready");
+        expect(sessions[0]?.activeTurnId).toBeUndefined();
+        const failed = afterReject.filter((event) => event.type === "turn.completed");
+        expect(failed).toHaveLength(1);
+        expect(failed[0]?.payload).toMatchObject({
+          state: "failed",
+          errorMessage: "pi command failed.",
+        });
+
+        const second = yield* adapter.sendTurn({ threadId, input: "again" });
+        yield* settle;
+        const afterSecond = yield* Ref.get(events);
+        expect(afterSecond.filter((event) => event.type === "turn.aborted")).toHaveLength(0);
+        const completed = afterSecond.filter((event) => event.type === "turn.completed");
+        expect(completed).toHaveLength(2);
+        expect(completed[1]?.turnId).toBe(second.turnId);
+        expect(completed[1]?.payload).toMatchObject({ state: "completed" });
       }),
     ),
   );

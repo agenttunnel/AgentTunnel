@@ -609,7 +609,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                     new ProviderAdapterRequestError({
                       provider: PROVIDER,
                       method,
-                      detail: response.error ?? "pi command failed.",
+                      detail:
+                        response.error !== undefined && response.error.trim().length > 0
+                          ? response.error
+                          : "pi command failed.",
                     }),
                   ),
           }),
@@ -951,6 +954,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
         context.activeTurnId = undefined;
         context.mapper.turnId = undefined;
+        // A rejected non-steering prompt never ran, so discard any interrupt
+        // the user issued during admission; otherwise the next turn's
+        // `agent_end` would be misreported as `turn.aborted`.
+        context.mapper.interrupted = false;
+        context.mapper.lastStopReason = undefined;
         context.promptsInFlight = 0;
         const { activeTurnId: _activeTurnId, ...rest } = context.session;
         context.session = {
