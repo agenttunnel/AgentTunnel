@@ -32,9 +32,13 @@ export class PiRuntimeError extends Schema.TaggedErrorClass<PiRuntimeError>()("P
   operation: Schema.String,
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),
-}) {}
+}) {
+  override get message(): string {
+    return `Pi runtime error in ${this.operation}: ${this.detail}`;
+  }
+}
 
-const isPiRuntimeError = Schema.is(PiRuntimeError);
+export const isPiRuntimeError = Schema.is(PiRuntimeError);
 
 export function piRuntimeErrorDetail(cause: unknown): string {
   if (isPiRuntimeError(cause)) return cause.detail;

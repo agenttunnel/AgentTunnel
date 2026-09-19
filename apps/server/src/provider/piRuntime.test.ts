@@ -157,6 +157,28 @@ const makeFakePi = (): Effect.Effect<FakePi, never, Scope.Scope> =>
     };
   });
 
+describe("PiRuntimeError", () => {
+  it("derives a non-empty message from operation and detail", () => {
+    const error = new piRuntime.PiRuntimeError({
+      operation: "spawn",
+      detail: "Failed to spawn 'pi'.",
+    });
+    expect(error.message.length).toBeGreaterThan(0);
+    expect(error.message).toContain("spawn");
+    expect(error.message).toContain("Failed to spawn 'pi'.");
+  });
+
+  it("exposes the detail through piRuntimeErrorDetail", () => {
+    const error = new piRuntime.PiRuntimeError({
+      operation: "encodeCommand",
+      detail: "Failed to encode pi command 'get_state'.",
+    });
+    expect(piRuntime.piRuntimeErrorDetail(error)).toBe(error.detail);
+    expect(error.message).toContain(piRuntime.piRuntimeErrorDetail(error));
+    expect(piRuntime.isPiRuntimeError(error)).toBe(true);
+  });
+});
+
 describe("makePiRpcSession", () => {
   it.effect("correlates responses by id and streams other frames", () =>
     Effect.scoped(
