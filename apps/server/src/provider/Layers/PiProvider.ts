@@ -57,13 +57,7 @@ export function parsePiTokenCount(value: string): number | undefined {
   }
   const suffix = (match[2] ?? "").toUpperCase();
   const multiplier =
-    suffix === "K"
-      ? 1_000
-      : suffix === "M"
-        ? 1_000_000
-        : suffix === "B"
-          ? 1_000_000_000
-          : 1;
+    suffix === "K" ? 1_000 : suffix === "M" ? 1_000_000 : suffix === "B" ? 1_000_000_000 : 1;
   return Math.round(amount * multiplier);
 }
 

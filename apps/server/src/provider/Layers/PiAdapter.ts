@@ -191,8 +191,7 @@ function applyPiAssistantMessageEvent(
 ): ReadonlyArray<PiEmission> {
   const assistantEvent = asPiRecord(event.assistantMessageEvent);
   if (assistantEvent === undefined) return [];
-  const index =
-    typeof assistantEvent.contentIndex === "number" ? assistantEvent.contentIndex : 0;
+  const index = typeof assistantEvent.contentIndex === "number" ? assistantEvent.contentIndex : 0;
   const kind = asString(assistantEvent.type);
   switch (kind) {
     case "text_start":
@@ -270,11 +269,7 @@ export function applyPiEvent(
       const stopReason = state.lastStopReason;
       state.lastStopReason = undefined;
       const turnState =
-        stopReason === "aborted"
-          ? "interrupted"
-          : stopReason === "error"
-            ? "failed"
-            : "completed";
+        stopReason === "aborted" ? "interrupted" : stopReason === "error" ? "failed" : "completed";
       return [
         {
           type: "turn.completed",
@@ -574,7 +569,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         ),
       );
 
-    const requireSession = (threadId: ThreadId): Effect.Effect<PiSessionContext, ProviderAdapterSessionNotFoundError> => {
+    const requireSession = (
+      threadId: ThreadId,
+    ): Effect.Effect<PiSessionContext, ProviderAdapterSessionNotFoundError> => {
       const context = sessions.get(threadId);
       if (context === undefined || context.stopped) {
         return Effect.fail(
@@ -617,16 +614,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                   ),
           }),
         ),
-        Effect.catchTag("PiRuntimeError", (cause) =>
-          Effect.fail(
-            new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method,
-              detail: piRuntimeErrorDetail(cause),
-              cause,
-            }),
-          ),
-        ),
+        Effect.catchTags({
+          PiRuntimeError: (cause) =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method,
+                detail: piRuntimeErrorDetail(cause),
+                cause,
+              }),
+            ),
+        }),
       );
 
     const readPiImages = (
@@ -702,10 +700,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
       });
 
-    const consumePiEvent = (
-      context: PiSessionContext,
-      event: PiRpcValue,
-    ): Effect.Effect<void> =>
+    const consumePiEvent = (context: PiSessionContext, event: PiRpcValue): Effect.Effect<void> =>
       Effect.gen(function* () {
         yield* writeNativeEvent(context.threadId, event);
         const emissions = applyPiEvent(context.mapper, event);
@@ -904,13 +899,15 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             Effect.catchCause(() => Effect.void),
             Effect.forkIn(sessionScope),
           );
+          // Register before forking the exit watcher so a child that dies during
+          // startup is removed from `sessions` instead of being re-added after
+          // `handlePiProcessExit` already marked it stopped.
+          sessions.set(input.threadId, context);
+          sessionScopeTransferred = true;
           yield* rpc.awaitExit.pipe(
             Effect.flatMap((exit) => handlePiProcessExit(context, exit)),
             Effect.forkIn(sessionScope),
           );
-
-          sessions.set(input.threadId, context);
-          sessionScopeTransferred = true;
 
           yield* emit(
             yield* buildEvent(input.threadId, undefined, {
@@ -976,31 +973,22 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       });
 
     const sendTurn: PiAdapterShape["sendTurn"] = (input) =>
-      Effect.gen(function* () {
-        const context = yield* requireSession(input.threadId);
-        const modelSelection =
-          input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
+      withThreadLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(input.threadId);
+          const modelSelection =
+            input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
 
-        if (modelSelection !== undefined && modelSelection.model !== context.session.model) {
-          yield* applyPiModelSelection(context.rpc, modelSelection, "sendTurn");
-          context.session = {
-            ...context.session,
-            model: modelSelection.model,
-            updatedAt: yield* nowIso,
-          };
-        }
+          if (modelSelection !== undefined && modelSelection.model !== context.session.model) {
+            yield* applyPiModelSelection(context.rpc, modelSelection, "sendTurn");
+            context.session = {
+              ...context.session,
+              model: modelSelection.model,
+              updatedAt: yield* nowIso,
+            };
+          }
 
-        // Active turn => the user is steering an in-flight run. pi's `steer`
-        // behavior folds the message into the current agent run (delivered
-        // before the next model call), so the turn id stays stable and the
-        // eventual agent_end settles it once.
-        const isSteering = context.activeTurnId !== undefined;
-        const turnId = isSteering
-          ? context.activeTurnId!
-          : TurnId.make(yield* randomUUIDv4);
-        context.promptsInFlight += 1;
-
-        return yield* Effect.gen(function* () {
           const message = input.input?.trim() ?? "";
           const images = yield* readPiImages(input.attachments ?? []);
           if (message.length === 0 && images.length === 0) {
@@ -1011,56 +999,72 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             });
           }
 
-          if (!isSteering) {
-            context.activeTurnId = turnId;
-            context.mapper.turnId = turnId;
-            context.session = {
-              ...context.session,
-              status: "running",
-              activeTurnId: turnId,
-              updatedAt: yield* nowIso,
-            };
-            yield* emit(
-              yield* buildEvent(input.threadId, turnId, {
-                type: "turn.started",
-                payload:
-                  context.session.model !== undefined ? { model: context.session.model } : {},
-              }),
-            );
-          }
+          // Decide steering only after the async attachment reads and under the
+          // per-thread lock: two concurrent admissions must not both claim to be
+          // a fresh non-steering turn and overwrite `activeTurnId`. Active turn
+          // => the user is steering, and pi's `steer` behavior folds the message
+          // into the current run so the turn id stays stable.
+          const isSteering = context.activeTurnId !== undefined;
+          const turnId = isSteering ? context.activeTurnId! : TurnId.make(yield* randomUUIDv4);
+          context.promptsInFlight += 1;
 
-          yield* sendPiCommand(
-            context.rpc,
-            {
-              type: "prompt",
-              message,
-              ...(images.length > 0 ? { images } : {}),
-              ...(isSteering ? { streamingBehavior: "steer" } : {}),
-            },
-            "prompt",
-          ).pipe(
-            Effect.tapError((cause) =>
-              isSteering ? Effect.void : rollbackRejectedTurn(context, turnId, cause.detail),
+          return yield* Effect.gen(function* () {
+            if (!isSteering) {
+              context.activeTurnId = turnId;
+              context.mapper.turnId = turnId;
+              context.session = {
+                ...context.session,
+                status: "running",
+                activeTurnId: turnId,
+                updatedAt: yield* nowIso,
+              };
+              yield* emit(
+                yield* buildEvent(input.threadId, turnId, {
+                  type: "turn.started",
+                  payload:
+                    context.session.model !== undefined ? { model: context.session.model } : {},
+                }),
+              );
+            }
+
+            yield* sendPiCommand(
+              context.rpc,
+              {
+                type: "prompt",
+                message,
+                ...(images.length > 0 ? { images } : {}),
+                ...(isSteering ? { streamingBehavior: "steer" } : {}),
+              },
+              "prompt",
+            ).pipe(
+              Effect.tapError((cause) =>
+                isSteering ? Effect.void : rollbackRejectedTurn(context, turnId, cause.detail),
+              ),
+            );
+
+            return {
+              threadId: input.threadId,
+              turnId,
+              resumeCursor: context.session.resumeCursor,
+            };
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                context.promptsInFlight = Math.max(0, context.promptsInFlight - 1);
+              }),
             ),
           );
+        }),
+      );
 
-          return {
-            threadId: input.threadId,
-            turnId,
-            resumeCursor: context.session.resumeCursor,
-          };
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              context.promptsInFlight = Math.max(0, context.promptsInFlight - 1);
-            }),
-          ),
-        );
-      });
-
-    const interruptTurn: PiAdapterShape["interruptTurn"] = (threadId) =>
+    const interruptTurn: PiAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {
         const context = yield* requireSession(threadId);
+        // A cancellation can be delivered after the turn it targeted already
+        // finished; ignore it rather than aborting whatever turn is live now.
+        if (turnId !== undefined && context.activeTurnId !== turnId) {
+          return;
+        }
         if (context.activeTurnId !== undefined) {
           context.mapper.interrupted = true;
         }
@@ -1075,7 +1079,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const readThread: PiAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {
         const context = yield* requireSession(threadId);
-        const response = yield* sendPiCommand(context.rpc, { type: "get_messages" }, "get_messages");
+        const response = yield* sendPiCommand(
+          context.rpc,
+          { type: "get_messages" },
+          "get_messages",
+        );
         const data = asPiRecord(response.data);
         const messages = Array.isArray(data?.messages) ? data.messages : [];
         return { threadId, turns: mapPiMessagesToTurns(messages) };
@@ -1090,12 +1098,16 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             issue: "numTurns must be an integer >= 1.",
           });
         }
-        const context = yield* requireSession(threadId);
-        // pi has no in-session rollback; best-effort returns the live snapshot.
-        const response = yield* sendPiCommand(context.rpc, { type: "get_messages" }, "get_messages");
-        const data = asPiRecord(response.data);
-        const messages = Array.isArray(data?.messages) ? data.messages : [];
-        return { threadId, turns: mapPiMessagesToTurns(messages) };
+        yield* requireSession(threadId);
+        // pi exposes no in-session rollback primitive; returning the unchanged
+        // live history as success would silently keep the turns the caller
+        // asked to drop, so fail explicitly like the other adapters that lack
+        // provider-side rollback.
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/rollback",
+          detail: "pi RPC sessions do not support provider-side rollback yet.",
+        });
       });
 
     const stopSession: PiAdapterShape["stopSession"] = (threadId) =>
@@ -1146,4 +1158,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
   });
 }
 
-type PiRpcResponseLike = { readonly success: boolean; readonly data?: unknown; readonly error?: string };
+type PiRpcResponseLike = {
+  readonly success: boolean;
+  readonly data?: unknown;
+  readonly error?: string;
+};

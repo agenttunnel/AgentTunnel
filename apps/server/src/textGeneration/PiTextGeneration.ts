@@ -97,13 +97,10 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
     );
 
     if (result.code !== 0) {
-      const detail = result.stderr.trim();
       return yield* new TextGenerationError({
         operation: input.operation,
-        detail:
-          detail.length > 0
-            ? `Pi exited with code ${result.code}: ${detail}`
-            : `Pi exited with code ${result.code}.`,
+        // Keep the surfaced detail bounded rather than forwarding raw stderr.
+        detail: `Pi exited with code ${result.code} (${result.stderr.trim().length} bytes on stderr).`,
       });
     }
 

@@ -81,10 +81,7 @@ describe("piJsonLineStream", () => {
       const chunk = new TextEncoder().encode(
         `${encodeJson({ type: "a" })}\n${encodeJson({ type: "b" })}\n`,
       );
-      const decoded = yield* Stream.make(chunk).pipe(
-        piRuntime.piJsonLineStream,
-        Stream.runCollect,
-      );
+      const decoded = yield* Stream.make(chunk).pipe(piRuntime.piJsonLineStream, Stream.runCollect);
       expect([...decoded].map((event) => event.type)).toEqual(["a", "b"]);
     }).pipe(Effect.runPromise));
 
@@ -93,10 +90,7 @@ describe("piJsonLineStream", () => {
       const chunk = new TextEncoder().encode(
         `${encodeJson({ type: "a" })}\n${encodeJson({ type: "tail" })}`,
       );
-      const decoded = yield* Stream.make(chunk).pipe(
-        piRuntime.piJsonLineStream,
-        Stream.runCollect,
-      );
+      const decoded = yield* Stream.make(chunk).pipe(piRuntime.piJsonLineStream, Stream.runCollect);
       expect([...decoded].map((event) => event.type)).toEqual(["a", "tail"]);
     }).pipe(Effect.runPromise));
 });
@@ -162,9 +156,7 @@ describe("makePiRpcSession", () => {
         const fake = yield* makeFakePi();
         const session = yield* piRuntime
           .makePiRpcSession({ binaryPath: "pi", args: ["--mode", "rpc"] })
-          .pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
-          );
+          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
 
         yield* fake.incoming.pipe(
           Stream.runForEach((command) =>
@@ -203,9 +195,7 @@ describe("makePiRpcSession", () => {
         const fake = yield* makeFakePi();
         const session = yield* piRuntime
           .makePiRpcSession({ binaryPath: "pi", args: ["--mode", "rpc"] })
-          .pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
-          );
+          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
 
         const sendFiber = yield* session.send({ type: "get_state" }).pipe(Effect.forkScoped);
         yield* Effect.yieldNow;
@@ -225,11 +215,44 @@ describe("makePiRpcSession", () => {
         const fake = yield* makeFakePi();
         const session = yield* piRuntime
           .makePiRpcSession({ binaryPath: "pi", args: ["--mode", "rpc"] })
-          .pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
-          );
+          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
         yield* fake.exitWith(0);
         expect((yield* session.awaitExit).code).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("rejects sends issued after the process exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const session = yield* piRuntime
+          .makePiRpcSession({ binaryPath: "pi", args: ["--mode", "rpc"] })
+          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+        yield* fake.exitWith(0);
+        yield* session.awaitExit;
+
+        const exit = yield* session.send({ type: "get_state" }).pipe(Effect.exit);
+        expect(Exit.isFailure(exit)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("ends the event stream when the process exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const session = yield* piRuntime
+          .makePiRpcSession({ binaryPath: "pi", args: ["--mode", "rpc"] })
+          .pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+
+        const eventsFiber = yield* session.events.pipe(Stream.runCollect, Effect.forkScoped);
+        yield* fake.exitWith(0);
+        yield* session.awaitExit;
+
+        const events = yield* Fiber.join(eventsFiber);
+        expect([...events]).toEqual([]);
       }),
     ),
   );

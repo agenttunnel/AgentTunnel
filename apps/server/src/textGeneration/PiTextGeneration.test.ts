@@ -88,7 +88,6 @@ it.layer(TestLayer)("PiTextGeneration", (it) => {
         modelSelection: DEFAULT_MODEL_SELECTION,
       });
 
-
       expect(result).toEqual({
         subject: "Add pi text generation",
         body: "Use one-shot pi.",
@@ -114,9 +113,7 @@ it.layer(TestLayer)("PiTextGeneration", (it) => {
         },
       });
 
-      expect(spawnerState.calls[0]).toEqual(
-        expect.arrayContaining(["--thinking", "high"]),
-      );
+      expect(spawnerState.calls[0]).toEqual(expect.arrayContaining(["--thinking", "high"]));
     }),
   );
 
@@ -155,7 +152,8 @@ it.layer(TestLayer)("PiTextGeneration", (it) => {
         })
         .pipe(Effect.flip);
 
-      expect(error.detail).toContain("not authenticated");
+      expect(error.detail).toContain("exited with code 1");
+      expect(error.detail).not.toContain("not authenticated");
     }),
   );
 

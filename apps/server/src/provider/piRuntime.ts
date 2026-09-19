@@ -15,6 +15,7 @@
  * @module piRuntime
  */
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -90,9 +91,7 @@ export function splitPiJsonLines(input: string): {
   return { lines, rest };
 }
 
-const decodePiJsonString = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Unknown),
-);
+const decodePiJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const encodePiCommand = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 /** Parse a single framed record. Blank and malformed records yield undefined. */
@@ -158,10 +157,8 @@ export interface PiRpcSessionInput {
 const makeExitError = (code: number, stderr: string): PiRuntimeError =>
   new PiRuntimeError({
     operation: "session",
-    detail:
-      stderr.trim().length > 0
-        ? `pi process exited with code ${code}: ${stderr.trim()}`
-        : `pi process exited with code ${code}`,
+    // Keep the surfaced detail bounded rather than forwarding raw CLI output.
+    detail: `pi process exited with code ${code} (${stderr.trim().length} bytes on stderr).`,
   });
 
 /**
@@ -189,9 +186,7 @@ export const makePiRpcSession = (
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           shell: spawnCommand.shell,
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-          ...(input.environment !== undefined
-            ? { env: input.environment, extendEnv: true }
-            : {}),
+          ...(input.environment !== undefined ? { env: input.environment, extendEnv: true } : {}),
         }),
       )
       .pipe(
@@ -211,8 +206,9 @@ export const makePiRpcSession = (
       new Map<string, Deferred.Deferred<PiRpcResponse, PiRuntimeError>>(),
     );
     const inputQueue = yield* Queue.unbounded<Uint8Array>();
-    const eventQueue = yield* Queue.unbounded<PiRpcValue>();
+    const eventQueue = yield* Queue.unbounded<PiRpcValue, Cause.Done>();
     const exitDeferred = yield* Deferred.make<PiRpcProcessExit>();
+    const exitInfo = yield* Ref.make<PiRpcProcessExit | undefined>(undefined);
     const idCounter = yield* Ref.make(0);
 
     yield* Scope.addFinalizer(
@@ -267,6 +263,10 @@ export const makePiRpcSession = (
         Effect.gen(function* () {
           const code = Exit.isSuccess(exit) ? Number(exit.value) : 1;
           const stderr = yield* Ref.get(stderrRef);
+          // Record the exit before sweeping pending so a `send` racing with the
+          // sweep is rejected by its own post-registration check instead of
+          // waiting forever on a dead child.
+          yield* Ref.set(exitInfo, { code, stderr });
           const waiters = yield* Ref.get(pending);
           yield* Ref.set(pending, new Map());
           yield* Effect.forEach(
@@ -274,6 +274,9 @@ export const makePiRpcSession = (
             (waiter) => Deferred.fail(waiter, makeExitError(code, stderr)).pipe(Effect.ignore),
             { discard: true },
           );
+          // End the event stream so consumers of `events` finish instead of
+          // retaining the session's fiber after the child is gone.
+          yield* Queue.end(eventQueue);
           yield* Deferred.succeed(exitDeferred, { code, stderr });
         }),
       ),
@@ -297,8 +300,23 @@ export const makePiRpcSession = (
         Effect.asVoid,
       );
 
+    const removeWaiter = (
+      id: string,
+      waiter: Deferred.Deferred<PiRpcResponse, PiRuntimeError>,
+    ): Effect.Effect<void> =>
+      Ref.update(pending, (current) => {
+        if (current.get(id) !== waiter) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+
     const send = (command: PiRpcCommand): Effect.Effect<PiRpcResponse, PiRuntimeError> =>
       Effect.gen(function* () {
+        const exited = yield* Ref.get(exitInfo);
+        if (exited !== undefined) {
+          return yield* makeExitError(exited.code, exited.stderr);
+        }
         const id =
           command.id ?? `pi-${yield* Ref.updateAndGet(idCounter, (counter) => counter + 1)}`;
         const waiter = yield* Deferred.make<PiRpcResponse, PiRuntimeError>();
@@ -307,8 +325,20 @@ export const makePiRpcSession = (
           next.set(id, waiter);
           return next;
         });
+        // The exit handler may have swept between the check above and the
+        // registration; re-check so the request fails instead of hanging.
+        const racedExit = yield* Ref.get(exitInfo);
+        if (racedExit !== undefined) {
+          yield* removeWaiter(id, waiter);
+          return yield* makeExitError(racedExit.code, racedExit.stderr);
+        }
         yield* write({ ...command, id });
-        return yield* Deferred.await(waiter);
+        return yield* Deferred.await(waiter).pipe(
+          // A timed-out `send` is interrupted while its entry is still pending;
+          // drop it so a late response is surfaced on `events` instead of being
+          // swallowed by an abandoned waiter.
+          Effect.onInterrupt(() => removeWaiter(id, waiter)),
+        );
       });
 
     return {
@@ -351,9 +381,7 @@ function collectPiMessageText(message: PiRpcValue): string {
 }
 
 /** Best-effort extraction of the last assistant message's text. */
-export function extractLastPiAssistantText(
-  events: ReadonlyArray<PiRpcValue>,
-): string | undefined {
+export function extractLastPiAssistantText(events: ReadonlyArray<PiRpcValue>): string | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event === undefined || event.type !== "message_end") continue;
@@ -372,11 +400,7 @@ export function extractLastPiAssistantText(
  */
 export const runPiJsonOneShot = (
   input: PiJsonOneShotInput,
-): Effect.Effect<
-  PiJsonOneShotResult,
-  PiRuntimeError,
-  ChildProcessSpawner.ChildProcessSpawner
-> =>
+): Effect.Effect<PiJsonOneShotResult, PiRuntimeError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const spawnCommand = yield* resolveSpawnCommand(
@@ -389,9 +413,7 @@ export const runPiJsonOneShot = (
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           shell: spawnCommand.shell,
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-          ...(input.environment !== undefined
-            ? { env: input.environment, extendEnv: true }
-            : {}),
+          ...(input.environment !== undefined ? { env: input.environment, extendEnv: true } : {}),
         }),
       )
       .pipe(
@@ -405,23 +427,30 @@ export const runPiJsonOneShot = (
         ),
       );
 
-    const events = yield* child.stdout.pipe(
-      piJsonLineStream,
-      Stream.runCollect,
-      Effect.map((chunk) => [...chunk]),
-      Effect.mapError(
-        (cause) =>
-          new PiRuntimeError({
-            operation: "runPiJsonOneShot.stdout",
-            detail: piRuntimeErrorDetail(cause),
-            cause,
-          }),
-      ),
-    );
-    const stderr = yield* child.stderr.pipe(
-      Stream.decodeText(),
-      Stream.mkString,
-      Effect.orElseSucceed(() => ""),
+    // Drain stdout and stderr concurrently: reading one to completion first can
+    // deadlock when the child fills the other pipe's buffer and blocks.
+    const [events, stderr] = yield* Effect.all(
+      [
+        child.stdout.pipe(
+          piJsonLineStream,
+          Stream.runCollect,
+          Effect.map((chunk) => [...chunk]),
+          Effect.mapError(
+            (cause) =>
+              new PiRuntimeError({
+                operation: "runPiJsonOneShot.stdout",
+                detail: "Failed to read the pi JSON event stream.",
+                cause,
+              }),
+          ),
+        ),
+        child.stderr.pipe(
+          Stream.decodeText(),
+          Stream.mkString,
+          Effect.orElseSucceed(() => ""),
+        ),
+      ],
+      { concurrency: "unbounded" },
     );
     const code = yield* child.exitCode.pipe(
       Effect.exit,

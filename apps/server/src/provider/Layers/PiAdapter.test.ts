@@ -351,7 +351,13 @@ describe("applyPiEvent text and thinking deltas", () => {
     expect(emissions[0]?.type).toBe("item.completed");
     expect(emissions[1]?.type).toBe("thread.token-usage.updated");
     expect(emissions[1]?.payload).toEqual({
-      usage: { usedTokens: 14, inputTokens: 10, lastInputTokens: 10, outputTokens: 4, lastOutputTokens: 4 },
+      usage: {
+        usedTokens: 14,
+        inputTokens: 10,
+        lastInputTokens: 10,
+        outputTokens: 4,
+        lastOutputTokens: 4,
+      },
     });
   });
 });
@@ -550,10 +556,9 @@ describe("makePiAdapter interrupt during prompt admission", () => {
           runtimeMode: "full-access",
         });
 
-        const pending = yield* adapter.sendTurn({ threadId, input: "hello" }).pipe(
-          Effect.result,
-          Effect.forkChild,
-        );
+        const pending = yield* adapter
+          .sendTurn({ threadId, input: "hello" })
+          .pipe(Effect.result, Effect.forkChild);
         yield* fake.awaitFirstPrompt;
         yield* adapter.interruptTurn(threadId);
         yield* fake.rejectFirstPrompt;
