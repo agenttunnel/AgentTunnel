@@ -65,6 +65,66 @@ function formatToolInput(input: unknown): string | undefined {
 
 export type AgentLogEntry = OrchestrationAgentLogEntry;
 
+export interface OpenCodeStepUsage {
+  readonly totalTokens: number;
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningOutputTokens: number;
+}
+
+function nonNegativeTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined;
+}
+
+/**
+ * Token frame from an OpenCode `step_finish` event. Each frame reports the
+ * step's own usage (they are deltas, not session totals); `part.tokens.total`
+ * includes input, output, reasoning, and cache reads and writes.
+ */
+export function parseOpenCodeStepUsage(raw: string): OpenCodeStepUsage | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const event = parsed as { type?: unknown; part?: unknown };
+  if (event.type !== "step_finish") {
+    return undefined;
+  }
+  const part = event.part;
+  if (!part || typeof part !== "object" || Array.isArray(part)) {
+    return undefined;
+  }
+  const tokens = (part as { tokens?: unknown }).tokens;
+  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) {
+    return undefined;
+  }
+  const record = tokens as Record<string, unknown>;
+  const totalTokens = nonNegativeTokenCount(record.total);
+  if (totalTokens === undefined || totalTokens <= 0) {
+    return undefined;
+  }
+  const cache =
+    record.cache && typeof record.cache === "object" && !Array.isArray(record.cache)
+      ? (record.cache as Record<string, unknown>)
+      : {};
+  return {
+    totalTokens,
+    inputTokens: nonNegativeTokenCount(record.input) ?? 0,
+    cachedInputTokens:
+      (nonNegativeTokenCount(cache.read) ?? 0) + (nonNegativeTokenCount(cache.write) ?? 0),
+    outputTokens: nonNegativeTokenCount(record.output) ?? 0,
+    reasoningOutputTokens: nonNegativeTokenCount(record.reasoning) ?? 0,
+  };
+}
+
 interface OpenCodeToolUseState {
   readonly title?: unknown;
   readonly input?: unknown;

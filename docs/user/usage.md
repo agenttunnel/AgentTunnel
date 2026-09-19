@@ -25,4 +25,6 @@ The pane is cumulative for the thread and shows:
 - **Agents**: every subagent's input, output, tool-call count, and total.
 
 Subagent tokens count toward the turn that spawned the agent. Figures are exactly what the provider
-reported; providers that report no usage leave the pane empty instead of estimating.
+reported; providers that report no usage leave the pane empty instead of estimating. AgentTunnel
+threads count tokens streamed by OpenCode harness runs; a run on a harness that reports no token
+frames contributes nothing.
