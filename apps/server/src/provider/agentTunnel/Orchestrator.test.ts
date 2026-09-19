@@ -258,6 +258,57 @@ it.effect("hands steering messages to the next planning pass", () =>
   }),
 );
 
+it.effect("takes another pass when steering arrives during the final pass", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const prompts: string[] = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        prompts.push(spec.prompt);
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable([
+            '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"nothing to do"}}',
+          ]),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+    let drains = 0;
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "steer late",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+      takeSteeringMessages: () =>
+        Effect.sync(() => {
+          drains += 1;
+          return drains === 1 ? ["also update the docs"] : [];
+        }),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.ok(
+      prompts.some(
+        (prompt) => prompt.includes("Summary pass") && prompt.includes("also update the docs"),
+      ),
+      "expected a follow-up pass carrying the late steering",
+    );
+  }),
+);
+
 /**
  * Shared fake harness for the markdown-shape tests: the orchestrator plans a
  * two-executor pipeline plus a dependent reviewer pipeline, and each executor
