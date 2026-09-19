@@ -253,8 +253,9 @@ export function TokenUsagePanel({
           </section>
 
           <p className="px-0.5 text-[.65rem] leading-relaxed text-muted-foreground/60">
-            Provider-reported usage. Each turn shows its latest snapshot; a subagent counts toward
-            the turn that spawned it.
+            Provider-reported usage. Each turn shows its latest snapshot, and a subagent counts
+            toward the turn that spawned it; Processed is the provider's cumulative session total
+            for the main thread.
           </p>
         </div>
       </ScrollArea>
