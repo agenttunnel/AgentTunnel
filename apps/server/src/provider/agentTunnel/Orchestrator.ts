@@ -240,6 +240,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   let orchestratorThinkingOpen = false;
   let openOutputFences = 0;
   let startedTaskCount = 0;
+  let recapScope: Scope.Closeable | null = null;
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
@@ -283,6 +284,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
 
   const finish = (status: AgentTunnelRunResult["status"], summary: string) =>
     Effect.gen(function* () {
+      if (recapScope !== null) {
+        yield* Scope.close(recapScope, Exit.void).pipe(Effect.ignore);
+        recapScope = null;
+      }
       yield* trace("workflow finished", {
         workflowId: options.workflowId,
         status,
@@ -962,9 +967,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     yield* emit({ type: "orchestrator.output", text: `\n> ⏱️ **${recap}**\n\n` });
   });
 
-  const recapScope = yield* Scope.make();
+  const scope = yield* Scope.make();
+  recapScope = scope;
   yield* Effect.forever(Effect.sleep(RECAP_INTERVAL).pipe(Effect.andThen(emitRecap()))).pipe(
-    Effect.forkIn(recapScope),
+    Effect.forkIn(scope),
   );
 
   const runWorkflow = Effect.gen(function* () {
@@ -1003,7 +1009,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   });
 
   return yield* runWorkflow.pipe(
-    Effect.ensuring(Scope.close(recapScope, Exit.void).pipe(Effect.ignore)),
+    Effect.ensuring(Scope.close(scope, Exit.void).pipe(Effect.ignore)),
   );
 });
 

@@ -625,6 +625,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.agents.clear();
     context.agentLogBytes.clear();
     context.agentRawLogBytes.clear();
+    // Steering is per-turn: a prior turn's queue must never leak into this one.
+    context.steering.length = 0;
     yield* clearAgentOutput(input.threadId);
     context.session = {
       ...context.session,
