@@ -238,6 +238,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
   let orchestratorThinkingOpen = false;
+  let openOutputFences = 0;
+  let startedTaskCount = 0;
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
@@ -631,6 +633,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   });
 
   const runTask = Effect.fn("runAgentTunnel.runTask")(function* (task: DispatchedTask) {
+    startedTaskCount += 1;
     const pipelineIndex = Math.max(0, pipelineOrder.indexOf(task.pipelineId));
     const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
     const roleModel =
@@ -718,6 +721,9 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         const prefix = firstOutputLine
           ? `\n<details>\n<summary>📋 Output · ${label}</summary>\n\n\`\`\`\n`
           : "";
+        if (firstOutputLine) {
+          openOutputFences += 1;
+        }
         firstOutputLine = false;
         return emit({ type: "orchestrator.output", text: `${prefix}${clean}\n` }).pipe(
           Effect.andThen(
@@ -733,6 +739,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     );
 
     if (!firstOutputLine) {
+      openOutputFences = Math.max(0, openOutputFences - 1);
       yield* emit({ type: "orchestrator.output", text: "```\n\n</details>\n\n" });
     }
 
@@ -919,17 +926,21 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         pipeline?.status === "completed" ? "✓" : pipeline?.status === "running" ? "▶" : "…";
       return `${marker} \`${id}\`: ${done}/${total}`;
     });
-    const running = tasks.length - taskRecords.length;
+    const running = Math.max(0, startedTaskCount - taskRecords.length);
     const state =
       parts.length > 0
         ? parts.join(" · ")
         : tasks.length > 0
           ? "starting pipelines"
           : "orchestrator planning";
-    yield* emit({
-      type: "orchestrator.output",
-      text: `\n> ⏱️ **Progress** · ${elapsed}${running > 0 ? ` · ${running} running` : ""} · ${state}\n\n`,
-    });
+    const recap = `Progress · ${elapsed}${running > 0 ? ` · ${running} running` : ""} · ${state}`;
+    yield* emitProgress(recap);
+    // An agent output fence is open: the recap would land inside a code block,
+    // so only the activity summary above is updated until the fence closes.
+    if (openOutputFences > 0) {
+      return;
+    }
+    yield* emit({ type: "orchestrator.output", text: `\n> ⏱️ **${recap}**\n\n` });
   });
 
   const recapScope = yield* Scope.make();
