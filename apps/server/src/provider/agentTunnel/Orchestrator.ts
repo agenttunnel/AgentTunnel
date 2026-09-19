@@ -241,6 +241,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   let openOutputFences = 0;
   let startedTaskCount = 0;
   let recapScope: Scope.Closeable | null = null;
+  const pendingSteering: string[] = [];
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
@@ -584,7 +585,12 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       });
     }
     const steering =
-      pass > 0 && options.takeSteeringMessages ? yield* options.takeSteeringMessages() : [];
+      pass > 0
+        ? [
+            ...pendingSteering.splice(0),
+            ...(options.takeSteeringMessages ? yield* options.takeSteeringMessages() : []),
+          ]
+        : [];
     if (steering.length > 0) {
       yield* emit({
         type: "orchestrator.output",
@@ -987,10 +993,24 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
       }
       if (pipelineOrder.length === pipelineCountBefore) {
-        return yield* finish(
-          "completed",
-          "All planned work finished — the orchestrator found no follow-up tasks.",
-        );
+        const lateSteering = options.takeSteeringMessages
+          ? yield* options.takeSteeringMessages()
+          : [];
+        if (lateSteering.length === 0) {
+          return yield* finish(
+            "completed",
+            "All planned work finished — the orchestrator found no follow-up tasks.",
+          );
+        }
+        // Steering arrived while the pass was running: take one more pass so
+        // the orchestrator can weigh it instead of finishing silently.
+        pendingSteering.push(...lateSteering);
+        yield* emit({
+          type: "orchestrator.output",
+          text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
+        });
+        orchestratorPasses += 1;
+        continue;
       }
       if (!(yield* runNewPipelines(pipelineCountBefore))) {
         const wasStopped = yield* isCancelled;
