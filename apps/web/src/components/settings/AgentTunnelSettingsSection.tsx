@@ -266,7 +266,12 @@ export function AgentTunnelSettingsSection({
           onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             if (!Number.isNaN(parsed)) {
-              writeConfigValue(config, onChange, "maxOrchestratorPasses", parsed);
+              writeConfigValue(
+                config,
+                onChange,
+                "maxOrchestratorPasses",
+                Math.min(12, Math.max(1, parsed)),
+              );
             }
           }}
         />
@@ -287,7 +292,12 @@ export function AgentTunnelSettingsSection({
           onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             if (!Number.isNaN(parsed)) {
-              writeConfigValue(config, onChange, "orchestratorPassTimeoutMinutes", parsed);
+              writeConfigValue(
+                config,
+                onChange,
+                "orchestratorPassTimeoutMinutes",
+                Math.min(120, Math.max(1, parsed)),
+              );
             }
           }}
         />
