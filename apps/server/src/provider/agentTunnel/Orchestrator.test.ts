@@ -179,7 +179,7 @@ it.effect("emits a periodic progress recap while tasks stay running", () =>
 
       const recaps = events.filter(
         (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
-          event.type === "orchestrator.output" && event.text.includes("**Progress**"),
+          event.type === "orchestrator.output" && event.text.includes("\u23f1\ufe0f"),
       );
       NodeAssert.ok(recaps.length >= 1, "expected at least one progress recap");
       NodeAssert.match(recaps[0]!.text, /implementation`?: 0\/1/);

@@ -129,6 +129,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     readonly model: string | null;
     readonly harness: string;
     readonly variant: string | null;
+    readonly auto: boolean;
   }>;
   activeWorkflowRoleId?: string | null;
   onWorkflowRoleChange?: (roleId: string | null) => void;
@@ -834,7 +835,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     className={workflowRoleChipClass(activeWorkflowRole?.id === role.id)}
                   >
                     {role.label}
-                    {role.model ? (
+                    {role.auto ? (
+                      <span className="text-muted-foreground/70">
+                        {" · auto"}
+                        {role.model ? ` · fallback ${role.model.split("/").pop()}` : ""}
+                      </span>
+                    ) : role.model ? (
                       <span className="text-muted-foreground/70">
                         {" · "}
                         {role.model.split("/").pop()}
