@@ -20,6 +20,7 @@ import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as P from "effect/Predicate";
 import * as Queue from "effect/Queue";
@@ -244,13 +245,13 @@ export const makePiRpcSession = (
         yield* Queue.offer(eventQueue, message);
       });
 
-    yield* child.stdout.pipe(
+    const stdoutFiber = yield* child.stdout.pipe(
       piJsonLineStream,
       Stream.runForEach(handleMessage),
       Effect.ignore,
       Effect.forkIn(runtimeScope),
     );
-    yield* child.stderr.pipe(
+    const stderrFiber = yield* child.stderr.pipe(
       Stream.decodeText(),
       Stream.runForEach((chunk) => Ref.update(stderrRef, (acc) => acc + chunk)),
       Effect.ignore,
@@ -262,6 +263,12 @@ export const makePiRpcSession = (
       Effect.flatMap((exit) =>
         Effect.gen(function* () {
           const code = Exit.isSuccess(exit) ? Number(exit.value) : 1;
+          // Drain the stdout/stderr consumers before sweeping. The child can
+          // exit while frames are still buffered in its pipes; joining the
+          // consumer fibers lets those frames correlate their responses and
+          // reach the event stream instead of being dropped by the sweep.
+          yield* Fiber.join(stdoutFiber).pipe(Effect.ignore);
+          yield* Fiber.join(stderrFiber).pipe(Effect.ignore);
           const stderr = yield* Ref.get(stderrRef);
           // Record the exit before sweeping pending so a `send` racing with the
           // sweep is rejected by its own post-registration check instead of

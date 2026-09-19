@@ -15,9 +15,13 @@ import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shar
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { resolveAttachmentPath } from "../attachmentStore.ts";
+import * as ServerConfig from "../config.ts";
 import { parsePiModelSlug } from "../provider/Layers/PiAdapter.ts";
 import { piRuntimeErrorDetail, runPiJsonOneShot } from "../provider/piRuntime.ts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -47,6 +51,9 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
   environment: NodeJS.ProcessEnv = process.env,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const serverConfig = yield* ServerConfig.ServerConfig;
 
   const runPiJson = Effect.fn("runPiJson")(function* <S extends Schema.Top>(input: {
     readonly operation: PiTextGenerationOperation;
@@ -76,6 +83,26 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
       getModelSelectionStringOptionValue(input.modelSelection, "effort");
     if (thinkingLevel !== undefined && thinkingLevel.trim().length > 0) {
       args.push("--thinking", thinkingLevel.trim());
+    }
+
+    // pi one-shot mode attaches files as positional `@<path>` arguments. Only
+    // images are forwarded, matching the other text generators.
+    for (const attachment of input.attachments ?? []) {
+      if (attachment.type !== "image") {
+        continue;
+      }
+      const resolvedPath = resolveAttachmentPath({
+        attachmentsDir: serverConfig.attachmentsDir,
+        attachment,
+      });
+      if (!resolvedPath || !path.isAbsolute(resolvedPath)) {
+        continue;
+      }
+      const fileInfo = yield* fileSystem.stat(resolvedPath).pipe(Effect.orElseSucceed(() => null));
+      if (!fileInfo || fileInfo.type !== "File") {
+        continue;
+      }
+      args.push(`@${resolvedPath}`);
     }
 
     const result = yield* runPiJsonOneShot({

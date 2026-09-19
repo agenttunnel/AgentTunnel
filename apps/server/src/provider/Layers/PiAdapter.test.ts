@@ -10,6 +10,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -19,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
@@ -125,6 +127,7 @@ const makeFakePi = (): Effect.Effect<FakePi, never, Scope.Scope> =>
           });
           yield* emit({ type: "turn_end", message: { stopReason: "stop" } });
           yield* emit({ type: "agent_end", willRetry: false });
+          yield* emit({ type: "agent_settled" });
         }),
       ),
       Effect.forkScoped,
@@ -229,6 +232,7 @@ const makeInterruptibleFakePi = (): Effect.Effect<
           });
           yield* emit({ type: "turn_end", message: { stopReason: "stop" } });
           yield* emit({ type: "agent_end", willRetry: false });
+          yield* emit({ type: "agent_settled" });
         }),
       ),
       Effect.forkScoped,
@@ -247,6 +251,196 @@ const makeInterruptibleFakePi = (): Effect.Effect<
           error: "",
         });
       }),
+    };
+  });
+
+/**
+ * A pi RPC child that accepts the first prompt and then emits two agent runs
+ * (a continuation) before `agent_settled`, mirroring pi 0.85 draining queued
+ * continuation work after `agent_end`.
+ */
+const makeContinuationFakePi = (): Effect.Effect<
+  { readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"] },
+  never,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const stdout = yield* Queue.unbounded<Uint8Array>();
+    const incoming = yield* Queue.unbounded<piRuntime.PiRpcValue>();
+    const buffer = yield* Ref.make("");
+
+    const emit = (value: unknown) => Queue.offer(stdout, frameBytes(value)).pipe(Effect.asVoid);
+
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() =>
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(4242),
+          exitCode: Effect.never,
+          isRunning: Effect.succeed(true),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.forEach((chunk: Uint8Array) =>
+            Effect.gen(function* () {
+              const next = (yield* Ref.get(buffer)) + new TextDecoder().decode(chunk);
+              const { lines, rest } = piRuntime.splitPiJsonLines(next);
+              yield* Ref.set(buffer, rest);
+              for (const line of lines) {
+                const command = piRuntime.decodePiJsonLine(line);
+                if (command !== undefined) {
+                  yield* Queue.offer(incoming, command);
+                }
+              }
+            }),
+          ),
+          stdout: Stream.fromQueue(stdout),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      ),
+    );
+
+    const assistantRun = Effect.gen(function* () {
+      yield* emit({ type: "agent_start" });
+      yield* emit({ type: "message_start", message: { role: "assistant" } });
+      yield* emit({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "stop" },
+      });
+      yield* emit({ type: "turn_end", message: { stopReason: "stop" } });
+      yield* emit({ type: "agent_end", willRetry: false });
+    });
+
+    yield* Stream.fromQueue(incoming).pipe(
+      Stream.runForEach((command) =>
+        Effect.gen(function* () {
+          if (command.type === "get_state") {
+            yield* emit({
+              id: command.id,
+              type: "response",
+              command: "get_state",
+              success: true,
+              data: { sessionId: "thread-abc" },
+            });
+            return;
+          }
+          if (command.type !== "prompt") {
+            return;
+          }
+          yield* emit({ id: command.id, type: "response", command: "prompt", success: true });
+          yield* assistantRun;
+          yield* assistantRun;
+          yield* emit({ type: "agent_settled" });
+        }),
+      ),
+      Effect.forkScoped,
+    );
+
+    return { spawner };
+  });
+
+/**
+ * A pi RPC child that accepts the first prompt, then blocks on a `select`
+ * extension dialog until AgentTunnel writes back an `extension_ui_response`
+ * with the same id. The assistant run only starts once that response arrives,
+ * so the turn never settles if the adapter fails to cancel the dialog.
+ */
+const makeExtensionDialogFakePi = (): Effect.Effect<
+  {
+    readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
+    readonly awaitUiResponse: Effect.Effect<piRuntime.PiRpcValue>;
+    readonly awaitTurnSettled: Effect.Effect<void>;
+  },
+  never,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const stdout = yield* Queue.unbounded<Uint8Array>();
+    const incoming = yield* Queue.unbounded<piRuntime.PiRpcValue>();
+    const buffer = yield* Ref.make("");
+    const uiResponse = yield* Deferred.make<piRuntime.PiRpcValue>();
+    const turnSettled = yield* Deferred.make<void>();
+
+    const emit = (value: unknown) => Queue.offer(stdout, frameBytes(value)).pipe(Effect.asVoid);
+
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.sync(() =>
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(4242),
+          exitCode: Effect.never,
+          isRunning: Effect.succeed(true),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.forEach((chunk: Uint8Array) =>
+            Effect.gen(function* () {
+              const next = (yield* Ref.get(buffer)) + new TextDecoder().decode(chunk);
+              const { lines, rest } = piRuntime.splitPiJsonLines(next);
+              yield* Ref.set(buffer, rest);
+              for (const line of lines) {
+                const command = piRuntime.decodePiJsonLine(line);
+                if (command !== undefined) {
+                  yield* Queue.offer(incoming, command);
+                }
+              }
+            }),
+          ),
+          stdout: Stream.fromQueue(stdout),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      ),
+    );
+
+    yield* Stream.fromQueue(incoming).pipe(
+      Stream.runForEach((command) =>
+        Effect.gen(function* () {
+          if (command.type === "get_state") {
+            yield* emit({
+              id: command.id,
+              type: "response",
+              command: "get_state",
+              success: true,
+              data: { sessionId: "thread-abc" },
+            });
+            return;
+          }
+          if (command.type === "extension_ui_response") {
+            yield* Deferred.succeed(uiResponse, command);
+            yield* emit({ type: "agent_start" });
+            yield* emit({ type: "message_start", message: { role: "assistant" } });
+            yield* emit({
+              type: "message_end",
+              message: { role: "assistant", stopReason: "stop" },
+            });
+            yield* emit({ type: "turn_end", message: { stopReason: "stop" } });
+            yield* emit({ type: "agent_end", willRetry: false });
+            yield* emit({ type: "agent_settled" });
+            yield* Deferred.succeed(turnSettled, void 0);
+            return;
+          }
+          if (command.type !== "prompt") {
+            return;
+          }
+          yield* emit({ id: command.id, type: "response", command: "prompt", success: true });
+          yield* emit({
+            type: "extension_ui_request",
+            id: "ui-dialog-1",
+            method: "select",
+            title: "Pick a directory",
+            options: ["src", "docs"],
+          });
+        }),
+      ),
+      Effect.forkScoped,
+    );
+
+    return {
+      spawner,
+      awaitUiResponse: Deferred.await(uiResponse),
+      awaitTurnSettled: Deferred.await(turnSettled),
     };
   });
 
@@ -419,10 +613,26 @@ describe("applyPiEvent tool lifecycle", () => {
 });
 
 describe("applyPiEvent turn lifecycle", () => {
-  it("completes a turn on agent_end", () => {
-    const state = createPiEventMapperState();
+  it("defers agent_end to agent_settled so continuations keep the turn", () => {
+    const state = createPiEventMapperState({ supportsAgentSettled: true });
     state.turnId = TurnId.make("turn-1");
-    const emissions = applyPiEvent(state, { type: "agent_end", willRetry: false });
+
+    expect(applyPiEvent(state, { type: "agent_start" })).toEqual([]);
+    expect(applyPiEvent(state, { type: "agent_end", willRetry: false })).toEqual([]);
+    expect(state.turnId).toBe(TurnId.make("turn-1"));
+
+    // A continuation run starts before pi settles; the turn must stay bound.
+    expect(applyPiEvent(state, { type: "agent_start" })).toEqual([]);
+    expect(
+      applyPiEvent(state, {
+        type: "message_start",
+        message: { role: "assistant" },
+      })[0]?.type,
+    ).toBe("item.started");
+    expect(applyPiEvent(state, { type: "agent_end", willRetry: false })).toEqual([]);
+    expect(state.turnId).toBe(TurnId.make("turn-1"));
+
+    const emissions = applyPiEvent(state, { type: "agent_settled" });
     expect(emissions).toEqual([
       {
         type: "turn.completed",
@@ -433,11 +643,59 @@ describe("applyPiEvent turn lifecycle", () => {
     expect(state.turnId).toBeUndefined();
   });
 
+  it("settles on agent_end for pi versions without agent_settled", () => {
+    const state = createPiEventMapperState({ supportsAgentSettled: false });
+    state.turnId = TurnId.make("turn-old");
+    const emissions = applyPiEvent(state, { type: "agent_end", willRetry: false });
+    expect(emissions).toEqual([
+      {
+        type: "turn.completed",
+        turnId: TurnId.make("turn-old"),
+        payload: { state: "completed" },
+      },
+    ]);
+    expect(state.turnId).toBeUndefined();
+  });
+
+  it("fails the turn on a late rejected prompt response", () => {
+    const state = createPiEventMapperState({ supportsAgentSettled: true });
+    state.turnId = TurnId.make("turn-late");
+    const emissions = applyPiEvent(state, {
+      type: "response",
+      command: "prompt",
+      success: false,
+      error: "No API key found for pi.",
+    });
+    expect(emissions).toEqual([
+      {
+        type: "turn.completed",
+        turnId: TurnId.make("turn-late"),
+        payload: { state: "failed", errorMessage: "No API key found for pi." },
+      },
+    ]);
+    expect(state.turnId).toBeUndefined();
+  });
+
+  it("ignores late successful prompt responses and non-prompt responses", () => {
+    const state = createPiEventMapperState({ supportsAgentSettled: true });
+    state.turnId = TurnId.make("turn-ok");
+    expect(applyPiEvent(state, { type: "response", command: "prompt", success: true })).toEqual([]);
+    expect(
+      applyPiEvent(state, {
+        type: "response",
+        command: "set_model",
+        success: false,
+        error: "nope",
+      }),
+    ).toEqual([]);
+    expect(state.turnId).toBe(TurnId.make("turn-ok"));
+  });
+
   it("emits turn.aborted when interrupted", () => {
-    const state = createPiEventMapperState();
+    const state = createPiEventMapperState({ supportsAgentSettled: true });
     state.turnId = TurnId.make("turn-2");
     state.interrupted = true;
-    const emissions = applyPiEvent(state, { type: "agent_end" });
+    const emissions = applyPiEvent(state, { type: "agent_settled" });
     expect(emissions).toEqual([
       {
         type: "turn.aborted",
@@ -449,17 +707,17 @@ describe("applyPiEvent turn lifecycle", () => {
   });
 
   it("waits for retries instead of completing early", () => {
-    const state = createPiEventMapperState();
+    const state = createPiEventMapperState({ supportsAgentSettled: true });
     state.turnId = TurnId.make("turn-3");
     expect(applyPiEvent(state, { type: "agent_end", willRetry: true })).toEqual([]);
     expect(state.turnId).toBe(TurnId.make("turn-3"));
   });
 
   it("records the stop reason from turn_end", () => {
-    const state = createPiEventMapperState();
+    const state = createPiEventMapperState({ supportsAgentSettled: true });
     state.turnId = TurnId.make("turn-4");
     applyPiEvent(state, { type: "turn_end", message: { stopReason: "error" } });
-    const emissions = applyPiEvent(state, { type: "agent_end" });
+    const emissions = applyPiEvent(state, { type: "agent_settled" });
     expect(emissions[0]?.payload).toEqual({ state: "failed", stopReason: "error" });
   });
 });
@@ -586,6 +844,170 @@ describe("makePiAdapter interrupt during prompt admission", () => {
         expect(completed).toHaveLength(2);
         expect(completed[1]?.turnId).toBe(second.turnId);
         expect(completed[1]?.payload).toMatchObject({ state: "completed" });
+      }),
+    ),
+  );
+});
+
+describe("makePiAdapter continuation turns", () => {
+  it.effect("keeps continuation events on the same turn id until agent_settled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeContinuationFakePi();
+        const adapter = yield* makePiAdapter(
+          decodePiSettings({ enabled: true, binaryPath: "pi" }),
+          {
+            supportsAgentSettled: true,
+          },
+        ).pipe(
+          Effect.provide(adapterServices),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+
+        const events = yield* Ref.make<ReadonlyArray<ProviderRuntimeEvent>>([]);
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Ref.update(events, (list) => [...list, event])),
+          Effect.forkScoped,
+        );
+
+        const threadId = ThreadId.make("thread-pi-continuation");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("pi"),
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const turn = yield* adapter.sendTurn({ threadId, input: "hello" });
+        yield* settle;
+        const observed = yield* Ref.get(events);
+
+        const started = observed.filter((event) => event.type === "turn.started");
+        expect(started).toHaveLength(1);
+        expect(started[0]?.turnId).toBe(turn.turnId);
+
+        // Both agent runs' assistant items stay bound to the single turn.
+        const assistantItems = observed.filter(
+          (event) => event.type === "item.started" || event.type === "item.completed",
+        );
+        expect(assistantItems).toHaveLength(4);
+        expect(assistantItems.every((event) => event.turnId === turn.turnId)).toBe(true);
+
+        const completed = observed.filter((event) => event.type === "turn.completed");
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.turnId).toBe(turn.turnId);
+        expect(completed[0]?.payload).toMatchObject({ state: "completed" });
+      }),
+    ),
+  );
+});
+
+describe("makePiAdapter prompt timeout", () => {
+  it.effect("keeps the turn active on timeout and fails it on the late rejection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeInterruptibleFakePi();
+        const adapter = yield* makePiAdapter(
+          decodePiSettings({ enabled: true, binaryPath: "pi" }),
+          {
+            promptTimeout: Duration.millis(30),
+          },
+        ).pipe(
+          Effect.provide(adapterServices),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+
+        const events = yield* Ref.make<ReadonlyArray<ProviderRuntimeEvent>>([]);
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Ref.update(events, (list) => [...list, event])),
+          Effect.forkScoped,
+        );
+
+        const threadId = ThreadId.make("thread-pi-timeout");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("pi"),
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const sendFiber = yield* adapter
+          .sendTurn({ threadId, input: "hello" })
+          .pipe(Effect.forkScoped);
+        yield* fake.awaitFirstPrompt;
+        // Advance the TestClock past the admission timeout so sendTurn resolves
+        // without rolling the turn back.
+        yield* TestClock.adjust("100 millis");
+        const admitted = yield* Fiber.join(sendFiber);
+        yield* settle;
+        const midFlight = yield* Ref.get(events);
+        expect(midFlight.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+        expect((yield* adapter.listSessions())[0]?.status).toBe("running");
+
+        // The late rejection arrives on the event stream after the waiter was
+        // dropped, so it must fail the still-active turn.
+        yield* fake.rejectFirstPrompt;
+        yield* settle;
+        const observed = yield* Ref.get(events);
+        const completed = observed.filter((event) => event.type === "turn.completed");
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.turnId).toBe(admitted.turnId);
+        expect(completed[0]?.payload).toMatchObject({
+          state: "failed",
+          errorMessage: "pi command failed.",
+        });
+        const sessions = yield* adapter.listSessions();
+        expect(sessions[0]?.status).toBe("ready");
+        expect(sessions[0]?.activeTurnId).toBeUndefined();
+      }),
+    ),
+  );
+});
+
+describe("makePiAdapter extension dialogs", () => {
+  it.effect("auto-cancels a blocking dialog with its request id and warns", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeExtensionDialogFakePi();
+        const adapter = yield* makePiAdapter(
+          decodePiSettings({ enabled: true, binaryPath: "pi" }),
+        ).pipe(
+          Effect.provide(adapterServices),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+
+        const events = yield* Ref.make<ReadonlyArray<ProviderRuntimeEvent>>([]);
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Ref.update(events, (list) => [...list, event])),
+          Effect.forkScoped,
+        );
+
+        const threadId = ThreadId.make("thread-pi-extension-dialog");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("pi"),
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+
+        const turn = yield* adapter.sendTurn({ threadId, input: "hello" });
+        const response = yield* fake.awaitUiResponse;
+        yield* fake.awaitTurnSettled;
+        yield* settle;
+
+        expect(response).toMatchObject({
+          type: "extension_ui_response",
+          id: "ui-dialog-1",
+          cancelled: true,
+        });
+
+        const observed = yield* Ref.get(events);
+        const warning = observed.find((event) => event.type === "runtime.warning");
+        expect(warning).toBeDefined();
+        const completed = observed.filter((event) => event.type === "turn.completed");
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.turnId).toBe(turn.turnId);
+        expect(completed[0]?.payload).toMatchObject({ state: "completed" });
       }),
     ),
   );

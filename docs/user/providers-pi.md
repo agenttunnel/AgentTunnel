@@ -64,7 +64,7 @@ model before trying again.
 - **No sandbox flag.** AgentTunnel cannot start Pi in a restricted sandbox. Use Pi's own tool and
   extension configuration to limit what it can do.
 - **No extension dialogs.** If a Pi extension asks for interactive input, AgentTunnel cannot display
-  the dialog and shows a warning instead.
+  the dialog. It cancels the request so the agent can continue and shows a warning instead.
 - **Usage and cost are not in the Usage page.** AgentTunnel tracks the token counts Pi reports per
   turn and shows them on the thread's context meter, but the Review usage page does not include Pi
   activity, provider shares, or an API-equivalent cost for Pi models.

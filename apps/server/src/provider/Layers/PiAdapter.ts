@@ -78,6 +78,14 @@ export interface PiAdapterLiveOptions {
   readonly nativeEventLogger?: EventNdjsonLogger;
   /** Selections are honored when `modelSelection.instanceId` matches this value. */
   readonly instanceId?: ProviderInstanceId;
+  /**
+   * Whether the configured pi binary emits `agent_settled` (0.85+). When
+   * false, `agent_end` settles the turn; when unknown, the latest pi behavior
+   * is assumed so continuations stay attached to their turn.
+   */
+  readonly supportsAgentSettled?: boolean;
+  /** How long to wait for pi to accept a prompt before treating it as pending. */
+  readonly promptTimeout?: Duration.Input;
 }
 
 export function mapPiToolNameToItemType(toolName: string): ToolLifecycleItemType {
@@ -140,6 +148,8 @@ export interface PiEventMapperState {
   turnId: TurnId | undefined;
   interrupted: boolean;
   active: boolean;
+  /** Whether pi emits `agent_settled` (0.85+); otherwise `agent_end` settles. */
+  supportsAgentSettled: boolean;
   assistantItemId: string | undefined;
   assistantItemCounter: number;
   contentKinds: Map<number, "text" | "thinking" | "toolcall">;
@@ -148,11 +158,14 @@ export interface PiEventMapperState {
   compactionItemId: string | undefined;
 }
 
-export function createPiEventMapperState(): PiEventMapperState {
+export function createPiEventMapperState(options?: {
+  readonly supportsAgentSettled?: boolean;
+}): PiEventMapperState {
   return {
     turnId: undefined,
     interrupted: false,
     active: false,
+    supportsAgentSettled: options?.supportsAgentSettled ?? true,
     assistantItemId: undefined,
     assistantItemCounter: 0,
     contentKinds: new Map(),
@@ -164,6 +177,18 @@ export function createPiEventMapperState(): PiEventMapperState {
 
 const asString = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
+
+/**
+ * pi extension UI methods that block the RPC child until a matching
+ * `extension_ui_response` arrives. The remaining methods (`notify`,
+ * `setStatus`, `setWidget`, `setTitle`, `set_editor_text`) are fire-and-forget.
+ */
+const PI_BLOCKING_EXTENSION_UI_METHODS: ReadonlySet<string> = new Set([
+  "select",
+  "confirm",
+  "input",
+  "editor",
+]);
 
 const asFiniteInt = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : undefined;
@@ -242,6 +267,42 @@ function applyPiAssistantMessageEvent(
 }
 
 /**
+ * Emit the terminal event for the active turn and clear its turn state. Shared
+ * by `agent_settled`, the `agent_end` fallback for older pi, and a late
+ * rejected prompt response.
+ */
+function settlePiTurn(state: PiEventMapperState, override?: PiEmission): ReadonlyArray<PiEmission> {
+  const turnId = state.turnId;
+  if (turnId === undefined) return [];
+  state.turnId = undefined;
+  state.active = false;
+  if (override !== undefined) {
+    state.interrupted = false;
+    state.lastStopReason = undefined;
+    return [{ ...override, turnId }];
+  }
+  if (state.interrupted) {
+    state.interrupted = false;
+    state.lastStopReason = undefined;
+    return [{ type: "turn.aborted", turnId, payload: { reason: "Interrupted by user." } }];
+  }
+  const stopReason = state.lastStopReason;
+  state.lastStopReason = undefined;
+  const turnState =
+    stopReason === "aborted" ? "interrupted" : stopReason === "error" ? "failed" : "completed";
+  return [
+    {
+      type: "turn.completed",
+      turnId,
+      payload: {
+        state: turnState,
+        ...(stopReason !== undefined ? { stopReason } : {}),
+      },
+    },
+  ];
+}
+
+/**
  * Reduce one parsed pi event into zero or more canonical emissions. Pure and
  * synchronous (mutating only `state`) so delta assembly, tool lifecycle, and
  * turn state are unit-testable without a live child.
@@ -257,29 +318,30 @@ export function applyPiEvent(
     }
     case "agent_end": {
       state.active = false;
+      // A retryable end is followed by another agent run; keep the turn live.
       if (event.willRetry === true) return [];
-      const turnId = state.turnId;
-      if (turnId === undefined) return [];
-      state.turnId = undefined;
-      if (state.interrupted) {
-        state.interrupted = false;
-        state.lastStopReason = undefined;
-        return [{ type: "turn.aborted", turnId, payload: { reason: "Interrupted by user." } }];
-      }
-      const stopReason = state.lastStopReason;
-      state.lastStopReason = undefined;
-      const turnState =
-        stopReason === "aborted" ? "interrupted" : stopReason === "error" ? "failed" : "completed";
-      return [
-        {
-          type: "turn.completed",
-          turnId,
-          payload: {
-            state: turnState,
-            ...(stopReason !== undefined ? { stopReason } : {}),
-          },
+      // pi settles continuations after agent_settled; agent_end can fire
+      // between continuation passes, so deferring avoids completing early.
+      if (state.supportsAgentSettled) return [];
+      return settlePiTurn(state);
+    }
+    case "agent_settled": {
+      return settlePiTurn(state);
+    }
+    case "response": {
+      // A prompt response only reaches the event stream when its waiter was
+      // interrupted (the adapter timed out but pi may still have run the
+      // prompt). A late rejection means the turn never actually ran, so fail
+      // it here instead of leaving it active forever.
+      if (event.command !== "prompt" || event.success !== false) return [];
+      const detail = asString(event.error)?.trim();
+      return settlePiTurn(state, {
+        type: "turn.completed",
+        payload: {
+          state: "failed",
+          errorMessage: detail !== undefined && detail.length > 0 ? detail : "pi command failed.",
         },
-      ];
+      });
     }
     case "message_start": {
       const message = asPiRecord(event.message);
@@ -627,6 +689,50 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }),
       );
 
+    /**
+     * Unlike {@link sendPiCommand}, a prompt may still execute after the local
+     * timeout fires: pi writes the command to the child before the response
+     * arrives. Timing out must therefore not roll the turn back. Treat a timed
+     * out prompt as accepted and let pi's events settle the turn; a late
+     * rejection arrives on the event stream and fails the turn there.
+     */
+    const sendPiPromptCommand = (
+      rpc: PiRpcSession,
+      command: PiRpcCommand,
+    ): Effect.Effect<void, ProviderAdapterRequestError> =>
+      rpc.send(command).pipe(
+        Effect.timeoutOption(options?.promptTimeout ?? "15 seconds"),
+        Effect.flatMap((option) =>
+          Option.match(option, {
+            onNone: () => Effect.void,
+            onSome: (response) =>
+              response.success
+                ? Effect.void
+                : Effect.fail(
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "prompt",
+                      detail:
+                        response.error !== undefined && response.error.trim().length > 0
+                          ? response.error
+                          : "pi command failed.",
+                    }),
+                  ),
+          }),
+        ),
+        Effect.catchTags({
+          PiRuntimeError: (cause) =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "prompt",
+                detail: piRuntimeErrorDetail(cause),
+                cause,
+              }),
+            ),
+        }),
+      );
+
     const readPiImages = (
       attachments: ReadonlyArray<ChatAttachment>,
     ): Effect.Effect<
@@ -700,9 +806,31 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
       });
 
+    /**
+     * A blocking extension dialog wedges pi's RPC child until it receives a
+     * matching `extension_ui_response`. AgentTunnel has no dialog surface, so
+     * cancel it with the exact request id to let the agent continue; the
+     * `runtime.warning` from {@link applyPiEvent} still tells the user.
+     */
+    const cancelPiExtensionDialog = (
+      context: PiSessionContext,
+      event: PiRpcValue,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (event.type !== "extension_ui_request") return;
+        const id = asString(event.id);
+        const method = asString(event.method);
+        if (id === undefined || method === undefined) return;
+        if (!PI_BLOCKING_EXTENSION_UI_METHODS.has(method)) return;
+        yield* context.rpc
+          .write({ type: "extension_ui_response", id, cancelled: true })
+          .pipe(Effect.catchCause(() => Effect.void));
+      });
+
     const consumePiEvent = (context: PiSessionContext, event: PiRpcValue): Effect.Effect<void> =>
       Effect.gen(function* () {
         yield* writeNativeEvent(context.threadId, event);
+        yield* cancelPiExtensionDialog(context, event);
         const emissions = applyPiEvent(context.mapper, event);
         for (const emission of emissions) {
           const turnId = emission.turnId ?? context.activeTurnId;
@@ -887,7 +1015,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             session,
             rpc,
             scope: sessionScope,
-            mapper: createPiEventMapperState(),
+            mapper: createPiEventMapperState({
+              supportsAgentSettled: options?.supportsAgentSettled ?? true,
+            }),
             eventFiber: undefined,
             activeTurnId: undefined,
             promptsInFlight: 0,
@@ -1027,16 +1157,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               );
             }
 
-            yield* sendPiCommand(
-              context.rpc,
-              {
-                type: "prompt",
-                message,
-                ...(images.length > 0 ? { images } : {}),
-                ...(isSteering ? { streamingBehavior: "steer" } : {}),
-              },
-              "prompt",
-            ).pipe(
+            yield* sendPiPromptCommand(context.rpc, {
+              type: "prompt",
+              message,
+              ...(images.length > 0 ? { images } : {}),
+              ...(isSteering ? { streamingBehavior: "steer" } : {}),
+            }).pipe(
               Effect.tapError((cause) =>
                 isSteering ? Effect.void : rollbackRejectedTurn(context, turnId, cause.detail),
               ),
