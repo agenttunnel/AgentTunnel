@@ -176,6 +176,9 @@ export function AgentTunnelSettingsSection({
   const skipPermissions = readConfigBoolean(config, "dangerouslySkipPermissions", true);
   const autoMode = readConfigBoolean(config, "autoMode", false);
   const maxPasses = Number(readConfigString(config, "maxOrchestratorPasses") || 4);
+  const passTimeoutMinutes = Number(
+    readConfigString(config, "orchestratorPassTimeoutMinutes") || 15,
+  );
 
   return (
     <div className="space-y-4">
@@ -255,6 +258,27 @@ export function AgentTunnelSettingsSection({
             const parsed = Number.parseInt(event.target.value, 10);
             if (!Number.isNaN(parsed)) {
               writeConfigValue(config, onChange, "maxOrchestratorPasses", String(parsed));
+            }
+          }}
+        />
+      </label>
+
+      <label className="block rounded-lg border border-border/60 bg-muted/20 p-3">
+        <span className="block text-sm font-medium text-foreground">Orchestrator pass timeout</span>
+        <span className="mb-2 block text-xs text-muted-foreground">
+          Minutes a single planning or summary pass may run before it is stopped. Raising this helps
+          when the orchestrator explores the repository before dispatching work.
+        </span>
+        <Input
+          className="mt-1.5 max-w-28"
+          type="number"
+          min={1}
+          max={120}
+          value={Number.isFinite(passTimeoutMinutes) ? passTimeoutMinutes : 15}
+          onChange={(event) => {
+            const parsed = Number.parseInt(event.target.value, 10);
+            if (!Number.isNaN(parsed)) {
+              writeConfigValue(config, onChange, "orchestratorPassTimeoutMinutes", String(parsed));
             }
           }}
         />
