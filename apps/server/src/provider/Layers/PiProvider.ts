@@ -371,6 +371,24 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   }
 
   const modelsOutput = modelsResult.success.value;
+  if (modelsOutput.code !== 0) {
+    yield* Effect.logWarning("Pi model list probe exited with a non-zero status.", {
+      exitCode: modelsOutput.code,
+    });
+    return buildServerProvider({
+      presentation: PI_PRESENTATION,
+      enabled: true,
+      checkedAt,
+      models: fallbackModels,
+      probe: {
+        installed: true,
+        version,
+        status: "error",
+        auth: { status: "unknown" },
+        message: "Pi CLI is installed but failed to list models.",
+      },
+    });
+  }
   // pi v0.78.0 writes the table to stderr when spawned with piped stdio, so
   // parse both streams (mirroring the `--version` probe) and drop any row a
   // version that also prints to stdout would duplicate.

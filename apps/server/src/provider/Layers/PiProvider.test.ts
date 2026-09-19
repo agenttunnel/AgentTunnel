@@ -95,6 +95,24 @@ function mockPiNoModelsSpawnerLayer() {
   );
 }
 
+// A `pi --list-models` that prints a valid table but exits non-zero: the probe
+// must not trust rows from a failed command.
+function mockPiListModelsFailureSpawnerLayer() {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const cmd = command as unknown as { args: ReadonlyArray<string> };
+      if (cmd.args.includes("--list-models")) {
+        return Effect.succeed(mockHandle({ stdout: PI_LIST_MODELS_FIXTURE, stderr: "", code: 1 }));
+      }
+      if (cmd.args.includes("--version")) {
+        return Effect.succeed(mockHandle({ stdout: "0.78.0", stderr: "", code: 0 }));
+      }
+      return Effect.succeed(mockHandle({ stdout: "", stderr: "unknown args", code: 1 }));
+    }),
+  );
+}
+
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
 describe("piSupportsAgentSettled", () => {
@@ -281,6 +299,20 @@ describe("checkPiProviderStatus", () => {
         expect(snapshot.models).toHaveLength(0);
         expect(snapshot.message).toContain("reported no models");
       }).pipe(Effect.provide(mockPiNoModelsSpawnerLayer())),
+    );
+
+    it.effect("reports an error and ignores parsed rows when the model list exits non-zero", () =>
+      Effect.gen(function* () {
+        const snapshot = yield* checkPiProviderStatus(
+          decodePiSettings({ enabled: true, binaryPath: "pi" }),
+          process.cwd(),
+        );
+
+        expect(snapshot.installed).toBe(true);
+        expect(snapshot.status).toBe("error");
+        expect(snapshot.message).toContain("failed to list models");
+        expect(snapshot.models).toHaveLength(0);
+      }).pipe(Effect.provide(mockPiListModelsFailureSpawnerLayer())),
     );
 
     it.effect("stays disabled when settings disable the provider", () =>

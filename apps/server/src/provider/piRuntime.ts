@@ -16,13 +16,11 @@
  */
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
-import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
-import * as P from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -30,18 +28,16 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const PI_RUNTIME_ERROR_TAG = "PiRuntimeError";
+export class PiRuntimeError extends Schema.TaggedErrorClass<PiRuntimeError>()("PiRuntimeError", {
+  operation: Schema.String,
+  detail: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
 
-export class PiRuntimeError extends Data.TaggedError(PI_RUNTIME_ERROR_TAG)<{
-  readonly operation: string;
-  readonly detail: string;
-  readonly cause?: unknown;
-}> {
-  static readonly is = (u: unknown): u is PiRuntimeError => P.isTagged(u, PI_RUNTIME_ERROR_TAG);
-}
+const isPiRuntimeError = Schema.is(PiRuntimeError);
 
 export function piRuntimeErrorDetail(cause: unknown): string {
-  if (PiRuntimeError.is(cause)) return cause.detail;
+  if (isPiRuntimeError(cause)) return cause.detail;
   if (cause instanceof Error && cause.message.trim().length > 0) return cause.message.trim();
   return String(cause);
 }

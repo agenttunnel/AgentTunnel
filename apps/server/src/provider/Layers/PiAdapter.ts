@@ -80,8 +80,9 @@ export interface PiAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   /**
    * Whether the configured pi binary emits `agent_settled` (0.85+). When
-   * false, `agent_end` settles the turn; when unknown, the latest pi behavior
-   * is assumed so continuations stay attached to their turn.
+   * false, `agent_end` settles the turn; callers that probe the binary pass
+   * the probed capability, and an unknown version resolves to false so the
+   * `agent_end` fallback is used. Omitted defaults to true.
    */
   readonly supportsAgentSettled?: boolean;
   /** How long to wait for pi to accept a prompt before treating it as pending. */
@@ -554,6 +555,70 @@ interface PiSessionContext {
   stopped: boolean;
 }
 
+interface PiThreadLockEntry {
+  readonly semaphore: Semaphore.Semaphore;
+  readonly count: number;
+}
+
+export interface PiThreadLocks {
+  /**
+   * Run `effect` while holding the per-thread lock. Waiters on the same thread
+   * share one semaphore; the entry is dropped once the last holder releases,
+   * so idle threads do not accumulate.
+   */
+  readonly withThreadLock: <A, E, R>(
+    threadId: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
+  /** Number of live per-thread lock entries, exposed for lifecycle tests. */
+  readonly size: Effect.Effect<number>;
+}
+
+export const makePiThreadLocks = (): Effect.Effect<PiThreadLocks> =>
+  Effect.gen(function* () {
+    const locks = yield* SynchronizedRef.make(new Map<string, PiThreadLockEntry>());
+
+    const acquire = (threadId: string) =>
+      SynchronizedRef.modifyEffect(locks, (current) => {
+        const existing = current.get(threadId);
+        if (existing !== undefined) {
+          const next = new Map(current);
+          next.set(threadId, { semaphore: existing.semaphore, count: existing.count + 1 });
+          return Effect.succeed([existing.semaphore, next] as const);
+        }
+        return Semaphore.make(1).pipe(
+          Effect.map((semaphore) => {
+            const next = new Map(current);
+            next.set(threadId, { semaphore, count: 1 });
+            return [semaphore, next] as const;
+          }),
+        );
+      });
+
+    const release = (threadId: string) =>
+      SynchronizedRef.update(locks, (current) => {
+        const existing = current.get(threadId);
+        if (existing === undefined) return current;
+        const next = new Map(current);
+        if (existing.count <= 1) {
+          next.delete(threadId);
+        } else {
+          next.set(threadId, { semaphore: existing.semaphore, count: existing.count - 1 });
+        }
+        return next;
+      });
+
+    return {
+      withThreadLock: (threadId, effect) =>
+        Effect.acquireUseRelease(
+          acquire(threadId),
+          (semaphore) => semaphore.withPermit(effect),
+          () => release(threadId),
+        ),
+      size: SynchronizedRef.get(locks).pipe(Effect.map((current) => current.size)),
+    };
+  });
+
 export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOptions) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("pi");
@@ -572,30 +637,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, PiSessionContext>();
-    const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
+    const threadLocks = yield* makePiThreadLocks();
+    const withThreadLock = threadLocks.withThreadLock;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(Effect.orDie);
     const nextEventId = Effect.map(randomUUIDv4, (id) => EventId.make(id));
-
-    const getThreadSemaphore = (threadId: string) =>
-      SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
-        const existing = Option.fromNullishOr(current.get(threadId));
-        return Option.match(existing, {
-          onNone: () =>
-            Semaphore.make(1).pipe(
-              Effect.map((semaphore) => {
-                const next = new Map(current);
-                next.set(threadId, semaphore);
-                return [semaphore, next] as const;
-              }),
-            ),
-          onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
-        });
-      });
-
-    const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
-      Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);

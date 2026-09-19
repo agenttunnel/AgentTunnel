@@ -29,6 +29,7 @@ import {
   applyPiEvent,
   createPiEventMapperState,
   makePiAdapter,
+  makePiThreadLocks,
   mapPiMessagesToTurns,
   mapPiToolNameToItemType,
   parsePiModelSlug,
@@ -899,6 +900,74 @@ describe("makePiAdapter continuation turns", () => {
         expect(completed[0]?.payload).toMatchObject({ state: "completed" });
       }),
     ),
+  );
+});
+
+describe("makePiThreadLocks", () => {
+  it.live("drops the entry after the last holder completes", () =>
+    Effect.gen(function* () {
+      const locks = yield* makePiThreadLocks();
+      expect(yield* locks.size).toBe(0);
+
+      yield* locks.withThreadLock("thread-a", Effect.void);
+
+      expect(yield* locks.size).toBe(0);
+    }),
+  );
+
+  it.live("holds one entry while active and clears it on failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const locks = yield* makePiThreadLocks();
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+
+        const fiber = yield* locks
+          .withThreadLock(
+            "thread-a",
+            Deferred.succeed(started, void 0).pipe(Effect.andThen(Deferred.await(release))),
+          )
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        expect(yield* locks.size).toBe(1);
+
+        yield* Deferred.succeed(release, void 0);
+        yield* Fiber.join(fiber);
+        expect(yield* locks.size).toBe(0);
+
+        const failed = yield* locks
+          .withThreadLock("thread-a", Effect.fail("boom"))
+          .pipe(Effect.result);
+        expect(failed._tag).toBe("Failure");
+        expect(yield* locks.size).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("serializes concurrent sends on the same thread and cleans up", () =>
+    Effect.gen(function* () {
+      const locks = yield* makePiThreadLocks();
+      const running = yield* Ref.make(false);
+      const overlapped = yield* Ref.make(false);
+
+      const send = () =>
+        locks.withThreadLock(
+          "thread-a",
+          Effect.gen(function* () {
+            const wasRunning = yield* Ref.getAndSet(running, true);
+            if (wasRunning) {
+              yield* Ref.set(overlapped, true);
+            }
+            yield* Effect.yieldNow;
+            yield* Ref.update(running, () => false);
+          }),
+        );
+
+      yield* Effect.all([send(), send(), send()], { concurrency: "unbounded" });
+
+      expect(yield* Ref.get(overlapped)).toBe(false);
+      expect(yield* locks.size).toBe(0);
+    }),
   );
 });
 
