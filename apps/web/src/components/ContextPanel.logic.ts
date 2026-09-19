@@ -10,7 +10,8 @@ import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { formatContextWindowTokens } from "../lib/contextWindow";
 import { formatDayAwareTimestamp } from "../timestampFormat";
 import type { AgentTunnelRoleOption } from "./agentTunnelRoles.logic";
-import { workflowMembers } from "./AgentsPanel.logic";
+import { collectDisplayAgents } from "./AgentsPanel.logic";
+import { type ContextUsageSummary, deriveContextUsage } from "./ContextUsageBar.logic";
 
 /** The thread fields the analysis reads; narrower than the full read model. */
 export interface ContextAnalysisThread {
@@ -23,15 +24,6 @@ export interface ContextAnalysisThread {
 export interface ContextStat {
   readonly label: string;
   readonly value: string;
-}
-
-export interface ContextUsageSummary {
-  readonly usedTokens: number;
-  readonly maxTokens: number | null;
-  readonly usedPercentage: number | null;
-  readonly usedLabel: string;
-  readonly limitLabel: string | null;
-  readonly percentLabel: string | null;
 }
 
 export interface ContextAgentRow {
@@ -75,15 +67,6 @@ const STATUS_LABELS: Record<RuntimeSubagentStatus, string> = {
   interrupted: "Stopped",
 };
 
-/** One row per rendered agents-panel entry, never the coordinator of a populated workflow. */
-function collectDisplayAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
-  const workflowEntries = model.workflows.flatMap((group) => {
-    const members = workflowMembers(group);
-    return members.length > 0 ? members : [group.workflow];
-  });
-  return [...workflowEntries, ...model.directAgents];
-}
-
 function formatDurationMs(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = Math.floor(seconds / 60);
@@ -114,33 +97,6 @@ function agentDuration(agent: RuntimeSubagent): string | null {
   return formatDurationMs(end - start);
 }
 
-function formatPercentage(value: number | null): string | null {
-  if (value === null || !Number.isFinite(value)) {
-    return null;
-  }
-  const clamped = Math.max(0, Math.min(100, value));
-  if (clamped < 10) {
-    return `${clamped.toFixed(1).replace(/\.0$/, "")}%`;
-  }
-  return `${Math.round(clamped)}%`;
-}
-
-function deriveUsage(contextWindow: ContextWindowSnapshot | null): ContextUsageSummary | null {
-  if (contextWindow === null) {
-    return null;
-  }
-  const maxTokens = contextWindow.maxTokens ?? null;
-  const usedPercentage = contextWindow.usedPercentage ?? null;
-  return {
-    usedTokens: contextWindow.usedTokens,
-    maxTokens,
-    usedPercentage,
-    usedLabel: formatContextWindowTokens(contextWindow.usedTokens),
-    limitLabel: maxTokens === null ? null : formatContextWindowTokens(maxTokens),
-    percentLabel: formatPercentage(usedPercentage),
-  };
-}
-
 /**
  * Display data for the Context surface. Reads only fields the app tracks:
  * the thread read model, the latest context-window snapshot, the subagent
@@ -156,7 +112,7 @@ export function deriveContextAnalysis(input: {
   readonly roles: ReadonlyArray<AgentTunnelRoleOption>;
   readonly timestampFormat: TimestampFormat;
 }): ContextAnalysis {
-  const usage = deriveUsage(input.contextWindow);
+  const usage = deriveContextUsage(input.contextWindow);
   const contextWindow = input.contextWindow;
 
   const userMessages = input.thread.messages.filter((message) => message.role === "user").length;

@@ -34,7 +34,6 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
-  ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { ServerConfig } from "../../config.ts";
@@ -53,7 +52,15 @@ import {
   isOpenCodeHarness,
   parseOpenCodeJsonLine,
   parseOpenCodeLogLine,
+  parseOpenCodeStepUsage,
 } from "../agentTunnel/opencodeTransport.ts";
+import {
+  addHarnessUsageTotals,
+  emptyHarnessUsageTotals,
+  runtimeTaskUsageFromTotals,
+  threadUsageSnapshotFromStep,
+  type HarnessUsageTotals,
+} from "../agentTunnel/harnessUsage.ts";
 
 const PROVIDER = ProviderDriverKind.make("agenttunnel");
 const RESUME_VERSION = 1;
@@ -82,6 +89,10 @@ interface AgentTunnelSessionContext {
   readonly cancelled: Ref.Ref<boolean>;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
   readonly agents: Map<string, AgentTunnelAgentMetadata>;
+  /** Per-agent cumulative usage for the active turn, keyed by process id. */
+  readonly agentUsage: Map<string, HarnessUsageTotals>;
+  /** Session-cumulative orchestrator usage; survives across turns. */
+  readonly orchestratorUsage: HarnessUsageTotals;
   readonly agentLogBytes: Map<string, number>;
   readonly agentRawLogBytes: Map<string, number>;
   workflowTitle: string | undefined;
@@ -422,6 +433,62 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     }
   });
 
+  /**
+   * Token frames from the harness stream. OpenCode reports per-step deltas on
+   * `step_finish`; orchestrator steps feed the thread usage snapshot, agent
+   * steps feed that agent's cumulative typed-usage rollup. Harnesses that
+   * stream no comparable frames contribute nothing rather than a guess.
+   */
+  const trackHarnessUsage = Effect.fn("AgentTunnelAdapter.trackHarnessUsage")(function* (
+    threadId: ThreadId,
+    processId: string,
+    line: string,
+  ) {
+    const context = sessions.get(threadId);
+    if (!context) return;
+    const step = parseOpenCodeStepUsage(line);
+    if (!step) return;
+    const turnId = context.activeTurnId;
+    const eventBase = (itemId?: string) =>
+      buildEventBase({
+        threadId,
+        ...(turnId ? { turnId } : {}),
+        ...(itemId ? { itemId } : {}),
+      });
+
+    if (processId.startsWith("orchestrator")) {
+      const cumulative = addHarnessUsageTotals(context.orchestratorUsage, step);
+      yield* emit({
+        ...(yield* eventBase()),
+        type: "thread.token-usage.updated",
+        payload: {
+          usage: threadUsageSnapshotFromStep(step, cumulative),
+        },
+      });
+      return;
+    }
+
+    let cumulative = context.agentUsage.get(processId);
+    if (cumulative === undefined) {
+      cumulative = emptyHarnessUsageTotals();
+      context.agentUsage.set(processId, cumulative);
+    }
+    addHarnessUsageTotals(cumulative, step);
+    const metadata = context.agents.get(processId);
+    yield* emit({
+      ...(yield* eventBase(processId)),
+      type: "task.progress",
+      payload: {
+        taskId: RuntimeTaskId.make(processId),
+        description: metadata?.task ?? processId,
+        typedUsage: runtimeTaskUsageFromTotals(cumulative),
+        taskType: "local_agent",
+        ...(metadata?.role ? { role: metadata.role } : {}),
+        timelineBypass: true,
+      },
+    });
+  });
+
   const killThreadProcesses = Effect.fn("AgentTunnelAdapter.killThreadProcesses")(function* (
     threadId: ThreadId,
   ) {
@@ -516,14 +583,19 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ),
         );
         const includeReasoning = spec.id.startsWith("orchestrator");
-        const lines = openCode
+        const usageLines = openCode
           ? observedLines.pipe(
+              Stream.tap((line) => trackHarnessUsage(threadId, spec.id, line).pipe(Effect.orDie)),
+            )
+          : observedLines;
+        const lines = openCode
+          ? usageLines.pipe(
               Stream.flatMap((line) =>
                 Stream.fromIterable(parseOpenCodeJsonLine(line, { includeReasoning })),
               ),
               Stream.mapError(processError),
             )
-          : observedLines.pipe(Stream.mapError(processError));
+          : usageLines.pipe(Stream.mapError(processError));
         return {
           pid: Number(child.pid),
           lines,
@@ -612,6 +684,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       cancelled: yield* Ref.make(false),
       turns: [],
       agents: new Map(),
+      agentUsage: new Map(),
+      orchestratorUsage: emptyHarnessUsageTotals(),
       agentLogBytes: new Map(),
       agentRawLogBytes: new Map(),
       workflowTitle: undefined,
@@ -689,6 +763,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.workflowTitle = input.input ?? "AgentTunnel workflow";
     context.workflowId = workflowId;
     context.agents.clear();
+    context.agentUsage.clear();
     context.agentLogBytes.clear();
     context.agentRawLogBytes.clear();
     // Steering is per-turn: a prior turn's queue must never leak into this one.
