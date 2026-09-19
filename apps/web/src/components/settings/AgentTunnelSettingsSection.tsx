@@ -34,6 +34,17 @@ interface AgentTunnelSettingsSectionProps {
   readonly onChange: (nextConfig: Record<string, unknown> | undefined) => void;
 }
 
+function readConfigNumber(config: unknown, key: string, fallback: number): number {
+  if (config === null || typeof config !== "object") return fallback;
+  const value = (config as Record<string, unknown>)[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
 function readConfigString(config: unknown, key: string): string {
   if (config === null || typeof config !== "object") return "";
   const value = (config as Record<string, unknown>)[key];
@@ -50,7 +61,7 @@ function writeConfigValue(
   config: unknown,
   onChange: (nextConfig: Record<string, unknown> | undefined) => void,
   key: string,
-  value: string | boolean,
+  value: string | boolean | number,
 ): void {
   const base: Record<string, unknown> =
     config !== null && typeof config === "object" ? { ...(config as Record<string, unknown>) } : {};
@@ -257,7 +268,7 @@ export function AgentTunnelSettingsSection({
           onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             if (!Number.isNaN(parsed)) {
-              writeConfigValue(config, onChange, "maxOrchestratorPasses", String(parsed));
+              writeConfigValue(config, onChange, "maxOrchestratorPasses", parsed);
             }
           }}
         />
@@ -278,7 +289,7 @@ export function AgentTunnelSettingsSection({
           onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             if (!Number.isNaN(parsed)) {
-              writeConfigValue(config, onChange, "orchestratorPassTimeoutMinutes", String(parsed));
+              writeConfigValue(config, onChange, "orchestratorPassTimeoutMinutes", parsed);
             }
           }}
         />
