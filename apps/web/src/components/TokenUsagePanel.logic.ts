@@ -25,8 +25,8 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { formatDayAwareTimestamp } from "../timestampFormat";
-import { workflowMembers } from "./AgentsPanel.logic";
-import { type ContextUsageSummary, deriveContextUsage } from "./ContextUsageBar";
+import { collectDisplayAgents } from "./AgentsPanel.logic";
+import { type ContextUsageSummary, deriveContextUsage } from "./ContextUsageBar.logic";
 
 export interface TokenUsageTotals {
   readonly inputTokens: number;
@@ -103,15 +103,6 @@ function asCount(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-/** One row per rendered agents-panel entry, never the coordinator of a populated workflow. */
-function displayAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
-  const workflowEntries = model.workflows.flatMap((group) => {
-    const members = workflowMembers(group);
-    return members.length > 0 ? members : [group.workflow];
-  });
-  return [...workflowEntries, ...model.directAgents];
-}
-
 function agentTotalTokens(agent: RuntimeSubagent): number | null {
   const total = agent.usage?.totalTokens;
   return total !== undefined && Number.isFinite(total) ? total : null;
@@ -135,14 +126,20 @@ function applyMainUsage(turn: MutableTurn, activity: OrchestrationThreadActivity
   const cached = asCount(payload.lastCachedInputTokens) ?? asCount(payload.cachedInputTokens);
   const reasoning =
     asCount(payload.lastReasoningOutputTokens) ?? asCount(payload.reasoningOutputTokens);
-  if (input === null && output === null && cached === null && reasoning === null) {
+  const processed = asCount(payload.totalProcessedTokens);
+  if (
+    input === null &&
+    output === null &&
+    cached === null &&
+    reasoning === null &&
+    processed === null
+  ) {
     return;
   }
   turn.inputTokens = input ?? 0;
   turn.outputTokens = output ?? 0;
   turn.cachedInputTokens = cached ?? 0;
   turn.reasoningOutputTokens = reasoning ?? 0;
-  const processed = asCount(payload.totalProcessedTokens);
   if (processed !== null) {
     turn.processedTokens = Math.max(turn.processedTokens ?? 0, processed);
   }
@@ -221,7 +218,7 @@ export function deriveTokenUsage(input: {
   }
 
   const turnList = Array.from(turns.values());
-  const agents = displayAgents(input.model);
+  const agents = collectDisplayAgents(input.model);
 
   // Subagents are attributed to the turn that first observed them: the turn
   // "bought" that agent's work, even when the agent outlives the pass.
@@ -321,6 +318,12 @@ export function deriveTokenUsage(input: {
     agents: agentRows,
     context: deriveContextUsage(input.contextWindow),
     hasUsage:
-      rows.length > 0 || agentRows.some((row) => row.totalTokens !== null && row.totalTokens > 0),
+      rows.length > 0 ||
+      agentRows.some((row) => row.totalTokens !== null && row.totalTokens > 0) ||
+      inputTokens > 0 ||
+      outputTokens > 0 ||
+      cachedInputTokens > 0 ||
+      reasoningOutputTokens > 0 ||
+      processedTokens !== null,
   };
 }

@@ -10,10 +10,8 @@ import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { formatContextWindowTokens } from "../lib/contextWindow";
 import { formatDayAwareTimestamp } from "../timestampFormat";
 import type { AgentTunnelRoleOption } from "./agentTunnelRoles.logic";
-import { workflowMembers } from "./AgentsPanel.logic";
-import { type ContextUsageSummary, deriveContextUsage } from "./ContextUsageBar";
-
-export type { ContextUsageSummary } from "./ContextUsageBar";
+import { collectDisplayAgents } from "./AgentsPanel.logic";
+import { type ContextUsageSummary, deriveContextUsage } from "./ContextUsageBar.logic";
 
 /** The thread fields the analysis reads; narrower than the full read model. */
 export interface ContextAnalysisThread {
@@ -68,15 +66,6 @@ const STATUS_LABELS: Record<RuntimeSubagentStatus, string> = {
   cancelled: "Stopped",
   interrupted: "Stopped",
 };
-
-/** One row per rendered agents-panel entry, never the coordinator of a populated workflow. */
-function collectDisplayAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
-  const workflowEntries = model.workflows.flatMap((group) => {
-    const members = workflowMembers(group);
-    return members.length > 0 ? members : [group.workflow];
-  });
-  return [...workflowEntries, ...model.directAgents];
-}
 
 function formatDurationMs(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));

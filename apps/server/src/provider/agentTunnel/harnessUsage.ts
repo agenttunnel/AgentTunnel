@@ -51,12 +51,14 @@ export function threadUsageSnapshotFromStep(
     totalProcessedTokens: cumulative.totalTokens,
     inputTokens: step.inputTokens,
     cachedInputTokens: step.cachedInputTokens,
-    outputTokens: step.outputTokens,
+    // OpenCode counts reasoning beside output; consumers of these contracts
+    // treat it as included in output (Codex semantics), so normalize here.
+    outputTokens: step.outputTokens + step.reasoningOutputTokens,
     reasoningOutputTokens: step.reasoningOutputTokens,
     lastUsedTokens: step.totalTokens,
     lastInputTokens: step.inputTokens,
     lastCachedInputTokens: step.cachedInputTokens,
-    lastOutputTokens: step.outputTokens,
+    lastOutputTokens: step.outputTokens + step.reasoningOutputTokens,
     lastReasoningOutputTokens: step.reasoningOutputTokens,
   };
 }
@@ -66,7 +68,7 @@ export function runtimeTaskUsageFromTotals(cumulative: HarnessUsageTotals): Runt
     totalTokens: cumulative.totalTokens,
     inputTokens: cumulative.inputTokens,
     cachedInputTokens: cumulative.cachedInputTokens,
-    outputTokens: cumulative.outputTokens,
+    outputTokens: cumulative.outputTokens + cumulative.reasoningOutputTokens,
     reasoningOutputTokens: cumulative.reasoningOutputTokens,
   };
 }

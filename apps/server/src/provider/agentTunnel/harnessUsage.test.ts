@@ -45,17 +45,17 @@ it("threadUsageSnapshotFromStep keeps the step in last* fields and the run total
     totalProcessedTokens: 100_000,
     inputTokens: 10_871,
     cachedInputTokens: 13_056,
-    outputTokens: 213,
+    outputTokens: 695,
     reasoningOutputTokens: 482,
     lastUsedTokens: 24_622,
     lastInputTokens: 10_871,
     lastCachedInputTokens: 13_056,
-    lastOutputTokens: 213,
+    lastOutputTokens: 695,
     lastReasoningOutputTokens: 482,
   });
 });
 
-it("runtimeTaskUsageFromTotals reports the cumulative agent rollup", () => {
+it("runtimeTaskUsageFromTotals folds reasoning into the reported output", () => {
   const cumulative = {
     totalTokens: 24_722,
     inputTokens: 10_951,
@@ -64,5 +64,11 @@ it("runtimeTaskUsageFromTotals reports the cumulative agent rollup", () => {
     reasoningOutputTokens: 487,
   };
 
-  NodeAssert.deepEqual(runtimeTaskUsageFromTotals(cumulative), cumulative);
+  NodeAssert.deepEqual(runtimeTaskUsageFromTotals(cumulative), {
+    totalTokens: 24_722,
+    inputTokens: 10_951,
+    cachedInputTokens: 13_056,
+    outputTokens: 715,
+    reasoningOutputTokens: 487,
+  });
 });

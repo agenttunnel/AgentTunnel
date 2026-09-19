@@ -51,7 +51,7 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
 
-function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
+export function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
     <span
       aria-hidden

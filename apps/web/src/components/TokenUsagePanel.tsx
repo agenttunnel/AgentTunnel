@@ -16,19 +16,9 @@ import { type ReactNode, useMemo } from "react";
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { cn } from "~/lib/utils";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { StatusDot } from "./AgentsPanel";
 import { ContextUsageBar } from "./ContextUsageBar";
 import { deriveTokenUsage } from "./TokenUsagePanel.logic";
-
-const STATUS_DOT_CLASSES: Record<string, string> = {
-  pending: "bg-info",
-  running: "bg-info",
-  waiting: "bg-info",
-  idle: "bg-muted-foreground/50",
-  completed: "bg-success",
-  failed: "bg-destructive",
-  cancelled: "bg-muted-foreground/60",
-  interrupted: "bg-muted-foreground/60",
-};
 
 function SectionHeader({ children }: { children: ReactNode }) {
   return (
@@ -217,13 +207,7 @@ export function TokenUsagePanel({
                       <tr key={agent.id} className="border-t border-border/40">
                         <td className="py-1 pr-2 pl-2">
                           <div className="flex max-w-44 items-center gap-1.5">
-                            <span
-                              aria-hidden
-                              className={cn(
-                                "size-1.5 shrink-0 rounded-full",
-                                STATUS_DOT_CLASSES[agent.status] ?? "bg-muted-foreground/50",
-                              )}
-                            />
+                            <StatusDot status={agent.status} />
                             <span className="truncate text-foreground/90">{agent.title}</span>
                           </div>
                         </td>

@@ -270,6 +270,24 @@ describe("deriveTokenUsage", () => {
 
     expect(model.turns).toEqual([]);
     expect(model.totals).toMatchObject({ inputTokens: 7_000, outputTokens: 300 });
+    expect(model.hasUsage).toBe(true);
+  });
+
+  it("counts a processed-only snapshot instead of hiding the surface", () => {
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          payload: { usedTokens: 1_000, totalProcessedTokens: 42_000 },
+        }),
+      ],
+    });
+
+    expect(model.hasUsage).toBe(true);
+    expect(model.totals.processedTokens).toBe(42_000);
+    expect(model.turns).toHaveLength(1);
+    expect(model.turns[0]).toMatchObject({ turnId: "turn-1", totalTokens: 0 });
   });
 
   it("reports missing agent usage as an em dash instead of zero", () => {

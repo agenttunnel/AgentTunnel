@@ -8,6 +8,18 @@ export function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<R
   return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
 }
 
+/**
+ * One row per rendered agents-panel entry, never the coordinator of a populated
+ * workflow (the coordinator stands in only when it has no members).
+ */
+export function collectDisplayAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
+  const workflowEntries = model.workflows.flatMap((group) => {
+    const members = workflowMembers(group);
+    return members.length > 0 ? members : [group.workflow];
+  });
+  return [...workflowEntries, ...model.directAgents];
+}
+
 /** Resolves the roster row behind a drill-in selection, across every section. */
 export function findAgentById(model: AgentPanelModel, agentId: string): RuntimeSubagent | null {
   for (const group of model.workflows) {
