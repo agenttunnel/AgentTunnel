@@ -33,8 +33,7 @@ export type AgentTunnelDriverEnv =
   | Crypto.Crypto
   | OpenCodeRuntime
   | ProviderEventLoggers
-  | ServerConfig
-  | OpenCodeServerOwner.OpenCodeServerOwner;
+  | ServerConfig;
 
 const decodeSettings = Schema.decodeSync(AgentTunnelSettings);
 
