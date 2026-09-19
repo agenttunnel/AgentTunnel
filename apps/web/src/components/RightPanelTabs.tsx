@@ -2,6 +2,7 @@ import type { ContextMenuItem, PreviewSessionSnapshot, PullRequestState } from "
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
   Bot,
+  ChartNoAxesColumnIncreasing,
   FileDiff,
   Files,
   Gauge,
@@ -76,6 +77,7 @@ interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddAgents: () => void;
   onAddContext: () => void;
+  onAddUsage: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -83,6 +85,7 @@ interface RightPanelTabsProps {
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
   contextAvailable: boolean;
+  usageAvailable: boolean;
   pullRequestStatuses?: Readonly<Record<string, PullRequestTabStatus>>;
   /** Running + waiting subagents; badges the Agents card in the empty state. */
   liveAgentCount: number;
@@ -105,6 +108,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequest: "This thread's branch has no pull request yet.",
   agents: "Agents are only available from a thread.",
   context: "Context analysis is only available for AgentTunnel threads.",
+  usage: "Token usage is only available from a thread.",
 } as const;
 
 /** Overlays that must win over the launcher's letter shortcuts. */
@@ -128,6 +132,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequest: "No pull request on this branch yet.",
   agents: "Available from a thread.",
   context: "Available for AgentTunnel threads.",
+  usage: "Available from a thread.",
 } as const;
 
 type TabContextMenuAction =
@@ -258,6 +263,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddAgents: () => void;
   onAddContext: () => void;
+  onAddUsage: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -265,6 +271,7 @@ function RightPanelEmptyState(props: {
   pullRequestAvailable: boolean;
   agentsAvailable: boolean;
   contextAvailable: boolean;
+  usageAvailable: boolean;
   liveAgentCount: number;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
@@ -339,6 +346,16 @@ function RightPanelEmptyState(props: {
       available: props.contextAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.context,
       onClick: props.onAddContext,
+      badgeCount: 0,
+    },
+    {
+      label: "Usage",
+      description: "See token spend by turn and subagent.",
+      icon: ChartNoAxesColumnIncreasing,
+      shortcut: "U",
+      available: props.usageAvailable,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.usage,
+      onClick: props.onAddUsage,
       badgeCount: 0,
     },
   ] as const;
@@ -527,6 +544,8 @@ function surfaceTitle(
       return "Agents";
     case "context":
       return "Context";
+    case "usage":
+      return "Token usage";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -614,6 +633,8 @@ function SurfaceIcon({
       return <Bot className="size-3 shrink-0" />;
     case "context":
       return <Gauge className="size-3 shrink-0" />;
+    case "usage":
+      return <ChartNoAxesColumnIncreasing className="size-3 shrink-0" />;
   }
 }
 
@@ -679,6 +700,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.contextAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.context,
       onClick: props.onAddContext,
+    },
+    {
+      label: "Usage",
+      icon: ChartNoAxesColumnIncreasing,
+      shortcut: "U",
+      available: props.usageAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.usage,
+      onClick: props.onAddUsage,
     },
   ] as const;
 
@@ -968,6 +997,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddAgents={props.onAddAgents}
             onAddContext={props.onAddContext}
+            onAddUsage={props.onAddUsage}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
@@ -975,6 +1005,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             pullRequestAvailable={props.pullRequestAvailable}
             agentsAvailable={props.agentsAvailable}
             contextAvailable={props.contextAvailable}
+            usageAvailable={props.usageAvailable}
             liveAgentCount={props.liveAgentCount}
           />
         ) : (

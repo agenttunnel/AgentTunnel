@@ -11,3 +11,18 @@ completed-turn record will not appear.
 Use **Past 24h** for an hourly chart covering the exact rolling 24-hour period. The **7 days**,
 **30 days**, and **90 days** ranges use daily resolution. Cost and token toggles update both the
 headline and chart, and refreshing rescans every connected environment.
+
+## Per-thread token usage
+
+While a thread is open, open the **Usage** surface from the right panel's surface launcher (or the
+`+` menu) to see what that thread has spent. Close it like any other panel tab.
+
+The pane is cumulative for the thread and shows:
+
+- **Totals**: input, output, cached input, reasoning output, subagent, and total tokens, plus the
+  provider's processed-token count when it reports one.
+- **By turn**: each turn's input, output, and subagent tokens, and the turn's total.
+- **Agents**: every subagent's input, output, tool-call count, and total.
+
+Subagent tokens count toward the turn that spawned the agent. Figures are exactly what the provider
+reported; providers that report no usage leave the pane empty instead of estimating.

@@ -171,6 +171,7 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import { ContextPanel } from "./ContextPanel";
+import { TokenUsagePanel } from "./TokenUsagePanel";
 import {
   agentTunnelRoleHarnessKey,
   agentTunnelRoleModelKey,
@@ -3617,6 +3618,10 @@ function ChatViewContent(props: ChatViewProps) {
   const addContextSurface = useCallback(() => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "context");
+  }, [activeThreadRef]);
+  const addUsageSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "usage");
   }, [activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
@@ -7159,6 +7164,13 @@ function ChatViewContent(props: ChatViewProps) {
         roles={activeAgentTunnelRoles}
         timestampFormat={timestampFormat}
       />
+    ) : activeRightPanelSurface?.kind === "usage" ? (
+      <TokenUsagePanel
+        model={agentPanelModel}
+        contextWindow={activeContextWindow}
+        activities={threadActivities}
+        timestampFormat={timestampFormat}
+      />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
@@ -7640,6 +7652,7 @@ function ChatViewContent(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
           onAddContext={addContextSurface}
+          onAddUsage={addUsageSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
@@ -7647,6 +7660,7 @@ function ChatViewContent(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           agentsAvailable
           contextAvailable={contextSurfaceAvailable}
+          usageAvailable
           pullRequestStatuses={pullRequestTabStatuses}
           liveAgentCount={agentPanelModel.liveCount}
         >
@@ -7682,6 +7696,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
             onAddContext={addContextSurface}
+            onAddUsage={addUsageSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
@@ -7689,6 +7704,7 @@ function ChatViewContent(props: ChatViewProps) {
             pullRequestAvailable={pullRequestSurfaceAvailable}
             agentsAvailable
             contextAvailable={contextSurfaceAvailable}
+            usageAvailable
             pullRequestStatuses={pullRequestTabStatuses}
             liveAgentCount={agentPanelModel.liveCount}
           >

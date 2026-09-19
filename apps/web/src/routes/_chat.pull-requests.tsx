@@ -1588,6 +1588,7 @@ function PullRequestsRouteView() {
             onAddPullRequest={() => undefined}
             onAddAgents={() => undefined}
             onAddContext={() => undefined}
+            onAddUsage={() => undefined}
             browserAvailable={false}
             terminalAvailable={false}
             diffAvailable={false}
@@ -1595,6 +1596,7 @@ function PullRequestsRouteView() {
             pullRequestAvailable={false}
             agentsAvailable={false}
             contextAvailable={false}
+            usageAvailable={false}
             liveAgentCount={0}
             pullRequestStatuses={pullRequestTabStatuses}
           >
