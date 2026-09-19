@@ -162,6 +162,17 @@ it("parseOpenCodeJsonLine surfaces harness error events", () => {
   NodeAssert.deepEqual(parseOpenCodeJsonLine(line), ["\u2717 rate limited"]);
 });
 
+it("parseOpenCodeJsonLine includes reasoning only when requested", () => {
+  const line = JSON.stringify({
+    type: "reasoning",
+    part: { type: "reasoning", text: "Weighing options." },
+  });
+  NodeAssert.deepEqual(parseOpenCodeJsonLine(line), []);
+  NodeAssert.deepEqual(parseOpenCodeJsonLine(line, { includeReasoning: true }), [
+    "Weighing options.",
+  ]);
+});
+
 it("parseOpenCodeLogLine keeps reasoning parts with their raw text", () => {
   const line = JSON.stringify({
     type: "reasoning",

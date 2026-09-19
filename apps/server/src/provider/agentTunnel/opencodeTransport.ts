@@ -175,7 +175,10 @@ function splitTextLines(text: string): ReadonlyArray<string> {
 }
 
 /** Display lines for the orchestrator chat message, derived from log entries. */
-export function parseOpenCodeJsonLine(raw: string): ReadonlyArray<string> {
+export function parseOpenCodeJsonLine(
+  raw: string,
+  options: { readonly includeReasoning?: boolean } = {},
+): ReadonlyArray<string> {
   const lines: string[] = [];
   for (const entry of parseOpenCodeLogLine(raw)) {
     switch (entry.kind) {
@@ -192,6 +195,9 @@ export function parseOpenCodeJsonLine(raw: string): ReadonlyArray<string> {
         lines.push(entry.text);
         break;
       case "reasoning":
+        if (options.includeReasoning === true) {
+          lines.push(...splitTextLines(entry.text));
+        }
         break;
     }
   }

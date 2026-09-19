@@ -88,6 +88,7 @@ interface AgentTunnelSessionContext {
 export interface AgentTunnelAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly environment?: ProviderInstanceEnvironment;
+  readonly availableModels?: ReadonlyArray<string>;
   /** Optional per-thread NDJSON trace writer (provider-native event log). */
   readonly nativeEventLogger?: EventNdjsonLogger;
 }
@@ -461,9 +462,12 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             appendAgentLogEntries(threadId, spec.id, line, openCode).pipe(Effect.orDie),
           ),
         );
+        const includeReasoning = spec.id.startsWith("orchestrator");
         const lines = openCode
           ? observedLines.pipe(
-              Stream.flatMap((line) => Stream.fromIterable(parseOpenCodeJsonLine(line))),
+              Stream.flatMap((line) =>
+                Stream.fromIterable(parseOpenCodeJsonLine(line, { includeReasoning })),
+              ),
               Stream.mapError(processError),
             )
           : observedLines.pipe(Stream.mapError(processError));
@@ -630,6 +634,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           userTask: input.input ?? "",
           cwd: context.cwd,
           ...(model ? { model } : {}),
+          availableModels: options.availableModels ?? [],
           settings: effectiveSettings,
           process: processRunner,
           emit: (event) => emitEvent(input.threadId, turnId, event).pipe(Effect.orDie),
