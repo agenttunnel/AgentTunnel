@@ -188,6 +188,76 @@ it.effect("emits a periodic progress recap while tasks stay running", () =>
   ),
 );
 
+it.effect("hands steering messages to the next planning pass", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const prompts: string[] = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 2,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        prompts.push(spec.prompt);
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(
+            spec.prompt.includes("Summary pass")
+              ? ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}']
+              : spec.id.startsWith("orchestrator")
+                ? [
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Work","pipeline":"implementation"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ]
+                : [
+                    '__AGENTTUNNEL_TOOL__ {"name":"note_finding","arguments":{"key":"findings","value":"done"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}',
+                  ],
+          ),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+    let delivered = false;
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "steer me",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+      takeSteeringMessages: () =>
+        Effect.sync(() => {
+          if (delivered) return [];
+          delivered = true;
+          return ["also update the docs"];
+        }),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    const markdown = events
+      .filter(
+        (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
+          event.type === "orchestrator.output",
+      )
+      .map((event) => event.text)
+      .join("");
+    NodeAssert.match(markdown, /Steering received/);
+    NodeAssert.ok(
+      prompts.some(
+        (prompt) => prompt.includes("Summary pass") && prompt.includes("also update the docs"),
+      ),
+      "expected steering in the summary pass prompt",
+    );
+  }),
+);
+
 /**
  * Shared fake harness for the markdown-shape tests: the orchestrator plans a
  * two-executor pipeline plus a dependent reviewer pipeline, and each executor

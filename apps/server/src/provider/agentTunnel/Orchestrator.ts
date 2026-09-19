@@ -124,6 +124,7 @@ export interface AgentTunnelRunOptions {
   readonly orchestratorPassTimeout?: Duration.Input;
   readonly threadHistory?: ReadonlyArray<{ readonly task: string; readonly summary?: string }>;
   readonly priorSharedContext?: string;
+  readonly takeSteeringMessages?: () => Effect.Effect<ReadonlyArray<string>>;
 }
 
 interface DispatchedTask {
@@ -553,14 +554,19 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return `\n\n## Available models\n\n${availableModels.join("\n")}`;
   };
 
-  const summaryPrompt = (): string => {
+  const steeringBlock = (steering: ReadonlyArray<string>): string =>
+    steering.length === 0
+      ? ""
+      : `\n\n## Steering from the user (sent while work was running)\n\n${steering.map((message) => `- ${message}`).join("\n")}\n\nWeigh this before deciding what to do next.`;
+
+  const summaryPrompt = (steering: ReadonlyArray<string>): string => {
     const pipelineSummary = pipelineOrder
       .map((id) => {
         const pipeline = pipelines.get(id);
         return `- ${id}: ${pipeline?.status ?? "pending"}`;
       })
       .join("\n");
-    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
+    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
   };
 
   const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (
@@ -570,6 +576,14 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       yield* emit({
         type: "orchestrator.output",
         text: `\n---\n\n## Summary pass ${pass + 1}\n\nThe orchestrator is checking the completed work for follow-up tasks.\n`,
+      });
+    }
+    const steering =
+      pass > 0 && options.takeSteeringMessages ? yield* options.takeSteeringMessages() : [];
+    if (steering.length > 0) {
+      yield* emit({
+        type: "orchestrator.output",
+        text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
       });
     }
     const result = yield* runProcess(
@@ -587,7 +601,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         prompt:
           pass === 0
             ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
-            : summaryPrompt(),
+            : summaryPrompt(steering),
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,
       },
       handleOrchestratorLine,
