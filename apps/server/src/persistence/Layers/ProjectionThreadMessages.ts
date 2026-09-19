@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachment } from "@t3tools/contracts";
+import { ChatAttachment, ThreadMessageSteeringStatus } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -21,6 +21,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    steering: Schema.NullOr(ThreadMessageSteeringStatus),
   }),
 );
 
@@ -37,6 +38,7 @@ function toProjectionThreadMessage(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+    ...(row.steering !== null ? { steering: row.steering } : {}),
   };
 }
 
@@ -57,6 +59,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json,
           is_streaming,
+          steering,
           created_at,
           updated_at
         )
@@ -75,6 +78,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             )
           ),
           ${row.isStreaming ? 1 : 0},
+          ${row.steering ?? null},
           ${row.createdAt},
           ${row.updatedAt}
         )
@@ -89,6 +93,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             projection_thread_messages.attachments_json
           ),
           is_streaming = excluded.is_streaming,
+          steering = COALESCE(excluded.steering, projection_thread_messages.steering),
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
       `;
@@ -108,6 +113,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
+          steering,
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
@@ -129,6 +135,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
+          steering,
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages

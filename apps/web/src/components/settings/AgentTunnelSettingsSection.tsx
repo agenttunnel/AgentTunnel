@@ -188,6 +188,7 @@ export function AgentTunnelSettingsSection({
   const autoMode = readConfigBoolean(config, "autoMode", false);
   const maxPasses = readConfigNumber(config, "maxOrchestratorPasses", 4);
   const passTimeoutMinutes = readConfigNumber(config, "orchestratorPassTimeoutMinutes", 15);
+  const recapIntervalSeconds = readConfigNumber(config, "orchestratorRecapIntervalSeconds", 30);
 
   return (
     <div className="space-y-4">
@@ -297,6 +298,32 @@ export function AgentTunnelSettingsSection({
                 onChange,
                 "orchestratorPassTimeoutMinutes",
                 Math.min(120, Math.max(1, parsed)),
+              );
+            }
+          }}
+        />
+      </label>
+
+      <label className="block rounded-lg border border-border/60 bg-muted/20 p-3">
+        <span className="block text-sm font-medium text-foreground">Progress recap interval</span>
+        <span className="mb-2 block text-xs text-muted-foreground">
+          Seconds between live progress recaps (elapsed time, running agents, per-pipeline status)
+          while a workflow runs. Set to 0 to turn the heartbeat off.
+        </span>
+        <Input
+          className="mt-1.5 max-w-28"
+          type="number"
+          min={0}
+          max={900}
+          value={Number.isFinite(recapIntervalSeconds) ? recapIntervalSeconds : 30}
+          onChange={(event) => {
+            const parsed = Number.parseInt(event.target.value, 10);
+            if (!Number.isNaN(parsed)) {
+              writeConfigValue(
+                config,
+                onChange,
+                "orchestratorRecapIntervalSeconds",
+                Math.min(900, Math.max(0, parsed)),
               );
             }
           }}

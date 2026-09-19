@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import {
   EventId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProviderItemId,
   PositiveInt,
@@ -14,7 +15,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
-import { ProviderApprovalOption } from "./orchestration.ts";
+import { ProviderApprovalOption, ThreadMessageSteeringStatus } from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -991,6 +992,21 @@ const ProviderRuntimeUserInputResolvedEvent = Schema.Struct({
 export type ProviderRuntimeUserInputResolvedEvent =
   typeof ProviderRuntimeUserInputResolvedEvent.Type;
 
+const SteeringUpdatedType = Schema.Literal("steering.updated");
+
+const SteeringUpdatedPayload = Schema.Struct({
+  messageId: MessageId,
+  status: ThreadMessageSteeringStatus,
+});
+export type SteeringUpdatedPayload = typeof SteeringUpdatedPayload.Type;
+
+const ProviderRuntimeSteeringUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SteeringUpdatedType,
+  payload: SteeringUpdatedPayload,
+});
+export type ProviderRuntimeSteeringUpdatedEvent = typeof ProviderRuntimeSteeringUpdatedEvent.Type;
+
 const ProviderRuntimeTaskStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskStartedType,
@@ -1170,6 +1186,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeRequestResolvedEvent,
   ProviderRuntimeUserInputRequestedEvent,
   ProviderRuntimeUserInputResolvedEvent,
+  ProviderRuntimeSteeringUpdatedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskUpdatedEvent,

@@ -19,6 +19,7 @@ import {
   ThreadCreatedPayload,
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
+  ThreadMessageSteeringUpdatedPayload,
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
@@ -559,6 +560,31 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.message-steering-updated":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadMessageSteeringUpdatedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread || !thread.messages.some((entry) => entry.id === payload.messageId)) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages: thread.messages.map((entry) =>
+              entry.id === payload.messageId
+                ? { ...entry, steering: payload.steering, updatedAt: payload.updatedAt }
+                : entry,
+            ),
             updatedAt: event.occurredAt,
           }),
         };
