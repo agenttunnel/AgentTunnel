@@ -14,6 +14,7 @@ export type TextGenerationProvider =
   | "cursor"
   | "grok"
   | "opencode"
+  | "pi"
   | "agenttunnel";
 
 export interface CommitMessageGenerationInput {

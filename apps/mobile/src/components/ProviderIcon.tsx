@@ -1,4 +1,4 @@
-import { Path, Svg } from "react-native-svg";
+import { Path, Rect, Svg } from "react-native-svg";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 
 type ProviderIconProps = {
@@ -55,6 +55,21 @@ export function ProviderIcon(props: ProviderIconProps) {
       <Svg width={size} height={size} viewBox="0 0 32 40" fill="none">
         <Path d="M24 32H8V16H24V32Z" fill={isDarkMode ? "#4B4646" : "#CFCECD"} />
         <Path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill={isDarkMode ? "#F1ECEC" : "#211E1E"} />
+      </Svg>
+    );
+  }
+
+  if (props.provider === "pi") {
+    const glyph = isDarkMode ? "#171717" : "#e5e5e5";
+    return (
+      <Svg width={size} height={size} viewBox="0 0 800 800" fill="none">
+        <Rect width={800} height={800} rx={160} fill={mono} />
+        <Path
+          fill={glyph}
+          fillRule="evenodd"
+          d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+        />
+        <Path fill={glyph} d="M517.36 400H634.72V634.72H517.36Z" />
       </Svg>
     );
   }

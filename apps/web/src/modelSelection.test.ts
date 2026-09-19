@@ -467,6 +467,60 @@ describe("instance-scoped model selection", () => {
     ).toBe("gpt-5.6-sol");
   });
 
+  it("preserves an existing Pi model when a catalog refresh no longer contains it", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        models: ["google/gemini-3-pro-preview"],
+      }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("pi"),
+        settingsWithProviderInstances(),
+        providers,
+        "anthropic/claude-sonnet-4-5",
+        { preserveUnavailableSelection: true },
+      ),
+    ).toBe("anthropic/claude-sonnet-4-5");
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("pi"),
+        settingsWithProviderInstances(),
+        providers,
+        "anthropic/claude-sonnet-4-5",
+      ),
+    ).toBe("google/gemini-3-pro-preview");
+  });
+
+  it("adds the selected missing Pi model as an unavailable option", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        models: ["google/gemini-3-pro-preview"],
+      }),
+    ];
+    const entry = deriveProviderInstanceEntries(providers)[0]!;
+
+    expect(
+      getAppModelOptionsForInstance(
+        settingsWithProviderInstances(),
+        entry,
+        "anthropic/claude-sonnet-4-5",
+      ),
+    ).toEqual([
+      expect.objectContaining({ slug: "google/gemini-3-pro-preview" }),
+      expect.objectContaining({
+        slug: "anthropic/claude-sonnet-4-5",
+        name: "anthropic/claude-sonnet-4-5",
+        isUnavailable: true,
+      }),
+    ]);
+  });
+
   it("falls back from an explicit non-OpenCode draft with a missing model", () => {
     const instanceId = ProviderInstanceId.make("codex");
     const driver = ProviderDriverKind.make("codex");

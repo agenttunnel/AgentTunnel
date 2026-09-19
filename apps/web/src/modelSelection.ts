@@ -20,6 +20,7 @@ import * as Result from "effect/Result";
 import {
   getDefaultServerModel,
   getProviderModels,
+  keepsUnavailableModelSelection,
   resolveSelectableProvider,
 } from "./providerModels";
 import { ModelEsque } from "./components/chat/providerIconUtils";
@@ -81,14 +82,14 @@ export interface AppModelOption {
   isUnavailable?: boolean;
 }
 
-function appendUnavailableOpenCodeSelection(
+function appendUnavailableCatalogSelection(
   options: AppModelOption[],
   rawModels: ReadonlyArray<ServerProvider["models"][number]>,
   provider: ProviderDriverKind,
   selectedModel: string | null | undefined,
   hiddenModels: ReadonlyArray<string>,
 ): AppModelOption[] {
-  if (provider !== "opencode") return options;
+  if (!keepsUnavailableModelSelection(provider)) return options;
   const slug = normalizeCustomModelSlug(selectedModel);
   if (!slug) return options;
 
@@ -203,7 +204,7 @@ export function getAppModelOptions(
   }
 
   const preferences = readInstanceModelPreferences(settings, defaultInstanceId);
-  return appendUnavailableOpenCodeSelection(
+  return appendUnavailableCatalogSelection(
     applyInstanceModelPreferences(options, preferences),
     rawModels,
     provider,
@@ -247,7 +248,7 @@ export function getAppModelOptionsForInstance(
   }
 
   const preferences = readInstanceModelPreferences(settings, entry.instanceId);
-  return appendUnavailableOpenCodeSelection(
+  return appendUnavailableCatalogSelection(
     applyInstanceModelPreferences(options, preferences),
     entry.models,
     entry.driverKind,
@@ -290,7 +291,10 @@ export function resolveAppModelSelectionForInstance(
   if (resolvedSelection) {
     return resolvedSelection;
   }
-  if (resolutionOptions?.preserveUnavailableSelection && entry.driverKind === "opencode") {
+  if (
+    resolutionOptions?.preserveUnavailableSelection &&
+    keepsUnavailableModelSelection(entry.driverKind)
+  ) {
     const unavailableSelection = normalizeCustomModelSlug(selectedModel);
     const hiddenModels = readInstanceModelPreferences(settings, entry.instanceId).hiddenModels;
     if (unavailableSelection && !hiddenModels.includes(unavailableSelection)) {

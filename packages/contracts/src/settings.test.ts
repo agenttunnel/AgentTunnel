@@ -8,6 +8,7 @@ import {
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   defaultEnabledForDriver,
+  PiSettings,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
@@ -19,6 +20,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodePiSettings = Schema.decodeUnknownSync(PiSettings);
 
 describe("ClaudeSettings auto-compaction", () => {
   it("uses Claude's default threshold when no override is configured", () => {
@@ -46,6 +48,35 @@ describe("ClaudeSettings auto-compaction", () => {
     expect(
       decodeServerSettingsPatch({ providers: { claudeAgent: { autoCompactWindow: "300000" } } }),
     ).toBeDefined();
+  });
+});
+
+describe("PiSettings", () => {
+  it("defaults disabled with the default binary and no custom models", () => {
+    const settings = decodePiSettings({});
+    expect(settings.enabled).toBe(false);
+    expect(settings.binaryPath).toBe("pi");
+    expect(settings.customModels).toEqual([]);
+  });
+
+  it("falls back to the default binary when the path is cleared", () => {
+    expect(decodePiSettings({ binaryPath: "" }).binaryPath).toBe("pi");
+  });
+
+  it("decodes a patch enabling pi and trimming its binary path", () => {
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        pi: {
+          enabled: true,
+          binaryPath: "  /opt/homebrew/bin/pi  ",
+          customModels: ["google/gemini-3-pro-preview"],
+        },
+      },
+    });
+
+    expect(patch.providers?.pi?.enabled).toBe(true);
+    expect(patch.providers?.pi?.binaryPath).toBe("/opt/homebrew/bin/pi");
+    expect(patch.providers?.pi?.customModels).toEqual(["google/gemini-3-pro-preview"]);
   });
 });
 
@@ -241,12 +272,14 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
+    expect(decoded.providers.pi.enabled).toBe(false);
   });
 
   it("derives per-driver defaults from the settings schemas", () => {
     expect(defaultEnabledForDriver(ProviderDriverKind.make("codex"))).toBe(true);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("cursor"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(false);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("pi"))).toBe(false);
     // Unknown fork drivers stay enabled; their own build decides otherwise.
     expect(defaultEnabledForDriver(ProviderDriverKind.make("ollama"))).toBe(true);
   });

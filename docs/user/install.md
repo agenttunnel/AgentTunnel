@@ -76,19 +76,23 @@ The per-role models remain as fallbacks when the orchestrator does not pick one,
 configured per role. If the orchestrator picks a model the environment does not offer, AgentTunnel
 shows a warning and uses the fallback instead.
 
-| Provider   | CLI                                                   | Default binary | Log in with           |
-| ---------- | ----------------------------------------------------- | -------------- | --------------------- |
-| Codex      | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex`        | `codex login`         |
-| Claude     | [Claude Code](https://claude.com/product/claude-code) | `claude`       | `claude auth login`   |
-| Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`         |
-| Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`          |
-| OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login` |
+| Provider   | CLI                                                      | Default binary | Log in with           |
+| ---------- | -------------------------------------------------------- | -------------- | --------------------- |
+| Codex      | [Codex CLI](https://developers.openai.com/codex/cli)     | `codex`        | `codex login`         |
+| Claude     | [Claude Code](https://claude.com/product/claude-code)    | `claude`       | `claude auth login`   |
+| Cursor     | [Cursor CLI](https://cursor.com/cli)                     | `cursor-agent` | `agent login`         |
+| Grok Build | [Grok Build CLI](https://x.ai/cli)                       | `grok`         | `grok login`          |
+| OpenCode   | [OpenCode](https://opencode.ai)                          | `opencode`     | `opencode auth login` |
+| Pi         | [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`) | `pi`           | `pi`, then `/login`   |
 
-Codex and Claude are on by default. Cursor, Grok Build, and OpenCode are off by default; turn
+Codex and Claude are on by default. Cursor, Grok Build, OpenCode, and Pi are off by default; turn
 them on in **Settings** → the provider's card when you want to use them.
 
 Cursor is the one to watch: install Cursor CLI, which provides the `cursor-agent` binary that
 AgentTunnel looks for, but authenticate with `agent login`, not `cursor-agent login`.
+
+Pi authenticates by running `pi` and using `/login` for a subscription provider, or by setting the
+provider's API-key environment variables on the environment.
 
 Run the login command on the machine running the AgentTunnel server, not on the device you browse
 from.
@@ -107,7 +111,8 @@ AgentTunnel. You can install AgentTunnel, open it, and add providers afterwards.
 authenticated shows its status in **Settings** and fails at session start with the login command
 to run.
 
-For multi-account setups, see [Codex](./providers-codex.md) and [Claude](./providers-claude.md).
+For provider-specific setup and accounts, see [Codex](./providers-codex.md),
+[Claude](./providers-claude.md), and [Pi](./providers-pi.md).
 
 ## Next Steps
 

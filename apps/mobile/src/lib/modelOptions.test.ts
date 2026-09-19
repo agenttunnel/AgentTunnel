@@ -102,6 +102,59 @@ describe("mobile model options", () => {
     ]);
   });
 
+  it("keeps pi provider/model slugs intact without changing their routing", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "pi",
+          driver: "pi",
+          displayName: "Pi",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "google/gemini-3-pro-preview",
+              name: "Gemini 3 Pro Preview",
+              isCustom: false,
+              capabilities: null,
+            },
+            {
+              slug: "anthropic/claude-sonnet-4-5",
+              name: "Claude Sonnet 4.5",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const selection = {
+      instanceId: ProviderInstanceId.make("pi"),
+      model: "anthropic/claude-sonnet-4-5",
+    };
+
+    const options = buildModelOptions(config, selection);
+
+    expect(options).toMatchObject([
+      {
+        key: "pi:google/gemini-3-pro-preview",
+        providerDriver: "pi",
+        providerLabel: "Pi",
+        selection: { instanceId: "pi", model: "google/gemini-3-pro-preview" },
+      },
+      {
+        key: "pi:anthropic/claude-sonnet-4-5",
+        providerDriver: "pi",
+        providerLabel: "Pi",
+        selection: { instanceId: "pi", model: "anthropic/claude-sonnet-4-5" },
+      },
+    ]);
+    expect(groupByProvider(options)).toEqual([
+      { providerKey: "pi", providerLabel: "Pi", models: options },
+    ]);
+  });
+
   it("normalizes a legacy fallback selection against current capabilities", () => {
     const config = {
       providers: [

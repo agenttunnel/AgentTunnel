@@ -18,6 +18,7 @@ import {
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
+import { keepsUnavailableModelSelection } from "../../providerModels";
 import { ComposerControl } from "./ComposerControl";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
@@ -81,7 +82,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   // providers keep the active instance's first option as their normal fallback.
   const selectedModel =
     selectedInstanceOptions.find((option) => option.slug === props.model) ??
-    (activeEntry?.driverKind === "opencode" ? undefined : selectedInstanceOptions[0]);
+    (activeEntry && keepsUnavailableModelSelection(activeEntry.driverKind)
+      ? undefined
+      : selectedInstanceOptions[0]);
   const triggerTitle =
     activeEntry?.driverKind === "agenttunnel"
       ? "Model config"
