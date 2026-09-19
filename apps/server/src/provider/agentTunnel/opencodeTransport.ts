@@ -85,6 +85,11 @@ function nonNegativeTokenCount(value: unknown): number | undefined {
  * includes input, output, reasoning, and cache reads and writes.
  */
 export function parseOpenCodeStepUsage(raw: string): OpenCodeStepUsage | undefined {
+  // The adapter runs this over every harness line; skip the JSON parse for the
+  // overwhelming majority that cannot be a step frame.
+  if (!raw.includes("step_finish")) {
+    return undefined;
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);

@@ -294,3 +294,8 @@ it("parseOpenCodeStepUsage ignores non-usage lines and malformed frames", () => 
     undefined,
   );
 });
+
+it("parseOpenCodeStepUsage tolerates step_finish text in non-frame lines", () => {
+  const text = JSON.stringify({ type: "text", part: { text: "the step_finish event is next" } });
+  NodeAssert.equal(parseOpenCodeStepUsage(text), undefined);
+});
