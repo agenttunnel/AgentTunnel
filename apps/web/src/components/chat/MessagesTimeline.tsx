@@ -1041,7 +1041,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {steeringBadge ? (
         <div
           className={cn(
-            "flex items-center gap-1.5 pe-1 text-[11px]",
+            "flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-[11px]",
             steeringBadge.tone === "queued"
               ? "text-amber-600 dark:text-amber-300/90"
               : steeringBadge.tone === "cancelled"
@@ -1049,7 +1049,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 : "text-muted-foreground",
           )}
         >
-          <CornerDownRightIcon className="size-3" aria-hidden="true" />
+          <CornerDownRightIcon className="size-3 shrink-0" aria-hidden="true" />
           <span className="font-medium">{steeringBadge.label}</span>
           <span>{steeringBadge.detail}</span>
         </div>

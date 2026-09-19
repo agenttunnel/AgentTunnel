@@ -2076,6 +2076,8 @@ describe("ProviderRuntimeIngestion", () => {
         text: "use worktrees",
         attachments: [],
       },
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       createdAt: now,
     });
     await waitForThread(harness.readModel, (thread) =>
