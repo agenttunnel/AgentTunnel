@@ -6022,6 +6022,12 @@ function ChatViewContent(props: ChatViewProps) {
         text: outgoingMessageText,
         ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
         turnId: null,
+        // A message sent while the AgentTunnel workflow is running is steering;
+        // show that immediately, and let the server confirm the lifecycle.
+        steering:
+          isAgentTunnelProviderKind(selectedProvider) && activeRunningTurnId !== null
+            ? "queued"
+            : null,
         createdAt: messageCreatedAt,
         updatedAt: messageCreatedAt,
         streaming: false,

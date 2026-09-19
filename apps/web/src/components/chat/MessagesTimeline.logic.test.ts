@@ -3,6 +3,7 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveUserMessageSteeringBadge,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   shouldPreserveAssistantLineBreaks,
@@ -16,6 +17,26 @@ describe("shouldPreserveAssistantLineBreaks", () => {
       ),
     ).toBe(true);
     expect(shouldPreserveAssistantLineBreaks("A normal\\nmarkdown paragraph")).toBe(false);
+  });
+});
+
+describe("deriveUserMessageSteeringBadge", () => {
+  it("labels a queued steer as waiting for the next planning pass", () => {
+    expect(deriveUserMessageSteeringBadge("queued")).toEqual({
+      label: "Steering",
+      detail: "queued — will be injected at the next planning pass",
+      tone: "queued",
+    });
+  });
+
+  it("labels an injected steer and a cancelled steer distinctly", () => {
+    expect(deriveUserMessageSteeringBadge("injected")?.tone).toBe("injected");
+    expect(deriveUserMessageSteeringBadge("cancelled")?.tone).toBe("cancelled");
+  });
+
+  it("renders no badge for regular messages", () => {
+    expect(deriveUserMessageSteeringBadge(undefined)).toBeNull();
+    expect(deriveUserMessageSteeringBadge(null)).toBeNull();
   });
 });
 

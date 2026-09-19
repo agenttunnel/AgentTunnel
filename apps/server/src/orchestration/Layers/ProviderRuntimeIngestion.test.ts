@@ -2017,6 +2017,111 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("streams AgentTunnel workflow deltas immediately instead of buffering", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-agenttunnel"),
+      provider: ProviderDriverKind.make("agenttunnel"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agenttunnel"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session?.activeTurnId === "turn-agenttunnel",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-agenttunnel"),
+      provider: ProviderDriverKind.make("agenttunnel"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agenttunnel"),
+      itemId: asItemId("item-agenttunnel"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Progress · orchestrator planning",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-agenttunnel" &&
+          message.text === "Progress · orchestrator planning",
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-agenttunnel",
+    );
+    expect(message?.streaming).toBe(true);
+  });
+
+  it("projects steering lifecycle updates onto the user message", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-steering-turn-start"),
+      threadId: asThreadId("thread-1"),
+      message: {
+        messageId: asMessageId("msg-steering"),
+        role: "user",
+        text: "use worktrees",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: now,
+    });
+    await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some((message) => message.id === "msg-steering"),
+    );
+
+    harness.emit({
+      type: "steering.updated",
+      eventId: asEventId("evt-steering-queued"),
+      provider: ProviderDriverKind.make("agenttunnel"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-steering"),
+      payload: { messageId: asMessageId("msg-steering"), status: "queued" },
+    });
+
+    const queuedThread = await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "msg-steering" && message.steering === "queued",
+      ),
+    );
+    expect(queuedThread.messages.find((message) => message.id === "msg-steering")?.steering).toBe(
+      "queued",
+    );
+
+    harness.emit({
+      type: "steering.updated",
+      eventId: asEventId("evt-steering-injected"),
+      provider: ProviderDriverKind.make("agenttunnel"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-steering"),
+      payload: { messageId: asMessageId("msg-steering"), status: "injected" },
+    });
+
+    await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "msg-steering" && message.steering === "injected",
+      ),
+    );
+  });
+
   it("flushes and completes buffered assistant text when user input is requested", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

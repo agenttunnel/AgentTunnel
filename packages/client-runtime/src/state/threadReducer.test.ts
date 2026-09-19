@@ -499,6 +499,66 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.message-steering-updated", () => {
+    const threadWithSteeringMessage: OrchestrationThread = {
+      ...baseThread,
+      messages: [
+        {
+          id: MessageId.make("msg-steer"),
+          role: "user",
+          text: "use worktrees",
+          turnId: null,
+          streaming: false,
+          steering: "queued",
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:00:00.000Z",
+        },
+      ],
+    };
+
+    it("moves the message from queued to injected", () => {
+      const result = applyThreadDetailEvent(threadWithSteeringMessage, {
+        ...baseEventFields,
+        sequence: 9,
+        occurredAt: "2026-04-01T06:05:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-steering-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-steer"),
+          steering: "injected",
+          updatedAt: "2026-04-01T06:05:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages[0]?.steering).toBe("injected");
+        expect(result.thread.messages[0]?.updatedAt).toBe("2026-04-01T06:05:00.000Z");
+      }
+    });
+
+    it("ignores updates for unknown messages", () => {
+      const result = applyThreadDetailEvent(threadWithSteeringMessage, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T06:05:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-steering-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-unknown"),
+          steering: "injected",
+          updatedAt: "2026-04-01T06:05:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("unchanged");
+    });
+  });
+
   describe("thread.session-set", () => {
     it("settles a running latestTurn when the session leaves the running status", () => {
       const threadWithRunningTurn: OrchestrationThread = {

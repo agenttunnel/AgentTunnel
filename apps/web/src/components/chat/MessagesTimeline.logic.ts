@@ -69,6 +69,44 @@ export function shouldPreserveAssistantLineBreaks(text: string): boolean {
   return /^★ Insight(?:\s|─)/mu.test(text);
 }
 
+export interface UserMessageSteeringBadge {
+  readonly label: string;
+  readonly detail: string;
+  readonly tone: "queued" | "injected" | "cancelled";
+}
+
+/**
+ * Copy for the steering label on a user message that was sent mid-run.
+ * `queued` is the state the user needs to understand: the message is not a new
+ * turn, it will be folded into the next planning pass.
+ */
+export function deriveUserMessageSteeringBadge(
+  steering: ChatMessage["steering"],
+): UserMessageSteeringBadge | null {
+  switch (steering) {
+    case "queued":
+      return {
+        label: "Steering",
+        detail: "queued — will be injected at the next planning pass",
+        tone: "queued",
+      };
+    case "injected":
+      return {
+        label: "Steering",
+        detail: "injected into the running pass",
+        tone: "injected",
+      };
+    case "cancelled":
+      return {
+        label: "Steering",
+        detail: "not delivered — the run ended before the next pass",
+        tone: "cancelled",
+      };
+    default:
+      return null;
+  }
+}
+
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
   const naturalHeight = Math.max(1, (itemCount - 1) * TIMELINE_MINIMAP_ITEM_SPACING);
   return `min(${naturalHeight}px, ${TIMELINE_MINIMAP_MAX_HEIGHT_CSS})`;

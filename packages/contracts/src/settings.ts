@@ -663,6 +663,12 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed(15)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    orchestratorRecapIntervalSeconds: Schema.Int.check(
+      Schema.isBetween({ minimum: 0, maximum: 900 }),
+    ).pipe(
+      Schema.withDecodingDefault(Effect.succeed(30)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     dangerouslySkipPermissions: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({
@@ -1017,6 +1023,7 @@ const AgentTunnelSettingsPatch = Schema.Struct({
   reviewerVariant: Schema.optionalKey(TrimmedString),
   maxOrchestratorPasses: Schema.optionalKey(Schema.Int),
   orchestratorPassTimeoutMinutes: Schema.optionalKey(Schema.Int),
+  orchestratorRecapIntervalSeconds: Schema.optionalKey(Schema.Int),
   dangerouslySkipPermissions: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });

@@ -59,6 +59,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  CornerDownRightIcon,
   DownloadIcon,
   EyeIcon,
   FileIcon,
@@ -85,6 +86,7 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveUserMessageSteeringBadge,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
@@ -1032,10 +1034,32 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const steeringBadge = deriveUserMessageSteeringBadge(row.message.steering);
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
+      {steeringBadge ? (
+        <div
+          className={cn(
+            "flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-[11px]",
+            steeringBadge.tone === "queued"
+              ? "text-amber-600 dark:text-amber-300/90"
+              : steeringBadge.tone === "cancelled"
+                ? "text-destructive"
+                : "text-muted-foreground",
+          )}
+        >
+          <CornerDownRightIcon className="size-3 shrink-0" aria-hidden="true" />
+          <span className="font-medium">{steeringBadge.label}</span>
+          <span>{steeringBadge.detail}</span>
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground",
+          steeringBadge?.tone === "queued" && "ring-1 ring-amber-500/40",
+        )}
+      >
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
             {regularImages.map((image) => (

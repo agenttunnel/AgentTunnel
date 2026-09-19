@@ -223,6 +223,22 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
+/**
+ * AgentTunnel workflow output is line-oriented narration (orchestrator prose,
+ * progress recaps, subagent log lines), not raw model tokens. Buffering it
+ * behind the legacy token-streaming preference made long planning passes look
+ * stalled, so it always streams straight to the thread.
+ */
+function assistantDeliveryModeForEvent(
+  event: ProviderRuntimeEvent,
+  settings: { readonly enableLegacyTokenStreaming: boolean },
+): AssistantDeliveryMode {
+  if (event.provider === "agenttunnel") {
+    return "streaming";
+  }
+  return settings.enableLegacyTokenStreaming ? "streaming" : "buffered";
+}
+
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
   return `plan:${threadId}:turn:${turnId}`;
 }
@@ -1662,6 +1678,17 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (event.type === "steering.updated") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.steering",
+          commandId: yield* providerCommandId(event, "thread-message-steering"),
+          threadId: thread.id,
+          messageId: event.payload.messageId,
+          steering: event.payload.status,
+          createdAt: now,
+        });
+      }
+
       const assistantDelta =
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
@@ -1682,7 +1709,7 @@ const make = Effect.gen(function* () {
 
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
-          (settings) => (settings.enableLegacyTokenStreaming ? "streaming" : "buffered"),
+          (settings) => assistantDeliveryModeForEvent(event, settings),
         );
         if (assistantDeliveryMode === "buffered") {
           const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
@@ -1718,7 +1745,7 @@ const make = Effect.gen(function* () {
         const detailedThread = yield* getLoadedThreadDetail();
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
-          (settings) => (settings.enableLegacyTokenStreaming ? "streaming" : "buffered"),
+          (settings) => assistantDeliveryModeForEvent(event, settings),
         );
         const flushedMessageIds =
           assistantDeliveryMode === "buffered"

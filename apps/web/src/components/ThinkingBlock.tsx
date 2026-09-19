@@ -1,15 +1,17 @@
 import { ChevronDown, ChevronRight, Terminal } from "lucide-react";
 import { useState } from "react";
 
+import { cn } from "~/lib/utils";
+
 import ChatMarkdown from "./ChatMarkdown";
 import { splitThinkingText } from "./ThinkingBlock.logic";
 
 /** Muted, indented aside for model reasoning — opencode's thinking part. */
-export function ThinkingBlock({ text }: { text: string }) {
+export function ThinkingBlock({ text, className }: { text: string; className?: string }) {
   const [open, setOpen] = useState(true);
   const segments = splitThinkingText(text);
   return (
-    <div className="ms-2 border-s border-border/60 ps-3">
+    <div className={cn("ms-2 border-s border-border/60 ps-3", className)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
