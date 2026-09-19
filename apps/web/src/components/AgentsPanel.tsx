@@ -60,6 +60,11 @@ export function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   );
 }
 
+/** Visible status vocabulary for call sites that render the dot beside text. */
+export function subagentStatusLabel(status: RuntimeSubagent["status"]): string {
+  return STATUS_VISUALS[status].label;
+}
+
 function formatElapsedSeconds(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(seconds / 60);

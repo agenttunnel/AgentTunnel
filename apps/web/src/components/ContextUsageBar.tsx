@@ -9,19 +9,17 @@ export function ContextUsageBar({
   limitLabel,
   percentLabel,
   percentage,
-  label = "Context usage",
 }: {
   usedLabel: string;
   limitLabel: string;
   percentLabel: string | null;
   percentage: number;
-  label?: string;
 }) {
   const normalized = Math.max(0, Math.min(100, percentage));
   return (
     <div className="rounded-md border border-border/50 bg-card/30 p-2">
       <div className="flex items-center justify-between gap-2 pb-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span>{label}</span>
+        <span>Context usage</span>
         <span className="tabular-nums text-foreground/80">
           {usedLabel} / {limitLabel}
           {percentLabel === null ? "" : ` · ${percentLabel}`}
@@ -33,7 +31,7 @@ export function ContextUsageBar({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(normalized)}
-        aria-label={label}
+        aria-label="Context window usage"
       >
         <div
           className={cn("h-full rounded-full", normalized > 90 ? "bg-destructive" : "bg-info")}

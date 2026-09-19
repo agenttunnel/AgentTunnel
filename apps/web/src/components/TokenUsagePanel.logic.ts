@@ -19,7 +19,10 @@ import type {
   RuntimeSubagent,
   RuntimeSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  formatSubagentModelLabel,
+  formatSubagentTokenCount,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 
@@ -64,7 +67,7 @@ export interface TokenUsageAgentRow {
   readonly id: string;
   readonly title: string;
   readonly role: string | null;
-  readonly model: string | null;
+  readonly modelLabel: string | null;
   readonly status: RuntimeSubagentStatus;
   readonly totalTokens: number | null;
   readonly totalLabel: string;
@@ -292,7 +295,7 @@ export function deriveTokenUsage(input: {
       id: agent.id,
       title: agent.title,
       role: agent.role,
-      model: agent.model,
+      modelLabel: formatSubagentModelLabel(agent.model, agent.effort),
       status: agent.status,
       totalTokens: agentTotalTokens(agent),
       totalLabel: usage === null ? "—" : formatSubagentTokenCount(usage.totalTokens),

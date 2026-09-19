@@ -4,10 +4,7 @@
  * carries only usage the providers actually reported.
  */
 import type { AgentPanelModel } from "@t3tools/client-runtime/state/subagentRuntime";
-import {
-  formatSubagentModelLabel,
-  formatSubagentTokenCount,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { ChartNoAxesColumnIncreasing } from "lucide-react";
@@ -16,7 +13,7 @@ import { type ReactNode, useMemo } from "react";
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { cn } from "~/lib/utils";
 import { ScrollArea } from "~/components/ui/scroll-area";
-import { StatusDot } from "./AgentsPanel";
+import { StatusDot, subagentStatusLabel } from "./AgentsPanel";
 import { ContextUsageBar } from "./ContextUsageBar";
 import { deriveTokenUsage } from "./TokenUsagePanel.logic";
 
@@ -209,10 +206,11 @@ export function TokenUsagePanel({
                           <div className="flex max-w-44 items-center gap-1.5">
                             <StatusDot status={agent.status} />
                             <span className="truncate text-foreground/90">{agent.title}</span>
+                            <span className="sr-only">{subagentStatusLabel(agent.status)}</span>
                           </div>
                         </td>
                         <td className="py-1 pr-2 text-muted-foreground">
-                          {formatSubagentModelLabel(agent.model, null) ?? "—"}
+                          {agent.modelLabel ?? "—"}
                         </td>
                         <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
                           {agent.inputLabel}
