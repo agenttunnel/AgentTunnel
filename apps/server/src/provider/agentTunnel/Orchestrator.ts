@@ -164,7 +164,6 @@ interface TaskRecord {
 const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
 const TASK_LABEL_MAX_CHARS = 72;
-const ORCHESTRATOR_PASS_TIMEOUT: Duration.Input = "3 minutes";
 const RECAP_INTERVAL: Duration.Input = "30 seconds";
 
 const roleIcon = (role: "executor" | "reviewer"): string => (role === "executor" ? "🛠️" : "🔍");
@@ -243,7 +242,9 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
-  const orchestratorPassTimeout = options.orchestratorPassTimeout ?? ORCHESTRATOR_PASS_TIMEOUT;
+  const orchestratorPassTimeout =
+    options.orchestratorPassTimeout ??
+    Duration.minutes(options.settings.orchestratorPassTimeoutMinutes);
 
   yield* trace("workflow started", {
     workflowId: options.workflowId,
@@ -371,7 +372,11 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         id: spec.id,
         ...(timeout ? { timeoutMs: Duration.toMillis(timeout) } : {}),
       });
-      return { code: null, error: "orchestrator pass timed out" };
+      return {
+        code: null,
+        error:
+          "orchestrator pass timed out — raise the pass timeout in AgentTunnel settings if the planner needs longer",
+      };
     }
     yield* trace("harness process finished", {
       id: spec.id,
