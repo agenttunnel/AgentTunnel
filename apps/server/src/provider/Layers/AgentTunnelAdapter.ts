@@ -83,6 +83,7 @@ interface AgentTunnelSessionContext {
   stopped: boolean;
   readonly threadHistory: Array<{ readonly task: string; readonly summary?: string }>;
   lastSharedContextDump: string | undefined;
+  readonly steering: string[];
 }
 
 export interface AgentTunnelAdapterOptions {
@@ -564,6 +565,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       stopped: false,
       threadHistory: [],
       lastSharedContextDump: undefined,
+      steering: [],
     };
     sessions.set(input.threadId, context);
     yield* emit({
@@ -584,11 +586,24 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
   )(function* (input) {
     const context = yield* ensureSession(input.threadId);
     if (context.activeTurnId) {
-      return yield* new ProviderAdapterValidationError({
-        provider: PROVIDER,
-        operation: "sendTurn",
-        issue: "AgentTunnel only accepts one active workflow per thread.",
-      });
+      // Steering: a message sent mid-run is queued and handed to the
+      // orchestrator at its next planning pass instead of interrupting work.
+      const steering = (input.input ?? "").trim();
+      if (steering.length > 0) {
+        context.steering.push(steering);
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId: input.threadId,
+            turnId: context.activeTurnId,
+          })),
+          type: "content.delta",
+          payload: {
+            streamKind: "assistant_text",
+            delta: `\n> \ud83d\udce5 **Steering queued** \u2014 the orchestrator will weigh this at its next planning pass: ${steering}\n`,
+          },
+        });
+      }
+      return { threadId: input.threadId, turnId: context.activeTurnId };
     }
 
     const turnId = TurnId.make(yield* randomUuid);
@@ -610,6 +625,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.agents.clear();
     context.agentLogBytes.clear();
     context.agentRawLogBytes.clear();
+    // Steering is per-turn: a prior turn's queue must never leak into this one.
+    context.steering.length = 0;
     yield* clearAgentOutput(input.threadId);
     context.session = {
       ...context.session,
@@ -645,6 +662,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ...(context.lastSharedContextDump
             ? { priorSharedContext: context.lastSharedContextDump }
             : {}),
+          takeSteeringMessages: () => Effect.sync(() => context.steering.splice(0)),
         }),
       );
       if (result._tag === "Failure") {

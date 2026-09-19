@@ -3,6 +3,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -115,6 +116,7 @@ export interface AgentTunnelRunOptions {
   readonly userTask: string;
   readonly cwd: string;
   readonly model?: string;
+  readonly availableModels?: ReadonlyArray<string>;
   readonly settings: AgentTunnelSettings;
   readonly process: AgentTunnelProcessRunner;
   readonly emit: (event: AgentTunnelEvent) => Effect.Effect<void>;
@@ -122,6 +124,7 @@ export interface AgentTunnelRunOptions {
   readonly orchestratorPassTimeout?: Duration.Input;
   readonly threadHistory?: ReadonlyArray<{ readonly task: string; readonly summary?: string }>;
   readonly priorSharedContext?: string;
+  readonly takeSteeringMessages?: () => Effect.Effect<ReadonlyArray<string>>;
 }
 
 interface DispatchedTask {
@@ -131,6 +134,7 @@ interface DispatchedTask {
   readonly context: ReadonlyArray<string>;
   readonly pipelineId: string;
   readonly agentIndex: number;
+  readonly model?: string;
 }
 
 interface PipelineState {
@@ -161,7 +165,7 @@ interface TaskRecord {
 const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
 const TASK_LABEL_MAX_CHARS = 72;
-const ORCHESTRATOR_PASS_TIMEOUT: Duration.Input = "3 minutes";
+const RECAP_INTERVAL: Duration.Input = "30 seconds";
 
 const roleIcon = (role: "executor" | "reviewer"): string => (role === "executor" ? "🛠️" : "🔍");
 
@@ -234,10 +238,16 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
   let orchestratorThinkingOpen = false;
+  let openOutputFences = 0;
+  let startedTaskCount = 0;
+  let recapScope: Scope.Closeable | null = null;
+  const pendingSteering: string[] = [];
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
-  const orchestratorPassTimeout = options.orchestratorPassTimeout ?? ORCHESTRATOR_PASS_TIMEOUT;
+  const orchestratorPassTimeout =
+    options.orchestratorPassTimeout ??
+    Duration.minutes(options.settings.orchestratorPassTimeoutMinutes);
 
   yield* trace("workflow started", {
     workflowId: options.workflowId,
@@ -275,6 +285,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
 
   const finish = (status: AgentTunnelRunResult["status"], summary: string) =>
     Effect.gen(function* () {
+      if (recapScope !== null) {
+        yield* Scope.close(recapScope, Exit.void).pipe(Effect.ignore);
+        recapScope = null;
+      }
       yield* trace("workflow finished", {
         workflowId: options.workflowId,
         status,
@@ -365,7 +379,11 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         id: spec.id,
         ...(timeout ? { timeoutMs: Duration.toMillis(timeout) } : {}),
       });
-      return { code: null, error: "orchestrator pass timed out" };
+      return {
+        code: null,
+        error:
+          "orchestrator pass timed out — raise the pass timeout in AgentTunnel settings if the planner needs longer",
+      };
     }
     yield* trace("harness process finished", {
       id: spec.id,
@@ -412,6 +430,19 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         const mode = call.arguments.mode === "sequential" ? "sequential" : "parallel";
         const dependsOn = stringArray(call.arguments.depends_on);
         const contextKeys = stringArray(call.arguments.context);
+        const requestedModel = stringValue(call.arguments.model).trim();
+        let taskModel: string | undefined;
+        if (options.settings.autoMode && requestedModel.length > 0) {
+          const availableModels = options.availableModels ?? [];
+          if (availableModels.includes(requestedModel)) {
+            taskModel = requestedModel;
+          } else {
+            yield* emit({
+              type: "orchestrator.output",
+              text: `\n> ⚠️ Model \`${requestedModel}\` is not available for the ${role} task — using the configured model instead.\n`,
+            });
+          }
+        }
 
         const existing = pipelines.get(pipelineId);
         if (!existing) {
@@ -433,6 +464,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           context: contextKeys,
           pipelineId,
           agentIndex,
+          ...(taskModel ? { model: taskModel } : {}),
         });
         const label = humanTaskLabel(task);
         yield* trace("task dispatched", {
@@ -441,6 +473,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           pipeline: pipelineId,
           mode,
           dependsOn: dependsOn.join(","),
+          ...(taskModel ? { model: taskModel } : {}),
           task: task.slice(0, 160),
         });
         yield* emitProgress(`Queued ${role} "${label}" in pipeline "${pipelineId}" (${mode})`);
@@ -450,9 +483,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           contextKeys.length > 0
             ? ` · uses ${contextKeys.map((key) => `\`${key}\``).join(", ")}`
             : "";
+        const modelText = taskModel ? ` · ${taskModel}` : "";
         yield* emit({
           type: "orchestrator.output",
-          text: `\n- ${roleIcon(role)} Queued **${role} · ${label}** in \`${pipelineId}\` · ${mode}${dependencyText}${contextText}\n`,
+          text: `\n- ${roleIcon(role)} Queued **${role} · ${label}** in \`${pipelineId}\` · ${mode}${modelText}${dependencyText}${contextText}\n`,
         });
         return;
       }
@@ -520,14 +554,25 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return `\n\n## Conversation history (prior turns in this thread)\n${lines}\n\nIf the current task references "previous task", "that", or "continue", resolve it from this history.`;
   };
 
-  const summaryPrompt = (): string => {
+  const availableModelsBlock = (): string => {
+    const availableModels = options.availableModels ?? [];
+    if (!options.settings.autoMode || availableModels.length === 0) return "";
+    return `\n\n## Available models\n\n${availableModels.join("\n")}`;
+  };
+
+  const steeringBlock = (steering: ReadonlyArray<string>): string =>
+    steering.length === 0
+      ? ""
+      : `\n\n## Steering from the user (sent while work was running)\n\n${steering.map((message) => `- ${message}`).join("\n")}\n\nWeigh this before deciding what to do next.`;
+
+  const summaryPrompt = (steering: ReadonlyArray<string>): string => {
     const pipelineSummary = pipelineOrder
       .map((id) => {
         const pipeline = pipelines.get(id);
         return `- ${id}: ${pipeline?.status ?? "pending"}`;
       })
       .join("\n");
-    return `${ORCHESTRATOR_PROMPT}${historyBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
+    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
   };
 
   const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (
@@ -537,6 +582,19 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       yield* emit({
         type: "orchestrator.output",
         text: `\n---\n\n## Summary pass ${pass + 1}\n\nThe orchestrator is checking the completed work for follow-up tasks.\n`,
+      });
+    }
+    const steering =
+      pass > 0
+        ? [
+            ...pendingSteering.splice(0),
+            ...(options.takeSteeringMessages ? yield* options.takeSteeringMessages() : []),
+          ]
+        : [];
+    if (steering.length > 0) {
+      yield* emit({
+        type: "orchestrator.output",
+        text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
       });
     }
     const result = yield* runProcess(
@@ -553,8 +611,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         cwd: options.cwd,
         prompt:
           pass === 0
-            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
-            : summaryPrompt(),
+            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
+            : summaryPrompt(steering),
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,
       },
       handleOrchestratorLine,
@@ -605,18 +663,13 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   });
 
   const runTask = Effect.fn("runAgentTunnel.runTask")(function* (task: DispatchedTask) {
+    startedTaskCount += 1;
     const pipelineIndex = Math.max(0, pipelineOrder.indexOf(task.pipelineId));
     const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
+    const roleModel =
+      task.role === "executor" ? options.settings.executorModel : options.settings.reviewerModel;
     const model =
-      task.role === "executor"
-        ? options.settings.executorModel ||
-          options.settings.orchestratorModel ||
-          options.model ||
-          undefined
-        : options.settings.reviewerModel ||
-          options.settings.orchestratorModel ||
-          options.model ||
-          undefined;
+      task.model || roleModel || options.settings.orchestratorModel || options.model || undefined;
     const harness =
       task.role === "executor"
         ? options.settings.executorHarness
@@ -698,6 +751,9 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         const prefix = firstOutputLine
           ? `\n<details>\n<summary>📋 Output · ${label}</summary>\n\n\`\`\`\n`
           : "";
+        if (firstOutputLine) {
+          openOutputFences += 1;
+        }
         firstOutputLine = false;
         return emit({ type: "orchestrator.output", text: `${prefix}${clean}\n` }).pipe(
           Effect.andThen(
@@ -713,6 +769,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     );
 
     if (!firstOutputLine) {
+      openOutputFences = Math.max(0, openOutputFences - 1);
       yield* emit({ type: "orchestrator.output", text: "```\n\n</details>\n\n" });
     }
 
@@ -889,34 +946,90 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     text: `## AgentTunnel workflow\n\n**Task:** ${options.userTask}\n\nThe orchestrator is analyzing the task and will dispatch subagents shortly.\n`,
   });
 
-  while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
-    const pipelineCountBefore = pipelineOrder.length;
-    const orchestratorResult = yield* runOrchestratorPass(orchestratorPasses);
-    if (yield* isCancelled) {
-      return yield* finish("stopped", "The workflow was stopped before all planned work finished.");
+  const emitRecap = Effect.fn("runAgentTunnel.emitRecap")(function* () {
+    const elapsed = formatDuration((yield* Clock.currentTimeMillis) - workflowStartedAt);
+    const parts = pipelineOrder.map((id) => {
+      const total = tasks.filter((task) => task.pipelineId === id).length;
+      const done = taskRecords.filter((record) => record.pipelineId === id).length;
+      const pipeline = pipelines.get(id);
+      const marker =
+        pipeline?.status === "completed" ? "✓" : pipeline?.status === "running" ? "▶" : "…";
+      return `${marker} \`${id}\`: ${done}/${total}`;
+    });
+    const running = Math.max(0, startedTaskCount - taskRecords.length);
+    const state =
+      parts.length > 0
+        ? parts.join(" · ")
+        : tasks.length > 0
+          ? "starting pipelines"
+          : "orchestrator planning";
+    const recap = `Progress · ${elapsed}${running > 0 ? ` · ${running} running` : ""} · ${state}`;
+    yield* emitProgress(recap);
+    // An agent output fence is open: the recap would land inside a code block,
+    // so only the activity summary above is updated until the fence closes.
+    if (openOutputFences > 0) {
+      return;
     }
-    if (orchestratorResult.code !== 0) {
-      return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
-    }
-    if (pipelineOrder.length === pipelineCountBefore) {
-      return yield* finish(
-        "completed",
-        "All planned work finished — the orchestrator found no follow-up tasks.",
-      );
-    }
-    if (!(yield* runNewPipelines(pipelineCountBefore))) {
-      const wasStopped = yield* isCancelled;
-      return yield* finish(
-        wasStopped ? "stopped" : "failed",
-        wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
-      );
-    }
-    orchestratorPasses += 1;
-  }
+    yield* emit({ type: "orchestrator.output", text: `\n> ⏱️ **${recap}**\n\n` });
+  });
 
-  return yield* finish(
-    "completed",
-    `Reached the maximum of ${options.settings.maxOrchestratorPasses} orchestrator passes.`,
+  const scope = yield* Scope.make();
+  recapScope = scope;
+  yield* Effect.forever(Effect.sleep(RECAP_INTERVAL).pipe(Effect.andThen(emitRecap()))).pipe(
+    Effect.forkIn(scope),
+  );
+
+  const runWorkflow = Effect.gen(function* () {
+    while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
+      const pipelineCountBefore = pipelineOrder.length;
+      const orchestratorResult = yield* runOrchestratorPass(orchestratorPasses);
+      if (yield* isCancelled) {
+        return yield* finish(
+          "stopped",
+          "The workflow was stopped before all planned work finished.",
+        );
+      }
+      if (orchestratorResult.code !== 0) {
+        return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
+      }
+      if (pipelineOrder.length === pipelineCountBefore) {
+        const lateSteering = options.takeSteeringMessages
+          ? yield* options.takeSteeringMessages()
+          : [];
+        if (lateSteering.length === 0) {
+          return yield* finish(
+            "completed",
+            "All planned work finished — the orchestrator found no follow-up tasks.",
+          );
+        }
+        // Steering arrived while the pass was running: take one more pass so
+        // the orchestrator can weigh it instead of finishing silently.
+        pendingSteering.push(...lateSteering);
+        yield* emit({
+          type: "orchestrator.output",
+          text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
+        });
+        orchestratorPasses += 1;
+        continue;
+      }
+      if (!(yield* runNewPipelines(pipelineCountBefore))) {
+        const wasStopped = yield* isCancelled;
+        return yield* finish(
+          wasStopped ? "stopped" : "failed",
+          wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
+        );
+      }
+      orchestratorPasses += 1;
+    }
+
+    return yield* finish(
+      "completed",
+      `Reached the maximum of ${options.settings.maxOrchestratorPasses} orchestrator passes.`,
+    );
+  });
+
+  return yield* runWorkflow.pipe(
+    Effect.ensuring(Scope.close(scope, Exit.void).pipe(Effect.ignore)),
   );
 });
 

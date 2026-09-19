@@ -51,6 +51,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     readonly model: string | null;
     readonly harness: string;
     readonly variant: string | null;
+    readonly auto: boolean;
   }>;
   activeWorkflowRoleId?: string | null;
   onWorkflowRoleChange?: (roleId: string | null) => void;

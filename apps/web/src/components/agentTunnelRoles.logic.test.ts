@@ -31,11 +31,37 @@ describe("agentTunnelRoles", () => {
         model: "a/b",
         harness: "opencode",
         variant: null,
+        auto: false,
       },
-      { id: "executor", label: "Executor", model: null, harness: "opencode", variant: null },
-      { id: "reviewer", label: "Reviewer", model: null, harness: "opencode", variant: null },
+      {
+        id: "executor",
+        label: "Executor",
+        model: null,
+        harness: "opencode",
+        variant: null,
+        auto: false,
+      },
+      {
+        id: "reviewer",
+        label: "Reviewer",
+        model: null,
+        harness: "opencode",
+        variant: null,
+        auto: false,
+      },
     ]);
     expect(readAgentTunnelRoles(undefined).every((role) => role.model === null)).toBe(true);
+  });
+
+  it("marks executor and reviewer as auto when auto mode is on", () => {
+    const roles = readAgentTunnelRoles({ autoMode: true, executorModel: "p/m" });
+    expect(roles.map((role) => role.auto)).toEqual([false, true, true]);
+    expect(roles[1]?.model).toBe("p/m");
+    expect(readAgentTunnelRoles({ autoMode: false }).map((role) => role.auto)).toEqual([
+      false,
+      false,
+      false,
+    ]);
   });
 
   it("reads per-role harnesses", () => {

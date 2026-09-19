@@ -189,14 +189,23 @@ describe("deriveContextAnalysis", () => {
           model: "anthropic/claude-opus",
           harness: "opencode",
           variant: null,
+          auto: false,
         },
-        { id: "executor", label: "Executor", model: null, harness: "opencode", variant: null },
+        {
+          id: "executor",
+          label: "Executor",
+          model: null,
+          harness: "opencode",
+          variant: null,
+          auto: false,
+        },
         {
           id: "reviewer",
           label: "Reviewer",
           model: "openai/gpt-5",
           harness: "claude",
           variant: "high",
+          auto: false,
         },
       ],
     });
@@ -206,10 +215,72 @@ describe("deriveContextAnalysis", () => {
         id: "orchestrator",
         label: "Orchestrator",
         model: "anthropic/claude-opus",
+        auto: false,
         value: "anthropic/claude-opus",
       },
-      { id: "executor", label: "Executor", model: null, value: "Workflow default" },
-      { id: "reviewer", label: "Reviewer", model: "openai/gpt-5", value: "openai/gpt-5" },
+      { id: "executor", label: "Executor", model: null, auto: false, value: "Workflow default" },
+      {
+        id: "reviewer",
+        label: "Reviewer",
+        model: "openai/gpt-5",
+        auto: false,
+        value: "openai/gpt-5",
+      },
+    ]);
+  });
+
+  it("labels auto roles as orchestrator-chosen while keeping their fallback model", () => {
+    const analysis = derive({
+      roles: [
+        {
+          id: "orchestrator",
+          label: "Orchestrator",
+          model: null,
+          harness: "opencode",
+          variant: null,
+          auto: false,
+        },
+        {
+          id: "executor",
+          label: "Executor",
+          model: "anthropic/claude-sonnet",
+          harness: "opencode",
+          variant: null,
+          auto: true,
+        },
+        {
+          id: "reviewer",
+          label: "Reviewer",
+          model: null,
+          harness: "opencode",
+          variant: null,
+          auto: true,
+        },
+      ],
+    });
+
+    expect(analysis.roleModels).toEqual([
+      {
+        id: "orchestrator",
+        label: "Orchestrator",
+        model: null,
+        auto: false,
+        value: "Workflow default",
+      },
+      {
+        id: "executor",
+        label: "Executor",
+        model: "anthropic/claude-sonnet",
+        auto: true,
+        value: "Auto - chosen by orchestrator",
+      },
+      {
+        id: "reviewer",
+        label: "Reviewer",
+        model: null,
+        auto: true,
+        value: "Auto - chosen by orchestrator",
+      },
     ]);
   });
 

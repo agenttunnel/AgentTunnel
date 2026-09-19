@@ -51,6 +51,7 @@ export interface ContextRoleModelRow {
   readonly id: string;
   readonly label: string;
   readonly model: string | null;
+  readonly auto: boolean;
   readonly value: string;
 }
 
@@ -225,7 +226,8 @@ export function deriveContextAnalysis(input: {
       id: role.id,
       label: role.label,
       model: role.model,
-      value: role.model ?? "Workflow default",
+      auto: role.auto,
+      value: role.auto ? "Auto - chosen by orchestrator" : (role.model ?? "Workflow default"),
     })),
     agents,
     hasAgents: input.model.hasAgents,

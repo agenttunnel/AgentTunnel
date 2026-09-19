@@ -1,7 +1,7 @@
 "use client";
 
 import type { ServerProviderModel } from "@t3tools/contracts";
-import { Bot, ShieldCheck, Workflow } from "lucide-react";
+import { Bot, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -34,6 +34,17 @@ interface AgentTunnelSettingsSectionProps {
   readonly onChange: (nextConfig: Record<string, unknown> | undefined) => void;
 }
 
+function readConfigNumber(config: unknown, key: string, fallback: number): number {
+  if (config === null || typeof config !== "object") return fallback;
+  const value = (config as Record<string, unknown>)[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
 function readConfigString(config: unknown, key: string): string {
   if (config === null || typeof config !== "object") return "";
   const value = (config as Record<string, unknown>)[key];
@@ -50,7 +61,7 @@ function writeConfigValue(
   config: unknown,
   onChange: (nextConfig: Record<string, unknown> | undefined) => void,
   key: string,
-  value: string | boolean,
+  value: string | boolean | number,
 ): void {
   const base: Record<string, unknown> =
     config !== null && typeof config === "object" ? { ...(config as Record<string, unknown>) } : {};
@@ -174,10 +185,32 @@ export function AgentTunnelSettingsSection({
   onChange,
 }: AgentTunnelSettingsSectionProps) {
   const skipPermissions = readConfigBoolean(config, "dangerouslySkipPermissions", true);
-  const maxPasses = Number(readConfigString(config, "maxOrchestratorPasses") || 4);
+  const autoMode = readConfigBoolean(config, "autoMode", false);
+  const maxPasses = readConfigNumber(config, "maxOrchestratorPasses", 4);
+  const passTimeoutMinutes = readConfigNumber(config, "orchestratorPassTimeoutMinutes", 15);
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-4 text-muted-foreground" />
+            <div>
+              <span className="block text-sm font-medium text-foreground">Auto mode</span>
+              <span className="block text-xs text-muted-foreground">
+                The orchestrator chooses each executor and reviewer task's model. Per-role model
+                settings below act as fallbacks.
+              </span>
+            </div>
+          </div>
+          <Switch
+            checked={autoMode}
+            onCheckedChange={(checked) => writeConfigValue(config, onChange, "autoMode", checked)}
+            aria-label="Auto mode"
+          />
+        </div>
+      </div>
+
       <div>
         <div className="mb-2 flex items-center gap-2">
           <Workflow className="size-4 text-muted-foreground" />
@@ -233,7 +266,38 @@ export function AgentTunnelSettingsSection({
           onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             if (!Number.isNaN(parsed)) {
-              writeConfigValue(config, onChange, "maxOrchestratorPasses", String(parsed));
+              writeConfigValue(
+                config,
+                onChange,
+                "maxOrchestratorPasses",
+                Math.min(12, Math.max(1, parsed)),
+              );
+            }
+          }}
+        />
+      </label>
+
+      <label className="block rounded-lg border border-border/60 bg-muted/20 p-3">
+        <span className="block text-sm font-medium text-foreground">Orchestrator pass timeout</span>
+        <span className="mb-2 block text-xs text-muted-foreground">
+          Minutes a single planning or summary pass may run before it is stopped. Raising this helps
+          when the orchestrator explores the repository before dispatching work.
+        </span>
+        <Input
+          className="mt-1.5 max-w-28"
+          type="number"
+          min={1}
+          max={120}
+          value={Number.isFinite(passTimeoutMinutes) ? passTimeoutMinutes : 15}
+          onChange={(event) => {
+            const parsed = Number.parseInt(event.target.value, 10);
+            if (!Number.isNaN(parsed)) {
+              writeConfigValue(
+                config,
+                onChange,
+                "orchestratorPassTimeoutMinutes",
+                Math.min(120, Math.max(1, parsed)),
+              );
             }
           }}
         />

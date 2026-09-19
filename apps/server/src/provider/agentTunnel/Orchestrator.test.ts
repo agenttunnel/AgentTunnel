@@ -12,6 +12,7 @@ import {
   type AgentTunnelEvent,
   type AgentTunnelProcessHandle,
   type AgentTunnelProcessRunner,
+  type AgentTunnelProcessSpec,
   runAgentTunnel,
 } from "./Orchestrator.ts";
 
@@ -128,6 +129,184 @@ it.effect("fails a turn when an orchestrator pass hangs past the timeout", () =>
       NodeAssert.equal(events.at(-1)?.type, "workflow.completed");
     }),
   ),
+);
+
+it.effect("emits a periodic progress recap while tasks stay running", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 1,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) =>
+          Effect.succeed(
+            spec.id.startsWith("orchestrator")
+              ? {
+                  pid: 1,
+                  lines: Stream.fromIterable([
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Slow work","pipeline":"implementation"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ]),
+                  exitCode: Effect.succeed(0),
+                  kill: Effect.void,
+                }
+              : {
+                  pid: 2,
+                  lines: Stream.never,
+                  exitCode: Effect.never,
+                  kill: Effect.void,
+                },
+          ),
+      };
+
+      const fiber = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "slow workflow",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+      }).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust("1 second");
+      yield* TestClock.adjust("31 seconds");
+
+      const recaps = events.filter(
+        (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
+          event.type === "orchestrator.output" && event.text.includes("\u23f1\ufe0f"),
+      );
+      NodeAssert.ok(recaps.length >= 1, "expected at least one progress recap");
+      NodeAssert.match(recaps[0]!.text, /implementation`?: 0\/1/);
+      yield* Fiber.interrupt(fiber);
+    }),
+  ),
+);
+
+it.effect("hands steering messages to the next planning pass", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const prompts: string[] = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 2,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        prompts.push(spec.prompt);
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(
+            spec.prompt.includes("Summary pass")
+              ? ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}']
+              : spec.id.startsWith("orchestrator")
+                ? [
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Work","pipeline":"implementation"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ]
+                : [
+                    '__AGENTTUNNEL_TOOL__ {"name":"note_finding","arguments":{"key":"findings","value":"done"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}',
+                  ],
+          ),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+    let delivered = false;
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "steer me",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+      takeSteeringMessages: () =>
+        Effect.sync(() => {
+          if (delivered) return [];
+          delivered = true;
+          return ["also update the docs"];
+        }),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    const markdown = events
+      .filter(
+        (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
+          event.type === "orchestrator.output",
+      )
+      .map((event) => event.text)
+      .join("");
+    NodeAssert.match(markdown, /Steering received/);
+    NodeAssert.ok(
+      prompts.some(
+        (prompt) => prompt.includes("Summary pass") && prompt.includes("also update the docs"),
+      ),
+      "expected steering in the summary pass prompt",
+    );
+  }),
+);
+
+it.effect("takes another pass when steering arrives during the final pass", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const prompts: string[] = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        prompts.push(spec.prompt);
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable([
+            '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"nothing to do"}}',
+          ]),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+    let drains = 0;
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "steer late",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+      takeSteeringMessages: () =>
+        Effect.sync(() => {
+          drains += 1;
+          return drains === 1 ? ["also update the docs"] : [];
+        }),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.ok(
+      prompts.some(
+        (prompt) => prompt.includes("Summary pass") && prompt.includes("also update the docs"),
+      ),
+      "expected a follow-up pass carrying the late steering",
+    );
+  }),
 );
 
 /**
@@ -259,5 +438,322 @@ it.effect("reports failed agents in the workflow summary", () =>
     NodeAssert.match(markdown, /❌ \*\*Pipeline `research` failed\*\* · 1\/2 completed · 1 failed/);
     NodeAssert.match(markdown, /### Failures\n\n- ❌ \*\*executor · Research A\*\*/);
     NodeAssert.match(markdown, /\| 🛠️ executor · Research A \| `research` \| ❌ failed \|/);
+  }),
+);
+
+const collectMarkdown = (events: ReadonlyArray<AgentTunnelEvent>): string =>
+  events
+    .filter(
+      (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
+        event.type === "orchestrator.output",
+    )
+    .map((event) => event.text)
+    .join("");
+
+/** Fake harness that replays the given orchestrator planning lines for every pass. */
+const makeDispatchRunner = (input: {
+  readonly dispatchLines: ReadonlyArray<string>;
+  readonly specs: Array<AgentTunnelProcessSpec>;
+}): AgentTunnelProcessRunner => ({
+  spawn: (spec) => {
+    input.specs.push(spec);
+    const lines = spec.prompt.includes("Summary pass")
+      ? ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}']
+      : spec.id.startsWith("orchestrator")
+        ? input.dispatchLines
+        : [
+            '__AGENTTUNNEL_TOOL__ {"name":"note_finding","arguments":{"key":"findings","value":"work complete"}}',
+            '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}',
+          ];
+    return Effect.succeed({
+      pid: 1,
+      lines: Stream.fromIterable(lines),
+      exitCode: Effect.succeed(0),
+      kill: Effect.void,
+    } satisfies AgentTunnelProcessHandle);
+  },
+});
+
+it.effect("auto mode uses the dispatched model for executor and reviewer tasks", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const specs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      executorModel: "fallback/executor",
+      reviewerModel: "fallback/reviewer",
+      autoMode: true,
+      maxOrchestratorPasses: 3,
+    });
+    const process = makeDispatchRunner({
+      specs,
+      dispatchLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research","model":"auto/executor"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the research","pipeline":"review","depends_on":["research"],"model":"auto/reviewer"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+      ],
+    });
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "test auto mode",
+      cwd: "/tmp",
+      model: "session/model",
+      availableModels: ["auto/executor", "auto/reviewer"],
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-executor")?.model,
+      "auto/executor",
+    );
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-reviewer")?.model,
+      "auto/reviewer",
+    );
+    const started = events.filter(
+      (event): event is Extract<AgentTunnelEvent, { type: "agent.started" }> =>
+        event.type === "agent.started",
+    );
+    NodeAssert.equal(started.find((event) => event.role === "executor")?.model, "auto/executor");
+    NodeAssert.equal(started.find((event) => event.role === "reviewer")?.model, "auto/reviewer");
+
+    const orchestratorPrompts = specs
+      .filter((spec) => spec.id.startsWith("orchestrator"))
+      .map((spec) => spec.prompt);
+    NodeAssert.equal(orchestratorPrompts.length, 2);
+    for (const prompt of orchestratorPrompts) {
+      NodeAssert.match(prompt, /## Available models\n\nauto\/executor\nauto\/reviewer/);
+    }
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(markdown, /Queued \*\*executor · Research A\*\*[^\n]*auto\/executor/);
+    NodeAssert.match(markdown, /Queued \*\*reviewer · Review the research\*\*[^\n]*auto\/reviewer/);
+  }),
+);
+
+it.effect("auto mode warns on unknown models and falls back to role and session models", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const specs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      executorModel: "fallback/executor",
+      autoMode: true,
+      maxOrchestratorPasses: 3,
+    });
+    const process = makeDispatchRunner({
+      specs,
+      dispatchLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research","model":"bogus/executor"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the research","pipeline":"review","depends_on":["research"],"model":"bogus/reviewer"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+      ],
+    });
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "test invalid auto mode models",
+      cwd: "/tmp",
+      model: "session/model",
+      availableModels: ["known/model"],
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-executor")?.model,
+      "fallback/executor",
+    );
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-reviewer")?.model,
+      "session/model",
+    );
+    const markdown = collectMarkdown(events);
+    NodeAssert.ok(markdown.includes("⚠️ Model `bogus/executor` is not available"));
+    NodeAssert.ok(markdown.includes("⚠️ Model `bogus/reviewer` is not available"));
+  }),
+);
+
+it.effect("auto mode rejects task models when the available list is empty or absent", () =>
+  Effect.gen(function* () {
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly availableModels?: ReadonlyArray<string>;
+    }> = [{ label: "absent" }, { label: "empty", availableModels: [] }];
+
+    for (const [index, testCase] of cases.entries()) {
+      const events: AgentTunnelEvent[] = [];
+      const specs: Array<AgentTunnelProcessSpec> = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        executorModel: "fallback/executor",
+        autoMode: true,
+        maxOrchestratorPasses: 3,
+      });
+      const process = makeDispatchRunner({
+        specs,
+        dispatchLines: [
+          '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research","model":"known/model"}}',
+          '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the research","pipeline":"review","depends_on":["research"],"model":"known/model"}}',
+          '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+        ],
+      });
+
+      const result = yield* runAgentTunnel({
+        threadId: `thread-${testCase.label}`,
+        workflowId: `workflow-${testCase.label}`,
+        userTask: "test unavailable task models",
+        cwd: "/tmp",
+        model: "session/model",
+        ...(testCase.availableModels === undefined
+          ? {}
+          : { availableModels: testCase.availableModels }),
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+      });
+
+      NodeAssert.equal(result.status, "completed");
+      NodeAssert.equal(
+        specs.find((spec) => spec.harness === "fake-executor")?.model,
+        "fallback/executor",
+      );
+      NodeAssert.equal(
+        specs.find((spec) => spec.harness === "fake-reviewer")?.model,
+        "session/model",
+      );
+      const markdown = collectMarkdown(events);
+      NodeAssert.ok(
+        markdown.includes("⚠️ Model `known/model` is not available"),
+        `expected a warning with ${testCase.label} available models`,
+      );
+      const orchestratorPrompts = specs
+        .filter((spec) => spec.id.startsWith("orchestrator"))
+        .map((spec) => spec.prompt);
+      NodeAssert.equal(orchestratorPrompts.length, 2);
+      for (const prompt of orchestratorPrompts) {
+        NodeAssert.doesNotMatch(prompt, /## Available models/);
+      }
+    }
+  }),
+);
+
+it.effect("falls back to the orchestrator model when no task or role model is set", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const specs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      orchestratorModel: "orchestrator/model",
+      autoMode: true,
+      maxOrchestratorPasses: 3,
+    });
+    const process = makeDispatchRunner({
+      specs,
+      dispatchLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the research","pipeline":"review","depends_on":["research"]}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+      ],
+    });
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "test orchestrator model fallback",
+      cwd: "/tmp",
+      model: "session/model",
+      availableModels: ["other/model"],
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-executor")?.model,
+      "orchestrator/model",
+    );
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-reviewer")?.model,
+      "orchestrator/model",
+    );
+    const started = events.filter(
+      (event): event is Extract<AgentTunnelEvent, { type: "agent.started" }> =>
+        event.type === "agent.started",
+    );
+    NodeAssert.equal(
+      started.find((event) => event.role === "executor")?.model,
+      "orchestrator/model",
+    );
+    NodeAssert.equal(
+      started.find((event) => event.role === "reviewer")?.model,
+      "orchestrator/model",
+    );
+    NodeAssert.ok(!specs.some((spec) => spec.model === "session/model"));
+  }),
+);
+
+it.effect("manual mode ignores a task-level model", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const specs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      executorModel: "fallback/executor",
+      maxOrchestratorPasses: 3,
+    });
+    const process = makeDispatchRunner({
+      specs,
+      dispatchLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research","model":"known/model"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+      ],
+    });
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "test manual mode",
+      cwd: "/tmp",
+      model: "session/model",
+      availableModels: ["known/model"],
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(
+      specs.find((spec) => spec.harness === "fake-executor")?.model,
+      "fallback/executor",
+    );
+    NodeAssert.ok(!specs.some((spec) => spec.model === "known/model"));
+    NodeAssert.ok(!collectMarkdown(events).includes("known/model"));
+    for (const spec of specs.filter((entry) => entry.id.startsWith("orchestrator"))) {
+      NodeAssert.doesNotMatch(spec.prompt, /## Available models/);
+    }
   }),
 );
