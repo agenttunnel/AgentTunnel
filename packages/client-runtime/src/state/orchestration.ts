@@ -26,7 +26,7 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       // view is mounted, which is when the atom is subscribed.
       staleTimeMs: 0,
       idleTtlMs: 60_000,
-      refreshIntervalMs: 2_000,
+      refreshIntervalMs: 1_000,
     }),
     fullThreadDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:full-thread-diff",

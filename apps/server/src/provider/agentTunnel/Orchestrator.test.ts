@@ -131,6 +131,63 @@ it.effect("fails a turn when an orchestrator pass hangs past the timeout", () =>
   ),
 );
 
+it.effect("emits a periodic progress recap while tasks stay running", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 1,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) =>
+          Effect.succeed(
+            spec.id.startsWith("orchestrator")
+              ? {
+                  pid: 1,
+                  lines: Stream.fromIterable([
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Slow work","pipeline":"implementation"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ]),
+                  exitCode: Effect.succeed(0),
+                  kill: Effect.void,
+                }
+              : {
+                  pid: 2,
+                  lines: Stream.never,
+                  exitCode: Effect.never,
+                  kill: Effect.void,
+                },
+          ),
+      };
+
+      const fiber = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "slow workflow",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+      }).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust("1 second");
+      yield* TestClock.adjust("31 seconds");
+
+      const recaps = events.filter(
+        (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
+          event.type === "orchestrator.output" && event.text.includes("**Progress**"),
+      );
+      NodeAssert.ok(recaps.length >= 1, "expected at least one progress recap");
+      NodeAssert.match(recaps[0]!.text, /implementation`?: 0\/1/);
+      yield* Fiber.interrupt(fiber);
+    }),
+  ),
+);
+
 /**
  * Shared fake harness for the markdown-shape tests: the orchestrator plans a
  * two-executor pipeline plus a dependent reviewer pipeline, and each executor

@@ -3,6 +3,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -164,6 +165,7 @@ const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
 const TASK_LABEL_MAX_CHARS = 72;
 const ORCHESTRATOR_PASS_TIMEOUT: Duration.Input = "3 minutes";
+const RECAP_INTERVAL: Duration.Input = "30 seconds";
 
 const roleIcon = (role: "executor" | "reviewer"): string => (role === "executor" ? "🛠️" : "🔍");
 
@@ -907,34 +909,71 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     text: `## AgentTunnel workflow\n\n**Task:** ${options.userTask}\n\nThe orchestrator is analyzing the task and will dispatch subagents shortly.\n`,
   });
 
-  while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
-    const pipelineCountBefore = pipelineOrder.length;
-    const orchestratorResult = yield* runOrchestratorPass(orchestratorPasses);
-    if (yield* isCancelled) {
-      return yield* finish("stopped", "The workflow was stopped before all planned work finished.");
-    }
-    if (orchestratorResult.code !== 0) {
-      return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
-    }
-    if (pipelineOrder.length === pipelineCountBefore) {
-      return yield* finish(
-        "completed",
-        "All planned work finished — the orchestrator found no follow-up tasks.",
-      );
-    }
-    if (!(yield* runNewPipelines(pipelineCountBefore))) {
-      const wasStopped = yield* isCancelled;
-      return yield* finish(
-        wasStopped ? "stopped" : "failed",
-        wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
-      );
-    }
-    orchestratorPasses += 1;
-  }
+  const emitRecap = Effect.fn("runAgentTunnel.emitRecap")(function* () {
+    const elapsed = formatDuration((yield* Clock.currentTimeMillis) - workflowStartedAt);
+    const parts = pipelineOrder.map((id) => {
+      const total = tasks.filter((task) => task.pipelineId === id).length;
+      const done = taskRecords.filter((record) => record.pipelineId === id).length;
+      const pipeline = pipelines.get(id);
+      const marker =
+        pipeline?.status === "completed" ? "✓" : pipeline?.status === "running" ? "▶" : "…";
+      return `${marker} \`${id}\`: ${done}/${total}`;
+    });
+    const running = tasks.length - taskRecords.length;
+    const state =
+      parts.length > 0
+        ? parts.join(" · ")
+        : tasks.length > 0
+          ? "starting pipelines"
+          : "orchestrator planning";
+    yield* emit({
+      type: "orchestrator.output",
+      text: `\n> ⏱️ **Progress** · ${elapsed}${running > 0 ? ` · ${running} running` : ""} · ${state}\n\n`,
+    });
+  });
 
-  return yield* finish(
-    "completed",
-    `Reached the maximum of ${options.settings.maxOrchestratorPasses} orchestrator passes.`,
+  const recapScope = yield* Scope.make();
+  yield* Effect.forever(Effect.sleep(RECAP_INTERVAL).pipe(Effect.andThen(emitRecap()))).pipe(
+    Effect.forkIn(recapScope),
+  );
+
+  const runWorkflow = Effect.gen(function* () {
+    while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
+      const pipelineCountBefore = pipelineOrder.length;
+      const orchestratorResult = yield* runOrchestratorPass(orchestratorPasses);
+      if (yield* isCancelled) {
+        return yield* finish(
+          "stopped",
+          "The workflow was stopped before all planned work finished.",
+        );
+      }
+      if (orchestratorResult.code !== 0) {
+        return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
+      }
+      if (pipelineOrder.length === pipelineCountBefore) {
+        return yield* finish(
+          "completed",
+          "All planned work finished — the orchestrator found no follow-up tasks.",
+        );
+      }
+      if (!(yield* runNewPipelines(pipelineCountBefore))) {
+        const wasStopped = yield* isCancelled;
+        return yield* finish(
+          wasStopped ? "stopped" : "failed",
+          wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
+        );
+      }
+      orchestratorPasses += 1;
+    }
+
+    return yield* finish(
+      "completed",
+      `Reached the maximum of ${options.settings.maxOrchestratorPasses} orchestrator passes.`,
+    );
+  });
+
+  return yield* runWorkflow.pipe(
+    Effect.ensuring(Scope.close(recapScope, Exit.void).pipe(Effect.ignore)),
   );
 });
 
