@@ -46,19 +46,23 @@ export function threadUsageSnapshotFromStep(
   step: OpenCodeStepUsage,
   cumulative: HarnessUsageTotals,
 ): ThreadTokenUsageSnapshot {
+  // Match the Claude and Codex snapshots: inputTokens/outputTokens are the
+  // totals, and the cached/reasoning fields are their subsets (OpenCode counts
+  // both beside the uncached input and plain output). Reasoning must never be
+  // added on top of output twice (UsageTokenTotals contract).
+  const inputTokens = step.inputTokens + step.cachedInputTokens;
+  const outputTokens = step.outputTokens + step.reasoningOutputTokens;
   return {
     usedTokens: step.totalTokens,
     totalProcessedTokens: cumulative.totalTokens,
-    inputTokens: step.inputTokens,
+    inputTokens,
     cachedInputTokens: step.cachedInputTokens,
-    // OpenCode counts reasoning beside output; consumers of these contracts
-    // treat it as included in output (Codex semantics), so normalize here.
-    outputTokens: step.outputTokens + step.reasoningOutputTokens,
+    outputTokens,
     reasoningOutputTokens: step.reasoningOutputTokens,
     lastUsedTokens: step.totalTokens,
-    lastInputTokens: step.inputTokens,
+    lastInputTokens: inputTokens,
     lastCachedInputTokens: step.cachedInputTokens,
-    lastOutputTokens: step.outputTokens + step.reasoningOutputTokens,
+    lastOutputTokens: outputTokens,
     lastReasoningOutputTokens: step.reasoningOutputTokens,
   };
 }

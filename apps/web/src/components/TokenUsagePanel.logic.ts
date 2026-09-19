@@ -115,7 +115,12 @@ function countLabel(value: number | null): string {
   return value === null ? "—" : formatSubagentTokenCount(value);
 }
 
-/** The latest snapshot within a turn wins; earlier frames are superseded. */
+/**
+ * The latest snapshot within a turn wins; earlier frames are superseded by the
+ * read model (server projection and client reducer keep one per turn), so
+ * there is nothing to accumulate here. The provider's cumulative session total
+ * arrives on each snapshot as `totalProcessedTokens`.
+ */
 function applyMainUsage(turn: MutableTurn, activity: OrchestrationThreadActivity): void {
   if (activity.kind !== "context-window.updated") {
     return;
@@ -287,6 +292,9 @@ export function deriveTokenUsage(input: {
     }
   }
   const subagentTokens = agents.reduce((sum, agent) => sum + (agentTotalTokens(agent) ?? 0), 0);
+  // Snapshot input/output already include the cached and reasoning subsets
+  // (UsageTokenTotals contract), so those categories are displayed beside the
+  // sums, never added on top.
   const mainTokens = inputTokens + outputTokens;
 
   const agentRows = agents.map((agent): TokenUsageAgentRow => {
