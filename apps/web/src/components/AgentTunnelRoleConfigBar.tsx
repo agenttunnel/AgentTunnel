@@ -21,7 +21,9 @@ export function AgentTunnelRoleConfigBar({
       {roles.map((role) => (
         <span key={role.id} className="inline-flex min-w-0 items-center gap-1">
           <span className="text-muted-foreground/80">{role.label}</span>
-          <span className="truncate text-foreground/80">{shortName(role.model, "default")}</span>
+          <span className="truncate text-foreground/80">
+            {role.auto ? "auto" : shortName(role.model, "default")}
+          </span>
           <span className="text-muted-foreground/50">
             {shortName(role.harness, "opencode")}
             {role.variant ? ` · ${role.variant}` : ""}

@@ -112,6 +112,7 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
       };
       const adapter = yield* makeAgentTunnelAdapter(config, {
         instanceId,
+        availableModels: models.map((model) => model.slug),
         ...(environment ? { environment } : {}),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });

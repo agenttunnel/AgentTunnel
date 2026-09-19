@@ -1,7 +1,7 @@
 "use client";
 
 import type { ServerProviderModel } from "@t3tools/contracts";
-import { Bot, ShieldCheck, Workflow } from "lucide-react";
+import { Bot, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -174,10 +174,31 @@ export function AgentTunnelSettingsSection({
   onChange,
 }: AgentTunnelSettingsSectionProps) {
   const skipPermissions = readConfigBoolean(config, "dangerouslySkipPermissions", true);
+  const autoMode = readConfigBoolean(config, "autoMode", false);
   const maxPasses = Number(readConfigString(config, "maxOrchestratorPasses") || 4);
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-4 text-muted-foreground" />
+            <div>
+              <span className="block text-sm font-medium text-foreground">Auto mode</span>
+              <span className="block text-xs text-muted-foreground">
+                The orchestrator chooses each executor and reviewer task's model. Per-role model
+                settings below act as fallbacks.
+              </span>
+            </div>
+          </div>
+          <Switch
+            checked={autoMode}
+            onCheckedChange={(checked) => writeConfigValue(config, onChange, "autoMode", checked)}
+            aria-label="Auto mode"
+          />
+        </div>
+      </div>
+
       <div>
         <div className="mb-2 flex items-center gap-2">
           <Workflow className="size-4 text-muted-foreground" />

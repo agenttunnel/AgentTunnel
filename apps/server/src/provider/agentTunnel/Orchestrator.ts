@@ -115,6 +115,7 @@ export interface AgentTunnelRunOptions {
   readonly userTask: string;
   readonly cwd: string;
   readonly model?: string;
+  readonly availableModels?: ReadonlyArray<string>;
   readonly settings: AgentTunnelSettings;
   readonly process: AgentTunnelProcessRunner;
   readonly emit: (event: AgentTunnelEvent) => Effect.Effect<void>;
@@ -131,6 +132,7 @@ interface DispatchedTask {
   readonly context: ReadonlyArray<string>;
   readonly pipelineId: string;
   readonly agentIndex: number;
+  readonly model?: string;
 }
 
 interface PipelineState {
@@ -412,6 +414,19 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         const mode = call.arguments.mode === "sequential" ? "sequential" : "parallel";
         const dependsOn = stringArray(call.arguments.depends_on);
         const contextKeys = stringArray(call.arguments.context);
+        const requestedModel = stringValue(call.arguments.model).trim();
+        let taskModel: string | undefined;
+        if (options.settings.autoMode && requestedModel.length > 0) {
+          const availableModels = options.availableModels ?? [];
+          if (availableModels.includes(requestedModel)) {
+            taskModel = requestedModel;
+          } else {
+            yield* emit({
+              type: "orchestrator.output",
+              text: `\n> ⚠️ Model \`${requestedModel}\` is not available for the ${role} task — using the configured model instead.\n`,
+            });
+          }
+        }
 
         const existing = pipelines.get(pipelineId);
         if (!existing) {
@@ -433,6 +448,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           context: contextKeys,
           pipelineId,
           agentIndex,
+          ...(taskModel ? { model: taskModel } : {}),
         });
         const label = humanTaskLabel(task);
         yield* trace("task dispatched", {
@@ -441,6 +457,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           pipeline: pipelineId,
           mode,
           dependsOn: dependsOn.join(","),
+          ...(taskModel ? { model: taskModel } : {}),
           task: task.slice(0, 160),
         });
         yield* emitProgress(`Queued ${role} "${label}" in pipeline "${pipelineId}" (${mode})`);
@@ -450,9 +467,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           contextKeys.length > 0
             ? ` · uses ${contextKeys.map((key) => `\`${key}\``).join(", ")}`
             : "";
+        const modelText = taskModel ? ` · ${taskModel}` : "";
         yield* emit({
           type: "orchestrator.output",
-          text: `\n- ${roleIcon(role)} Queued **${role} · ${label}** in \`${pipelineId}\` · ${mode}${dependencyText}${contextText}\n`,
+          text: `\n- ${roleIcon(role)} Queued **${role} · ${label}** in \`${pipelineId}\` · ${mode}${modelText}${dependencyText}${contextText}\n`,
         });
         return;
       }
@@ -520,6 +538,12 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return `\n\n## Conversation history (prior turns in this thread)\n${lines}\n\nIf the current task references "previous task", "that", or "continue", resolve it from this history.`;
   };
 
+  const availableModelsBlock = (): string => {
+    const availableModels = options.availableModels ?? [];
+    if (!options.settings.autoMode || availableModels.length === 0) return "";
+    return `\n\n## Available models\n\n${availableModels.join("\n")}`;
+  };
+
   const summaryPrompt = (): string => {
     const pipelineSummary = pipelineOrder
       .map((id) => {
@@ -527,7 +551,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         return `- ${id}: ${pipeline?.status ?? "pending"}`;
       })
       .join("\n");
-    return `${ORCHESTRATOR_PROMPT}${historyBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
+    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
   };
 
   const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (
@@ -553,7 +577,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         cwd: options.cwd,
         prompt:
           pass === 0
-            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
+            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
             : summaryPrompt(),
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,
       },
@@ -607,16 +631,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const runTask = Effect.fn("runAgentTunnel.runTask")(function* (task: DispatchedTask) {
     const pipelineIndex = Math.max(0, pipelineOrder.indexOf(task.pipelineId));
     const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
+    const roleModel =
+      task.role === "executor" ? options.settings.executorModel : options.settings.reviewerModel;
     const model =
-      task.role === "executor"
-        ? options.settings.executorModel ||
-          options.settings.orchestratorModel ||
-          options.model ||
-          undefined
-        : options.settings.reviewerModel ||
-          options.settings.orchestratorModel ||
-          options.model ||
-          undefined;
+      task.model || roleModel || options.settings.orchestratorModel || options.model || undefined;
     const harness =
       task.role === "executor"
         ? options.settings.executorHarness

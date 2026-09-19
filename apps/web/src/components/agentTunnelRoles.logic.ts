@@ -66,6 +66,8 @@ export interface AgentTunnelRoleOption {
   readonly model: string | null;
   readonly harness: string;
   readonly variant: string | null;
+  /** Auto mode lets the orchestrator pick this role's per-task model. */
+  readonly auto: boolean;
 }
 
 export function agentTunnelRoleModelKey(roleId: string): string | null {
@@ -84,6 +86,7 @@ export function readAgentTunnelRoles(
   config: Record<string, unknown> | undefined,
 ): ReadonlyArray<AgentTunnelRoleOption> {
   const source = config ?? {};
+  const autoMode = source.autoMode === true;
   return AGENT_TUNNEL_ROLES.map((role) => {
     const model = source[role.key];
     const harness = source[role.harnessKey];
@@ -95,6 +98,7 @@ export function readAgentTunnelRoles(
       harness:
         typeof harness === "string" && harness.trim().length > 0 ? harness.trim() : "opencode",
       variant: typeof variant === "string" && variant.trim().length > 0 ? variant.trim() : null,
+      auto: autoMode && (role.id === "executor" || role.id === "reviewer"),
     };
   });
 }

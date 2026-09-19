@@ -575,6 +575,15 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    autoMode: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Auto mode",
+        description:
+          "The orchestrator picks each executor/reviewer task's model; per-role models are fallbacks.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
     orchestratorHarness: makeBinaryPathSetting("opencode").pipe(
       Schema.annotateKey({
         title: "Orchestrator harness",
@@ -663,6 +672,7 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
   },
   {
     order: [
+      "autoMode",
       "orchestratorHarness",
       "executorHarness",
       "reviewerHarness",
@@ -989,6 +999,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 
 const AgentTunnelSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
+  autoMode: Schema.optionalKey(Schema.Boolean),
   orchestratorHarness: Schema.optionalKey(TrimmedString),
   executorHarness: Schema.optionalKey(TrimmedString),
   reviewerHarness: Schema.optionalKey(TrimmedString),

@@ -111,6 +111,27 @@ provider settings. The default harness is `opencode` for all three roles. AgentT
 are currently non-interactive and use the configured permission-bypass setting; approval and user-input
 requests are not yet routed through the AgentTunnel request surface.
 
+### Model selection and auto mode
+
+Each role has a harness, model, and reasoning variant in provider settings. Harness and variant are
+always settings-driven. By default (`AgentTunnelSettings.autoMode` off), a child's model follows the
+existing precedence: `executorModel`/`reviewerModel` when set, then `orchestratorModel`, then the
+session model. Task-level models are ignored entirely in this mode.
+
+Auto mode lets the orchestrator choose a model per dispatched task. The driver builds
+`availableModels` from the AgentTunnel provider's model snapshot (`modelsFromInventory`, which merges
+the connected OpenCode catalog with `customModels`) and the adapter forwards it to `runAgentTunnel`.
+In auto mode the orchestrator prompt for pass 0 and summary passes gains an `## Available models`
+block listing those slugs (only when the list is non-empty), appended after the base prompt and before
+the `## Shared context` and `## Summary pass` sections. `dispatch_task` accepts an optional `model`
+argument.
+
+A task's `model` is honored only in auto mode and only when it is a member of `availableModels`; an
+empty or missing list means no task model is ever valid. A non-empty slug outside the list emits an
+`orchestrator.output` warning and is ignored. The precedence becomes task model (auto only) > role
+model > `orchestratorModel` > session model. The chosen model is shown in the queued dispatch message
+and in the `agent.started` event, so the thread timeline and Agents panel surface it per task.
+
 ## How provider work is requested
 
 Clients never call a provider directly. They dispatch orchestration commands over the RPC method

@@ -146,7 +146,9 @@ export function ContextPanel({
                     <span
                       className={cn(
                         "truncate font-mono text-[.7rem]",
-                        role.model ? "text-foreground/90" : "text-muted-foreground/60",
+                        role.auto || !role.model
+                          ? "text-muted-foreground/60"
+                          : "text-foreground/90",
                       )}
                     >
                       {role.value}

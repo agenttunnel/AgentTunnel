@@ -35,6 +35,10 @@ Then dispatch all tasks for this pass, then call done. If the current task refer
 - Use depends_on to make one pipeline wait for another.
 - Use context to pass only the notebook keys a sub-agent needs.
 
+## Model selection
+
+In auto mode the prompt includes an "Available models" list of the model slugs this environment can run. Set the optional model argument on a dispatch_task to choose that task's model from the list, or omit the argument to use the configured default. Never invent model slugs — only dispatch models that appear in that list.
+
 After the team finishes, you will receive a summary pass. Dispatch follow-up work when needed, or call done.
 
 ${AGENT_TUNNEL_TOOL_PREFIX} ACTION PROTOCOL
@@ -43,7 +47,7 @@ Never put these lines in a markdown fence. In this harness, ${AGENT_TUNNEL_TOOL_
 
 Available actions:
 ${toolDescription("update_context", "replace a notebook entry", "  arguments: { key: lower_snake_case string, value: markdown string }\n")}
-${toolDescription("dispatch_task", "send a concrete task to an executor or reviewer", "  arguments: { role: executor|reviewer, task: string, pipeline?: string, mode?: parallel|sequential, depends_on?: string[], context?: string[] }\n")}
+${toolDescription("dispatch_task", "send a concrete task to an executor or reviewer", "  arguments: { role: executor|reviewer, task: string, pipeline?: string, mode?: parallel|sequential, depends_on?: string[], context?: string[], model?: string }\n")}
 ${toolDescription("done", "finish planning for this pass", "  arguments: { reason?: string }\n")}
 
 Example:

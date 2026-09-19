@@ -145,6 +145,20 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       );
 
       assert.deepEqual(
+        yield* decodeSettingsPatch({ providers: { agenttunnel: { autoMode: true } } }),
+        {
+          providers: { agenttunnel: { autoMode: true } },
+        },
+      );
+
+      assert.deepEqual(
+        yield* decodeSettingsPatch({ providers: { agenttunnel: { autoMode: false } } }),
+        {
+          providers: { agenttunnel: { autoMode: false } },
+        },
+      );
+
+      assert.deepEqual(
         yield* decodeSettingsPatch({
           textGenerationModelSelection: {
             options: [{ id: "fastMode", value: false }],
@@ -157,6 +171,23 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         },
       );
     }),
+  );
+
+  it.effect("round-trips agenttunnel auto mode through settings updates", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+
+      const enabled = yield* serverSettings.updateSettings({
+        providers: { agenttunnel: { autoMode: true } },
+      });
+      assert.isTrue(enabled.providers.agenttunnel.autoMode);
+
+      const disabled = yield* serverSettings.updateSettings({
+        providers: { agenttunnel: { autoMode: false } },
+      });
+      assert.isFalse(disabled.providers.agenttunnel.autoMode);
+      assert.isFalse((yield* serverSettings.getSettings).providers.agenttunnel.autoMode);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
   it.effect(
