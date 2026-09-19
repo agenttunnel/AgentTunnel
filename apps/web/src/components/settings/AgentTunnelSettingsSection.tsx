@@ -186,10 +186,8 @@ export function AgentTunnelSettingsSection({
 }: AgentTunnelSettingsSectionProps) {
   const skipPermissions = readConfigBoolean(config, "dangerouslySkipPermissions", true);
   const autoMode = readConfigBoolean(config, "autoMode", false);
-  const maxPasses = Number(readConfigString(config, "maxOrchestratorPasses") || 4);
-  const passTimeoutMinutes = Number(
-    readConfigString(config, "orchestratorPassTimeoutMinutes") || 15,
-  );
+  const maxPasses = readConfigNumber(config, "maxOrchestratorPasses", 4);
+  const passTimeoutMinutes = readConfigNumber(config, "orchestratorPassTimeoutMinutes", 15);
 
   return (
     <div className="space-y-4">
