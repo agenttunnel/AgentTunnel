@@ -49,10 +49,13 @@ import {
 } from "../agentTunnel/Orchestrator.ts";
 import {
   buildAgentTunnelSpawnArgs,
-  isOpenCodeHarness,
+  agentTunnelHarnessKind,
+  type AgentTunnelHarnessKind,
   parseOpenCodeJsonLine,
   parseOpenCodeLogLine,
   parseOpenCodeStepUsage,
+  parsePiJsonLine,
+  parsePiLogLine,
 } from "../agentTunnel/opencodeTransport.ts";
 import {
   addHarnessUsageTotals,
@@ -159,14 +162,17 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     threadId: ThreadId,
     agentId: string,
     rawLine: string,
-    openCode: boolean,
+    harnessKind: AgentTunnelHarnessKind,
   ) =>
     Effect.gen(function* () {
       const context = sessions.get(threadId);
       const outputPath = agentOutputPath(threadId, agentId);
-      const entries = openCode
-        ? parseOpenCodeLogLine(rawLine)
-        : [{ kind: "raw" as const, text: rawLine }];
+      const entries =
+        harnessKind === "opencode"
+          ? parseOpenCodeLogLine(rawLine)
+          : harnessKind === "pi"
+            ? parsePiLogLine(rawLine)
+            : [{ kind: "raw" as const, text: rawLine }];
       for (const entry of entries) {
         const line = `${encodeLogEntry(entry)}\n`;
         const written = context?.agentLogBytes.get(agentId) ?? 0;
@@ -177,7 +183,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         context?.agentLogBytes.set(agentId, written + bytes);
         yield* appendLogFile(threadId, agentId, outputPath, line);
       }
-      if (!openCode) {
+      if (harnessKind === "other") {
         return;
       }
       // The raw stdout/stderr stream, verbatim, for the "Raw" view.
@@ -573,29 +579,38 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ),
         );
         const threadId = ThreadId.make(spec.threadId);
-        const openCode = isOpenCodeHarness(spec.harness);
+        const harnessKind = agentTunnelHarnessKind(spec.harness);
         const observedLines = child.all.pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.tap((line) => writeNativeLine(threadId, spec.id, line).pipe(Effect.orDie)),
           Stream.tap((line) =>
-            appendAgentLogEntries(threadId, spec.id, line, openCode).pipe(Effect.orDie),
+            appendAgentLogEntries(threadId, spec.id, line, harnessKind).pipe(Effect.orDie),
           ),
         );
         const includeReasoning = spec.id.startsWith("orchestrator");
-        const usageLines = openCode
-          ? observedLines.pipe(
-              Stream.tap((line) => trackHarnessUsage(threadId, spec.id, line).pipe(Effect.orDie)),
-            )
-          : observedLines;
-        const lines = openCode
-          ? usageLines.pipe(
-              Stream.flatMap((line) =>
-                Stream.fromIterable(parseOpenCodeJsonLine(line, { includeReasoning })),
-              ),
-              Stream.mapError(processError),
-            )
-          : usageLines.pipe(Stream.mapError(processError));
+        const usageLines =
+          harnessKind === "opencode"
+            ? observedLines.pipe(
+                Stream.tap((line) => trackHarnessUsage(threadId, spec.id, line).pipe(Effect.orDie)),
+              )
+            : observedLines;
+        const lines =
+          harnessKind === "opencode"
+            ? usageLines.pipe(
+                Stream.flatMap((line) =>
+                  Stream.fromIterable(parseOpenCodeJsonLine(line, { includeReasoning })),
+                ),
+                Stream.mapError(processError),
+              )
+            : harnessKind === "pi"
+              ? usageLines.pipe(
+                  Stream.flatMap((line) =>
+                    Stream.fromIterable(parsePiJsonLine(line, { includeReasoning })),
+                  ),
+                  Stream.mapError(processError),
+                )
+              : usageLines.pipe(Stream.mapError(processError));
         return {
           pid: Number(child.pid),
           lines,

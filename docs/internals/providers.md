@@ -136,6 +136,13 @@ harness writes the matching default provider instance's `enabled` flag; the comp
 shows only harnesses that are enabled (or currently selected by a role). There is no standalone
 Providers settings page.
 
+The driver branches on the harness CLI basename: `opencode` uses the OpenCode inventory probe
+(`<harness> models --verbose`) and `run --format json`, while `pi` uses `pi --list-models` for the
+model list and one-shot `pi --mode json -p <prompt> --no-session` per role, translating pi's JSONL
+`message_end` text into the same `__AGENTTUNNEL_TOOL__` protocol. Any other basename keeps the generic
+`run` invocation. Model probes never read stdin and are wrapped in a timeout, so a wedged or
+interactive harness degrades to a readable provider warning instead of blocking the registry.
+
 ### Model selection and auto mode
 
 Each role has a harness, model, and reasoning variant in provider settings. Harness and variant are
