@@ -21,6 +21,8 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -64,6 +66,7 @@ import {
   threadUsageSnapshotFromStep,
   type HarnessUsageTotals,
 } from "../agentTunnel/harnessUsage.ts";
+import { makeAgentTunnelInheritedContext } from "../agentTunnel/InheritedContextStore.ts";
 
 const PROVIDER = ProviderDriverKind.make("agenttunnel");
 const RESUME_VERSION = 1;
@@ -124,11 +127,19 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
 ): Effect.fn.Return<
   ProviderAdapterShape<ProviderAdapterError>,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | ServerConfig | Scope.Scope
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | ServerConfig
+  | Scope.Scope
 > {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* ServerConfig;
+  const inheritedContext = yield* makeAgentTunnelInheritedContext(
+    serverConfig.orchestratorContextDir,
+  );
   const runtimeScope = yield* Scope.make();
   const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, AgentTunnelSessionContext>();
@@ -800,6 +811,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     });
 
     const run = Effect.gen(function* () {
+      const inheritedContextPrompt = yield* inheritedContext.renderForPrompt();
       const result = yield* Effect.exit(
         runAgentTunnel({
           threadId: input.threadId,
@@ -817,6 +829,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             : {}),
           ...(context.lastSharedContextDump
             ? { priorSharedContext: context.lastSharedContextDump }
+            : {}),
+          ...(inheritedContextPrompt.trim().length > 0
+            ? { inheritedContext: inheritedContextPrompt }
             : {}),
           takeSteeringMessages: () =>
             Effect.gen(function* () {
@@ -862,6 +877,15 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       if (workflowResult.contextDump) {
         context.lastSharedContextDump = workflowResult.contextDump;
       }
+      yield* inheritedContext.record({
+        learnings: workflowResult.learnings ?? [],
+        attribution: {
+          threadId: input.threadId,
+          workflowId,
+          projectCwd: context.cwd,
+          status: workflowResult.status,
+        },
+      });
       yield* completeTurn(
         context,
         input.threadId,

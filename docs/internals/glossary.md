@@ -125,6 +125,10 @@ A point-in-time view of state. The word is used in multiple layers, including or
 
 The per-driver list of current model slugs that decides which models land in the model picker's legacy section. Bundled at `apps/server/src/provider/model-manifest.json` and refreshed at runtime from the same file on `main`, so classification updates ship as commits instead of releases. See the [provider architecture][16] model manifest section.
 
+#### Inherited context
+
+The cross-project memory every AgentTunnel orchestrator inherits and updates. A hidden `.orchestrator-context/` folder in the environment's state directory holds a `GUIDE.md`, one rules file per category under `rules/` (design decisions, harness/model fit, model quality), and a chronological `LOG.md`. The adapter renders the guide and rules into the orchestrator prompt before a workflow and, when the workflow ends, appends the lessons the orchestrator recorded through the `record_learning` action. Updates are serialized by an in-process semaphore plus a lock file, and each entry carries the date, thread, project, workflow, and terminal status that recorded it. See [InheritedContextStore.ts][28].
+
 ### Checkpointing
 
 Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].
@@ -206,3 +210,4 @@ ships AgentTunnel already matching it.
 [25]: ../../apps/server/src/environmentTheme.ts
 [26]: ../user/environment-theme.md
 [27]: ../../apps/server/src/provider/Layers/AgentTunnelAdapter.ts
+[28]: ../../apps/server/src/provider/agentTunnel/InheritedContextStore.ts

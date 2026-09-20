@@ -76,6 +76,15 @@ The per-role models remain as fallbacks when the orchestrator does not pick one,
 configured per role. If the orchestrator picks a model the environment does not offer, AgentTunnel
 shows a warning and uses the fallback instead.
 
+AgentTunnel orchestrators also learn across projects. Each environment keeps a hidden
+`.orchestrator-context/` folder in its data directory (`~/.t3/userdata`, or `~/.t3/dev` for dev
+installs). It holds a `GUIDE.md`, one rules file per category under `rules/`, and a `LOG.md` ledger.
+Before planning, the orchestrator reads the rules; when a workflow ends, it records what it learned —
+design decisions you liked or disliked, which harness and model combinations fit which tasks, and how
+models performed overall — and AgentTunnel appends those entries with the date, project, and thread.
+You can edit any of these files at any time and the next orchestrator inherits your edits. Only one
+workflow updates the folder at a time.
+
 | Provider   | CLI                                                      | Default binary | Log in with           |
 | ---------- | -------------------------------------------------------- | -------------- | --------------------- |
 | Codex      | [Codex CLI](https://developers.openai.com/codex/cli)     | `codex`        | `codex login`         |

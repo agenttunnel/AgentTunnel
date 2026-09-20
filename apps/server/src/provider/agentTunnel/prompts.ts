@@ -37,7 +37,13 @@ Then dispatch all tasks for this pass, then call done. If the current task refer
 
 ## Model selection
 
-In auto mode the prompt includes an "Available models" list of the model slugs this environment can run. Set the optional model argument on a dispatch_task to choose that task's model from the list, or omit the argument to use the configured default. Never invent model slugs — only dispatch models that appear in that list.
+In auto mode the prompt includes an "Available models" list of the model slugs this environment can run. Set the optional model argument on a dispatch_task to choose that task's model from the list, or omit the argument to use the configured default. Never invent model slugs — only dispatch models that appear in that list. Prefer models that the inherited context rates as a good fit for the task shape.
+
+## Inherited context
+
+Every orchestrator inherits a global context folder that accumulates durable, cross-project rules. It is injected into this prompt under "Inherited context": design decisions the user likes and dislikes, which harness/model combinations fit which tasks, and overall model quality. Treat it as binding guidance unless the user's current task overrides it. When a rule should shape the implementation, copy it into the shared notebook and pass it to the executor with context.
+
+Before you call done at the end of the workflow, record every durable, generalizable lesson you learned with record_learning. Common categories: design-decisions, model-fit, model-quality. Use another lowercase kebab-case category when a lesson fits none. Good entries are non-project-specific, actionable, and one or two sentences, grounded in this workflow's outcomes (dispatch results, reviewer findings, explicit user feedback). Correct stale entries when reality changed. Never record secrets, credentials, file contents, or one-off task details, and do not restate rules that are already present. Recording nothing is fine when the workflow taught nothing durable.
 
 After the team finishes, you will receive a summary pass. Dispatch follow-up work when needed, or call done.
 
@@ -48,6 +54,7 @@ Never put these lines in a markdown fence. In this harness, ${AGENT_TUNNEL_TOOL_
 Available actions:
 ${toolDescription("update_context", "replace a notebook entry", "  arguments: { key: lower_snake_case string, value: markdown string }\n")}
 ${toolDescription("dispatch_task", "send a concrete task to an executor or reviewer", "  arguments: { role: executor|reviewer, task: string, pipeline?: string, mode?: parallel|sequential, depends_on?: string[], context?: string[], model?: string }\n")}
+${toolDescription("record_learning", "append a durable, cross-project lesson to the inherited context", "  arguments: { category: lowercase-kebab-case string, entry: string }\n")}
 ${toolDescription("done", "finish planning for this pass", "  arguments: { reason?: string }\n")}
 
 Example:
@@ -55,6 +62,7 @@ ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"update_context","arguments":{"key":"user_go
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"executor","task":"Implement the feature and run tests.","pipeline":"implementation","context":["user_goal"]}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"executor","task":"Write documentation for the feature.","pipeline":"implementation","context":["user_goal"]}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the implementation and documentation.","pipeline":"review","depends_on":["implementation"],"context":["user_goal"]}}
+${AGENT_TUNNEL_TOOL_PREFIX} {"name":"record_learning","arguments":{"category":"model-fit","entry":"codex + gpt-5.2-codex handled multi-file TypeScript refactors well; too slow for one-line fixes."}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"done","arguments":{"reason":"tasks dispatched"}}`;
 
 export const EXECUTOR_PROMPT = `You are an executor agent in AgentTunnel.
