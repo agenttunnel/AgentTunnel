@@ -22,7 +22,12 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
-import { checkPiProviderStatus, makePendingPiProvider } from "../Layers/PiProvider.ts";
+import {
+  checkPiProviderStatus,
+  makePendingPiProvider,
+  piSupportsAgentSettled,
+  probePiVersion,
+} from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -111,9 +116,16 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         env: processEnv,
       });
 
+      // pi 0.85 introduced `agent_settled`; older binaries never emit it. Probe
+      // the version so the adapter settles turns on the correct terminal event
+      // rather than guessing from a fixed timeout.
+      const piVersion = yield* probePiVersion(effectiveConfig, processEnv).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
       const adapter = yield* makePiAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        supportsAgentSettled: piSupportsAgentSettled(piVersion),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);

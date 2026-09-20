@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import {
   EventId,
+  MessageId,
   OrchestrationAgentLogEntry,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -13,6 +14,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type TaskWorkflowPhase,
+  type ThreadMessageSteeringStatus,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -32,7 +34,6 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
-  ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { ServerConfig } from "../../config.ts";
@@ -51,7 +52,15 @@ import {
   isOpenCodeHarness,
   parseOpenCodeJsonLine,
   parseOpenCodeLogLine,
+  parseOpenCodeStepUsage,
 } from "../agentTunnel/opencodeTransport.ts";
+import {
+  addHarnessUsageTotals,
+  emptyHarnessUsageTotals,
+  runtimeTaskUsageFromTotals,
+  threadUsageSnapshotFromStep,
+  type HarnessUsageTotals,
+} from "../agentTunnel/harnessUsage.ts";
 
 const PROVIDER = ProviderDriverKind.make("agenttunnel");
 const RESUME_VERSION = 1;
@@ -67,6 +76,11 @@ interface AgentTunnelAgentMetadata {
   readonly model?: string;
 }
 
+interface AgentTunnelSteeringEntry {
+  readonly messageId?: MessageId;
+  readonly text: string;
+}
+
 interface AgentTunnelSessionContext {
   session: ProviderSession;
   readonly cwd: string;
@@ -75,6 +89,10 @@ interface AgentTunnelSessionContext {
   readonly cancelled: Ref.Ref<boolean>;
   readonly turns: Array<{ readonly id: TurnId; readonly items: Array<unknown> }>;
   readonly agents: Map<string, AgentTunnelAgentMetadata>;
+  /** Per-agent cumulative usage for the active turn, keyed by process id. */
+  readonly agentUsage: Map<string, HarnessUsageTotals>;
+  /** Session-cumulative orchestrator usage; survives across turns. */
+  readonly orchestratorUsage: HarnessUsageTotals;
   readonly agentLogBytes: Map<string, number>;
   readonly agentRawLogBytes: Map<string, number>;
   workflowTitle: string | undefined;
@@ -83,7 +101,7 @@ interface AgentTunnelSessionContext {
   stopped: boolean;
   readonly threadHistory: Array<{ readonly task: string; readonly summary?: string }>;
   lastSharedContextDump: string | undefined;
-  readonly steering: string[];
+  readonly steering: AgentTunnelSteeringEntry[];
 }
 
 export interface AgentTunnelAdapterOptions {
@@ -208,6 +226,51 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
 
   const emit = (event: ProviderRuntimeEvent) =>
     Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+
+  // Steering lifecycle: "queued" when a mid-run message lands in the queue,
+  // "injected" when a planning pass drains it, "cancelled" when the turn ends
+  // first. The projected user message carries this so clients can label it.
+  const emitSteeringUpdate = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId?: TurnId | undefined;
+    readonly messageId: MessageId;
+    readonly status: ThreadMessageSteeringStatus;
+  }) =>
+    buildEventBase({
+      threadId: input.threadId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+    }).pipe(
+      Effect.flatMap((base) =>
+        emit({
+          ...base,
+          type: "steering.updated",
+          payload: { messageId: input.messageId, status: input.status },
+        }),
+      ),
+      Effect.orDie,
+    );
+
+  const cancelPendingSteering = (
+    context: AgentTunnelSessionContext,
+    threadId: ThreadId,
+    turnId: TurnId | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const pending = context.steering.splice(0);
+      yield* Effect.forEach(
+        pending,
+        (entry) =>
+          entry.messageId
+            ? emitSteeringUpdate({
+                threadId,
+                ...(turnId ? { turnId } : {}),
+                messageId: entry.messageId,
+                status: "cancelled",
+              })
+            : Effect.void,
+        { concurrency: 1, discard: true },
+      );
+    });
 
   const emitEvent = Effect.fn("AgentTunnelAdapter.emitEvent")(function* (
     threadId: ThreadId,
@@ -370,6 +433,62 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     }
   });
 
+  /**
+   * Token frames from the harness stream. OpenCode reports per-step deltas on
+   * `step_finish`; orchestrator steps feed the thread usage snapshot, agent
+   * steps feed that agent's cumulative typed-usage rollup. Harnesses that
+   * stream no comparable frames contribute nothing rather than a guess.
+   */
+  const trackHarnessUsage = Effect.fn("AgentTunnelAdapter.trackHarnessUsage")(function* (
+    threadId: ThreadId,
+    processId: string,
+    line: string,
+  ) {
+    const context = sessions.get(threadId);
+    if (!context) return;
+    const step = parseOpenCodeStepUsage(line);
+    if (!step) return;
+    const turnId = context.activeTurnId;
+    const eventBase = (itemId?: string) =>
+      buildEventBase({
+        threadId,
+        ...(turnId ? { turnId } : {}),
+        ...(itemId ? { itemId } : {}),
+      });
+
+    if (processId.startsWith("orchestrator")) {
+      const cumulative = addHarnessUsageTotals(context.orchestratorUsage, step);
+      yield* emit({
+        ...(yield* eventBase()),
+        type: "thread.token-usage.updated",
+        payload: {
+          usage: threadUsageSnapshotFromStep(step, cumulative),
+        },
+      });
+      return;
+    }
+
+    let cumulative = context.agentUsage.get(processId);
+    if (cumulative === undefined) {
+      cumulative = emptyHarnessUsageTotals();
+      context.agentUsage.set(processId, cumulative);
+    }
+    addHarnessUsageTotals(cumulative, step);
+    const metadata = context.agents.get(processId);
+    yield* emit({
+      ...(yield* eventBase(processId)),
+      type: "task.progress",
+      payload: {
+        taskId: RuntimeTaskId.make(processId),
+        description: metadata?.task ?? processId,
+        typedUsage: runtimeTaskUsageFromTotals(cumulative),
+        taskType: "local_agent",
+        ...(metadata?.role ? { role: metadata.role } : {}),
+        timelineBypass: true,
+      },
+    });
+  });
+
   const killThreadProcesses = Effect.fn("AgentTunnelAdapter.killThreadProcesses")(function* (
     threadId: ThreadId,
   ) {
@@ -464,14 +583,19 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ),
         );
         const includeReasoning = spec.id.startsWith("orchestrator");
-        const lines = openCode
+        const usageLines = openCode
           ? observedLines.pipe(
+              Stream.tap((line) => trackHarnessUsage(threadId, spec.id, line).pipe(Effect.orDie)),
+            )
+          : observedLines;
+        const lines = openCode
+          ? usageLines.pipe(
               Stream.flatMap((line) =>
                 Stream.fromIterable(parseOpenCodeJsonLine(line, { includeReasoning })),
               ),
               Stream.mapError(processError),
             )
-          : observedLines.pipe(Stream.mapError(processError));
+          : usageLines.pipe(Stream.mapError(processError));
         return {
           pid: Number(child.pid),
           lines,
@@ -508,6 +632,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     summary: string,
   ) {
     if (context.activeTurnId !== turnId) return;
+    // Steering still in the queue was never handed to a planning pass; the
+    // turn is ending, so report it as cancelled instead of leaving it queued.
+    yield* cancelPendingSteering(context, threadId, turnId);
     context.activeTurnId = undefined;
     const { activeTurnId: _activeTurnId, lastError: _lastError, ...sessionBase } = context.session;
     context.session = {
@@ -557,6 +684,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       cancelled: yield* Ref.make(false),
       turns: [],
       agents: new Map(),
+      agentUsage: new Map(),
+      orchestratorUsage: emptyHarnessUsageTotals(),
       agentLogBytes: new Map(),
       agentRawLogBytes: new Map(),
       workflowTitle: undefined,
@@ -590,7 +719,18 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       // orchestrator at its next planning pass instead of interrupting work.
       const steering = (input.input ?? "").trim();
       if (steering.length > 0) {
-        context.steering.push(steering);
+        context.steering.push({
+          ...(input.messageId ? { messageId: input.messageId } : {}),
+          text: steering,
+        });
+        if (input.messageId) {
+          yield* emitSteeringUpdate({
+            threadId: input.threadId,
+            turnId: context.activeTurnId,
+            messageId: input.messageId,
+            status: "queued",
+          });
+        }
         yield* emit({
           ...(yield* buildEventBase({
             threadId: input.threadId,
@@ -623,10 +763,11 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.workflowTitle = input.input ?? "AgentTunnel workflow";
     context.workflowId = workflowId;
     context.agents.clear();
+    context.agentUsage.clear();
     context.agentLogBytes.clear();
     context.agentRawLogBytes.clear();
     // Steering is per-turn: a prior turn's queue must never leak into this one.
-    context.steering.length = 0;
+    yield* cancelPendingSteering(context, input.threadId, undefined);
     yield* clearAgentOutput(input.threadId);
     context.session = {
       ...context.session,
@@ -662,7 +803,24 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ...(context.lastSharedContextDump
             ? { priorSharedContext: context.lastSharedContextDump }
             : {}),
-          takeSteeringMessages: () => Effect.sync(() => context.steering.splice(0)),
+          takeSteeringMessages: () =>
+            Effect.gen(function* () {
+              const drained = context.steering.splice(0);
+              yield* Effect.forEach(
+                drained,
+                (entry) =>
+                  entry.messageId
+                    ? emitSteeringUpdate({
+                        threadId: input.threadId,
+                        ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+                        messageId: entry.messageId,
+                        status: "injected",
+                      })
+                    : Effect.void,
+                { concurrency: 1, discard: true },
+              );
+              return drained.map((entry) => entry.text);
+            }),
         }),
       );
       if (result._tag === "Failure") {

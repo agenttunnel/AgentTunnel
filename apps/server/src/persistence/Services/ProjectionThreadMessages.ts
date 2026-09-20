@@ -11,6 +11,7 @@ import {
   MessageId,
   OrchestrationMessageRole,
   ThreadId,
+  ThreadMessageSteeringStatus,
   TurnId,
   IsoDateTime,
 } from "@t3tools/contracts";
@@ -29,6 +30,7 @@ export const ProjectionThreadMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   isStreaming: Schema.Boolean,
+  steering: Schema.optional(Schema.NullOr(ThreadMessageSteeringStatus)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

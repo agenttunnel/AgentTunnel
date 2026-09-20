@@ -51,13 +51,18 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
 
-function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
+export function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
     <span
       aria-hidden
       className={cn("size-1.5 shrink-0 rounded-full", STATUS_VISUALS[status].dotClass)}
     />
   );
+}
+
+/** Visible status vocabulary for call sites that render the dot beside text. */
+export function subagentStatusLabel(status: RuntimeSubagent["status"]): string {
+  return STATUS_VISUALS[status].label;
 }
 
 function formatElapsedSeconds(totalSeconds: number): string {

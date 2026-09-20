@@ -165,7 +165,6 @@ interface TaskRecord {
 const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
 const TASK_LABEL_MAX_CHARS = 72;
-const RECAP_INTERVAL: Duration.Input = "30 seconds";
 
 const roleIcon = (role: "executor" | "reviewer"): string => (role === "executor" ? "🛠️" : "🔍");
 
@@ -975,9 +974,13 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
 
   const scope = yield* Scope.make();
   recapScope = scope;
-  yield* Effect.forever(Effect.sleep(RECAP_INTERVAL).pipe(Effect.andThen(emitRecap()))).pipe(
-    Effect.forkIn(scope),
-  );
+  // The periodic recap is user-configurable; 0 turns the heartbeat off.
+  const recapIntervalSeconds = options.settings.orchestratorRecapIntervalSeconds;
+  if (recapIntervalSeconds > 0) {
+    yield* Effect.forever(
+      Effect.sleep(Duration.seconds(recapIntervalSeconds)).pipe(Effect.andThen(emitRecap())),
+    ).pipe(Effect.forkIn(scope));
+  }
 
   const runWorkflow = Effect.gen(function* () {
     while (orchestratorPasses < options.settings.maxOrchestratorPasses) {

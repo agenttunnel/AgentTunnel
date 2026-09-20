@@ -1050,11 +1050,17 @@ function renderFeedEntry(
 
     if (isUser) {
       const enterAnimated = isFreshTimestamp(message.createdAt);
+      const steeringLabel = userMessageSteeringLabel(message.steering);
       return (
         <Animated.View
           className="mb-5 items-end"
           {...(enterAnimated ? { entering: FadeInUp.duration(220) } : {})}
         >
+          {steeringLabel ? (
+            <Text className="mb-1 pr-0.5 font-t3-medium text-xs text-foreground-muted">
+              {steeringLabel}
+            </Text>
+          ) : null}
           <View
             className="min-w-0 gap-2 rounded-[20px] px-3.5 py-2.5"
             style={{
@@ -1205,6 +1211,21 @@ const WorkingTimelineRow = memo(function WorkingTimelineRow(props: { readonly st
     </View>
   );
 });
+
+function userMessageSteeringLabel(
+  steering: "queued" | "injected" | "cancelled" | null | undefined,
+): string | null {
+  switch (steering) {
+    case "queued":
+      return "↳ Steering · queued for the next planning pass";
+    case "injected":
+      return "↳ Steering · injected into the running pass";
+    case "cancelled":
+      return "↳ Steering · not delivered — the run ended first";
+    default:
+      return null;
+  }
+}
 
 function UserMessageContent(props: {
   readonly text: string;

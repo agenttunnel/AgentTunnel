@@ -43,6 +43,10 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
 
+#### Steering
+
+A user message sent while a turn is already running. Providers fold it into the running turn instead of starting a new one. The AgentTunnel workflow provider queues it and hands it to the orchestrator at its next planning pass, tracking delivery on the projected message as `queued`, `injected`, or `cancelled` in [the contracts][1]. See [AgentTunnelAdapter.ts][27].
+
 ### Orchestration
 
 Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].
@@ -201,3 +205,4 @@ ships AgentTunnel already matching it.
 [24]: ./overview.md
 [25]: ../../apps/server/src/environmentTheme.ts
 [26]: ../user/environment-theme.md
+[27]: ../../apps/server/src/provider/Layers/AgentTunnelAdapter.ts

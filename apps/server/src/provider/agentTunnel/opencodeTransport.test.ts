@@ -7,6 +7,7 @@ import {
   isOpenCodeHarness,
   parseOpenCodeJsonLine,
   parseOpenCodeLogLine,
+  parseOpenCodeStepUsage,
 } from "./opencodeTransport.ts";
 
 function spec(overrides: Partial<AgentTunnelProcessSpec> = {}): AgentTunnelProcessSpec {
@@ -241,4 +242,60 @@ it("parseOpenCodeLogLine passes non-JSON through and drops step events", () => {
     { kind: "raw", text: "stderr banner" },
   ]);
   NodeAssert.deepEqual(parseOpenCodeLogLine(JSON.stringify({ type: "step_finish", part: {} })), []);
+});
+
+it("parseOpenCodeStepUsage reads step token frames, counting cache as cached input", () => {
+  const line = JSON.stringify({
+    type: "step_finish",
+    part: {
+      reason: "tool-calls",
+      tokens: {
+        total: 24_622,
+        input: 10_871,
+        output: 213,
+        reasoning: 482,
+        cache: { write: 0, read: 13_056 },
+      },
+      cost: 0.002,
+    },
+  });
+  NodeAssert.deepEqual(parseOpenCodeStepUsage(line), {
+    totalTokens: 24_622,
+    inputTokens: 10_871,
+    cachedInputTokens: 13_056,
+    outputTokens: 213,
+    reasoningOutputTokens: 482,
+  });
+});
+
+it("parseOpenCodeStepUsage defaults missing breakdown fields to zero", () => {
+  const line = JSON.stringify({ type: "step_finish", part: { tokens: { total: 120 } } });
+  NodeAssert.deepEqual(parseOpenCodeStepUsage(line), {
+    totalTokens: 120,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  });
+});
+
+it("parseOpenCodeStepUsage ignores non-usage lines and malformed frames", () => {
+  NodeAssert.equal(parseOpenCodeStepUsage("not json"), undefined);
+  NodeAssert.equal(
+    parseOpenCodeStepUsage(JSON.stringify({ type: "text", part: { text: "hi" } })),
+    undefined,
+  );
+  NodeAssert.equal(
+    parseOpenCodeStepUsage(JSON.stringify({ type: "step_finish", part: { tokens: { total: 0 } } })),
+    undefined,
+  );
+  NodeAssert.equal(
+    parseOpenCodeStepUsage(JSON.stringify({ type: "step_finish", part: {} })),
+    undefined,
+  );
+});
+
+it("parseOpenCodeStepUsage tolerates step_finish text in non-frame lines", () => {
+  const text = JSON.stringify({ type: "text", part: { text: "the step_finish event is next" } });
+  NodeAssert.equal(parseOpenCodeStepUsage(text), undefined);
 });

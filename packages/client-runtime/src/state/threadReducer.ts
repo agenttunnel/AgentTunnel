@@ -389,6 +389,29 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.message-steering-updated": {
+      const existingMessage = thread.messages.find((entry) => entry.id === event.payload.messageId);
+      if (!existingMessage) {
+        return { kind: "unchanged" };
+      }
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          messages: Arr.map(thread.messages, (entry) =>
+            entry.id === event.payload.messageId
+              ? {
+                  ...entry,
+                  steering: event.payload.steering,
+                  updatedAt: event.payload.updatedAt,
+                }
+              : entry,
+          ),
+          updatedAt: event.occurredAt,
+        },
+      };
+    }
+
     // ── Session ─────────────────────────────────────────────────────
     case "thread.session-set": {
       // Leaving the "running" session status is the turn-end signal: settle a

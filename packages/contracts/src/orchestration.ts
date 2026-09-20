@@ -304,6 +304,15 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+/**
+ * Delivery lifecycle of a user message sent while a turn was already running
+ * (a "steer"). The AgentTunnel workflow provider records this on the message so
+ * every client can show whether the steering is still waiting for the next
+ * planning pass, has been folded into one, or was dropped when the run ended.
+ */
+export const ThreadMessageSteeringStatus = Schema.Literals(["queued", "injected", "cancelled"]);
+export type ThreadMessageSteeringStatus = typeof ThreadMessageSteeringStatus.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
@@ -311,6 +320,8 @@ export const OrchestrationMessage = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  // Optional so cached snapshots from older servers still decode.
+  steering: Schema.optional(Schema.NullOr(ThreadMessageSteeringStatus)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1061,6 +1072,15 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessageSteeringCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.steering"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  steering: ThreadMessageSteeringStatus,
+  createdAt: IsoDateTime,
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -1111,6 +1131,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
+  ThreadMessageSteeringCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
@@ -1144,6 +1165,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
+  "thread.message-steering-updated",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
@@ -1312,6 +1334,13 @@ export const ThreadMessageSentPayload = Schema.Struct({
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMessageSteeringUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  steering: ThreadMessageSteeringStatus,
   updatedAt: IsoDateTime,
 });
 
@@ -1514,6 +1543,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.message-sent"),
     payload: ThreadMessageSentPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.message-steering-updated"),
+    payload: ThreadMessageSteeringUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -110,6 +110,7 @@ function renderTabs(
       onAddFiles={() => undefined}
       onAddAgents={() => undefined}
       onAddContext={() => undefined}
+      onAddUsage={() => undefined}
       liveAgentCount={0}
       browserAvailable
       terminalAvailable={false}
@@ -118,6 +119,7 @@ function renderTabs(
       pullRequestAvailable={false}
       agentsAvailable={false}
       contextAvailable={false}
+      usageAvailable={false}
     >
       <div>content</div>
     </RightPanelTabs>,

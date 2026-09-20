@@ -2,13 +2,16 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { TextGenerationError, PiSettings, ProviderInstanceId } from "@t3tools/contracts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { beforeEach, expect } from "vite-plus/test";
 
+import * as ServerConfig from "../config.ts";
 import * as PiTextGeneration from "./PiTextGeneration.ts";
 
 const encoder = new TextEncoder();
@@ -51,7 +54,9 @@ const MockSpawnerLayer = Layer.succeed(
   }),
 );
 
-const TestLayer = Layer.mergeAll(NodeServices.layer, MockSpawnerLayer);
+const PiTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3code-pi-text-generation-test-",
+}).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, MockSpawnerLayer)));
 
 function assistantOutput(text: string): string {
   const escaped = text.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
@@ -72,7 +77,7 @@ beforeEach(() => {
   spawnerState.reset();
 });
 
-it.layer(TestLayer)("PiTextGeneration", (it) => {
+it.layer(PiTextGenerationTestLayer)("PiTextGeneration", (it) => {
   it.effect("passes the provider/model selection to a one-shot pi invocation", () =>
     Effect.gen(function* () {
       spawnerState.stdout = assistantOutput(
@@ -114,6 +119,69 @@ it.layer(TestLayer)("PiTextGeneration", (it) => {
       });
 
       expect(spawnerState.calls[0]).toEqual(expect.arrayContaining(["--thinking", "high"]));
+    }),
+  );
+
+  it.effect("forwards image attachments as @path arguments", () =>
+    Effect.gen(function* () {
+      spawnerState.stdout = assistantOutput('{"branch":"fix/ui-regression"}');
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const attachmentId = "thread-branch-image-attachment";
+      const imagePath = path.join(attachmentsDir, `${attachmentId}.png`);
+      yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fs.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+
+      const textGeneration = yield* PiTextGeneration.makePiTextGeneration(PI_SETTINGS);
+      yield* textGeneration.generateBranchName({
+        cwd: process.cwd(),
+        message: "Fix layout bug from screenshot.",
+        modelSelection: DEFAULT_MODEL_SELECTION,
+        attachments: [
+          {
+            type: "image",
+            id: attachmentId,
+            name: "bug.png",
+            mimeType: "image/png",
+            sizeBytes: 3,
+          },
+        ],
+      });
+
+      expect(spawnerState.calls[0]).toEqual(expect.arrayContaining([`@${imagePath}`]));
+    }),
+  );
+
+  it.effect("skips non-image and missing attachments", () =>
+    Effect.gen(function* () {
+      spawnerState.stdout = assistantOutput('{"branch":"add-pi-textgen"}');
+      const textGeneration = yield* PiTextGeneration.makePiTextGeneration(PI_SETTINGS);
+
+      yield* textGeneration.generateBranchName({
+        cwd: process.cwd(),
+        message: "Add pi text generation",
+        modelSelection: DEFAULT_MODEL_SELECTION,
+        attachments: [
+          {
+            type: "file",
+            id: "thread-file-attachment",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 5,
+          },
+          {
+            type: "image",
+            id: "thread-missing-image-attachment",
+            name: "missing.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+          },
+        ],
+      });
+
+      const args = spawnerState.calls[0] ?? [];
+      expect(args.some((arg) => arg.startsWith("@"))).toBe(false);
     }),
   );
 

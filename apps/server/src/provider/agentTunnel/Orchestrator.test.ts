@@ -131,58 +131,110 @@ it.effect("fails a turn when an orchestrator pass hangs past the timeout", () =>
   ),
 );
 
+const makeSlowWorkflowProcess = (): AgentTunnelProcessRunner => ({
+  spawn: (spec) =>
+    Effect.succeed(
+      spec.id.startsWith("orchestrator")
+        ? {
+            pid: 1,
+            lines: Stream.fromIterable([
+              '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Slow work","pipeline":"implementation"}}',
+              '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+            ]),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          }
+        : {
+            pid: 2,
+            lines: Stream.never,
+            exitCode: Effect.never,
+            kill: Effect.void,
+          },
+    ),
+});
+
+const recapEvents = (events: ReadonlyArray<AgentTunnelEvent>) =>
+  events.filter(
+    (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
+      event.type === "orchestrator.output" && event.text.includes("\u23f1\ufe0f"),
+  );
+
+const runSlowWorkflow = (settings: AgentTunnelSettings) =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const fiber = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "slow workflow",
+      cwd: "/tmp",
+      settings,
+      process: makeSlowWorkflowProcess(),
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    }).pipe(Effect.forkChild);
+    return { events, fiber };
+  });
+
 it.effect("emits a periodic progress recap while tasks stay running", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const events: AgentTunnelEvent[] = [];
       const settings = decodeSettings({
         orchestratorHarness: "fake-orchestrator",
         executorHarness: "fake-executor",
         reviewerHarness: "fake-reviewer",
         maxOrchestratorPasses: 1,
       });
-      const process: AgentTunnelProcessRunner = {
-        spawn: (spec) =>
-          Effect.succeed(
-            spec.id.startsWith("orchestrator")
-              ? {
-                  pid: 1,
-                  lines: Stream.fromIterable([
-                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Slow work","pipeline":"implementation"}}',
-                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
-                  ]),
-                  exitCode: Effect.succeed(0),
-                  kill: Effect.void,
-                }
-              : {
-                  pid: 2,
-                  lines: Stream.never,
-                  exitCode: Effect.never,
-                  kill: Effect.void,
-                },
-          ),
-      };
-
-      const fiber = yield* runAgentTunnel({
-        threadId: "thread-1",
-        workflowId: "workflow-1",
-        userTask: "slow workflow",
-        cwd: "/tmp",
-        settings,
-        process,
-        emit: (event) => Effect.sync(() => events.push(event)),
-        isCancelled: Effect.succeed(false),
-      }).pipe(Effect.forkChild);
+      const { events, fiber } = yield* runSlowWorkflow(settings);
 
       yield* TestClock.adjust("1 second");
       yield* TestClock.adjust("31 seconds");
 
-      const recaps = events.filter(
-        (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
-          event.type === "orchestrator.output" && event.text.includes("\u23f1\ufe0f"),
-      );
+      const recaps = recapEvents(events);
       NodeAssert.ok(recaps.length >= 1, "expected at least one progress recap");
       NodeAssert.match(recaps[0]!.text, /implementation`?: 0\/1/);
+      yield* Fiber.interrupt(fiber);
+    }),
+  ),
+);
+
+it.effect("honors a custom recap interval", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 1,
+        orchestratorRecapIntervalSeconds: 5,
+      });
+      const { events, fiber } = yield* runSlowWorkflow(settings);
+
+      yield* TestClock.adjust("1 second");
+      NodeAssert.equal(recapEvents(events).length, 0, "no recap before the interval elapses");
+
+      yield* TestClock.adjust("6 seconds");
+      NodeAssert.ok(recapEvents(events).length >= 1, "expected a recap after the custom interval");
+      yield* Fiber.interrupt(fiber);
+    }),
+  ),
+);
+
+it.effect("turns the recap heartbeat off when the interval is 0", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 1,
+        orchestratorRecapIntervalSeconds: 0,
+      });
+      const { events, fiber } = yield* runSlowWorkflow(settings);
+
+      yield* TestClock.adjust("1 second");
+      yield* TestClock.adjust("10 minutes");
+
+      NodeAssert.equal(recapEvents(events).length, 0, "expected no recaps when disabled");
       yield* Fiber.interrupt(fiber);
     }),
   ),
