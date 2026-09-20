@@ -43,6 +43,11 @@ export function foldAgentLogEntries(
       blocks.push({ id, kind: "reasoning", text: entry.text });
       continue;
     }
+    // Usage entries are stats, not prose: the drill-in stats surface reads them
+    // directly and the log view stays free of per-step noise.
+    if (entry.kind === "usage") {
+      continue;
+    }
     if (entry.kind === "tool") {
       const callId = entry.callId;
       const existingIndex = callId === undefined ? undefined : toolIndexByCallId.get(callId);

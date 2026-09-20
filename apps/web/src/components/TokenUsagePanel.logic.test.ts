@@ -3,11 +3,20 @@ import type {
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { emptyAgentPanelModel } from "@t3tools/client-runtime/state/subagentRuntime";
-import { EventId, type OrchestrationThreadActivity, TurnId } from "@t3tools/contracts";
+import {
+  EventId,
+  type OrchestrationAgentLogEntry,
+  type OrchestrationThreadActivity,
+  TurnId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
-import { deriveTokenUsage, type TokenUsageModel } from "./TokenUsagePanel.logic";
+import {
+  deriveSubagentUsageStats,
+  deriveTokenUsage,
+  type TokenUsageModel,
+} from "./TokenUsagePanel.logic";
 
 function activity(input: {
   id: string;
@@ -319,5 +328,74 @@ describe("deriveTokenUsage", () => {
       limitLabel: "200k",
       percentLabel: "20%",
     });
+  });
+});
+
+function usageEntry(input: {
+  totalTokens: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+}): OrchestrationAgentLogEntry {
+  return { kind: "usage", ...input };
+}
+
+describe("deriveSubagentUsageStats", () => {
+  it("decomposes each usage entry into a turn with its context size", () => {
+    const stats = deriveSubagentUsageStats([
+      usageEntry({
+        totalTokens: 24_622,
+        inputTokens: 10_871,
+        cachedInputTokens: 13_056,
+        outputTokens: 213,
+        reasoningOutputTokens: 482,
+      }),
+      usageEntry({
+        totalTokens: 5_000,
+        inputTokens: 4_000,
+        cachedInputTokens: 1_000,
+        outputTokens: 100,
+      }),
+    ]);
+
+    expect(stats.turnCount).toBe(2);
+    expect(stats.turns[0]).toMatchObject({
+      ordinal: 1,
+      inputTokens: 10_871 + 13_056,
+      cachedInputTokens: 13_056,
+      outputTokens: 213 + 482,
+      reasoningOutputTokens: 482,
+      contextTokens: 10_871 + 13_056,
+    });
+    // Context size is the latest step's input, not the sum.
+    expect(stats.contextTokens).toBe(5_000);
+    expect(stats.totalTokens).toBe(29_622);
+    expect(stats.totalLabel).toBe("29.6k");
+  });
+
+  it("ignores non-usage log entries and reports no usage", () => {
+    const stats = deriveSubagentUsageStats([
+      { kind: "text", text: "working" },
+      { kind: "tool", tool: "bash", title: "echo hi", status: "completed" },
+    ]);
+
+    expect(stats.hasUsage).toBe(false);
+    expect(stats.turns).toEqual([]);
+    expect(stats.contextTokens).toBeNull();
+    expect(stats.contextLabel).toBeNull();
+  });
+
+  it("defaults missing breakdown fields to zero", () => {
+    const stats = deriveSubagentUsageStats([usageEntry({ totalTokens: 120 })]);
+
+    expect(stats.turns[0]).toMatchObject({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      contextTokens: 0,
+    });
+    expect(stats.totalLabel).toBe("120");
   });
 });

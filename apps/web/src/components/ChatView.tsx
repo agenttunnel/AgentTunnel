@@ -7185,6 +7185,7 @@ function ChatViewContent(props: ChatViewProps) {
         contextWindow={activeContextWindow}
         activities={threadActivities}
         timestampFormat={timestampFormat}
+        environmentId={activeThreadRef?.environmentId ?? null}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&

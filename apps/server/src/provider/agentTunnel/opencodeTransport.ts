@@ -259,6 +259,21 @@ export function parseOpenCodeLogLine(raw: string): ReadonlyArray<AgentLogEntry> 
     const message = errorMessage(event.error);
     return message === undefined ? [] : [{ kind: "error", text: truncate(message, TOOL_BODY_MAX) }];
   }
+  if (event.type === "step_finish") {
+    const usage = parseOpenCodeStepUsage(raw);
+    return usage === undefined
+      ? []
+      : [
+          {
+            kind: "usage",
+            totalTokens: usage.totalTokens,
+            inputTokens: usage.inputTokens,
+            cachedInputTokens: usage.cachedInputTokens,
+            outputTokens: usage.outputTokens,
+            reasoningOutputTokens: usage.reasoningOutputTokens,
+          },
+        ];
+  }
   return [];
 }
 
@@ -290,6 +305,9 @@ export function parseOpenCodeJsonLine(
         if (options.includeReasoning === true) {
           lines.push(...splitTextLines(entry.text));
         }
+        break;
+      // Usage entries feed the stats view, not the chat transcript.
+      case "usage":
         break;
     }
   }

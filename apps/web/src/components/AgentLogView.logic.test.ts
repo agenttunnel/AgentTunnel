@@ -52,6 +52,15 @@ describe("foldAgentLogEntries", () => {
     ]);
   });
 
+  it("skips usage entries so per-step stats stay out of the log view", () => {
+    const blocks = foldAgentLogEntries([
+      text("before"),
+      { kind: "usage", totalTokens: 1_200, inputTokens: 1_000, outputTokens: 200 },
+      text("after"),
+    ]);
+    expect(stripIds(blocks)).toEqual([{ kind: "markdown", text: "before\n\nafter" }]);
+  });
+
   it("keeps raw and error entries in order", () => {
     const blocks = foldAgentLogEntries([
       { kind: "raw", text: "stderr banner" },
