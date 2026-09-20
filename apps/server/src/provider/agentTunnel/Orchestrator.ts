@@ -9,6 +9,10 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import {
+  normalizeContextLearning,
+  type AgentTunnelContextLearning,
+} from "./InheritedContextStore.ts";
 import { AgentTunnelSharedContext } from "./SharedContext.ts";
 import { parseAgentTunnelToolCall, type AgentTunnelToolCall } from "./protocol.ts";
 import { EXECUTOR_PROMPT, ORCHESTRATOR_PROMPT, REVIEWER_PROMPT } from "./prompts.ts";
@@ -108,6 +112,8 @@ export interface AgentTunnelRunResult {
   readonly status: "completed" | "failed" | "stopped";
   readonly summary: string;
   readonly contextDump?: string;
+  /** Durable cross-project lessons the orchestrator recorded for the inherited context. */
+  readonly learnings?: ReadonlyArray<AgentTunnelContextLearning>;
 }
 
 export interface AgentTunnelRunOptions {
@@ -124,6 +130,8 @@ export interface AgentTunnelRunOptions {
   readonly orchestratorPassTimeout?: Duration.Input;
   readonly threadHistory?: ReadonlyArray<{ readonly task: string; readonly summary?: string }>;
   readonly priorSharedContext?: string;
+  /** Rendered global context inherited from earlier orchestrators. */
+  readonly inheritedContext?: string;
   readonly takeSteeringMessages?: () => Effect.Effect<ReadonlyArray<string>>;
 }
 
@@ -159,6 +167,8 @@ interface TaskRecord {
   readonly status: AgentTunnelAgentStatus;
   readonly durationMs: number;
   readonly outputLines: number;
+  readonly harness: string;
+  readonly model?: string;
   readonly error?: string;
 }
 
@@ -299,6 +309,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const pipelineOrder: string[] = [];
   const tasks: DispatchedTask[] = [];
   const taskRecords: TaskRecord[] = [];
+  const recordedLearnings: AgentTunnelContextLearning[] = [];
+  const recordedLearningKeys = new Set<string>();
   const workflowStartedAt = yield* Clock.currentTimeMillis;
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
@@ -388,6 +400,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           pipelineOrder,
           pipelines,
           taskRecords,
+          learnings: recordedLearnings,
           durationMs: finishedAt - workflowStartedAt,
         }),
       });
@@ -401,6 +414,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         status,
         summary: resolved.plainSummary,
         contextDump: context.renderForPrompt(),
+        ...(recordedLearnings.length > 0 ? { learnings: [...recordedLearnings] } : {}),
       } satisfies AgentTunnelRunResult;
     });
 
@@ -576,6 +590,34 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         return;
       }
 
+      if (call.name === "record_learning") {
+        const learning = normalizeContextLearning(
+          stringValue(call.arguments.category),
+          stringValue(call.arguments.entry),
+        );
+        if (!learning) {
+          yield* emit({
+            type: "orchestrator.output",
+            text: `> ⚠️ Invalid record_learning arguments — category must be lowercase kebab-case and entry must be a non-empty string.\n`,
+          });
+          return;
+        }
+        const key = `${learning.category}\u0000${learning.entry}`;
+        if (recordedLearningKeys.has(key)) return;
+        recordedLearningKeys.add(key);
+        recordedLearnings.push(learning);
+        yield* trace("learning recorded", {
+          workflowId: options.workflowId,
+          category: learning.category,
+          chars: learning.entry.length,
+        });
+        yield* emit({
+          type: "orchestrator.output",
+          text: `\n🧠 **Learning recorded** \`${learning.category}\` — ${plainTextPreview(learning.entry, 200)}\n`,
+        });
+        return;
+      }
+
       if (call.name === "done") {
         const reportSummary = stringValue(call.arguments.summary).trim();
         const reportNextSteps = nextStepsArray(call.arguments.next_steps);
@@ -652,6 +694,22 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return `\n\n## Available models\n\n${availableModels.join("\n")}`;
   };
 
+  const inheritedContextBlock = (): string => {
+    const inherited = options.inheritedContext?.trim() ?? "";
+    if (inherited.length === 0) return "";
+    return `\n\n## Inherited context\n\nDurable cross-project rules recorded by earlier orchestrators. Treat them as binding guidance unless the current task overrides them.\n\n${inherited}`;
+  };
+
+  const dispatchOutcomesBlock = (): string => {
+    if (taskRecords.length === 0) return "";
+    const orchestratorModel = options.settings.orchestratorModel || options.model;
+    const rows = taskRecords.map(
+      (record) =>
+        `| ${record.role} | ${record.harness} | ${record.model ?? "default"} | ${record.status} | ${record.label} |`,
+    );
+    return `\n\n## Dispatch outcomes this workflow\n\nUse these actual harness/model/status results when recording model-fit and model-quality learnings before you call done.\n\nOrchestrator: \`${options.settings.orchestratorHarness}\`${orchestratorModel ? ` · \`${orchestratorModel}\`` : ""}\n\n| Role | Harness | Model | Status | Task |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}`;
+  };
+
   const steeringBlock = (steering: ReadonlyArray<string>): string =>
     steering.length === 0
       ? ""
@@ -664,7 +722,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         return `- ${id}: ${pipeline?.status ?? "pending"}`;
       })
       .join("\n");
-    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
+    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}${inheritedContextBlock()}${dispatchOutcomesBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
   };
 
   const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (
@@ -703,7 +761,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         cwd: options.cwd,
         prompt:
           pass === 0
-            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
+            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${inheritedContextBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
             : summaryPrompt(steering),
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,
       },
@@ -899,6 +957,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       status,
       durationMs,
       outputLines: progressLineCount,
+      harness,
+      ...(model ? { model } : {}),
       ...(errorExcerpt ? { error: errorExcerpt } : {}),
     });
     yield* emit({
@@ -1200,6 +1260,7 @@ function formatWorkflowFinishMarkdown(input: {
   readonly pipelineOrder: ReadonlyArray<string>;
   readonly pipelines: Map<string, PipelineState>;
   readonly taskRecords: ReadonlyArray<TaskRecord>;
+  readonly learnings: ReadonlyArray<AgentTunnelContextLearning>;
   readonly durationMs: number;
 }): string {
   const {
@@ -1210,6 +1271,7 @@ function formatWorkflowFinishMarkdown(input: {
     pipelineOrder,
     pipelines,
     taskRecords,
+    learnings,
     durationMs,
   } = input;
   const icon = status === "completed" ? "✅" : status === "failed" ? "❌" : "⏹️";
@@ -1225,6 +1287,14 @@ function formatWorkflowFinishMarkdown(input: {
     `\n### What happened\n\n${resultText}\n`,
     `\n### Next steps\n\n${nextSteps.map((step) => `- ${step}`).join("\n")}\n`,
   ];
+
+  if (learnings.length > 0) {
+    lines.push("\n### Inherited context updates\n");
+    for (const learning of learnings) {
+      lines.push(`- \`${learning.category}\` · ${learning.entry}`);
+    }
+    lines.push("");
+  }
 
   if (pipelineOrder.length > 0) {
     lines.push("\n### Pipelines\n");

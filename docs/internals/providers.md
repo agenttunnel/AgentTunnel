@@ -172,6 +172,23 @@ empty or missing list means no task model is ever valid. A non-empty slug outsid
 model > `orchestratorModel` > session model. The chosen model is shown in the queued dispatch message
 and in the `agent.started` event, so the thread timeline and Agents panel surface it per task.
 
+### Inherited context
+
+Every workflow inherits a global, cross-project context from earlier orchestrators and feeds durable
+lessons back into it. The store lives in the hidden `.orchestrator-context/` folder under the
+environment's state directory: `GUIDE.md` explains how to navigate the rules, `rules/*.md` holds one
+file per category (`design-decisions`, `model-fit`, `model-quality`, plus any category an
+orchestrator introduces), and `LOG.md` is the chronological ledger. The adapter renders the guide and
+rules into the orchestrator prompt before `runAgentTunnel` (planning pass 0 and every summary pass)
+and appends the orchestrator's `record_learning` entries after the run, under an in-process semaphore
+plus a lock file, so concurrent workflows on one environment never interleave a read-modify-write.
+The summary pass prompt includes a dispatch-outcomes table (role, harness, model, status, task) so
+model-fit and model-quality entries are grounded in actual results, and the finish markdown lists the
+recorded entries. Every entry is stamped with its ISO date, project, thread, workflow, and terminal
+status. Prompt rendering caps the guide and each rules file and trims from the top when the budget is
+exceeded, so a long-lived context cannot blow up the planner prompt. Flushing is best-effort: it never
+fails a turn, and it logs a warning and skips the update if the lock stays held too long.
+
 ## How provider work is requested
 
 Clients never call a provider directly. They dispatch orchestration commands over the RPC method

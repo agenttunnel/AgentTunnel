@@ -977,3 +977,79 @@ it.effect("manual mode ignores a task-level model", () =>
     }
   }),
 );
+
+it.effect("injects the inherited context and returns deduplicated learnings", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const specs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+    });
+    const learningLine =
+      '__AGENTTUNNEL_TOOL__ {"name":"record_learning","arguments":{"category":"model-fit","entry":"fake-executor + test-model handled Research A well."}}';
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        specs.push(spec);
+        const lines = spec.prompt.includes("Summary pass")
+          ? [
+              learningLine,
+              '__AGENTTUNNEL_TOOL__ {"name":"record_learning","arguments":{"category":"!!!","entry":"DROP"}}',
+              learningLine,
+              '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}',
+            ]
+          : spec.id.startsWith("orchestrator")
+            ? [
+                '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research"}}',
+                '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the research","pipeline":"review","depends_on":["research"]}}',
+                '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+              ]
+            : ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}'];
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(lines),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "test inherited context",
+      cwd: "/tmp",
+      model: "test-model",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+      inheritedContext: "### rules/model-fit.md\n\n- codex is strong at multi-file refactors.",
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    const planning = specs.find((spec) => spec.id === "orchestrator_1");
+    NodeAssert.match(planning?.prompt ?? "", /## Inherited context/);
+    NodeAssert.match(planning?.prompt ?? "", /codex is strong at multi-file refactors\./);
+    const summary = specs.find((spec) => spec.prompt.includes("Summary pass"));
+    NodeAssert.match(summary?.prompt ?? "", /\| Role \| Harness \| Model \| Status \| Task \|/);
+    NodeAssert.match(
+      summary?.prompt ?? "",
+      /\| executor \| fake-executor \| test-model \| completed \|/,
+    );
+    NodeAssert.match(summary?.prompt ?? "", /- codex is strong at multi-file refactors\./);
+
+    NodeAssert.deepEqual(result.learnings, [
+      { category: "model-fit", entry: "fake-executor + test-model handled Research A well." },
+    ]);
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(markdown, /### Inherited context updates/);
+    NodeAssert.match(
+      markdown,
+      /- `model-fit` · fake-executor \+ test-model handled Research A well\./,
+    );
+    NodeAssert.ok(!markdown.includes("DROP"));
+  }),
+);
