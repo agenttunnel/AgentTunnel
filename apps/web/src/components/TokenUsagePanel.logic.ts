@@ -23,7 +23,7 @@ import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { OrchestrationAgentLogEntry, OrchestrationThreadActivity } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
@@ -82,6 +82,112 @@ export interface TokenUsageModel {
   readonly agents: ReadonlyArray<TokenUsageAgentRow>;
   readonly context: ContextUsageSummary | null;
   readonly hasUsage: boolean;
+}
+
+/** One subagent model step ("turn"), decomposed from a usage log entry. */
+export interface SubagentUsageTurn {
+  readonly ordinal: number;
+  /** Input fed to the model this step; includes the cached subset. */
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  /** Output produced this step; includes the reasoning subset. */
+  readonly outputTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly totalTokens: number;
+  /** Context size this step: input + cached tokens. */
+  readonly contextTokens: number;
+  readonly inputLabel: string;
+  readonly cachedLabel: string;
+  readonly outputLabel: string;
+  readonly reasoningLabel: string;
+  readonly totalLabel: string;
+}
+
+/**
+ * Per-subagent stats for the agents drill-in: each provider-reported model step
+ * as a turn, with the context size fed into it. Derived from the usage entries
+ * the adapter persists in the agent's log; providers that report no per-step
+ * usage leave the surface empty rather than estimating.
+ */
+export interface SubagentUsageStats {
+  readonly turns: ReadonlyArray<SubagentUsageTurn>;
+  readonly turnCount: number;
+  readonly totalTokens: number;
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningOutputTokens: number;
+  /** Latest step's context size, or null when no step was reported. */
+  readonly contextTokens: number | null;
+  readonly totalLabel: string;
+  readonly inputLabel: string;
+  readonly cachedLabel: string;
+  readonly outputLabel: string;
+  readonly reasoningLabel: string;
+  readonly contextLabel: string | null;
+  readonly hasUsage: boolean;
+}
+
+export function deriveSubagentUsageStats(
+  entries: ReadonlyArray<OrchestrationAgentLogEntry>,
+): SubagentUsageStats {
+  const turns: SubagentUsageTurn[] = [];
+  let inputTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let totalTokens = 0;
+
+  for (const entry of entries) {
+    if (entry.kind !== "usage") {
+      continue;
+    }
+    const cached = entry.cachedInputTokens ?? 0;
+    const reasoning = entry.reasoningOutputTokens ?? 0;
+    // Match the thread snapshot convention: input/output include their cached
+    // and reasoning subsets, so the subsets render beside the sums, never added.
+    const input = (entry.inputTokens ?? 0) + cached;
+    const output = (entry.outputTokens ?? 0) + reasoning;
+    const context = input;
+    turns.push({
+      ordinal: turns.length + 1,
+      inputTokens: input,
+      cachedInputTokens: cached,
+      outputTokens: output,
+      reasoningOutputTokens: reasoning,
+      totalTokens: entry.totalTokens,
+      contextTokens: context,
+      inputLabel: formatSubagentTokenCount(input),
+      cachedLabel: formatSubagentTokenCount(cached),
+      outputLabel: formatSubagentTokenCount(output),
+      reasoningLabel: formatSubagentTokenCount(reasoning),
+      totalLabel: formatSubagentTokenCount(entry.totalTokens),
+    });
+    inputTokens += input;
+    cachedInputTokens += cached;
+    outputTokens += output;
+    reasoningOutputTokens += reasoning;
+    totalTokens += entry.totalTokens;
+  }
+
+  const contextTokens = turns.length > 0 ? turns[turns.length - 1]!.contextTokens : null;
+  return {
+    turns,
+    turnCount: turns.length,
+    totalTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    contextTokens,
+    totalLabel: formatSubagentTokenCount(totalTokens),
+    inputLabel: formatSubagentTokenCount(inputTokens),
+    cachedLabel: formatSubagentTokenCount(cachedInputTokens),
+    outputLabel: formatSubagentTokenCount(outputTokens),
+    reasoningLabel: formatSubagentTokenCount(reasoningOutputTokens),
+    contextLabel: contextTokens === null ? null : formatSubagentTokenCount(contextTokens),
+    hasUsage: turns.length > 0,
+  };
 }
 
 interface MutableTurn {

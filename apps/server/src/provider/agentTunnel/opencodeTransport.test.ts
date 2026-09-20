@@ -248,6 +248,34 @@ it("parseOpenCodeLogLine passes non-JSON through and drops step events", () => {
   NodeAssert.deepEqual(parseOpenCodeLogLine(JSON.stringify({ type: "step_finish", part: {} })), []);
 });
 
+it("parseOpenCodeLogLine persists step_finish token frames as usage entries", () => {
+  const line = JSON.stringify({
+    type: "step_finish",
+    part: {
+      reason: "tool-calls",
+      tokens: {
+        total: 24_622,
+        input: 10_871,
+        output: 213,
+        reasoning: 482,
+        cache: { write: 0, read: 13_056 },
+      },
+    },
+  });
+  NodeAssert.deepEqual(parseOpenCodeLogLine(line), [
+    {
+      kind: "usage",
+      totalTokens: 24_622,
+      inputTokens: 10_871,
+      cachedInputTokens: 13_056,
+      outputTokens: 213,
+      reasoningOutputTokens: 482,
+    },
+  ]);
+  // Usage entries never surface in the orchestrator chat transcript.
+  NodeAssert.deepEqual(parseOpenCodeJsonLine(line), []);
+});
+
 it("parseOpenCodeStepUsage reads step token frames, counting cache as cached input", () => {
   const line = JSON.stringify({
     type: "step_finish",

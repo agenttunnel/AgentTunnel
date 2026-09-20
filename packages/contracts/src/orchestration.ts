@@ -1803,6 +1803,19 @@ export const OrchestrationAgentLogEntry = Schema.Union([
     output: Schema.optional(Schema.String),
     error: Schema.optional(Schema.String),
   }),
+  /**
+   * One model step's provider-reported usage, persisted inline in the agent log
+   * so the per-subagent stats view can reconstruct tokens per turn without
+   * growing the fleet read model (one activity row per task).
+   */
+  Schema.Struct({
+    kind: Schema.Literal("usage"),
+    totalTokens: NonNegativeInt,
+    inputTokens: Schema.optional(NonNegativeInt),
+    cachedInputTokens: Schema.optional(NonNegativeInt),
+    outputTokens: Schema.optional(NonNegativeInt),
+    reasoningOutputTokens: Schema.optional(NonNegativeInt),
+  }),
 ]);
 export type OrchestrationAgentLogEntry = typeof OrchestrationAgentLogEntry.Type;
 

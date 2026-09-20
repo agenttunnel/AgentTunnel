@@ -23,7 +23,9 @@ The pane is cumulative for the thread and shows:
   provider's processed-token count when it reports one.
 - **By turn**: each turn's input, output, and subagent tokens, and the turn's total.
 - **Agents**: up to 100 subagents' input, output, tool-call count, and total (the roster keeps the
-  live and most recent agents).
+  live and most recent agents). Select an agent to drill into its own stats: how many turns (model
+  steps) it ran, the input, cached, output, reasoning, and total tokens for each turn, and the
+  context size fed into each step. A running agent's turns appear as they complete.
 
 Subagent tokens count toward the turn that spawned the agent. Figures are exactly what the provider
 reported; providers that report no usage leave the pane empty instead of estimating. AgentTunnel
