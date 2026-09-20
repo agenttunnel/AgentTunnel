@@ -1,7 +1,10 @@
 "use client";
 
 import type { ServerProviderModel } from "@t3tools/contracts";
-import { Bot, ShieldCheck, Sparkles, Workflow } from "lucide-react";
+import { ChevronDown } from "lucide-react";
+import { useState } from "react";
+import { cn } from "~/lib/utils";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -11,22 +14,12 @@ import {
 } from "../agentTunnelRoles.logic";
 
 const ROLES = [
-  {
-    key: "orchestrator",
-    label: "Orchestrator",
-    description: "Plans the workflow, dispatches tasks, and reviews team results.",
-  },
-  {
-    key: "executor",
-    label: "Executor",
-    description: "Implements individual tasks assigned by the orchestrator.",
-  },
-  {
-    key: "reviewer",
-    label: "Reviewer",
-    description: "Inspects completed work for correctness, consistency, and tests.",
-  },
+  { key: "orchestrator", label: "Orchestrator" },
+  { key: "executor", label: "Executor" },
+  { key: "reviewer", label: "Reviewer" },
 ] as const;
+
+const ROLE_GRID_COLUMNS = "sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)_10rem]";
 
 interface AgentTunnelSettingsSectionProps {
   readonly config: unknown;
@@ -73,7 +66,9 @@ function writeConfigValue(
   onChange(Object.keys(base).length > 0 ? base : undefined);
 }
 
-function RoleSettings({
+const selectPopupClassName = "max-h-72 w-[min(24rem,calc(100vw-3rem))]";
+
+function RoleRow({
   config,
   models,
   role,
@@ -96,94 +91,130 @@ function RoleSettings({
       : SUPPORTED_HARNESSES;
 
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <Bot className="size-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">{role.label}</span>
-      </div>
-      <p className="mb-3 text-xs leading-snug text-muted-foreground">{role.description}</p>
-      <div className="space-y-3">
-        <label className="block">
-          <span className="text-xs font-medium text-foreground">Harness</span>
-          <Select
-            value={harness}
-            onValueChange={(next) => writeConfigValue(config, onChange, harnessKey, next ?? "")}
-          >
-            <SelectTrigger className="mt-1.5">
-              <SelectValue placeholder="Select a harness" />
-            </SelectTrigger>
-            <SelectPopup className="max-h-72 w-[min(24rem,calc(100vw-3rem))]">
-              {harnessOptions.map((entry) => (
-                <SelectItem key={entry.value} value={entry.value}>
-                  {entry.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          <span className="mt-1 block text-xs text-muted-foreground">
-            CLI used to run this role. Must be on the server PATH.
-          </span>
-        </label>
-        <label className="block">
-          <span className="text-xs font-medium text-foreground">Model</span>
-          <Select
-            value={model || ""}
-            onValueChange={(next) => writeConfigValue(config, onChange, modelKey, next ?? "")}
-          >
-            <SelectTrigger className="mt-1.5">
-              <SelectValue placeholder="Use the workflow default model" />
-            </SelectTrigger>
-            <SelectPopup className="max-h-72 w-[min(24rem,calc(100vw-3rem))]">
-              <SelectItem value="">Use the workflow default model</SelectItem>
-              {models.map((entry) => (
-                <SelectItem key={entry.slug} value={entry.slug}>
-                  {entry.name}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          <span className="mt-1 block text-xs text-muted-foreground">
-            Optional per-role override of the workflow model selected in the composer.
-          </span>
-        </label>
-        <label className="block">
-          <span className="text-xs font-medium text-foreground">Reasoning</span>
-          <Select
-            value={variant}
-            onValueChange={(next) => writeConfigValue(config, onChange, variantKey, next ?? "")}
-          >
-            <SelectTrigger className="mt-1.5">
-              <SelectValue placeholder="Default" />
-            </SelectTrigger>
-            <SelectPopup className="max-h-72 w-[min(24rem,calc(100vw-3rem))]">
-              {AGENT_TUNNEL_REASONING_OPTIONS.map((entry) => (
-                <SelectItem key={entry.value || "default"} value={entry.value}>
-                  {entry.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          <span className="mt-1 block text-xs text-muted-foreground">
-            Reasoning effort passed to the harness (opencode `--variant`).
-          </span>
-        </label>
-      </div>
+    <div className={cn("grid gap-2 px-3 py-2.5 sm:items-center", ROLE_GRID_COLUMNS)}>
+      <span className="text-[13px] font-medium leading-5 text-foreground">{role.label}</span>
+      <Select
+        value={harness}
+        onValueChange={(next) => writeConfigValue(config, onChange, harnessKey, next ?? "")}
+      >
+        <SelectTrigger aria-label={`${role.label} harness`}>
+          <SelectValue placeholder="Harness" />
+        </SelectTrigger>
+        <SelectPopup className={selectPopupClassName}>
+          {harnessOptions.map((entry) => (
+            <SelectItem key={entry.value} value={entry.value}>
+              {entry.label}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+      <Select
+        value={model || ""}
+        onValueChange={(next) => writeConfigValue(config, onChange, modelKey, next ?? "")}
+      >
+        <SelectTrigger aria-label={`${role.label} model`}>
+          <SelectValue placeholder="Workflow default" />
+        </SelectTrigger>
+        <SelectPopup className={selectPopupClassName}>
+          <SelectItem value="">Workflow default</SelectItem>
+          {models.map((entry) => (
+            <SelectItem key={entry.slug} value={entry.slug}>
+              {entry.name}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+      <Select
+        value={variant}
+        onValueChange={(next) => writeConfigValue(config, onChange, variantKey, next ?? "")}
+      >
+        <SelectTrigger aria-label={`${role.label} reasoning`}>
+          <SelectValue placeholder="Default" />
+        </SelectTrigger>
+        <SelectPopup className={selectPopupClassName}>
+          {AGENT_TUNNEL_REASONING_OPTIONS.map((entry) => (
+            <SelectItem key={entry.value || "default"} value={entry.value}>
+              {entry.label}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
     </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly checked: boolean;
+  readonly onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-4 px-3 py-2.5">
+      <span className="min-w-0">
+        <span className="block text-[13px] font-medium leading-5 text-foreground">{label}</span>
+        <span className="block text-[13px] leading-5 text-muted-foreground">{description}</span>
+      </span>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
+    </label>
+  );
+}
+
+function NumberRow({
+  label,
+  description,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly value: number;
+  readonly min: number;
+  readonly max: number;
+  readonly onCommit: (value: number) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-4 px-3 py-2.5">
+      <span className="min-w-0">
+        <span className="block text-[13px] font-medium leading-5 text-foreground">{label}</span>
+        <span className="block text-[13px] leading-5 text-muted-foreground">{description}</span>
+      </span>
+      <Input
+        className="w-20 shrink-0"
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => {
+          const parsed = Number.parseInt(event.target.value, 10);
+          if (!Number.isNaN(parsed)) {
+            onCommit(Math.min(max, Math.max(min, parsed)));
+          }
+        }}
+      />
+    </label>
   );
 }
 
 /**
  * Interactive role configuration for the AgentTunnel workflow provider.
  *
- * Replaces the generic schema form so each role (orchestrator, executor,
- * reviewer) gets a focused harness + model editor with a live model picker
- * populated from the provider snapshot.
+ * Compact role grid plus a single Advanced disclosure, so the per-role harness,
+ * model, and reasoning choices stay scannable without a wall of cards.
  */
 export function AgentTunnelSettingsSection({
   config,
   models,
   onChange,
 }: AgentTunnelSettingsSectionProps) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const skipPermissions = readConfigBoolean(config, "dangerouslySkipPermissions", true);
   const autoMode = readConfigBoolean(config, "autoMode", false);
   const maxPasses = readConfigNumber(config, "maxOrchestratorPasses", 4);
@@ -191,35 +222,22 @@ export function AgentTunnelSettingsSection({
   const recapIntervalSeconds = readConfigNumber(config, "orchestratorRecapIntervalSeconds", 30);
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <Sparkles className="size-4 text-muted-foreground" />
-            <div>
-              <span className="block text-sm font-medium text-foreground">Auto mode</span>
-              <span className="block text-xs text-muted-foreground">
-                The orchestrator chooses each executor and reviewer task's model. Per-role model
-                settings below act as fallbacks.
-              </span>
-            </div>
-          </div>
-          <Switch
-            checked={autoMode}
-            onCheckedChange={(checked) => writeConfigValue(config, onChange, "autoMode", checked)}
-            aria-label="Auto mode"
-          />
+    <div className="space-y-3">
+      <div className="overflow-hidden rounded-lg border border-border/60">
+        <div
+          className={cn(
+            "hidden gap-2 border-b border-border/50 bg-muted/15 px-3 py-1.5 text-[11px] font-medium text-muted-foreground sm:grid sm:items-center",
+            ROLE_GRID_COLUMNS,
+          )}
+        >
+          <span>Role</span>
+          <span>Harness</span>
+          <span>Model</span>
+          <span>Reasoning</span>
         </div>
-      </div>
-
-      <div>
-        <div className="mb-2 flex items-center gap-2">
-          <Workflow className="size-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-foreground">Roles</span>
-        </div>
-        <div className="grid gap-3">
+        <div className="divide-y divide-border/50">
           {ROLES.map((role) => (
-            <RoleSettings
+            <RoleRow
               key={role.key}
               config={config}
               models={models}
@@ -230,105 +248,66 @@ export function AgentTunnelSettingsSection({
         </div>
       </div>
 
-      <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-4 text-muted-foreground" />
-            <div>
-              <span className="block text-sm font-medium text-foreground">
-                Skip harness permissions
-              </span>
-              <span className="block text-xs text-muted-foreground">
-                Pass the harness permission-bypass flag to child sessions.
-              </span>
-            </div>
-          </div>
-          <Switch
-            checked={skipPermissions}
-            onCheckedChange={(checked) =>
-              writeConfigValue(config, onChange, "dangerouslySkipPermissions", checked)
-            }
-            aria-label="Skip harness permissions"
-          />
-        </div>
+      <div className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
+        <ToggleRow
+          label="Auto mode"
+          description="Orchestrator picks each task's model; per-role models act as fallbacks."
+          checked={autoMode}
+          onCheckedChange={(checked) => writeConfigValue(config, onChange, "autoMode", checked)}
+        />
+        <ToggleRow
+          label="Skip harness permissions"
+          description="Pass the permission-bypass flag to child sessions."
+          checked={skipPermissions}
+          onCheckedChange={(checked) =>
+            writeConfigValue(config, onChange, "dangerouslySkipPermissions", checked)
+          }
+        />
       </div>
 
-      <label className="block rounded-lg border border-border/60 bg-muted/20 p-3">
-        <span className="block text-sm font-medium text-foreground">Max orchestrator passes</span>
-        <span className="mb-2 block text-xs text-muted-foreground">
-          How many summary passes the orchestrator may run before the workflow must finish.
-        </span>
-        <Input
-          className="mt-1.5 max-w-28"
-          type="number"
-          min={1}
-          max={12}
-          value={Number.isFinite(maxPasses) ? maxPasses : 4}
-          onChange={(event) => {
-            const parsed = Number.parseInt(event.target.value, 10);
-            if (!Number.isNaN(parsed)) {
-              writeConfigValue(
-                config,
-                onChange,
-                "maxOrchestratorPasses",
-                Math.min(12, Math.max(1, parsed)),
-              );
-            }
-          }}
-        />
-      </label>
-
-      <label className="block rounded-lg border border-border/60 bg-muted/20 p-3">
-        <span className="block text-sm font-medium text-foreground">Orchestrator pass timeout</span>
-        <span className="mb-2 block text-xs text-muted-foreground">
-          Minutes a single planning or summary pass may run before it is stopped. Raising this helps
-          when the orchestrator explores the repository before dispatching work.
-        </span>
-        <Input
-          className="mt-1.5 max-w-28"
-          type="number"
-          min={1}
-          max={120}
-          value={Number.isFinite(passTimeoutMinutes) ? passTimeoutMinutes : 15}
-          onChange={(event) => {
-            const parsed = Number.parseInt(event.target.value, 10);
-            if (!Number.isNaN(parsed)) {
-              writeConfigValue(
-                config,
-                onChange,
-                "orchestratorPassTimeoutMinutes",
-                Math.min(120, Math.max(1, parsed)),
-              );
-            }
-          }}
-        />
-      </label>
-
-      <label className="block rounded-lg border border-border/60 bg-muted/20 p-3">
-        <span className="block text-sm font-medium text-foreground">Progress recap interval</span>
-        <span className="mb-2 block text-xs text-muted-foreground">
-          Seconds between live progress recaps (elapsed time, running agents, per-pipeline status)
-          while a workflow runs. Set to 0 to turn the heartbeat off.
-        </span>
-        <Input
-          className="mt-1.5 max-w-28"
-          type="number"
-          min={0}
-          max={900}
-          value={Number.isFinite(recapIntervalSeconds) ? recapIntervalSeconds : 30}
-          onChange={(event) => {
-            const parsed = Number.parseInt(event.target.value, 10);
-            if (!Number.isNaN(parsed)) {
-              writeConfigValue(
-                config,
-                onChange,
-                "orchestratorRecapIntervalSeconds",
-                Math.min(900, Math.max(0, parsed)),
-              );
-            }
-          }}
-        />
-      </label>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger className="flex items-center gap-1.5 rounded-sm px-1 py-1 text-xs text-muted-foreground hover:text-foreground">
+          <ChevronDown
+            aria-hidden
+            className={cn("size-3 transition-transform", advancedOpen && "rotate-180")}
+          />
+          Advanced
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-2 divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
+            <NumberRow
+              label="Max orchestrator passes"
+              description="Summary passes before the workflow must finish."
+              value={Number.isFinite(maxPasses) ? maxPasses : 4}
+              min={1}
+              max={12}
+              onCommit={(value) =>
+                writeConfigValue(config, onChange, "maxOrchestratorPasses", value)
+              }
+            />
+            <NumberRow
+              label="Orchestrator pass timeout"
+              description="Minutes a planning or summary pass may run."
+              value={Number.isFinite(passTimeoutMinutes) ? passTimeoutMinutes : 15}
+              min={1}
+              max={120}
+              onCommit={(value) =>
+                writeConfigValue(config, onChange, "orchestratorPassTimeoutMinutes", value)
+              }
+            />
+            <NumberRow
+              label="Progress recap interval"
+              description="Seconds between live progress recaps. 0 turns the heartbeat off."
+              value={Number.isFinite(recapIntervalSeconds) ? recapIntervalSeconds : 30}
+              min={0}
+              max={900}
+              onCommit={(value) =>
+                writeConfigValue(config, onChange, "orchestratorRecapIntervalSeconds", value)
+              }
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }

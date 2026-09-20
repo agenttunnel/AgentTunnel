@@ -296,6 +296,7 @@ function AgentDetail({
   onBack: () => void;
 }) {
   const visuals = STATUS_VISUALS[agent.status];
+  const [logOpen, setLogOpen] = useState(false);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const metadata = [
     agent.role,
@@ -350,18 +351,45 @@ function AgentDetail({
             </p>
           </div>
           <div>
-            <div className="pb-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
-              Log
-            </div>
-            {agent.outputFile !== null && environmentId !== null ? (
-              <AgentOutputLog
-                agent={agent}
-                outputPath={agent.outputFile}
-                environmentId={environmentId}
-              />
-            ) : (
-              <SubagentLogLines agent={agent} />
-            )}
+            {/*
+              Logs stay collapsed until asked for: mounting the log view starts
+              polling the output file, and the summary already says what is
+              happening.
+            */}
+            <button
+              type="button"
+              onClick={() => setLogOpen((value) => !value)}
+              aria-expanded={logOpen}
+              className="flex h-7 w-full items-center gap-1.5 rounded-md px-1 text-left hover:bg-accent/40"
+            >
+              {logOpen ? (
+                <ChevronDown aria-hidden className="size-3.5 shrink-0 text-muted-foreground/60" />
+              ) : (
+                <ChevronRight aria-hidden className="size-3.5 shrink-0 text-muted-foreground/60" />
+              )}
+              <span className="text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+                Log
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[.7rem] text-muted-foreground/70">
+                {agentActivityText(agent) ?? visuals.label}
+              </span>
+              {!logOpen ? (
+                <span className="shrink-0 font-mono text-[.65rem] text-muted-foreground/50">
+                  {agent.recentActivity.length}
+                </span>
+              ) : null}
+            </button>
+            {logOpen ? (
+              agent.outputFile !== null && environmentId !== null ? (
+                <AgentOutputLog
+                  agent={agent}
+                  outputPath={agent.outputFile}
+                  environmentId={environmentId}
+                />
+              ) : (
+                <SubagentLogLines agent={agent} />
+              )
+            ) : null}
           </div>
         </div>
       </ScrollArea>
