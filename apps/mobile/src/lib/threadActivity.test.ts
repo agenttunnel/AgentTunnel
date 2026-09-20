@@ -784,6 +784,41 @@ describe("buildThreadFeed", () => {
     expect(deriveThreadFeedPresentation(presented, null, new Set())).toEqual([]);
   });
 
+  it("hides the working row while the latest message is a queued steer", () => {
+    const startedAt = "2026-04-01T00:00:01.000Z";
+    const steer = {
+      type: "message" as const,
+      id: "message-steer",
+      createdAt: "2026-04-01T00:00:02.000Z",
+      message: {
+        id: MessageId.make("message-steer"),
+        role: "user" as const,
+        text: "use a worktree instead",
+        turnId: null,
+        streaming: false,
+        steering: "queued" as const,
+        createdAt: "2026-04-01T00:00:02.000Z",
+        updatedAt: "2026-04-01T00:00:02.000Z",
+      },
+    };
+
+    expect(
+      deriveThreadFeedPresentation([steer], null, new Set(), new Set(), startedAt).map(
+        (entry) => entry.type,
+      ),
+    ).toEqual(["message"]);
+
+    expect(
+      deriveThreadFeedPresentation(
+        [{ ...steer, message: { ...steer.message, steering: "injected" as const } }],
+        null,
+        new Set(),
+        new Set(),
+        startedAt,
+      ).map((entry) => entry.type),
+    ).toEqual(["message", "working"]);
+  });
+
   it("models work-log overflow as list rows", () => {
     const activity = (
       id: string,

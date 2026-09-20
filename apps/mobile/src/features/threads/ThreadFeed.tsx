@@ -1057,8 +1057,8 @@ function renderFeedEntry(
           {...(enterAnimated ? { entering: FadeInUp.duration(220) } : {})}
         >
           {steeringLabel ? (
-            <Text className="mb-1 pr-0.5 font-t3-medium text-xs text-foreground-muted">
-              {steeringLabel}
+            <Text className={cn("mb-1 pr-0.5 font-t3-medium text-xs", steeringLabel.toneClassName)}>
+              {steeringLabel.text}
             </Text>
           ) : null}
           <View
@@ -1214,14 +1214,23 @@ const WorkingTimelineRow = memo(function WorkingTimelineRow(props: { readonly st
 
 function userMessageSteeringLabel(
   steering: "queued" | "injected" | "cancelled" | null | undefined,
-): string | null {
+): { readonly text: string; readonly toneClassName: string } | null {
   switch (steering) {
     case "queued":
-      return "↳ Steering · queued for the next planning pass";
+      return {
+        text: "↳ Steering · queued for the next planning pass",
+        toneClassName: "text-amber-500",
+      };
     case "injected":
-      return "↳ Steering · injected into the running pass";
+      return {
+        text: "↳ Steering · injected into the running pass",
+        toneClassName: "text-blue-500",
+      };
     case "cancelled":
-      return "↳ Steering · not delivered — the run ended first";
+      return {
+        text: "↳ Steering · not delivered — the run ended first",
+        toneClassName: "text-danger-foreground",
+      };
     default:
       return null;
   }

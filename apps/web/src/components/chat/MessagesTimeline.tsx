@@ -1044,9 +1044,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             "flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-[11px]",
             steeringBadge.tone === "queued"
               ? "text-amber-600 dark:text-amber-300/90"
-              : steeringBadge.tone === "cancelled"
-                ? "text-destructive"
-                : "text-muted-foreground",
+              : steeringBadge.tone === "injected"
+                ? "text-info-foreground"
+                : "text-destructive",
           )}
         >
           <CornerDownRightIcon className="size-3 shrink-0" aria-hidden="true" />
@@ -1058,6 +1058,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         className={cn(
           "relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground",
           steeringBadge?.tone === "queued" && "ring-1 ring-amber-500/40",
+          steeringBadge?.tone === "injected" && "ring-1 ring-info/40",
         )}
       >
         {regularImages.length > 0 && (
