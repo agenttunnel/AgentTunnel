@@ -2,6 +2,7 @@
 
 import {
   ArrowUpCircleIcon,
+  ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
   LoaderIcon,
@@ -29,6 +30,7 @@ import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
@@ -262,9 +264,7 @@ function ProviderEnvironmentSection(props: {
         </Button>
       </div>
       {rows.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          Add variables to pass API keys, base URLs, or other per-instance CLI settings.
-        </p>
+        <p className="text-xs text-muted-foreground">No environment variables.</p>
       ) : (
         <div className="overflow-hidden rounded-md border border-border/70">
           <Table>
@@ -346,7 +346,7 @@ function ProviderEnvironmentSection(props: {
         </div>
       )}
       <span className="text-xs text-muted-foreground">
-        Sensitive values are stored separately and are not returned to the app after saving.
+        Sensitive values are not returned to the app after saving.
       </span>
     </div>
   );
@@ -435,6 +435,7 @@ export function ProviderInstanceCard({
   isUpdating = false,
 }: ProviderInstanceCardProps) {
   const [activeTab, setActiveTab] = useState<"configuration" | "models">("configuration");
+  const [instanceSettingsOpen, setInstanceSettingsOpen] = useState(false);
   const enabled = resolveProviderInstanceEnabled(instance);
   // A locally disabled provider reads "Disabled" with a muted dot even if its
   // last server status is stale. Enabled providers use the server status.
@@ -641,8 +642,8 @@ export function ProviderInstanceCard({
       <div
         className={cn(
           // Sidebar-style selection with a fixed row height so the list stays
-          // even; the status line clamps to two lines instead of growing.
-          "group flex h-19 items-start gap-3 rounded-md px-3 py-2 transition-colors",
+          // even; the status line truncates instead of growing.
+          "group flex h-14 items-center gap-3 rounded-md px-3 transition-colors",
           // Foreground-alpha tint so the fill reads the same in light and dark themes.
           selected ? "bg-foreground/8" : "hover:bg-foreground/4",
         )}
@@ -650,7 +651,7 @@ export function ProviderInstanceCard({
         <button
           type="button"
           className={cn(
-            "flex min-w-0 flex-1 cursor-pointer items-start gap-3 rounded-sm text-left outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
+            "flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-sm text-left outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
             !enabled && !selected && "opacity-60 group-hover:opacity-100",
           )}
           onClick={onSelect}
@@ -659,12 +660,9 @@ export function ProviderInstanceCard({
           {titleIconNode}
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
-              {String(instanceId) !== String(instance.driver) ? (
-                <code className="min-w-0 truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
-                  {instanceId}
-                </code>
-              ) : null}
+              <span className="truncate text-[13px] font-medium leading-5 text-foreground">
+                {displayName}
+              </span>
               {versionCodeNode}
               {versionAdvisory ? (
                 <span role="img" aria-label="Update available" className="inline-flex shrink-0">
@@ -672,11 +670,9 @@ export function ProviderInstanceCard({
                 </span>
               ) : null}
             </span>
-            <span className="mt-0.5 flex items-start gap-1.5 text-[13px] leading-[1.45] text-muted-foreground/80">
-              {statusDotNode ? (
-                <span className="flex h-[1.45em] shrink-0 items-center">{statusDotNode}</span>
-              ) : null}
-              <span className="line-clamp-2 [overflow-wrap:anywhere]">
+            <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-5 text-muted-foreground">
+              {statusDotNode}
+              <span className="min-w-0 truncate">
                 {summary.headline}
                 {needsAttention && summary.detail ? ` · ${summary.detail}` : null}
               </span>
@@ -697,7 +693,7 @@ export function ProviderInstanceCard({
 
   return (
     <div className="min-w-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col">
-      <div className="flex min-h-16 shrink-0 items-start justify-between gap-3 border-b border-border/70 px-4 py-3">
+      <div className="flex min-h-14 shrink-0 items-start justify-between gap-3 border-b border-border/70 px-4 py-2.5">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {titleHeadNode}
@@ -823,14 +819,14 @@ export function ProviderInstanceCard({
             {summary.detail && !needsAttention ? <span>· {summary.detail}</span> : null}
           </p>
           {summary.detail && needsAttention ? (
-            <p className="text-[13px] leading-[1.45] text-muted-foreground/80 [overflow-wrap:anywhere]">
+            <p className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground/80 [overflow-wrap:anywhere]">
               {summary.detail}
             </p>
           ) : null}
         </div>
       </div>
 
-      <div className="flex h-11 shrink-0 border-b border-border/70 px-1">
+      <div className="flex h-9 shrink-0 border-b border-border/70 px-1">
         <button
           type="button"
           aria-pressed={visibleTab === "configuration"}
@@ -861,41 +857,56 @@ export function ProviderInstanceCard({
           <div
             inert={readOnly}
             aria-disabled={readOnly || undefined}
-            className={cn("space-y-5 px-4 py-5", readOnly && "opacity-50 select-none")}
+            className={cn("space-y-4 px-4 py-4", readOnly && "opacity-50 select-none")}
           >
-            <div>
-              <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
-                <span className="text-xs font-medium text-foreground">Display name</span>
-                <DraftInput
-                  id={`provider-instance-${instanceId}-display-name`}
-                  className="mt-1.5"
-                  value={instance.displayName ?? ""}
-                  onCommit={updateDisplayName}
-                  placeholder={driverOption?.label ?? "Instance label"}
-                  spellCheck={false}
+            <Collapsible open={instanceSettingsOpen} onOpenChange={setInstanceSettingsOpen}>
+              <CollapsibleTrigger className="flex items-center gap-1.5 rounded-sm text-[13px] text-muted-foreground hover:text-foreground">
+                <ChevronDownIcon
+                  aria-hidden
+                  className={cn(
+                    "size-3 transition-transform",
+                    instanceSettingsOpen && "rotate-180",
+                  )}
                 />
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  Optional label shown in the provider list.
-                </span>
-              </label>
-            </div>
+                Instance settings
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mt-3 space-y-4">
+                  <div>
+                    <label
+                      htmlFor={`provider-instance-${instanceId}-display-name`}
+                      className="block"
+                    >
+                      <span className="text-xs font-medium text-foreground">Display name</span>
+                      <DraftInput
+                        id={`provider-instance-${instanceId}-display-name`}
+                        className="mt-1.5"
+                        value={instance.displayName ?? ""}
+                        onCommit={updateDisplayName}
+                        placeholder={driverOption?.label ?? "Instance label"}
+                        spellCheck={false}
+                      />
+                    </label>
+                  </div>
 
-            <div>
-              <ProviderAccentColorPicker
-                displayName={displayName}
-                value={accentColor}
-                onCommit={updateAccentColor}
-                commitDelayMs={120}
-                description="Used to distinguish this instance in picker rails and model lists."
-              />
-            </div>
+                  <div>
+                    <ProviderAccentColorPicker
+                      displayName={displayName}
+                      value={accentColor}
+                      onCommit={updateAccentColor}
+                      commitDelayMs={120}
+                    />
+                  </div>
 
-            <div>
-              <ProviderEnvironmentSection
-                environment={instance.environment ?? []}
-                onChange={updateEnvironment}
-              />
-            </div>
+                  <div>
+                    <ProviderEnvironmentSection
+                      environment={instance.environment ?? []}
+                      onChange={updateEnvironment}
+                    />
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
 
             {driverKind === ProviderDriverKind.make("agenttunnel") && !hideAgentTunnelSettings ? (
               <AgentTunnelSettingsSection
