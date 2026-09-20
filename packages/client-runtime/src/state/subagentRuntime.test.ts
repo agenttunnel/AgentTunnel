@@ -96,6 +96,21 @@ describe("foldSubagentActivities", () => {
     expect(agent.completedAt).not.toBeNull();
   });
 
+  it("exposes a running agent's log file from its start row so the drill-in can stream it", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-log",
+        title: "Streaming agent",
+        role: "reviewer",
+        outputFile: "/logs/thread/task-log.log",
+      }),
+      activity("task.progress", { taskId: "task-log", summary: "still working" }),
+    ]);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.status).toBe("running");
+    expect(agents[0]!.outputFile).toBe("/logs/thread/task-log.log");
+  });
+
   it("progress can create an agent when its start row aged out of retention", () => {
     const agents = fold([
       activity("task.progress", {
