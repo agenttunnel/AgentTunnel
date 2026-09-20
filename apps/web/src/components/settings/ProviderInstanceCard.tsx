@@ -103,7 +103,7 @@ function providerEnvironmentsEqual(
  * `string[]` by the concrete driver schemas but arrives here as
  * `Schema.Unknown`.
  */
-function readConfigStringArray(config: unknown, key: string): ReadonlyArray<string> {
+export function readConfigStringArray(config: unknown, key: string): ReadonlyArray<string> {
   if (config === null || typeof config !== "object") return [];
   const value = (config as Record<string, unknown>)[key];
   if (!Array.isArray(value)) return [];
@@ -361,6 +361,12 @@ interface ProviderInstanceCardProps {
   readonly selected?: boolean | undefined;
   readonly onSelect?: (() => void) | undefined;
   readonly readOnly?: boolean | undefined;
+  /**
+   * Hide the AgentTunnel workflow editor in the configuration pane. The
+   * AgentTunnel settings page renders it in a dedicated Workflow section so it
+   * is not duplicated inside this card.
+   */
+  readonly hideAgentTunnelSettings?: boolean | undefined;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
    * Pass `undefined` to hide the delete button entirely. Built-in default
@@ -415,6 +421,7 @@ export function ProviderInstanceCard({
   selected = false,
   onSelect,
   readOnly = false,
+  hideAgentTunnelSettings = false,
   onUpdate,
   onDelete,
   headerAction,
@@ -890,7 +897,7 @@ export function ProviderInstanceCard({
               />
             </div>
 
-            {driverKind === ProviderDriverKind.make("agenttunnel") ? (
+            {driverKind === ProviderDriverKind.make("agenttunnel") && !hideAgentTunnelSettings ? (
               <AgentTunnelSettingsSection
                 config={instance.config}
                 models={modelsForDisplay}

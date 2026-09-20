@@ -19,9 +19,9 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
     to: "/settings/connections",
   },
   {
-    id: "providers",
-    title: "Providers",
-    to: "/settings/providers",
+    id: "agenttunnel",
+    title: "AgentTunnel",
+    to: "/settings/agenttunnel",
   },
   {
     id: "provider-updates",

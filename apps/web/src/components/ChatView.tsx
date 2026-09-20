@@ -178,6 +178,7 @@ import {
   applyAgentTunnelRoleHarness,
   applyAgentTunnelRoleModel,
   applyAgentTunnelRoleVariant,
+  applyAgentTunnelAutoMode,
   readAgentTunnelRoles,
 } from "./agentTunnelRoles.logic";
 import { getDriverOption } from "./settings/providerDriverMeta";
@@ -6947,6 +6948,14 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [updateAgentTunnelRoleConfig],
   );
+  const onAgentTunnelAutoModeChange = useCallback(
+    (instanceId: ProviderInstanceId, autoMode: boolean) => {
+      updateAgentTunnelRoleConfig(instanceId, (config) =>
+        applyAgentTunnelAutoMode(config, autoMode),
+      );
+    },
+    [updateAgentTunnelRoleConfig],
+  );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -7478,6 +7487,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onAgentTunnelRoleModelSelect={onAgentTunnelRoleModelSelect}
                             onAgentTunnelRoleHarnessSelect={onAgentTunnelRoleHarnessSelect}
                             onAgentTunnelRoleReasoningSelect={onAgentTunnelRoleReasoningSelect}
+                            onAgentTunnelAutoModeChange={onAgentTunnelAutoModeChange}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}

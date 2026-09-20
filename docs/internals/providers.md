@@ -7,7 +7,7 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with six entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with seven entries:
 
 | Driver kind   | Driver source                                 |
 | ------------- | --------------------------------------------- |
@@ -16,6 +16,7 @@ orchestration layer does not know which one is behind a thread.
 | `cursor`      | [`Drivers/CursorDriver.ts`][cursor]           |
 | `grok`        | [`Drivers/GrokDriver.ts`][grok]               |
 | `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode]       |
+| `pi`          | [`Drivers/PiDriver.ts`][pi]                   |
 | `agenttunnel` | [`Drivers/AgentTunnelDriver.ts`][agenttunnel] |
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
@@ -84,6 +85,23 @@ empty inventory is authoritative. Existing threads keep their explicit model ide
 options when catalog metadata is missing; the catalog is not permission to choose a different
 model for a thread.
 
+## Pi RPC sessions
+
+Pi runs as a child of the server. `pi --mode rpc` speaks strict JSONL over stdin/stdout, framed on
+LF only so a JSON string containing U+2028/U+2029 is not split ([`piRuntime.ts`][pi-runtime]). One
+child serves one thread, spawned with `--session-id <threadId>` so a fresh process resumes that
+thread's session. Closing the adapter scope kills the child, so a stopped session cannot leak a
+process. The adapter maps pi's event stream into `ProviderRuntimeEvent`s
+([`Layers/PiAdapter.ts`][pi-adapter]), including delta-only `message_update` assembly, tool
+lifecycle, and usage from `message_end`.
+
+Pi RPC exposes no approval or permission protocol, so `respondToRequest` and `respondToUserInput`
+are resolving no-ops and an extension UI request surfaces as a runtime warning. The snapshot probe
+runs `pi --version` and `pi --list-models` ([`Layers/PiProvider.ts`][pi-provider]); model slugs are
+`provider/model`. Pi instances are manual-refresh only (`refreshOnInterval` false), and text
+generation uses one-shot `pi --mode json -p` invocations
+([`textGeneration/PiTextGeneration.ts`][pi-textgen]).
+
 ## Model manifest
 
 The model picker's legacy section is driven by `apps/server/src/provider/model-manifest.json`, which
@@ -110,6 +128,13 @@ built-in providers are opt-in. Configure the orchestrator, executor, and reviewe
 provider settings. The default harness is `opencode` for all three roles. AgentTunnel child sessions
 are currently non-interactive and use the configured permission-bypass setting; approval and user-input
 requests are not yet routed through the AgentTunnel request surface.
+
+Settings for AgentTunnel and its harnesses live together on the `/settings/agenttunnel` page: a
+**Workflow** section (auto mode, roles, permissions, pass limits) backed by the default AgentTunnel
+instance, and a **Harnesses** section listing every provider instance with an enable switch. Enabling a
+harness writes the matching default provider instance's `enabled` flag; the composer's model config
+shows only harnesses that are enabled (or currently selected by a role). There is no standalone
+Providers settings page.
 
 ### Model selection and auto mode
 
@@ -175,6 +200,11 @@ when a request opens (approval) or user input is requested, via
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
 [opencode-server-owner]: ../../apps/server/src/provider/OpenCodeServerOwner.ts
+[pi]: ../../apps/server/src/provider/Drivers/PiDriver.ts
+[pi-runtime]: ../../apps/server/src/provider/piRuntime.ts
+[pi-adapter]: ../../apps/server/src/provider/Layers/PiAdapter.ts
+[pi-provider]: ../../apps/server/src/provider/Layers/PiProvider.ts
+[pi-textgen]: ../../apps/server/src/textGeneration/PiTextGeneration.ts
 [agenttunnel]: ../../apps/server/src/provider/Drivers/AgentTunnelDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts

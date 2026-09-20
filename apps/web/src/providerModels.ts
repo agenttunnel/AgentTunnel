@@ -15,6 +15,17 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 });
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("agenttunnel");
 
+/**
+ * OpenCode and Pi both report their model catalog from a live runtime probe,
+ * so a catalog refresh can momentarily omit the model the user selected. For
+ * those drivers we preserve the stored selection (and its options) rather than
+ * falling back to the first model. Other drivers have static catalogs and
+ * should fall back as usual.
+ */
+export function keepsUnavailableModelSelection(provider: ProviderDriverKind): boolean {
+  return provider === "opencode" || provider === "pi";
+}
+
 export function formatProviderDriverKindLabel(provider: ProviderDriverKind): string {
   return provider
     .replace(/([a-z])([A-Z])/g, "$1 $2")

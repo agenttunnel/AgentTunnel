@@ -897,6 +897,7 @@ function normalizeProviderModelOptions(
     "claudeAgent",
     "cursor",
     "opencode",
+    "pi",
     "agenttunnel",
   ] as const) {
     const selections = coerceProviderOptionSelections(candidate?.[providerKey]);
@@ -1057,7 +1058,14 @@ function legacyToModelSelectionByProvider(
 ): Partial<Record<ProviderInstanceId, ModelSelection>> {
   const result: Partial<Record<ProviderInstanceId, ModelSelection>> = {};
   if (modelOptions) {
-    for (const provider of ["codex", "claudeAgent", "cursor", "opencode", "agenttunnel"] as const) {
+    for (const provider of [
+      "codex",
+      "claudeAgent",
+      "cursor",
+      "opencode",
+      "pi",
+      "agenttunnel",
+    ] as const) {
       const options = modelOptions[provider];
       if (options && options.length > 0) {
         const driverKind = ProviderDriverKind.make(provider);
@@ -2912,6 +2920,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               "claudeAgent",
               "cursor",
               "opencode",
+              "pi",
               "agenttunnel",
             ] as const) {
               if (!modelOptions || !(provider in modelOptions)) continue;

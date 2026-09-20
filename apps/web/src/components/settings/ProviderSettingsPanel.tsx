@@ -32,6 +32,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   TerminalIcon,
+  Workflow,
 } from "lucide-react";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -75,7 +76,12 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
-import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { AgentTunnelSettingsSection } from "./AgentTunnelSettingsSection";
+import {
+  deriveProviderModelsForDisplay,
+  readConfigStringArray,
+  ProviderInstanceCard,
+} from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import { providerSettingsTabClassName } from "./providerSettingsTabs";
 import { searchableSetting } from "./settingsSearch";
@@ -189,7 +195,7 @@ function EnvironmentUnavailableRow({
   // No spinner: this state can persist indefinitely for a wedged device, and a
   // continuously repainting animation would run the whole time.
   return (
-    <SettingsSection title="Providers">
+    <SettingsSection title="AgentTunnel">
       {deviceTabs}
       <SettingsRow title={title} description={description} />
     </SettingsSection>
@@ -266,14 +272,14 @@ export function ProviderSettingsPanel() {
     ) : null;
 
   return (
-    <SettingsPageContainer className="gap-8">
+    <SettingsPageContainer width="full" className="gap-8">
       {options.length === 0 ? (
-        <SettingsSection title="Providers">
+        <SettingsSection title="AgentTunnel">
           <SettingsRow
             title={isReady ? "No connected devices" : "Loading devices"}
             description={
               isReady
-                ? "Connect an execution environment before configuring providers."
+                ? "Connect an execution environment before configuring harnesses."
                 : "Reading connected execution environments."
             }
           />
@@ -625,7 +631,21 @@ export function EnvironmentProviderSettings({
     }
   }
 
+  const agentTunnelDriver = ProviderDriverKind.make("agenttunnel");
+  // AgentTunnel's workflow is rendered in its own section above; the instance
+  // card below keeps its envelope config (name, accent, env, models).
+  const agentTunnelRow =
+    rows.find((row) => row.driver === agentTunnelDriver && row.isDefault) ?? null;
   const selectedRow = rows.find((row) => row.instanceId === selectedInstanceId) ?? rows[0] ?? null;
+  const agentTunnelLiveProvider = agentTunnelRow
+    ? serverProviders.find((candidate) => candidate.instanceId === agentTunnelRow.instanceId)
+    : undefined;
+  const agentTunnelModels = agentTunnelRow
+    ? deriveProviderModelsForDisplay({
+        liveModels: agentTunnelLiveProvider?.models,
+        customModels: readConfigStringArray(agentTunnelRow.instance.config, "customModels"),
+      })
+    : [];
 
   const updateProviderInstance = (
     row: InstanceRow,
@@ -716,6 +736,21 @@ export function EnvironmentProviderSettings({
     });
   };
 
+  const applyInstanceUpdate = (row: InstanceRow, next: ProviderInstanceConfig) => {
+    const wasEnabled = resolveProviderInstanceEnabled(row.instance);
+    const isDisabling = next.enabled === false && wasEnabled;
+    const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
+    updateProviderInstance(
+      row,
+      next,
+      shouldClearTextGen
+        ? {
+            textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+          }
+        : undefined,
+    );
+  };
+
   const renderProviderInstance = (row: InstanceRow, mode: "list" | "editor") => {
     const driverOption = getDriverOption(row.driver);
     const liveProvider = serverProviders.find(
@@ -758,21 +793,8 @@ export function EnvironmentProviderSettings({
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
         onSelect={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
         readOnly={readOnly}
-        onUpdate={(next) => {
-          const wasEnabled = resolveProviderInstanceEnabled(row.instance);
-          const isDisabling = next.enabled === false && wasEnabled;
-          const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
-          updateProviderInstance(
-            row,
-            next,
-            shouldClearTextGen
-              ? {
-                  textGenerationModelSelection:
-                    DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                }
-              : undefined,
-          );
-        }}
+        hideAgentTunnelSettings={row.driver === agentTunnelDriver}
+        onUpdate={(next) => applyInstanceUpdate(row, next)}
         onDelete={
           mode === "editor" && !row.isDefault
             ? () => deleteProviderInstance(row.instanceId)
@@ -816,8 +838,38 @@ export function EnvironmentProviderSettings({
 
   return (
     <>
+      {agentTunnelRow ? (
+        <SettingsSection
+          {...searchableSetting("agenttunnel-workflow")}
+          className="gap-2"
+          title="Workflow"
+          icon={<Workflow className="size-4 text-muted-foreground" />}
+        >
+          <p className="px-3 pb-1 text-[13px] leading-[1.45] text-muted-foreground/80 sm:px-4">
+            How AgentTunnel orchestrates work: the roles it runs, auto mode, and whether the
+            orchestrator may pick each task's model.
+          </p>
+          <div
+            inert={readOnly}
+            aria-disabled={readOnly || undefined}
+            className={cn("px-3 py-4 sm:px-4", readOnly && "opacity-50 select-none")}
+          >
+            <AgentTunnelSettingsSection
+              config={agentTunnelRow.instance.config}
+              models={[...agentTunnelModels]}
+              onChange={(nextConfig) =>
+                updateProviderInstance(agentTunnelRow, {
+                  ...agentTunnelRow.instance,
+                  config: nextConfig,
+                })
+              }
+            />
+          </div>
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection
-        {...searchableSetting("providers")}
+        {...searchableSetting("agenttunnel-harnesses")}
         headerAction={
           <div className="flex min-w-0 items-center gap-1.5">
             {/*
@@ -864,7 +916,7 @@ export function EnvironmentProviderSettings({
                       </Button>
                     }
                   />
-                  <TooltipPopup side="top">Add provider</TooltipPopup>
+                  <TooltipPopup side="top">Add harness instance</TooltipPopup>
                 </Tooltip>
               </>
             ) : null}
@@ -875,9 +927,13 @@ export function EnvironmentProviderSettings({
         {readOnly ? (
           <SettingsRow
             title="Limited permissions"
-            description={`This session can view ${environmentLabel}'s providers, but its credential does not allow changing their configuration.`}
+            description={`This session can view ${environmentLabel}'s harnesses, but its credential does not allow changing their configuration.`}
           />
         ) : null}
+        <p className="px-3 pb-1 text-[13px] leading-[1.45] text-muted-foreground/80 sm:px-4">
+          Enable a harness to make its models selectable in the model config. AgentTunnel itself
+          runs the workflow and is configured under Workflow above.
+        </p>
         <div className="space-y-1">
           <div className="mx-3 overflow-hidden rounded-lg border border-border/70 sm:mx-4 lg:grid lg:h-[min(38rem,calc(100dvh-16rem))] lg:min-h-[30rem] lg:grid-cols-[20rem_minmax(0,1fr)]">
             <div className="border-b border-border/70 lg:flex lg:min-h-0 lg:flex-col lg:border-r lg:border-b-0">
@@ -896,7 +952,7 @@ export function EnvironmentProviderSettings({
               {selectedRow ? (
                 renderProviderInstance(selectedRow, "editor")
               ) : (
-                <div className="p-6 text-sm text-muted-foreground">No providers configured.</div>
+                <div className="p-6 text-sm text-muted-foreground">No harnesses configured.</div>
               )}
             </div>
           </div>

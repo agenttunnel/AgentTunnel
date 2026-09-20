@@ -14,7 +14,7 @@ import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hook
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
+import { ACPRegistryIcon, Gemini, GithubCopilotIcon, type Icon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -68,8 +68,12 @@ function deriveInstanceId(driver: ProviderDriverKind, label: string): string {
 }
 
 const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
-const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("agenttunnel");
-const DEFAULT_DRIVER_OPTION = DRIVER_OPTIONS[0]!;
+// AgentTunnel is the app itself, not a harness the user adds another of.
+const ADDABLE_DRIVER_OPTIONS = DRIVER_OPTIONS.filter(
+  (option) => option.value !== ProviderDriverKind.make("agenttunnel"),
+);
+const DEFAULT_DRIVER_KIND = ADDABLE_DRIVER_OPTIONS[0]!.value;
+const DEFAULT_DRIVER_OPTION = ADDABLE_DRIVER_OPTIONS[0]!;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
 interface ComingSoonDriverOption {
   readonly value: ProviderDriverKind;
@@ -92,11 +96,6 @@ const COMING_SOON_DRIVER_OPTIONS: readonly ComingSoonDriverOption[] = [
     value: ProviderDriverKind.make("acpRegistry"),
     label: "ACP Registry",
     icon: ACPRegistryIcon,
-  },
-  {
-    value: ProviderDriverKind.make("piAgent"),
-    label: "Pi Agent",
-    icon: PiAgentIcon,
   },
 ];
 
@@ -261,7 +260,7 @@ export function AddProviderInstanceDialog({
                   aria-labelledby="add-instance-driver-label"
                   className="grid grid-cols-1 gap-2 sm:grid-cols-2"
                 >
-                  {DRIVER_OPTIONS.map((option) => {
+                  {ADDABLE_DRIVER_OPTIONS.map((option) => {
                     const IconComponent = option.icon;
                     return (
                       <RadioPrimitive.Root
