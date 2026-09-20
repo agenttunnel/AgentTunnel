@@ -293,6 +293,12 @@ export function TokenUsagePanel({
                 value={formatSubagentTokenCount(totals.totalTokens)}
                 emphasis
               />
+              {usage.orchestrator !== null ? (
+                <StatTile
+                  label="Orchestrator tokens"
+                  value={formatSubagentTokenCount(totals.mainTokens)}
+                />
+              ) : null}
               <StatTile
                 label="Subagent tokens"
                 value={formatSubagentTokenCount(totals.subagentTokens)}
@@ -379,7 +385,7 @@ export function TokenUsagePanel({
 
           <section>
             <SectionHeader>Agents</SectionHeader>
-            {usage.agents.length > 0 ? (
+            {usage.orchestrator !== null || usage.agents.length > 0 ? (
               <div className="overflow-x-auto rounded-md border border-border/50">
                 <table className="w-full min-w-[24rem] border-collapse text-left font-mono text-[.68rem]">
                   <thead>
@@ -393,6 +399,43 @@ export function TokenUsagePanel({
                     </tr>
                   </thead>
                   <tbody>
+                    {usage.orchestrator !== null ? (
+                      <tr
+                        key={`orchestrator:${usage.orchestrator.id}`}
+                        className="border-t border-border/40"
+                      >
+                        <td className="py-1 pr-2 pl-2">
+                          <div className="flex max-w-44 items-center gap-1.5">
+                            {usage.orchestrator.status !== null ? (
+                              <StatusDot status={usage.orchestrator.status} />
+                            ) : null}
+                            <span className="truncate text-foreground/90">
+                              {usage.orchestrator.title}
+                            </span>
+                            {usage.orchestrator.status !== null ? (
+                              <span className="sr-only">
+                                {subagentStatusLabel(usage.orchestrator.status)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="py-1 pr-2 text-muted-foreground">
+                          {usage.orchestrator.modelLabel ?? "—"}
+                        </td>
+                        <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                          {usage.orchestrator.inputLabel}
+                        </td>
+                        <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                          {usage.orchestrator.outputLabel}
+                        </td>
+                        <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
+                          —
+                        </td>
+                        <td className="py-1 pr-2 text-right font-medium tabular-nums text-foreground">
+                          {usage.orchestrator.totalLabel}
+                        </td>
+                      </tr>
+                    ) : null}
                     {usage.agents.map((agent) => (
                       <tr
                         key={agent.id}
@@ -447,7 +490,8 @@ export function TokenUsagePanel({
           <p className="px-0.5 text-[.65rem] leading-relaxed text-muted-foreground/60">
             Provider-reported usage. Each turn shows its latest snapshot, and a subagent counts
             toward the turn that spawned it; Processed is the provider's cumulative session total
-            for the main thread.
+            for the main thread. In AgentTunnel threads the Orchestrator row is the main thread's
+            own snapshots and has no per-step drill-in.
           </p>
         </div>
       </ScrollArea>

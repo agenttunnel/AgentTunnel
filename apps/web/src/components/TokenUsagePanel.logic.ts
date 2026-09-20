@@ -76,10 +76,30 @@ export interface TokenUsageAgentRow {
   readonly toolUses: number | null;
 }
 
+/**
+ * The thread's orchestrator (main-thread provider snapshots), surfaced as an
+ * AGENTS row in AgentTunnel workflow threads. `modelLabel`/`status` come from
+ * the newest workflow's coordinator when the roster carries one.
+ */
+export interface TokenUsageOrchestratorRow {
+  readonly id: string;
+  readonly title: string;
+  readonly modelLabel: string | null;
+  readonly status: RuntimeSubagentStatus | null;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly inputLabel: string;
+  readonly outputLabel: string;
+  readonly totalLabel: string;
+  readonly processedTokens: number | null;
+}
+
 export interface TokenUsageModel {
   readonly totals: TokenUsageTotals;
   readonly turns: ReadonlyArray<TokenUsageTurnRow>;
   readonly agents: ReadonlyArray<TokenUsageAgentRow>;
+  readonly orchestrator: TokenUsageOrchestratorRow | null;
   readonly context: ContextUsageSummary | null;
   readonly hasUsage: boolean;
 }
@@ -419,6 +439,40 @@ export function deriveTokenUsage(input: {
     };
   });
 
+  // AgentTunnel threads run an orchestrator whose provider frames land as this
+  // thread's own snapshots, so the main-thread sums ARE the orchestrator's.
+  // Only name it for workflow threads, and only once it reported something.
+  const isWorkflowThread =
+    input.model.workflows.length > 0 ||
+    agents.some((agent) => agent.workflowName === "AgentTunnel");
+  const coordinator = input.model.workflows.at(-1)?.workflow ?? null;
+  const orchestrator: TokenUsageOrchestratorRow | null =
+    isWorkflowThread && (inputTokens > 0 || outputTokens > 0 || processedTokens !== null)
+      ? {
+          id: coordinator?.id ?? "orchestrator",
+          title: "Orchestrator",
+          modelLabel:
+            coordinator === null
+              ? null
+              : formatSubagentModelLabel(coordinator.model, coordinator.effort),
+          status: coordinator?.status ?? null,
+          inputTokens,
+          outputTokens,
+          totalTokens: mainTokens,
+          inputLabel: formatSubagentTokenCount(inputTokens),
+          outputLabel: formatSubagentTokenCount(outputTokens),
+          totalLabel: formatSubagentTokenCount(mainTokens),
+          processedTokens,
+        }
+      : null;
+
+  // A member-less workflow's coordinator stands in as its roster row
+  // (collectDisplayAgents), but the orchestrator row already names it, so drop
+  // the duplicate and render that entity once. Coordinators carry no typed
+  // usage, so no subagent tokens are lost.
+  const visibleAgentRows =
+    orchestrator === null ? agentRows : agentRows.filter((row) => row.id !== orchestrator.id);
+
   return {
     totals: {
       inputTokens,
@@ -429,10 +483,12 @@ export function deriveTokenUsage(input: {
       subagentTokens,
       totalTokens: mainTokens + subagentTokens,
       processedTokens,
-      agentCount: agents.length,
+      // Counts every row the AGENTS table renders, orchestrator included.
+      agentCount: visibleAgentRows.length + (orchestrator === null ? 0 : 1),
     },
     turns: rows,
-    agents: agentRows,
+    agents: visibleAgentRows,
+    orchestrator,
     context: deriveContextUsage(input.contextWindow),
     hasUsage:
       rows.length > 0 ||

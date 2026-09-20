@@ -266,6 +266,178 @@ describe("deriveTokenUsage", () => {
     });
   });
 
+  it("surfaces the orchestrator row for AgentTunnel workflow threads", () => {
+    const member = agent({
+      id: "wf-1:task_1",
+      parentAgentId: "wf-1",
+      workflowName: "AgentTunnel",
+      firstSeenAt: "2026-01-01T09:11:00.000Z",
+      usage: { totalTokens: 500, inputTokens: 400, outputTokens: 100, toolUses: 3 },
+    });
+    const coordinator = agent({
+      id: "wf-1",
+      kind: "workflow",
+      model: "claude-sonnet-5",
+      effort: "high",
+      status: "running",
+    });
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          createdAt: "2026-01-01T09:00:00.000Z",
+          payload: contextPayload({
+            inputTokens: 43_000,
+            outputTokens: 8_900,
+            totalProcessedTokens: 70_100,
+          }),
+        }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 500,
+        workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [member] }],
+      },
+    });
+
+    expect(model.orchestrator).toMatchObject({
+      id: "wf-1",
+      title: "Orchestrator",
+      modelLabel: "sonnet-5 · high",
+      status: "running",
+      inputTokens: 43_000,
+      outputTokens: 8_900,
+      totalTokens: 51_900,
+      inputLabel: "43.0k",
+      outputLabel: "8.9k",
+      totalLabel: "51.9k",
+      processedTokens: 70_100,
+    });
+    expect(model.totals.agentCount).toBe(2);
+    expect(model.totals.subagentTokens).toBe(500);
+    expect(model.totals.mainTokens).toBe(51_900);
+    expect(model.totals.totalTokens).toBe(model.totals.mainTokens + model.totals.subagentTokens);
+    expect(model.agents.map((row) => row.id)).toEqual(["wf-1:task_1"]);
+  });
+
+  it("renders a member-less workflow coordinator once, as the orchestrator row", () => {
+    const coordinator = agent({
+      id: "wf-1",
+      kind: "workflow",
+      model: "claude-sonnet-5",
+      effort: "high",
+      status: "running",
+    });
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          payload: contextPayload({ inputTokens: 43_000, outputTokens: 8_900 }),
+        }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 0,
+        workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [] }],
+      },
+    });
+
+    // collectDisplayAgents falls back to the coordinator for a member-less
+    // workflow; the pane must not also render it as a subagent roster row.
+    expect(model.orchestrator).toMatchObject({ id: "wf-1" });
+    expect(model.agents).toEqual([]);
+    expect(model.totals.agentCount).toBe(1);
+    expect(model.totals.subagentTokens).toBe(0);
+  });
+
+  it("names an orchestrator for a workflowName-only thread with no workflow groups", () => {
+    const member = agent({
+      id: "wf-1:task_1",
+      parentAgentId: "wf-1",
+      workflowName: "AgentTunnel",
+      usage: { totalTokens: 500 },
+    });
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          payload: contextPayload({ inputTokens: 1_000, outputTokens: 100 }),
+        }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 500,
+        workflows: [],
+        directAgents: [member],
+      },
+    });
+
+    expect(model.orchestrator).toMatchObject({
+      id: "orchestrator",
+      title: "Orchestrator",
+      modelLabel: null,
+      status: null,
+      inputTokens: 1_000,
+      outputTokens: 100,
+      totalTokens: 1_100,
+    });
+    expect(model.agents.map((row) => row.id)).toEqual(["wf-1:task_1"]);
+    expect(model.totals.agentCount).toBe(2);
+  });
+
+  it("leaves the orchestrator unnamed on non-workflow threads", () => {
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          payload: contextPayload({ inputTokens: 1_000, outputTokens: 100 }),
+        }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 0,
+        directAgents: [agent({ id: "direct-1", usage: null })],
+      },
+    });
+
+    expect(model.orchestrator).toBeNull();
+    expect(model.totals.agentCount).toBe(1);
+  });
+
+  it("leaves the orchestrator unnamed when a workflow thread has no main usage", () => {
+    const member = agent({
+      id: "wf-1:task_1",
+      parentAgentId: "wf-1",
+      firstSeenAt: "2026-01-01T09:00:00.000Z",
+      usage: { totalTokens: 500 },
+    });
+    const model = derive({
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 500,
+        workflows: [
+          {
+            workflow: agent({ id: "wf-1", kind: "workflow" }),
+            phases: [],
+            unphasedMembers: [member],
+          },
+        ],
+      },
+    });
+
+    expect(model.orchestrator).toBeNull();
+    expect(model.totals.agentCount).toBe(1);
+  });
+
   it("keeps a turnless snapshot in totals without inventing a turn", () => {
     const model = derive({
       activities: [
