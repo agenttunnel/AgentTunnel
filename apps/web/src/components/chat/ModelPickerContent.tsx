@@ -41,6 +41,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
+import { keepsUnavailableModelSelection } from "../../providerModels";
 
 type ModelPickerItem = {
   slug: string;
@@ -65,7 +66,7 @@ export function shouldIncludeModelPickerOption(input: {
   if (isProviderInstancePickerReady(input.entry)) return true;
   return (
     input.entry.enabled &&
-    input.entry.driverKind === "opencode" &&
+    keepsUnavailableModelSelection(input.entry.driverKind) &&
     input.entry.instanceId === input.activeInstanceId &&
     input.option.slug === input.activeModel &&
     input.option.isUnavailable === true
