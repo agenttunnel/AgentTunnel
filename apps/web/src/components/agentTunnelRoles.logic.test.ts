@@ -8,6 +8,8 @@ import {
   applyAgentTunnelRoleHarness,
   applyAgentTunnelRoleModel,
   applyAgentTunnelRoleVariant,
+  applyAgentTunnelAutoMode,
+  readAgentTunnelAutoMode,
   readAgentTunnelRoles,
 } from "./agentTunnelRoles.logic";
 
@@ -109,6 +111,19 @@ describe("agentTunnelRoles", () => {
     expect(agentTunnelHarnessProviderKind("opencode")).toBe("opencode");
     expect(agentTunnelHarnessProviderKind("claude")).toBe("claudeAgent");
     expect(agentTunnelHarnessProviderKind("/usr/local/bin/codex")).toBeNull();
+  });
+
+  it("reads and applies auto mode", () => {
+    expect(readAgentTunnelAutoMode(undefined)).toBe(false);
+    expect(readAgentTunnelAutoMode({ autoMode: true })).toBe(true);
+    expect(readAgentTunnelAutoMode({ autoMode: "yes" })).toBe(false);
+    expect(applyAgentTunnelAutoMode({ enabled: true }, true)).toEqual({
+      enabled: true,
+      autoMode: true,
+    });
+    expect(applyAgentTunnelAutoMode({ enabled: true, autoMode: true }, false)).toEqual({
+      enabled: true,
+    });
   });
 
   it("ignores unknown roles", () => {

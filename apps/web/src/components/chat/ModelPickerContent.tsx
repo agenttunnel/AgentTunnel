@@ -144,6 +144,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     readonly label: string;
   }>;
   onWorkflowRoleHarnessSelect?: (roleId: string, harness: string) => void;
+  /**
+   * Global workflow auto mode: the orchestrator picks each executor/reviewer
+   * task's model, with per-role models acting as fallbacks. When set, a toggle
+   * row renders alongside the harness/reasoning strips.
+   */
+  workflowAutoMode?: boolean;
+  onWorkflowAutoModeChange?: (autoMode: boolean) => void;
   workflowReasoningOptions?: ReadonlyArray<{
     readonly value: string;
     readonly label: string;
@@ -166,6 +173,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
   const activeWorkflowRole =
     props.workflowRoles?.find((role) => role.id === activeWorkflowRoleId) ?? null;
+  // Harness belongs to a role, but the "Thread model" tab should surface it
+  // too. The orchestrator harness runs the coordinator, so it is the harness
+  // that backs the thread model.
+  const workflowHarnessRole =
+    activeWorkflowRole ?? props.workflowRoles?.find((role) => role.id === "orchestrator") ?? null;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const modelListRef = useRef<LegendListRef | null>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
@@ -852,8 +864,32 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               </div>
             ) : null}
 
+            {/* Workflow role auto mode */}
+            {props.workflowRoles &&
+            props.workflowRoles.length > 0 &&
+            props.onWorkflowAutoModeChange ? (
+              <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3 pb-2 pt-2">
+                <span className="pe-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
+                  Auto mode
+                </span>
+                <button
+                  type="button"
+                  onClick={() => props.onWorkflowAutoModeChange?.(props.workflowAutoMode !== true)}
+                  aria-pressed={props.workflowAutoMode === true}
+                  className={workflowRoleChipClass(props.workflowAutoMode === true)}
+                >
+                  {props.workflowAutoMode === true ? "On" : "Off"}
+                </button>
+                <span className="text-[.65rem] text-muted-foreground/70">
+                  Orchestrator picks each task&apos;s model
+                </span>
+              </div>
+            ) : null}
+
             {/* Workflow role harness */}
-            {activeWorkflowRole && props.workflowHarnesses && props.workflowHarnesses.length > 0 ? (
+            {workflowHarnessRole &&
+            props.workflowHarnesses &&
+            props.workflowHarnesses.length > 0 ? (
               <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3 pb-2 pt-2">
                 <span className="pe-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
                   Harness
@@ -863,19 +899,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     key={harness.value}
                     type="button"
                     onClick={() =>
-                      props.onWorkflowRoleHarnessSelect?.(activeWorkflowRole.id, harness.value)
+                      props.onWorkflowRoleHarnessSelect?.(workflowHarnessRole.id, harness.value)
                     }
-                    aria-pressed={activeWorkflowRole.harness === harness.value}
-                    className={workflowRoleChipClass(activeWorkflowRole.harness === harness.value)}
+                    aria-pressed={workflowHarnessRole.harness === harness.value}
+                    className={workflowRoleChipClass(workflowHarnessRole.harness === harness.value)}
                   >
                     {harness.label}
                   </button>
                 ))}
                 {props.workflowHarnesses.some(
-                  (harness) => harness.value === activeWorkflowRole.harness,
+                  (harness) => harness.value === workflowHarnessRole.harness,
                 ) ? null : (
                   <span className="font-mono text-[.65rem] text-muted-foreground/70">
-                    {activeWorkflowRole.harness.split(/[\\/]/).pop()}
+                    {workflowHarnessRole.harness.split(/[\\/]/).pop()}
                   </span>
                 )}
               </div>

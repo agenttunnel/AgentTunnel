@@ -1,18 +1,33 @@
-import { AgentTunnelSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  AgentTunnelSettings,
+  PiSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { makeAgentTunnelTextGeneration } from "../../textGeneration/AgentTunnelTextGeneration.ts";
+import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
+import { agentTunnelHarnessKind } from "../agentTunnel/opencodeTransport.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAgentTunnelAdapter } from "../Layers/AgentTunnelAdapter.ts";
+import {
+  dedupePiListedModels,
+  parsePiModelListTable,
+  piListedModelsToServerModels,
+} from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
-import { OpenCodeRuntime } from "../opencodeRuntime.ts";
+import { OpenCodeRuntime, OpenCodeRuntimeError } from "../opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -31,11 +46,14 @@ const DRIVER_KIND = ProviderDriverKind.make("agenttunnel");
 export type AgentTunnelDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
+  | FileSystem.FileSystem
   | OpenCodeRuntime
+  | Path.Path
   | ProviderEventLoggers
   | ServerConfig;
 
 const decodeSettings = Schema.decodeSync(AgentTunnelSettings);
+const decodePiSettings = Schema.decodeSync(PiSettings);
 
 const maintenanceCapabilities: ProviderMaintenanceCapabilities =
   makeManualOnlyProviderMaintenanceCapabilities({
@@ -58,23 +76,57 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
       const serverConfig = yield* ServerConfig;
       const processEnvironment = mergeProviderInstanceEnvironment(environment);
       const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
-      const inventoryExit = enabled
-        ? yield* Effect.exit(
-            openCodeRuntime
-              .loadInventoryFromCli({
-                binaryPath: config.orchestratorHarness,
-                cwd: serverConfig.cwd,
-                environment: processEnvironment,
-              })
-              // A wedged or interactive harness CLI must never block the
-              // registry build; degrade to a warning snapshot instead.
-              .pipe(Effect.timeout("4 seconds")),
-          )
-        : undefined;
-      const inventory = inventoryExit?._tag === "Success" ? inventoryExit.value : undefined;
-      const probeMessage =
-        inventoryExit?._tag === "Failure" ? Cause.pretty(inventoryExit.cause) : undefined;
-      const models = modelsFromInventory(inventory, config.customModels);
+      const harnessKind = agentTunnelHarnessKind(config.orchestratorHarness);
+      const loadOpenCodeModels = (binaryPath: string) =>
+        openCodeRuntime
+          .loadInventoryFromCli({
+            binaryPath,
+            cwd: serverConfig.cwd,
+            environment: processEnvironment,
+          })
+          .pipe(Effect.map((inventory) => modelsFromInventory(inventory, config.customModels)));
+      const loadPiModels = (binaryPath: string) =>
+        Effect.gen(function* () {
+          const result = yield* openCodeRuntime.runOpenCodeCommand({
+            binaryPath,
+            args: ["--list-models"],
+            cwd: serverConfig.cwd,
+            environment: processEnvironment,
+          });
+          const rows = dedupePiListedModels(
+            parsePiModelListTable(`${result.stdout}\n${result.stderr}`),
+          );
+          if (rows.length === 0 && result.code !== 0) {
+            return yield* new OpenCodeRuntimeError({
+              operation: "loadPiModels",
+              detail: `\`${binaryPath} --list-models\` exited with code ${result.code}.`,
+            });
+          }
+          return mergeProviderModels(piListedModelsToServerModels(rows), config.customModels);
+        });
+      // A wedged or interactive harness CLI must never block the registry
+      // build; the probe degrades to a warning snapshot with a readable reason.
+      const probeTimeout = harnessKind === "pi" ? "8 seconds" : "4 seconds";
+      let models = customModelsToServerModels(config.customModels);
+      let probeFailed = false;
+      let probeMessage: string | undefined;
+      if (enabled) {
+        const attempt = yield* Effect.exit(
+          (harnessKind === "pi"
+            ? loadPiModels(config.orchestratorHarness)
+            : loadOpenCodeModels(config.orchestratorHarness)
+          ).pipe(Effect.timeoutOption(probeTimeout)),
+        );
+        if (attempt._tag === "Failure") {
+          probeFailed = true;
+          probeMessage = Cause.pretty(attempt.cause);
+        } else if (Option.isNone(attempt.value)) {
+          probeFailed = true;
+          probeMessage = `Timed out after ${probeTimeout} reading models from the "${config.orchestratorHarness}" harness. Check that the harness CLI is installed and does not wait for input.`;
+        } else {
+          models = attempt.value.value;
+        }
+      }
       const snapshot: ServerProvider = {
         instanceId,
         driver: DRIVER_KIND,
@@ -89,9 +141,9 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
         },
         showInteractionModeToggle: false,
         enabled,
-        installed: enabled && inventory !== undefined,
+        installed: enabled && !probeFailed,
         version: null,
-        status: enabled ? (inventory ? "ready" : "warning") : "disabled",
+        status: enabled ? (probeFailed ? "warning" : "ready") : "disabled",
         auth: {
           status: "unknown",
           type: "AgentTunnel",
@@ -116,14 +168,26 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
         ...(environment ? { environment } : {}),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
-      const serverOwner = yield* OpenCodeServerOwner.make({
-        binaryPath: config.orchestratorHarness,
-        directory: serverConfig.cwd,
-        environment: processEnvironment,
-      });
-      const textGeneration = yield* makeAgentTunnelTextGeneration(config, undefined, {
-        availableModels: models.map((model) => model.slug),
-      }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
+      const textGeneration =
+        harnessKind === "pi"
+          ? yield* makePiTextGeneration(
+              decodePiSettings({
+                enabled,
+                binaryPath: config.orchestratorHarness,
+                customModels: [...config.customModels],
+              }),
+              processEnvironment,
+            )
+          : yield* Effect.gen(function* () {
+              const serverOwner = yield* OpenCodeServerOwner.make({
+                binaryPath: config.orchestratorHarness,
+                directory: serverConfig.cwd,
+                environment: processEnvironment,
+              });
+              return yield* makeAgentTunnelTextGeneration(config, undefined, {
+                availableModels: models.map((model) => model.slug),
+              }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
+            });
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -152,6 +216,27 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
       ),
     ),
 };
+
+function customModelsToServerModels(
+  customModels: ReadonlyArray<string>,
+): ReadonlyArray<ServerProvider["models"][number]> {
+  return mergeProviderModels([], customModels);
+}
+
+function mergeProviderModels(
+  listed: ReadonlyArray<ServerProvider["models"][number]>,
+  customModels: ReadonlyArray<string>,
+): ReadonlyArray<ServerProvider["models"][number]> {
+  const models = [...listed];
+  const seen = new Set(models.map((model) => model.slug));
+  for (const candidate of customModels) {
+    const slug = candidate.trim();
+    if (slug.length === 0 || seen.has(slug)) continue;
+    seen.add(slug);
+    models.push({ slug, name: slug, isCustom: true, capabilities: null });
+  }
+  return models;
+}
 
 function modelsFromInventory(
   inventory: OpenCodeInventoryLike | undefined,

@@ -33,6 +33,7 @@ export const AGENT_TUNNEL_HARNESS_OPTIONS: ReadonlyArray<{
   { value: "claude", label: "Claude Code" },
   { value: "cursor-agent", label: "Cursor" },
   { value: "grok", label: "Grok Build" },
+  { value: "pi", label: "Pi" },
 ];
 
 export const AGENT_TUNNEL_REASONING_OPTIONS: ReadonlyArray<{
@@ -53,6 +54,7 @@ const HARNESS_PROVIDER_KINDS: Record<string, string> = {
   claude: "claudeAgent",
   "cursor-agent": "cursor",
   grok: "grok",
+  pi: "pi",
 };
 
 /** Driver kind backing a harness preset, for enablement checks. */
@@ -137,6 +139,25 @@ export function applyAgentTunnelRoleHarness(
     next[key] = harness.trim();
   } else {
     delete next[key];
+  }
+  return next;
+}
+
+/** Reads the workflow auto mode flag: the orchestrator picks per-task models. */
+export function readAgentTunnelAutoMode(config: Record<string, unknown> | undefined): boolean {
+  return config?.autoMode === true;
+}
+
+/** Enables or disables workflow auto mode. */
+export function applyAgentTunnelAutoMode(
+  config: Record<string, unknown>,
+  autoMode: boolean,
+): Record<string, unknown> {
+  const next = { ...config };
+  if (autoMode) {
+    next.autoMode = true;
+  } else {
+    delete next.autoMode;
   }
   return next;
 }

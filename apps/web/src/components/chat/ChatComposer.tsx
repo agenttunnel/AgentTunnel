@@ -18,6 +18,7 @@ import {
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  resolveProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
@@ -128,6 +129,7 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { AgentTunnelRoleConfigBar } from "../AgentTunnelRoleConfigBar";
 import {
   readAgentTunnelRoles,
+  readAgentTunnelAutoMode,
   agentTunnelHarnessProviderKind,
   AGENT_TUNNEL_HARNESS_OPTIONS,
   AGENT_TUNNEL_REASONING_OPTIONS,
@@ -697,6 +699,7 @@ export interface ChatComposerProps {
     roleId: string,
     variant: string,
   ) => void;
+  onAgentTunnelAutoModeChange?: (instanceId: ProviderInstanceId, autoMode: boolean) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -780,6 +783,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onAgentTunnelRoleModelSelect,
     onAgentTunnelRoleHarnessSelect,
     onAgentTunnelRoleReasoningSelect,
+    onAgentTunnelAutoModeChange,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -1069,7 +1073,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderEntry?.driverKind ?? requestedDriverKind;
 
   const [activeWorkflowRoleId, setActiveWorkflowRoleId] = useState<string | null>(null);
-  const workflowRoles = useMemo(() => {
+  const workflowConfig = useMemo(() => {
     if (selectedProviderEntry?.driverKind !== "agenttunnel") {
       return undefined;
     }
@@ -1079,10 +1083,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       defaultInstanceIdForDriver(selectedProviderEntry.driverKind)
         ? settings.providers.agenttunnel
         : undefined;
-    return readAgentTunnelRoles(
-      (instanceConfig ?? legacyConfig) as Record<string, unknown> | undefined,
-    );
+    return (instanceConfig ?? legacyConfig) as Record<string, unknown> | undefined;
   }, [selectedProviderEntry, settings]);
+  const workflowRoles = useMemo(
+    () => (workflowConfig ? readAgentTunnelRoles(workflowConfig) : undefined),
+    [workflowConfig],
+  );
+  const workflowAutoMode = useMemo(
+    () => (workflowConfig ? readAgentTunnelAutoMode(workflowConfig) : undefined),
+    [workflowConfig],
+  );
   const workflowHarnesses = useMemo(() => {
     if (!workflowRoles) {
       return undefined;
@@ -1092,15 +1102,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         .filter((entry) => entry.enabled)
         .map((entry) => entry.driverKind as string),
     );
+    // Settings are the source of truth for enablement: the provider snapshot for
+    // a freshly enabled harness may not have materialized yet, so fall back to
+    // the explicit instance / legacy enabled flag rather than dropping it.
+    const legacyProviders = settings.providers as Readonly<
+      Record<string, { readonly enabled?: boolean } | undefined>
+    >;
+    const isHarnessEnabled = (harnessValue: string): boolean => {
+      const kind = agentTunnelHarnessProviderKind(harnessValue);
+      if (kind === null) {
+        return false;
+      }
+      if (enabledKinds.has(kind)) {
+        return true;
+      }
+      const driver = ProviderDriverKind.make(kind);
+      const instance = settings.providerInstances?.[defaultInstanceIdForDriver(driver)];
+      if (instance) {
+        return resolveProviderInstanceEnabled(instance);
+      }
+      return legacyProviders[kind]?.enabled === true;
+    };
     const selectedHarnesses = new Set(workflowRoles.map((role) => role.harness));
     return AGENT_TUNNEL_HARNESS_OPTIONS.filter((option) => {
       if (selectedHarnesses.has(option.value)) {
         return true;
       }
-      const kind = agentTunnelHarnessProviderKind(option.value);
-      return kind !== null && enabledKinds.has(kind);
+      return isHarnessEnabled(option.value);
     });
-  }, [providerInstanceEntries, workflowRoles]);
+  }, [providerInstanceEntries, settings, workflowRoles]);
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,
@@ -4084,6 +4114,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? {
                             onWorkflowRoleHarnessSelect: (roleId: string, harness: string) =>
                               onAgentTunnelRoleHarnessSelect(selectedInstanceId, roleId, harness),
+                          }
+                        : {})}
+                      {...(workflowAutoMode !== undefined ? { workflowAutoMode } : {})}
+                      {...(onAgentTunnelAutoModeChange
+                        ? {
+                            onWorkflowAutoModeChange: (autoMode: boolean) =>
+                              onAgentTunnelAutoModeChange(selectedInstanceId, autoMode),
                           }
                         : {})}
                       workflowReasoningOptions={AGENT_TUNNEL_REASONING_OPTIONS}

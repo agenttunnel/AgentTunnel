@@ -23,7 +23,7 @@ AgentTunnel loads the model list when an enabled OpenCode provider starts and ke
 cache. Reconnecting a client or using a refresh control asks OpenCode for the list again. The
 periodic provider health setting does not refresh OpenCode's catalog.
 
-After changing an OpenCode login or configuration outside AgentTunnel, open **Settings > Providers**,
+After changing an OpenCode login or configuration outside AgentTunnel, open **Settings > AgentTunnel**,
 select the environment, and choose **Refresh provider status**. Changing the provider's
 configuration in AgentTunnel also replaces that provider connection.
 

@@ -19,7 +19,34 @@ export function isOpenCodeHarness(harness: string): boolean {
   return baseName(harness).replace(/\.exe$/, "") === "opencode";
 }
 
+/** Pi's CLI (`pi --mode json -p <prompt>`) is its own transport. */
+export function isPiHarness(harness: string): boolean {
+  return (
+    baseName(harness)
+      .replace(/\.exe$/, "")
+      .toLowerCase() === "pi"
+  );
+}
+
+export type AgentTunnelHarnessKind = "opencode" | "pi" | "other";
+
+/** Which CLI protocol a harness speaks, so spawn args and parsing branch once. */
+export function agentTunnelHarnessKind(harness: string): AgentTunnelHarnessKind {
+  if (isOpenCodeHarness(harness)) return "opencode";
+  if (isPiHarness(harness)) return "pi";
+  return "other";
+}
+
 export function buildAgentTunnelSpawnArgs(spec: AgentTunnelProcessSpec): string[] {
+  if (isPiHarness(spec.harness)) {
+    // One prompt per process: `--no-session` keeps the workflow's short-lived
+    // role runs out of pi's session store. Pi has no sandbox flag, so
+    // `dangerouslySkipPermissions` is intentionally ignored here.
+    const args = ["--mode", "json", "-p", spec.prompt, "--no-session"];
+    if (spec.model) args.push("--model", spec.model);
+    if (spec.variant) args.push("--thinking", spec.variant);
+    return args;
+  }
   const args = ["run"];
   if (spec.model) args.push("-m", spec.model);
   if (spec.dangerouslySkipPermissions) {
@@ -246,6 +273,110 @@ export function parseOpenCodeJsonLine(
 ): ReadonlyArray<string> {
   const lines: string[] = [];
   for (const entry of parseOpenCodeLogLine(raw)) {
+    switch (entry.kind) {
+      case "text":
+        lines.push(...splitTextLines(entry.text));
+        break;
+      case "tool":
+        lines.push(entry.title.length > 0 ? `→ ${entry.tool}: ${entry.title}` : `→ ${entry.tool}`);
+        break;
+      case "error":
+        lines.push(`✗ ${truncateSummary(entry.text)}`);
+        break;
+      case "raw":
+        lines.push(entry.text);
+        break;
+      case "reasoning":
+        if (options.includeReasoning === true) {
+          lines.push(...splitTextLines(entry.text));
+        }
+        break;
+    }
+  }
+  return lines;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function parseJsonRecord(raw: string): Record<string, unknown> | undefined {
+  try {
+    return asRecord(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+interface PiTextPart {
+  readonly kind: "text" | "reasoning";
+  readonly text: string;
+}
+
+/**
+ * Assistant text/reasoning from a pi `message_end` payload. Pi's `--mode json`
+ * stream carries the full assistant message here; deltas arrive separately on
+ * `message_update`, so keying on the final message keeps the
+ * `__AGENTTUNNEL_TOOL__` lines intact instead of splitting them across
+ * streamed fragments.
+ */
+function piAssistantTextParts(message: Record<string, unknown>): ReadonlyArray<PiTextPart> {
+  const content = message.content;
+  if (typeof content === "string") {
+    return content.length > 0 ? [{ kind: "text", text: content }] : [];
+  }
+  if (!Array.isArray(content)) return [];
+  const parts: Array<PiTextPart> = [];
+  for (const candidate of content) {
+    const part = asRecord(candidate);
+    if (part === undefined) continue;
+    const text = part.text;
+    if (typeof text !== "string" || text.length === 0) continue;
+    if (part.type === "text") {
+      parts.push({ kind: "text", text });
+    } else if (part.type === "thinking" || part.type === "reasoning") {
+      parts.push({ kind: "reasoning", text });
+    }
+  }
+  return parts;
+}
+
+/**
+ * Structured log entries for one raw pi JSONL record. Unknown frames are
+ * dropped (they are internal pi bookkeeping, not workflow output); a line that
+ * is not JSON is preserved verbatim.
+ */
+export function parsePiLogLine(raw: string): ReadonlyArray<AgentLogEntry> {
+  const event = parseJsonRecord(raw);
+  if (event === undefined) {
+    return [{ kind: "raw", text: raw }];
+  }
+  if (event.type === "message_end") {
+    const message = asRecord(event.message);
+    if (message?.role !== "assistant") return [];
+    return piAssistantTextParts(message).map(
+      (part): AgentLogEntry =>
+        part.kind === "text"
+          ? { kind: "text", text: part.text }
+          : { kind: "reasoning", text: part.text },
+    );
+  }
+  if (event.type === "error") {
+    const message = errorMessage(event.error);
+    return message === undefined ? [] : [{ kind: "error", text: truncate(message, TOOL_BODY_MAX) }];
+  }
+  return [];
+}
+
+/** Display lines for the orchestrator chat message, derived from a pi record. */
+export function parsePiJsonLine(
+  raw: string,
+  options: { readonly includeReasoning?: boolean } = {},
+): ReadonlyArray<string> {
+  const lines: string[] = [];
+  for (const entry of parsePiLogLine(raw)) {
     switch (entry.kind) {
       case "text":
         lines.push(...splitTextLines(entry.text));

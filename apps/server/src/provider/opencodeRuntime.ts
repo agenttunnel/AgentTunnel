@@ -556,6 +556,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const child = yield* spawner.spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           shell: spawnCommand.shell,
+          // Inventory probes must never block on an interactive CLI; a harness
+          // that reads stdin should exit (or be timed out) instead of hanging.
+          stdin: "ignore",
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(input.environment ? { env: input.environment } : { extendEnv: true }),
         }),

@@ -3,7 +3,7 @@
 AgentTunnel uses the Pi setup on the connected environment. With a remote environment, its Pi login
 and configuration apply, not the setup on your desktop or phone.
 
-Pi is off by default. Add or enable a Pi provider in **Settings > Providers** to turn it on.
+Pi is off by default. Add or enable a Pi provider in **Settings > AgentTunnel** to turn it on.
 AgentTunnel runs the `pi` binary on the environment's `PATH`. Set **Binary path** on a Pi provider to
 point at a different install or a specific executable. The value accepts a bare command name such as
 `pi` or an absolute path. You can add more than one Pi provider, each with its own binary path and
@@ -27,7 +27,7 @@ the list in its cache. Reconnecting a client or using a refresh control asks Pi 
 The periodic provider health setting does not refresh Pi's catalog.
 
 After changing a Pi login, a configured provider, or the models Pi can reach outside AgentTunnel,
-open **Settings > Providers**, select the environment, and choose **Refresh provider status**.
+open **Settings > AgentTunnel**, select the environment, and choose **Refresh provider status**.
 Changing the provider's configuration in AgentTunnel also replaces that provider connection.
 
 On mobile, open the thread settings and select **Refresh models**. The control stays disabled while

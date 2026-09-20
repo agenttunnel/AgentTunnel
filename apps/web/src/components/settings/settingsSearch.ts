@@ -4,7 +4,7 @@ export type SettingsPath =
   | "/settings/general"
   | "/settings/appearance"
   | "/settings/keybindings"
-  | "/settings/providers"
+  | "/settings/agenttunnel"
   | "/settings/integrations"
   | "/settings/source-control"
   | "/settings/connections"
@@ -28,7 +28,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/general": "General",
   "/settings/appearance": "Appearance",
   "/settings/keybindings": "Keybindings",
-  "/settings/providers": "Providers",
+  "/settings/agenttunnel": "AgentTunnel",
   "/settings/integrations": "Integrations",
   "/settings/source-control": "Source Control",
   "/settings/connections": "Connections",
@@ -209,9 +209,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/keybindings",
   },
   {
-    id: "providers",
-    title: "Providers",
-    to: "/settings/providers",
+    id: "agenttunnel-workflow",
+    title: "Workflow",
+    to: "/settings/agenttunnel",
+  },
+  {
+    id: "agenttunnel-harnesses",
+    title: "Harnesses",
+    to: "/settings/agenttunnel",
+  },
+  {
+    id: "agenttunnel-provider-config",
+    title: "Provider configuration",
+    to: "/settings/agenttunnel",
+    targetId: "agenttunnel-harnesses",
   },
   {
     id: "agent-browser-access",

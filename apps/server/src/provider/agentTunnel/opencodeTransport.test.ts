@@ -3,11 +3,15 @@ import { it } from "@effect/vitest";
 
 import type { AgentTunnelProcessSpec } from "./Orchestrator.ts";
 import {
+  agentTunnelHarnessKind,
   buildAgentTunnelSpawnArgs,
   isOpenCodeHarness,
+  isPiHarness,
   parseOpenCodeJsonLine,
   parseOpenCodeLogLine,
   parseOpenCodeStepUsage,
+  parsePiJsonLine,
+  parsePiLogLine,
 } from "./opencodeTransport.ts";
 
 function spec(overrides: Partial<AgentTunnelProcessSpec> = {}): AgentTunnelProcessSpec {
@@ -298,4 +302,88 @@ it("parseOpenCodeStepUsage ignores non-usage lines and malformed frames", () => 
 it("parseOpenCodeStepUsage tolerates step_finish text in non-frame lines", () => {
   const text = JSON.stringify({ type: "text", part: { text: "the step_finish event is next" } });
   NodeAssert.equal(parseOpenCodeStepUsage(text), undefined);
+});
+
+it("detects harness kind by basename including pi", () => {
+  NodeAssert.equal(isPiHarness("pi"), true);
+  NodeAssert.equal(isPiHarness("/usr/local/bin/pi"), true);
+  NodeAssert.equal(isPiHarness("PI.exe"), true);
+  NodeAssert.equal(isPiHarness("opencode"), false);
+  NodeAssert.equal(agentTunnelHarnessKind("opencode"), "opencode");
+  NodeAssert.equal(agentTunnelHarnessKind("/opt/bin/pi"), "pi");
+  NodeAssert.equal(agentTunnelHarnessKind("codex"), "other");
+});
+
+it("buildAgentTunnelSpawnArgs uses pi's json one-shot flags", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "pi", model: "google/gemini-3-pro", variant: "high" }),
+    ),
+    [
+      "--mode",
+      "json",
+      "-p",
+      "do the thing",
+      "--no-session",
+      "--model",
+      "google/gemini-3-pro",
+      "--thinking",
+      "high",
+    ],
+  );
+});
+
+it("buildAgentTunnelSpawnArgs omits pi flags that are unset", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(spec({ harness: "pi", dangerouslySkipPermissions: true })),
+    ["--mode", "json", "-p", "do the thing", "--no-session"],
+  );
+});
+
+it("parsePiJsonLine splits assistant text from message_end and keeps tool markers", () => {
+  const line = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: 'Planning now.\n__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{}}\n\n',
+        },
+      ],
+    },
+  });
+  NodeAssert.deepEqual(parsePiJsonLine(line), [
+    "Planning now.",
+    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{}}',
+  ]);
+});
+
+it("parsePiJsonLine only surfaces thinking when reasoning is requested", () => {
+  const line = JSON.stringify({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "thinking", text: "Weighing options." }] },
+  });
+  NodeAssert.deepEqual(parsePiJsonLine(line), []);
+  NodeAssert.deepEqual(parsePiJsonLine(line, { includeReasoning: true }), ["Weighing options."]);
+});
+
+it("parsePiJsonLine accepts a plain string message body", () => {
+  const line = JSON.stringify({
+    type: "message_end",
+    message: { role: "assistant", content: "All done." },
+  });
+  NodeAssert.deepEqual(parsePiJsonLine(line), ["All done."]);
+});
+
+it("parsePiLogLine passes non-JSON through and drops unrelated frames", () => {
+  NodeAssert.deepEqual(parsePiLogLine("pi banner"), [{ kind: "raw", text: "pi banner" }]);
+  NodeAssert.deepEqual(parsePiLogLine(JSON.stringify({ type: "agent_start" })), []);
+  NodeAssert.deepEqual(parsePiLogLine(JSON.stringify({ type: "message_end", message: {} })), []);
+});
+
+it("parsePiLogLine surfaces pi error frames", () => {
+  const line = JSON.stringify({ type: "error", error: { message: "rate limited" } });
+  NodeAssert.deepEqual(parsePiLogLine(line), [{ kind: "error", text: "rate limited" }]);
+  NodeAssert.deepEqual(parsePiJsonLine(line), ["\u2717 rate limited"]);
 });
