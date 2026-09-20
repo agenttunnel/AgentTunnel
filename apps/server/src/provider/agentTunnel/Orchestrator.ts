@@ -162,6 +162,24 @@ interface TaskRecord {
   readonly error?: string;
 }
 
+/**
+ * The orchestrator's closing report: what the workflow actually produced and
+ * what the user should do next, captured from the `done` payload of a pass that
+ * dispatched no new pipelines.
+ */
+interface WorkflowFinalReport {
+  readonly summary: string;
+  readonly nextSteps: ReadonlyArray<string>;
+}
+
+interface ResolvedFinalReport {
+  readonly resultText: string;
+  readonly nextSteps: ReadonlyArray<string>;
+  readonly plainSummary: string;
+}
+
+const FINAL_SUMMARY_MAX_CHARS = 300;
+
 const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
 const TASK_LABEL_MAX_CHARS = 72;
@@ -213,6 +231,54 @@ function plainTextPreview(value: string, max = MAX_PROGRESS_CHARS): string {
   return candidate.length <= max ? candidate : `${candidate.slice(0, max - 1)}...`;
 }
 
+const fallbackNextSteps = (
+  status: AgentTunnelRunResult["status"],
+  taskRecords: ReadonlyArray<TaskRecord>,
+): ReadonlyArray<string> => {
+  const failures = taskRecords.filter((record) => record.status === "failed");
+  if (failures.length > 0) {
+    const noun = failures.length === 1 ? "task" : "tasks";
+    return [
+      `Fix the ${failures.length} failed ${noun} above, re-run the affected pipeline, then verify the result.`,
+    ];
+  }
+  if (status === "stopped") {
+    return ["Review what completed, then re-run the workflow to finish the remaining work."];
+  }
+  return ["Review the changes and run the relevant tests to verify the result."];
+};
+
+/**
+ * Resolve the closing report: the orchestrator's payload when present, guarded
+ * fallbacks otherwise. `plainSummary` is the markdown-free condensation that
+ * travels in structured events and the run result.
+ */
+function resolveFinalReportContent(input: {
+  readonly status: AgentTunnelRunResult["status"];
+  readonly fallbackSummary: string;
+  readonly report: WorkflowFinalReport | null;
+  readonly taskRecords: ReadonlyArray<TaskRecord>;
+}): ResolvedFinalReport {
+  const reportSummary = input.report?.summary.trim() ?? "";
+  const resultText = reportSummary.length > 0 ? reportSummary : input.fallbackSummary;
+  const nextSteps =
+    input.report && input.report.nextSteps.length > 0
+      ? input.report.nextSteps
+      : fallbackNextSteps(input.status, input.taskRecords);
+  const condensed = plainTextPreview(resultText, FINAL_SUMMARY_MAX_CHARS);
+  // plainTextPreview appends an ellipsis past the limit; trim so the structured
+  // summary never exceeds the documented bound.
+  const bounded =
+    condensed.length > FINAL_SUMMARY_MAX_CHARS
+      ? `${condensed.slice(0, FINAL_SUMMARY_MAX_CHARS - 3)}...`
+      : condensed;
+  return {
+    resultText,
+    nextSteps,
+    plainSummary: bounded.length > 0 ? bounded : input.fallbackSummary,
+  };
+}
+
 const trace = (message: string, fields: Record<string, string | number | boolean>) =>
   Effect.log(message, fields).pipe(Effect.annotateLogs({ scope: "agenttunnel.orchestrator" }));
 
@@ -237,6 +303,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
   let orchestratorThinkingOpen = false;
+  // `passDoneReport` is the payload from the current pass; `finalReport` only
+  // holds a payload from a pass that dispatched no new pipelines.
+  let passDoneReport: WorkflowFinalReport | null = null;
+  let finalReport: WorkflowFinalReport | null = null;
   let openOutputFences = 0;
   let startedTaskCount = 0;
   let recapScope: Scope.Closeable | null = null;
@@ -282,16 +352,30 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       ...(summary ? { summary } : {}),
     });
 
-  const finish = (status: AgentTunnelRunResult["status"], summary: string) =>
+  const finish = (
+    status: AgentTunnelRunResult["status"],
+    summary: string,
+    report: WorkflowFinalReport | null = null,
+  ) =>
     Effect.gen(function* () {
       if (recapScope !== null) {
         yield* Scope.close(recapScope, Exit.void).pipe(Effect.ignore);
         recapScope = null;
       }
+      const resolved = resolveFinalReportContent({
+        status,
+        fallbackSummary: summary,
+        report,
+        taskRecords,
+      });
+      // Persist the closing report so the next turn can resolve "continue" and
+      // "do the previous task" without relying on the collapsed prose.
+      setContext(context, "workflow_result", resolved.resultText);
+      setContext(context, "next_steps", resolved.nextSteps.map((step) => `- ${step}`).join("\n"));
       yield* trace("workflow finished", {
         workflowId: options.workflowId,
         status,
-        summary: summary.slice(0, 160),
+        summary: resolved.plainSummary.slice(0, 160),
       });
       const finishedAt = yield* Clock.currentTimeMillis;
       yield* emit({
@@ -299,6 +383,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         text: formatWorkflowFinishMarkdown({
           status,
           summary,
+          resultText: resolved.resultText,
+          nextSteps: resolved.nextSteps,
           pipelineOrder,
           pipelines,
           taskRecords,
@@ -309,11 +395,11 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         type: "workflow.completed",
         workflowId: options.workflowId,
         status,
-        summary,
+        summary: resolved.plainSummary,
       });
       return {
         status,
-        summary,
+        summary: resolved.plainSummary,
         contextDump: context.renderForPrompt(),
       } satisfies AgentTunnelRunResult;
     });
@@ -491,9 +577,16 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       }
 
       if (call.name === "done") {
+        const reportSummary = stringValue(call.arguments.summary).trim();
+        const reportNextSteps = nextStepsArray(call.arguments.next_steps);
+        passDoneReport =
+          reportSummary.length > 0 || reportNextSteps.length > 0
+            ? { summary: reportSummary, nextSteps: reportNextSteps }
+            : null;
         yield* trace("orchestrator finished pass", {
           workflowId: options.workflowId,
           reason: stringValue(call.arguments.reason).slice(0, 120),
+          hasReport: passDoneReport !== null,
         });
       } else {
         yield* emit({
@@ -985,6 +1078,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const runWorkflow = Effect.gen(function* () {
     while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
       const pipelineCountBefore = pipelineOrder.length;
+      passDoneReport = null;
       const orchestratorResult = yield* runOrchestratorPass(orchestratorPasses);
       if (yield* isCancelled) {
         return yield* finish(
@@ -996,6 +1090,12 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
       }
       if (pipelineOrder.length === pipelineCountBefore) {
+        // This pass dispatched no new pipelines, so its done payload — if any —
+        // is the workflow's final report. A planning pass's payload never wins
+        // because planning dispatches pipelines.
+        if (passDoneReport !== null) {
+          finalReport = passDoneReport;
+        }
         const lateSteering = options.takeSteeringMessages
           ? yield* options.takeSteeringMessages()
           : [];
@@ -1003,6 +1103,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           return yield* finish(
             "completed",
             "All planned work finished — the orchestrator found no follow-up tasks.",
+            finalReport,
           );
         }
         // Steering arrived while the pass was running: take one more pass so
@@ -1028,6 +1129,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return yield* finish(
       "completed",
       `Reached the maximum of ${options.settings.maxOrchestratorPasses} orchestrator passes.`,
+      finalReport,
     );
   });
 
@@ -1073,6 +1175,11 @@ function stringArray(value: unknown): ReadonlyArray<string> {
     : [];
 }
 
+function nextStepsArray(value: unknown): ReadonlyArray<string> {
+  const entries = typeof value === "string" ? value.split("\n") : stringArray(value);
+  return entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
+
 function safeKey(value: string): string {
   const normalized = value
     .toLowerCase()
@@ -1088,20 +1195,35 @@ function stripAnsi(value: string): string {
 function formatWorkflowFinishMarkdown(input: {
   readonly status: AgentTunnelRunResult["status"];
   readonly summary: string;
+  readonly resultText: string;
+  readonly nextSteps: ReadonlyArray<string>;
   readonly pipelineOrder: ReadonlyArray<string>;
   readonly pipelines: Map<string, PipelineState>;
   readonly taskRecords: ReadonlyArray<TaskRecord>;
   readonly durationMs: number;
 }): string {
-  const { status, summary, pipelineOrder, pipelines, taskRecords, durationMs } = input;
+  const {
+    status,
+    summary,
+    resultText,
+    nextSteps,
+    pipelineOrder,
+    pipelines,
+    taskRecords,
+    durationMs,
+  } = input;
   const icon = status === "completed" ? "✅" : status === "failed" ? "❌" : "⏹️";
   const orderedRecords = [...taskRecords].sort(
     (left, right) =>
       pipelineOrder.indexOf(left.pipelineId) - pipelineOrder.indexOf(right.pipelineId) ||
       left.agentIndex - right.agentIndex,
   );
+  // Visible by default: the workflow's actual outcome and what to do next lead
+  // the report, ahead of the machinery tables.
   const lines: string[] = [
     `\n---\n\n## ${icon} Workflow ${status} · ${formatDuration(durationMs)}\n\n${summary}\n`,
+    `\n### What happened\n\n${resultText}\n`,
+    `\n### Next steps\n\n${nextSteps.map((step) => `- ${step}`).join("\n")}\n`,
   ];
 
   if (pipelineOrder.length > 0) {

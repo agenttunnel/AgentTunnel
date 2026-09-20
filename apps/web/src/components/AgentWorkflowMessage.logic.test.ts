@@ -43,4 +43,28 @@ describe("parseAgentWorkflowMessage", () => {
     const blocks = stripIds(parseAgentWorkflowMessage(text));
     expect(blocks).toEqual([{ kind: "markdown", text }]);
   });
+
+  it("keeps the orchestrator final report visible as one ordered markdown block", () => {
+    const finalReport = [
+      "\n---\n",
+      "\n## ✅ Workflow completed · 12.4s\n",
+      "\n### What happened\n",
+      "\nImplemented the final report end to end and verified it against a real workflow.\n",
+      "\n### Next steps\n",
+      "\n1. Review the generated diff.\n",
+      "2. Run the focused tests.\n",
+      "\n### Pipelines\n",
+      "\n| Pipeline | Agents | Status | Time |\n",
+      "| --- | --- | --- | --- |\n",
+      "| `impl` | 1/1 | ✅ completed | 12.4s |\n",
+    ].join("");
+    const blocks = stripIds(parseAgentWorkflowMessage(finalReport));
+
+    expect(blocks).toEqual([{ kind: "markdown", text: finalReport.trim() }]);
+
+    const text = blocks[0]?.kind === "markdown" ? blocks[0].text : "";
+    expect(text.indexOf("### What happened")).toBeLessThan(text.indexOf("### Next steps"));
+    expect(text.indexOf("### Next steps")).toBeLessThan(text.indexOf("### Pipelines"));
+    expect(text).toContain("| Pipeline | Agents | Status | Time |");
+  });
 });
