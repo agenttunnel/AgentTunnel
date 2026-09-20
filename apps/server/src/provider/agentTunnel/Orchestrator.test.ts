@@ -383,7 +383,7 @@ const runFakeWorkflow = (options: { readonly failTaskIds?: ReadonlyArray<string>
         const lines = spec.prompt.includes("Summary pass")
           ? [
               "Reviewing the completed work.",
-              '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}',
+              '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed","summary":"Implemented the requested change; all tests pass.","next_steps":["Review the diff","Run the app to verify"]}}',
             ]
           : spec.id.startsWith("orchestrator")
             ? [
@@ -502,6 +502,172 @@ const collectMarkdown = (events: ReadonlyArray<AgentTunnelEvent>): string =>
     .map((event) => event.text)
     .join("");
 
+/**
+ * Fake harness for the final-report tests: the caller controls the planning
+ * lines (pass 0) and the summary-pass lines, so a test can put a payload on a
+ * planning `done`, on the final no-dispatch `done`, or on neither.
+ */
+const runReportWorkflow = (input: {
+  readonly planningLines: ReadonlyArray<string>;
+  readonly summaryLines: ReadonlyArray<string>;
+}) =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        const lines = spec.prompt.includes("Summary pass")
+          ? input.summaryLines
+          : spec.id.startsWith("orchestrator")
+            ? input.planningLines
+            : [
+                '__AGENTTUNNEL_TOOL__ {"name":"note_finding","arguments":{"key":"findings","value":"work complete"}}',
+                '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}',
+              ];
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(lines),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "report workflow",
+      cwd: "/tmp",
+      model: "test-model",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+    const completed = events.find(
+      (event): event is Extract<AgentTunnelEvent, { type: "workflow.completed" }> =>
+        event.type === "workflow.completed",
+    );
+    return { events, result, markdown: collectMarkdown(events), completed };
+  });
+
+const reportPlanningLines: ReadonlyArray<string> = [
+  "**Planning** the work.",
+  '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Implement the feature","pipeline":"implementation"}}',
+  '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+];
+
+it.effect("renders the orchestrator's final report and condenses it into summaries", () =>
+  Effect.gen(function* () {
+    const { result, markdown, completed } = yield* runReportWorkflow({
+      planningLines: reportPlanningLines,
+      summaryLines: [
+        "**Implemented** the requested `feature`; the test suite passes.",
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete","summary":"**Implemented** the requested `feature`; the test suite passes.","next_steps":["Review the diff","Ship the change"]}}',
+      ],
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    // The payload wins and both sections render, ahead of the machinery tables.
+    NodeAssert.match(markdown, /### What happened\n\n\*\*Implemented\*\* the requested `feature`/);
+    NodeAssert.match(markdown, /### Next steps\n\n- Review the diff\n- Ship the change/);
+    NodeAssert.ok(markdown.indexOf("### What happened") < markdown.indexOf("### Pipelines"));
+
+    // Structured summaries carry a plain-text condensation, never markdown.
+    const expected = "Implemented the requested feature; the test suite passes.";
+    NodeAssert.equal(result.summary, expected);
+    NodeAssert.equal(completed?.summary, expected);
+    NodeAssert.doesNotMatch(completed?.summary ?? "", /\*|`/);
+
+    // Persisted for follow-up turns, keeping the human-readable markdown.
+    NodeAssert.match(
+      result.contextDump ?? "",
+      /### workflow_result\n\n\*\*Implemented\*\* the requested/,
+    );
+    NodeAssert.match(
+      result.contextDump ?? "",
+      /### next_steps\n\n- Review the diff\n- Ship the change/,
+    );
+  }),
+);
+
+it.effect("bounds the plain-text structured summary and strips markdown", () =>
+  Effect.gen(function* () {
+    const longSummary = `**${"detailed result ".repeat(40)}**`;
+    const { result, completed } = yield* runReportWorkflow({
+      planningLines: reportPlanningLines,
+      summaryLines: [
+        `__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete","summary":"${longSummary}"}}`,
+      ],
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.ok(
+      result.summary.length <= 300,
+      `expected <=300 chars, got ${result.summary.length}`,
+    );
+    NodeAssert.equal(completed?.summary, result.summary);
+    NodeAssert.doesNotMatch(result.summary, /[*`]/);
+  }),
+);
+
+it.effect("falls back to non-empty report sections when the orchestrator sends no payload", () =>
+  Effect.gen(function* () {
+    const { result, markdown } = yield* runReportWorkflow({
+      planningLines: reportPlanningLines,
+      summaryLines: ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}'],
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.match(
+      markdown,
+      /### What happened\n\nAll planned work finished — the orchestrator found no follow-up tasks\./,
+    );
+    NodeAssert.match(
+      markdown,
+      /### Next steps\n\n- Review the changes and run the relevant tests to verify the result\./,
+    );
+    // The report is visible by default: it sits outside the collapsed thinking block.
+    NodeAssert.ok(markdown.indexOf("### What happened") > markdown.lastIndexOf("</details>"));
+  }),
+);
+
+it.effect("derives failure next steps when a task failed", () =>
+  Effect.gen(function* () {
+    const { result, markdown } = yield* runFakeWorkflow({ failTaskIds: ["task_1"] });
+
+    NodeAssert.equal(result.status, "failed");
+    NodeAssert.match(markdown, /### What happened\n\nOne or more pipelines failed\./);
+    NodeAssert.match(markdown, /### Next steps\n\n- Fix the 1 failed task/);
+  }),
+);
+
+it.effect("does not let a planning pass's done payload clobber the final report", () =>
+  Effect.gen(function* () {
+    const { result, markdown } = yield* runReportWorkflow({
+      planningLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Implement the feature","pipeline":"implementation"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched","summary":"planned outcome must not win","next_steps":["planned step must not win"]}}',
+      ],
+      summaryLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete","summary":"the final outcome wins","next_steps":["the final step wins"]}}',
+      ],
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.match(markdown, /the final outcome wins/);
+    NodeAssert.match(markdown, /the final step wins/);
+    NodeAssert.doesNotMatch(markdown, /planned outcome must not win/);
+    NodeAssert.doesNotMatch(markdown, /planned step must not win/);
+    NodeAssert.equal(result.summary, "the final outcome wins");
+  }),
+);
+
 /** Fake harness that replays the given orchestrator planning lines for every pass. */
 const makeDispatchRunner = (input: {
   readonly dispatchLines: ReadonlyArray<string>;
@@ -510,7 +676,9 @@ const makeDispatchRunner = (input: {
   spawn: (spec) => {
     input.specs.push(spec);
     const lines = spec.prompt.includes("Summary pass")
-      ? ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}']
+      ? [
+          '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed","summary":"Workflow complete.","next_steps":["Verify the changes"]}}',
+        ]
       : spec.id.startsWith("orchestrator")
         ? input.dispatchLines
         : [

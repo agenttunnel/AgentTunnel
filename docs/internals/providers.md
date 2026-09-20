@@ -143,6 +143,14 @@ model list and one-shot `pi --mode json -p <prompt> --no-session` per role, tran
 `run` invocation. Model probes never read stdin and are wrapped in a timeout, so a wedged or
 interactive harness degrades to a readable provider warning instead of blocking the registry.
 
+A completed workflow ends with a real final report rather than just the machinery tables. The
+orchestrator's closing `done` action may carry `summary` (what happened) and `next_steps`, and only a
+`done` from a pass that dispatched no new pipelines counts as the final report, so an earlier
+planning `done` cannot overwrite it. The final assistant message leads with `### What happened` and
+`### Next steps` before the pipelines and agents tables, `workflow.completed.summary` carries a
+plain-text condensation of that result, and the report is stored in shared context as
+`workflow_result` and `next_steps` so a follow-up turn can resolve "continue" or "previous task".
+
 ### Model selection and auto mode
 
 Each role has a harness, model, and reasoning variant in provider settings. Harness and variant are

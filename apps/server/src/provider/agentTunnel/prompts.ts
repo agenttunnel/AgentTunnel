@@ -47,6 +47,15 @@ Before you call done at the end of the workflow, record every durable, generaliz
 
 After the team finishes, you will receive a summary pass. Dispatch follow-up work when needed, or call done.
 
+## Final report
+
+When the workflow is complete and the team's work has been reviewed, end with a real report, not just a status. On the pass that dispatches no further tasks, write what actually happened as plain text and pass it to done as summary (a markdown string) and next_steps (a string or an array of strings).
+
+- What happened: the concrete result or deliverable the team produced — what was built, fixed, decided, or found. Not the orchestration mechanics.
+- Next steps: the concrete actions the user should take next. Recommend them; do not leave the section empty.
+- Do not repeat the pipeline/agent tables; the client renders those separately.
+- An earlier planning done's summary is ignored, so only provide the report on the final no-dispatch pass.
+
 ${AGENT_TUNNEL_TOOL_PREFIX} ACTION PROTOCOL
 Output exactly one JSON object per line, prefixed by ${AGENT_TUNNEL_TOOL_PREFIX} .
 Never put these lines in a markdown fence. In this harness, ${AGENT_TUNNEL_TOOL_PREFIX} IS your tool mechanism — do not use native provider tools for orchestration.
@@ -55,7 +64,7 @@ Available actions:
 ${toolDescription("update_context", "replace a notebook entry", "  arguments: { key: lower_snake_case string, value: markdown string }\n")}
 ${toolDescription("dispatch_task", "send a concrete task to an executor or reviewer", "  arguments: { role: executor|reviewer, task: string, pipeline?: string, mode?: parallel|sequential, depends_on?: string[], context?: string[], model?: string }\n")}
 ${toolDescription("record_learning", "append a durable, cross-project lesson to the inherited context", "  arguments: { category: lowercase-kebab-case string, entry: string }\n")}
-${toolDescription("done", "finish planning for this pass", "  arguments: { reason?: string }\n")}
+${toolDescription("done", "finish this pass; on the final no-dispatch pass supply the workflow's result and next steps", "  arguments: { reason?: string, summary?: markdown string, next_steps?: string | string[] }\n")}
 
 Example:
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"update_context","arguments":{"key":"user_goal","value":"Add the requested feature."}}
@@ -63,7 +72,10 @@ ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"executo
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"executor","task":"Write documentation for the feature.","pipeline":"implementation","context":["user_goal"]}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the implementation and documentation.","pipeline":"review","depends_on":["implementation"],"context":["user_goal"]}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"record_learning","arguments":{"category":"model-fit","entry":"codex + gpt-5.2-codex handled multi-file TypeScript refactors well; too slow for one-line fixes."}}
-${AGENT_TUNNEL_TOOL_PREFIX} {"name":"done","arguments":{"reason":"tasks dispatched"}}`;
+${AGENT_TUNNEL_TOOL_PREFIX} {"name":"done","arguments":{"reason":"tasks dispatched"}}
+
+Final report (only on the pass where you dispatch no more tasks):
+${AGENT_TUNNEL_TOOL_PREFIX} {"name":"done","arguments":{"reason":"workflow complete","summary":"Implemented the feature and the test suite passes.","next_steps":["Review the diff","Ship the change"]}}`;
 
 export const EXECUTOR_PROMPT = `You are an executor agent in AgentTunnel.
 

@@ -272,7 +272,7 @@ export function ProviderSettingsPanel() {
     ) : null;
 
   return (
-    <SettingsPageContainer width="full" className="gap-8">
+    <SettingsPageContainer width="full" className="gap-6">
       {options.length === 0 ? (
         <SettingsSection title="AgentTunnel">
           <SettingsRow
@@ -931,11 +931,10 @@ export function EnvironmentProviderSettings({
           />
         ) : null}
         <p className="px-3 pb-1 text-[13px] leading-[1.45] text-muted-foreground/80 sm:px-4">
-          Enable a harness to make its models selectable in the model config. AgentTunnel itself
-          runs the workflow and is configured under Workflow above.
+          Enable a harness to make its models selectable in the model config.
         </p>
         <div className="space-y-1">
-          <div className="mx-3 overflow-hidden rounded-lg border border-border/70 sm:mx-4 lg:grid lg:h-[min(38rem,calc(100dvh-16rem))] lg:min-h-[30rem] lg:grid-cols-[20rem_minmax(0,1fr)]">
+          <div className="mx-3 overflow-hidden rounded-lg border border-border/70 sm:mx-4 lg:grid lg:h-[min(34rem,calc(100dvh-14rem))] lg:min-h-[26rem] lg:grid-cols-[20rem_minmax(0,1fr)]">
             <div className="border-b border-border/70 lg:flex lg:min-h-0 lg:flex-col lg:border-r lg:border-b-0">
               <ScrollArea scrollFade chainVerticalScroll className="lg:min-h-0 lg:flex-1">
                 <div className="divide-y divide-border/60">

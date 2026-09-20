@@ -392,6 +392,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             agentIndex: event.agentIndex,
             phaseIndex: event.phaseIndex,
             phaseTitle: event.pipelineId,
+            // The structured log file exists from the agent's first frame, so
+            // the drill-in can stream it live instead of showing only the
+            // progress tail until completion.
+            outputFile: agentOutputPath(threadId, event.agentId),
             ...(event.model ? { model: event.model } : {}),
             timelineBypass: true,
           },
