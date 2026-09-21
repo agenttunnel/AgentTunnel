@@ -29,6 +29,7 @@ import {
   deriveSubagentUsageStats,
   deriveTokenUsage,
   formatCostLabel,
+  type SubagentUsageTurn,
 } from "./TokenUsagePanel.logic";
 
 function SectionHeader({ children }: { children: ReactNode }) {
@@ -100,23 +101,84 @@ function AgentIdentity({ role, harness }: { role: string | null; harness: string
 function AgentUsageStatsBody({
   agent,
   environmentId,
+  timestampFormat,
 }: {
   agent: RuntimeSubagent;
   environmentId: EnvironmentId;
+  timestampFormat: TimestampFormat;
 }) {
   const outputPath = agent.outputFile;
   if (outputPath === null) {
     return <EmptyNote>Per-turn usage isn't recorded for this agent.</EmptyNote>;
   }
-  return <AgentUsageStatsLoaded environmentId={environmentId} outputPath={outputPath} />;
+  return (
+    <AgentUsageStatsLoaded
+      environmentId={environmentId}
+      outputPath={outputPath}
+      timestampFormat={timestampFormat}
+    />
+  );
+}
+
+/**
+ * The drill-in's per-turn table: one row per model step, in the order the model
+ * ran them, each with the time the step landed in the agent's log.
+ */
+export function SubagentTurnsTable({ turns }: { turns: ReadonlyArray<SubagentUsageTurn> }) {
+  return (
+    <div className="overflow-x-auto rounded-md border border-border/50">
+      <table className="w-full min-w-[30rem] border-collapse text-left font-mono text-[.68rem]">
+        <thead>
+          <tr className="text-[.6rem] uppercase tracking-wider text-muted-foreground/60">
+            <th className="py-1 pr-2 pl-2 font-medium">Turn</th>
+            <th className="py-1 pr-2 font-medium">When</th>
+            <th className="py-1 pr-2 text-right font-medium">In</th>
+            <th className="py-1 pr-2 text-right font-medium">Cached</th>
+            <th className="py-1 pr-2 text-right font-medium">Out</th>
+            <th className="py-1 pr-2 text-right font-medium">Reasoning</th>
+            <th className="py-1 pr-2 text-right font-medium">Cost</th>
+            <th className="py-1 pr-2 text-right font-medium">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {turns.map((turn) => (
+            <tr key={turn.ordinal} className="border-t border-border/40">
+              <td className="py-1 pr-2 pl-2 text-muted-foreground">#{turn.ordinal}</td>
+              <td className="py-1 pr-2 text-muted-foreground">{turn.timeLabel}</td>
+              <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                {turn.inputLabel}
+              </td>
+              <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
+                {turn.cachedLabel}
+              </td>
+              <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                {turn.outputLabel}
+              </td>
+              <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
+                {turn.reasoningLabel}
+              </td>
+              <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                {turn.costLabel}
+              </td>
+              <td className="py-1 pr-2 text-right font-medium tabular-nums text-foreground">
+                {turn.totalLabel}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function AgentUsageStatsLoaded({
   environmentId,
   outputPath,
+  timestampFormat,
 }: {
   environmentId: EnvironmentId;
   outputPath: string;
+  timestampFormat: TimestampFormat;
 }) {
   const result = useAtomValue(
     orchestrationEnvironment.agentOutput({ environmentId, input: { outputPath } }),
@@ -127,7 +189,10 @@ function AgentUsageStatsLoaded({
   if (result._tag !== "Success") {
     return <div className="text-xs text-muted-foreground">Loading turns…</div>;
   }
-  const stats = deriveSubagentUsageStats(result.value.entries);
+  const stats = deriveSubagentUsageStats({
+    entries: result.value.entries,
+    timestampFormat,
+  });
   if (!stats.hasUsage) {
     return <EmptyNote>No per-turn usage recorded for this agent yet.</EmptyNote>;
   }
@@ -149,46 +214,7 @@ function AgentUsageStatsLoaded({
         ) : null}
         {stats.costUsd !== null ? <StatTile label="Cost" value={stats.costLabel} /> : null}
       </div>
-      <div className="overflow-x-auto rounded-md border border-border/50">
-        <table className="w-full min-w-[26rem] border-collapse text-left font-mono text-[.68rem]">
-          <thead>
-            <tr className="text-[.6rem] uppercase tracking-wider text-muted-foreground/60">
-              <th className="py-1 pr-2 pl-2 font-medium">Turn</th>
-              <th className="py-1 pr-2 text-right font-medium">In</th>
-              <th className="py-1 pr-2 text-right font-medium">Cached</th>
-              <th className="py-1 pr-2 text-right font-medium">Out</th>
-              <th className="py-1 pr-2 text-right font-medium">Reasoning</th>
-              <th className="py-1 pr-2 text-right font-medium">Cost</th>
-              <th className="py-1 pr-2 text-right font-medium">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stats.turns.map((turn) => (
-              <tr key={turn.ordinal} className="border-t border-border/40">
-                <td className="py-1 pr-2 pl-2 text-muted-foreground">#{turn.ordinal}</td>
-                <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
-                  {turn.inputLabel}
-                </td>
-                <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
-                  {turn.cachedLabel}
-                </td>
-                <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
-                  {turn.outputLabel}
-                </td>
-                <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
-                  {turn.reasoningLabel}
-                </td>
-                <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
-                  {turn.costLabel}
-                </td>
-                <td className="py-1 pr-2 text-right font-medium tabular-nums text-foreground">
-                  {turn.totalLabel}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <SubagentTurnsTable turns={stats.turns} />
       <p className="px-0.5 text-[.65rem] leading-relaxed text-muted-foreground/60">
         One row per model step. Input and output include their cached and reasoning subsets; context
         size is the tokens fed into the latest step, and cost is what the harness priced that step
@@ -202,10 +228,12 @@ function AgentUsageStatsLoaded({
 function AgentStatsDetail({
   agent,
   environmentId,
+  timestampFormat,
   onBack,
 }: {
   agent: RuntimeSubagent;
   environmentId: EnvironmentId | null;
+  timestampFormat: TimestampFormat;
   onBack: () => void;
 }) {
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
@@ -256,7 +284,11 @@ function AgentStatsDetail({
               Turns
             </div>
             {environmentId !== null ? (
-              <AgentUsageStatsBody agent={agent} environmentId={environmentId} />
+              <AgentUsageStatsBody
+                agent={agent}
+                environmentId={environmentId}
+                timestampFormat={timestampFormat}
+              />
             ) : (
               <EmptyNote>Per-turn usage isn't recorded for this agent.</EmptyNote>
             )}
@@ -292,6 +324,7 @@ export function TokenUsagePanel({
       <AgentStatsDetail
         agent={selectedAgent}
         environmentId={environmentId}
+        timestampFormat={timestampFormat}
         onBack={() => setSelectedAgentId(null)}
       />
     );

@@ -9,9 +9,10 @@ import {
   type OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
+import { formatShortTimestamp } from "../timestampFormat";
 import {
   deriveSubagentUsageStats,
   deriveTokenUsage,
@@ -632,27 +633,31 @@ function usageEntry(input: {
   outputTokens?: number;
   reasoningOutputTokens?: number;
   costUsd?: number;
+  at?: string;
 }): OrchestrationAgentLogEntry {
   return { kind: "usage", ...input };
 }
 
 describe("deriveSubagentUsageStats", () => {
   it("decomposes each usage entry into a turn with its context size", () => {
-    const stats = deriveSubagentUsageStats([
-      usageEntry({
-        totalTokens: 24_622,
-        inputTokens: 10_871,
-        cachedInputTokens: 13_056,
-        outputTokens: 213,
-        reasoningOutputTokens: 482,
-      }),
-      usageEntry({
-        totalTokens: 5_000,
-        inputTokens: 4_000,
-        cachedInputTokens: 1_000,
-        outputTokens: 100,
-      }),
-    ]);
+    const stats = deriveSubagentUsageStats({
+      entries: [
+        usageEntry({
+          totalTokens: 24_622,
+          inputTokens: 10_871,
+          cachedInputTokens: 13_056,
+          outputTokens: 213,
+          reasoningOutputTokens: 482,
+        }),
+        usageEntry({
+          totalTokens: 5_000,
+          inputTokens: 4_000,
+          cachedInputTokens: 1_000,
+          outputTokens: 100,
+        }),
+      ],
+      timestampFormat: "24-hour",
+    });
 
     expect(stats.turnCount).toBe(2);
     expect(stats.turns[0]).toMatchObject({
@@ -670,10 +675,13 @@ describe("deriveSubagentUsageStats", () => {
   });
 
   it("ignores non-usage log entries and reports no usage", () => {
-    const stats = deriveSubagentUsageStats([
-      { kind: "text", text: "working" },
-      { kind: "tool", tool: "bash", title: "echo hi", status: "completed" },
-    ]);
+    const stats = deriveSubagentUsageStats({
+      entries: [
+        { kind: "text", text: "working" },
+        { kind: "tool", tool: "bash", title: "echo hi", status: "completed" },
+      ],
+      timestampFormat: "24-hour",
+    });
 
     expect(stats.hasUsage).toBe(false);
     expect(stats.turns).toEqual([]);
@@ -682,7 +690,10 @@ describe("deriveSubagentUsageStats", () => {
   });
 
   it("defaults missing breakdown fields to zero", () => {
-    const stats = deriveSubagentUsageStats([usageEntry({ totalTokens: 120 })]);
+    const stats = deriveSubagentUsageStats({
+      entries: [usageEntry({ totalTokens: 120 })],
+      timestampFormat: "24-hour",
+    });
 
     expect(stats.turns[0]).toMatchObject({
       inputTokens: 0,
@@ -695,11 +706,14 @@ describe("deriveSubagentUsageStats", () => {
   });
 
   it("sums the steps the harness priced and leaves unpriced steps blank", () => {
-    const stats = deriveSubagentUsageStats([
-      usageEntry({ totalTokens: 120, costUsd: 0.0016 }),
-      usageEntry({ totalTokens: 80, costUsd: 0.25 }),
-      usageEntry({ totalTokens: 10 }),
-    ]);
+    const stats = deriveSubagentUsageStats({
+      entries: [
+        usageEntry({ totalTokens: 120, costUsd: 0.0016 }),
+        usageEntry({ totalTokens: 80, costUsd: 0.25 }),
+        usageEntry({ totalTokens: 10 }),
+      ],
+      timestampFormat: "24-hour",
+    });
 
     expect(stats.turns.map((turn) => turn.costLabel)).toEqual(["$0.0016", "$0.25", "—"]);
     expect(stats.costUsd).toBeCloseTo(0.2516, 6);
@@ -707,9 +721,48 @@ describe("deriveSubagentUsageStats", () => {
   });
 
   it("reports no cost at all when the harness priced nothing", () => {
-    const stats = deriveSubagentUsageStats([usageEntry({ totalTokens: 120 })]);
+    const stats = deriveSubagentUsageStats({
+      entries: [usageEntry({ totalTokens: 120 })],
+      timestampFormat: "24-hour",
+    });
 
     expect(stats.costUsd).toBeNull();
     expect(stats.costLabel).toBe("—");
+  });
+
+  it("labels each step with the time the adapter logged it, in the thread's format", () => {
+    // Instants are built with the local-time Date constructor so the label
+    // holds in any test timezone; the clock is pinned to the same local day.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 7, 14, 12, 0));
+      const firstAt = new Date(2026, 7, 14, 9, 5, 30).toISOString();
+      const secondAt = new Date(2026, 7, 14, 9, 42, 10).toISOString();
+      const stats = deriveSubagentUsageStats({
+        entries: [
+          usageEntry({ totalTokens: 120, at: firstAt }),
+          usageEntry({ totalTokens: 80, at: secondAt }),
+        ],
+        timestampFormat: "24-hour",
+      });
+
+      expect(stats.turns.map((turn) => turn.at)).toEqual([firstAt, secondAt]);
+      expect(stats.turns.map((turn) => turn.timeLabel)).toEqual([
+        formatShortTimestamp(firstAt, "24-hour"),
+        formatShortTimestamp(secondAt, "24-hour"),
+      ]);
+      expect(stats.turns.map((turn) => turn.ordinal)).toEqual([1, 2]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the time blank for steps logged before the adapter recorded one", () => {
+    const stats = deriveSubagentUsageStats({
+      entries: [usageEntry({ totalTokens: 120 })],
+      timestampFormat: "24-hour",
+    });
+
+    expect(stats.turns[0]).toMatchObject({ at: null, timeLabel: "—" });
   });
 });

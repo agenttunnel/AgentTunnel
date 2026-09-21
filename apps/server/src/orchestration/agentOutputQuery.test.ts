@@ -5,12 +5,17 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
+import { OrchestrationAgentLogEntry } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import { afterAll, assert, describe } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import { encodeAgentLogEntry } from "../provider/Layers/AgentTunnelAdapter.ts";
 import { agentOutputRoot, readAgentOutput } from "./agentOutputQuery.ts";
+
+const decodeAgentLogEntry = Schema.decodeSync(Schema.fromJsonString(OrchestrationAgentLogEntry));
 
 const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-output-test-"));
 const providerLogsDir = NodePath.join(baseDir, "userdata", "logs", "provider");
@@ -116,4 +121,43 @@ describe("readAgentOutput containment", () => {
       assert.equal(sneaky, "outside-root");
     }).pipe(Effect.provide(TestLayer)),
   );
+});
+
+describe("usage entry timestamps", () => {
+  const AT = "2026-08-14T09:05:30.000Z";
+
+  it.effect("round-trips the time a usage entry was persisted, and still reads older ones", () =>
+    Effect.gen(function* () {
+      const usageLogPath = NodePath.join(root, "thread-1", "agent_usage.log");
+      NodeFS.writeFileSync(
+        usageLogPath,
+        [
+          // As the adapter writes it now: stamped with the persistence time.
+          encodeAgentLogEntry({ kind: "usage", totalTokens: 1_200, inputTokens: 1_000 }, AT),
+          // As an older adapter wrote it: no stamp to read.
+          '{"kind":"usage","totalTokens":500}\n',
+        ].join(""),
+      );
+
+      const result = yield* readAgentOutput({ outputPath: usageLogPath });
+
+      assert.deepEqual(result.entries, [
+        { kind: "usage", totalTokens: 1_200, inputTokens: 1_000, at: AT },
+        { kind: "usage", totalTokens: 500 },
+      ]);
+      const stamped = result.entries[0];
+      if (stamped?.kind !== "usage") {
+        throw new Error("expected the first entry to decode as usage");
+      }
+      assert.equal(stamped.at, AT);
+      assert.equal(Number.isNaN(Date.parse(stamped.at ?? "")), false);
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it("stamps usage entries only", () => {
+    assert.deepEqual(
+      decodeAgentLogEntry(encodeAgentLogEntry({ kind: "text", text: "working" }, AT)),
+      { kind: "text", text: "working" },
+    );
+  });
 });
