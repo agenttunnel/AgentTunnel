@@ -111,7 +111,12 @@ interface AgentTunnelSessionContext {
   stopped: boolean;
   readonly threadHistory: Array<{ readonly task: string; readonly summary?: string }>;
   lastSharedContextDump: string | undefined;
-  readonly steering: AgentTunnelSteeringEntry[];
+  /**
+   * Steering messages the user sent mid-turn, waiting for the orchestrator's
+   * next pass. A queue, not an array: the orchestrator waits on it so a message
+   * landing while no pass is in flight starts one immediately.
+   */
+  readonly steering: Queue.Queue<AgentTunnelSteeringEntry>;
 }
 
 export interface AgentTunnelAdapterOptions {
@@ -249,8 +254,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
 
   // Steering lifecycle: "queued" when a mid-run message lands in the queue,
-  // "injected" when a planning pass drains it, "cancelled" when the turn ends
-  // first. The projected user message carries this so clients can label it.
+  // "injected" when the orchestrator takes it into a pass, "cancelled" when the
+  // turn ends first. The projected user message carries this so clients label it.
   const emitSteeringUpdate = (input: {
     readonly threadId: ThreadId;
     readonly turnId?: TurnId | undefined;
@@ -271,27 +276,45 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       Effect.orDie,
     );
 
-  const cancelPendingSteering = (
+  /** Marks drained entries with their delivery status, then returns their text. */
+  const resolveSteering = (
     context: AgentTunnelSessionContext,
     threadId: ThreadId,
-    turnId: TurnId | undefined,
+    entries: ReadonlyArray<AgentTunnelSteeringEntry>,
+    status: ThreadMessageSteeringStatus,
   ) =>
-    Effect.gen(function* () {
-      const pending = context.steering.splice(0);
-      yield* Effect.forEach(
-        pending,
-        (entry) =>
-          entry.messageId
-            ? emitSteeringUpdate({
-                threadId,
-                ...(turnId ? { turnId } : {}),
-                messageId: entry.messageId,
-                status: "cancelled",
-              })
-            : Effect.void,
-        { concurrency: 1, discard: true },
-      );
-    });
+    Effect.forEach(
+      entries,
+      (entry) =>
+        entry.messageId
+          ? emitSteeringUpdate({
+              threadId,
+              ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+              messageId: entry.messageId,
+              status,
+            })
+          : Effect.void,
+      { concurrency: 1, discard: true },
+    ).pipe(Effect.as(entries.map((entry) => entry.text)));
+
+  /**
+   * Drains whatever is queued without waiting. `Queue.takeAll` blocks for at
+   * least one message, so the size check is what makes this non-blocking — and
+   * the orchestrator is the only drainer, so the pair stays atomic in practice.
+   */
+  const drainQueuedSteering = Effect.fn("AgentTunnelAdapter.drainQueuedSteering")(function* (
+    context: AgentTunnelSessionContext,
+  ) {
+    if ((yield* Queue.size(context.steering)) === 0) return [];
+    return Array.from(yield* Queue.takeAll(context.steering));
+  });
+
+  const cancelPendingSteering = Effect.fn("AgentTunnelAdapter.cancelPendingSteering")(function* (
+    context: AgentTunnelSessionContext,
+    threadId: ThreadId,
+  ) {
+    yield* resolveSteering(context, threadId, yield* drainQueuedSteering(context), "cancelled");
+  });
 
   const emitEvent = Effect.fn("AgentTunnelAdapter.emitEvent")(function* (
     threadId: ThreadId,
@@ -677,9 +700,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     summary: string,
   ) {
     if (context.activeTurnId !== turnId) return;
-    // Steering still in the queue was never handed to a planning pass; the
-    // turn is ending, so report it as cancelled instead of leaving it queued.
-    yield* cancelPendingSteering(context, threadId, turnId);
+    // Steering still in the queue was never handed to a pass; the turn is
+    // ending, so report it as cancelled instead of leaving it queued.
+    yield* cancelPendingSteering(context, threadId);
     context.activeTurnId = undefined;
     const { activeTurnId: _activeTurnId, lastError: _lastError, ...sessionBase } = context.session;
     context.session = {
@@ -739,7 +762,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       stopped: false,
       threadHistory: [],
       lastSharedContextDump: undefined,
-      steering: [],
+      steering: yield* Queue.unbounded<AgentTunnelSteeringEntry>(),
     };
     sessions.set(input.threadId, context);
     yield* emit({
@@ -760,11 +783,11 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
   )(function* (input) {
     const context = yield* ensureSession(input.threadId);
     if (context.activeTurnId) {
-      // Steering: a message sent mid-run is queued and handed to the
-      // orchestrator at its next planning pass instead of interrupting work.
+      // Steering: a message sent mid-run is queued for the orchestrator, which
+      // takes a pass as soon as one is queued and no other pass is in flight.
       const steering = (input.input ?? "").trim();
       if (steering.length > 0) {
-        context.steering.push({
+        yield* Queue.offer(context.steering, {
           ...(input.messageId ? { messageId: input.messageId } : {}),
           text: steering,
         });
@@ -784,7 +807,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           type: "content.delta",
           payload: {
             streamKind: "assistant_text",
-            delta: `\n> \ud83d\udce5 **Steering queued** \u2014 the orchestrator will weigh this at its next planning pass: ${steering}\n`,
+            delta: `\n> \ud83d\udce5 **Steering queued** \u2014 the orchestrator weighs this at its next pass, without waiting for the running subagents: ${steering}\n`,
           },
         });
       }
@@ -812,7 +835,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.agentLogBytes.clear();
     context.agentRawLogBytes.clear();
     // Steering is per-turn: a prior turn's queue must never leak into this one.
-    yield* cancelPendingSteering(context, input.threadId, undefined);
+    yield* cancelPendingSteering(context, input.threadId);
     yield* clearAgentOutput(input.threadId);
     context.session = {
       ...context.session,
@@ -852,24 +875,28 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           ...(inheritedContextPrompt.trim().length > 0
             ? { inheritedContext: inheritedContextPrompt }
             : {}),
-          takeSteeringMessages: () =>
-            Effect.gen(function* () {
-              const drained = context.steering.splice(0);
-              yield* Effect.forEach(
-                drained,
-                (entry) =>
-                  entry.messageId
-                    ? emitSteeringUpdate({
-                        threadId: input.threadId,
-                        ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
-                        messageId: entry.messageId,
-                        status: "injected",
-                      })
-                    : Effect.void,
-                { concurrency: 1, discard: true },
-              );
-              return drained.map((entry) => entry.text);
-            }),
+          steering: {
+            // Non-blocking: the scheduler asks what is queued before deciding
+            // which pass to run.
+            pending: () =>
+              Effect.gen(function* () {
+                const queued = yield* drainQueuedSteering(context);
+                return yield* resolveSteering(context, input.threadId, queued, "injected");
+              }),
+            // Blocks until a message lands, so a steer sent while subagents are
+            // working starts an orchestrator pass instead of waiting for them.
+            takeWhenAvailable: () =>
+              Effect.gen(function* () {
+                const first = yield* Queue.take(context.steering);
+                const rest = yield* drainQueuedSteering(context);
+                return yield* resolveSteering(
+                  context,
+                  input.threadId,
+                  [first, ...rest],
+                  "injected",
+                );
+              }),
+          },
         }),
       );
       if (result._tag === "Failure") {

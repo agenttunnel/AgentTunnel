@@ -45,7 +45,7 @@ A user-visible log item attached to a thread. In [the contracts][1], activities 
 
 #### Steering
 
-A user message sent while a turn is already running. Providers fold it into the running turn instead of starting a new one. The AgentTunnel workflow provider queues it and hands it to the orchestrator at its next planning pass, tracking delivery on the projected message as `queued`, `injected`, or `cancelled` in [the contracts][1]. See [AgentTunnelAdapter.ts][27].
+A user message sent while a turn is already running. Providers fold it into the running turn instead of starting a new one. The AgentTunnel workflow provider queues it and hands it to the orchestrator at its next pass — that pass starts as soon as a message is queued and no other pass is in flight, so steering is weighed while the running subagents keep working rather than after they finish. Running subagent runs are one-shot harness processes with no input channel, so a steering pass routes affected work to a follow-up dispatch instead of re-instructing a running agent. Delivery is tracked on the projected message as `queued`, `injected`, or `cancelled` in [the contracts][1]. See [AgentTunnelAdapter.ts][27] and [Orchestrator.ts][29].
 
 ### Orchestration
 
@@ -211,3 +211,4 @@ ships AgentTunnel already matching it.
 [26]: ../user/environment-theme.md
 [27]: ../../apps/server/src/provider/Layers/AgentTunnelAdapter.ts
 [28]: ../../apps/server/src/provider/agentTunnel/InheritedContextStore.ts
+[29]: ../../apps/server/src/provider/agentTunnel/Orchestrator.ts

@@ -4,6 +4,7 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -199,7 +200,29 @@ export interface AgentTunnelRunOptions {
   readonly priorSharedContext?: string;
   /** Rendered global context inherited from earlier orchestrators. */
   readonly inheritedContext?: string;
-  readonly takeSteeringMessages?: () => Effect.Effect<ReadonlyArray<string>>;
+  /**
+   * Steering the user sent while this workflow runs. The orchestrator takes a
+   * pass as soon as a message is queued and no pass is in flight, instead of
+   * waiting for the running pipelines to finish.
+   */
+  readonly steering?: AgentTunnelSteeringChannel;
+}
+
+/**
+ * Steering queue handed to the orchestrator. `pending` reports what is queued
+ * without blocking; `takeWhenAvailable` waits for the next message and drains
+ * the rest with it, so a burst of messages costs one pass.
+ */
+export interface AgentTunnelSteeringChannel {
+  readonly pending: () => Effect.Effect<ReadonlyArray<string>>;
+  readonly takeWhenAvailable: () => Effect.Effect<ReadonlyArray<string>>;
+}
+
+/** A sub-agent run in flight, as a steering pass needs to see it. */
+interface RunningTask {
+  readonly role: AgentTunnelRole;
+  readonly label: string;
+  readonly pipelineId: string;
 }
 
 interface DispatchedTask {
@@ -390,7 +413,13 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   let openOutputFences = 0;
   let startedTaskCount = 0;
   let recapScope: Scope.Closeable | null = null;
-  const pendingSteering: string[] = [];
+  // Pipelines run as forked fibers so a steering pass can start while sub-agents
+  // keep working; the scheduler only ever blocks on "settled or steered".
+  const runningPipelines = new Map<string, Fiber.Fiber<boolean, never>>();
+  const startedPipelineIds = new Set<string>();
+  // Sub-agent runs still in flight, keyed by agent id. A steering pass reads
+  // this roster before dispatching, since a running agent cannot be re-told.
+  const activeTasks = new Map<string, RunningTask>();
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
@@ -783,33 +812,48 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       ? ""
       : `\n\n## Steering from the user (sent while work was running)\n\n${steering.map((message) => `- ${message}`).join("\n")}\n\nWeigh this before deciding what to do next.`;
 
-  const summaryPrompt = (steering: ReadonlyArray<string>): string => {
-    const pipelineSummary = pipelineOrder
+  const pipelineSummaryBlock = (): string =>
+    pipelineOrder
       .map((id) => {
         const pipeline = pipelines.get(id);
         return `- ${id}: ${pipeline?.status ?? "pending"}`;
       })
-      .join("\n");
-    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}${inheritedContextBlock()}${dispatchOutcomesBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
+      .join("\n") || "(none)";
+
+  /**
+   * In-flight sub-agent runs. Harness runs are one-shot CLI processes with no
+   * input channel, so steering that touches their work has to be routed as
+   * follow-up dispatch rather than handed to the running process.
+   */
+  const runningAgentsBlock = (): string => {
+    if (activeTasks.size === 0) return "";
+    const rows = [...activeTasks.values()].map(
+      (entry) => `| ${entry.role} | \`${entry.pipelineId}\` | ${entry.label} |`,
+    );
+    return `\n\n## Agents working right now\n\nThese sub-agents are mid-run and did not see the steering below. If it changes what one of them is doing, dispatch a follow-up task that supersedes their work — name their pipeline in depends_on when the change must land after they finish — instead of assuming they will adjust.\n\n| Role | Pipeline | Task |\n| --- | --- | --- |\n${rows.join("\n")}`;
   };
 
-  const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (
-    pass: number,
-  ) {
-    if (pass > 0) {
+  const steeringPrompt = (steering: ReadonlyArray<string>, running: boolean): string =>
+    `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}${inheritedContextBlock()}${dispatchOutcomesBlock()}${runningAgentsBlock()}\n\n## Steering pass\n\nThe user steered while the team ${running ? "is still working" : "was working"}. Decide what changes now${running ? ", leave the in-flight work alone, and dispatch whatever the steering needs" : ""}, then call done.\n\n### Pipelines\n${pipelineSummaryBlock()}\n\n### Shared context\n${context.renderForPrompt()}`;
+
+  const summaryPrompt = (): string =>
+    `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${inheritedContextBlock()}${dispatchOutcomesBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummaryBlock()}\n\n### Shared context\n${context.renderForPrompt()}`;
+
+  const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (input: {
+    readonly pass: number;
+    readonly steering: ReadonlyArray<string>;
+  }) {
+    const running = activeTasks.size > 0;
+    if (input.pass > 0) {
       yield* emit({
         type: "orchestrator.output",
-        text: `\n---\n\n## Summary pass ${pass + 1}\n\nThe orchestrator is checking the completed work for follow-up tasks.\n`,
+        text:
+          input.steering.length > 0
+            ? `\n---\n\n## Steering pass ${input.pass + 1}\n\nThe orchestrator is weighing your steering${running ? " while the team keeps working" : ""}.\n`
+            : `\n---\n\n## Summary pass ${input.pass + 1}\n\nThe orchestrator is checking the completed work for follow-up tasks.\n`,
       });
     }
-    const steering =
-      pass > 0
-        ? [
-            ...pendingSteering.splice(0),
-            ...(options.takeSteeringMessages ? yield* options.takeSteeringMessages() : []),
-          ]
-        : [];
-    if (steering.length > 0) {
+    if (input.steering.length > 0) {
       yield* emit({
         type: "orchestrator.output",
         text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
@@ -817,7 +861,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     }
     const result = yield* runProcess(
       {
-        id: `orchestrator_${pass + 1}`,
+        id: `orchestrator_${input.pass + 1}`,
         threadId: options.threadId,
         harness: options.settings.orchestratorHarness,
         ...(options.settings.orchestratorModel || options.model
@@ -828,9 +872,11 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           : {}),
         cwd: options.cwd,
         prompt:
-          pass === 0
+          input.pass === 0
             ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${inheritedContextBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
-            : summaryPrompt(steering),
+            : input.steering.length > 0
+              ? steeringPrompt(input.steering, running)
+              : summaryPrompt(),
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,
       },
       handleOrchestratorLine,
@@ -881,9 +927,23 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   });
 
   const runTask = Effect.fn("runAgentTunnel.runTask")(function* (task: DispatchedTask) {
+    const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
+    const label = humanTaskLabel(task.task);
+    // Registered before the process spawns: a steering pass that lands while
+    // this agent runs must see it in the roster and route around it.
+    activeTasks.set(agentId, { role: task.role, label, pipelineId: task.pipelineId });
+    return yield* runTaskBody(task, agentId, label).pipe(
+      Effect.ensuring(Effect.sync(() => activeTasks.delete(agentId))),
+    );
+  });
+
+  const runTaskBody = Effect.fn("runAgentTunnel.runTaskBody")(function* (
+    task: DispatchedTask,
+    agentId: string,
+    label: string,
+  ) {
     startedTaskCount += 1;
     const pipelineIndex = Math.max(0, pipelineOrder.indexOf(task.pipelineId));
-    const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
     const roleConfig = roleSettings(options.settings, task.role);
     const model =
       task.model ||
@@ -907,7 +967,6 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       harness,
       ...(model ? { model } : {}),
     });
-    const label = humanTaskLabel(task.task);
     const startedAt = yield* Clock.currentTimeMillis;
     // Use a bullet + quoted task line so the previous blockquote is closed
     // and this agent's header starts its own Markdown block. Without the
@@ -1110,48 +1169,67 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return results;
   });
 
-  const runNewPipelines = Effect.fn("runAgentTunnel.runNewPipelines")(function* (
-    startIndex: number,
-  ) {
-    const targetIds = pipelineOrder.slice(startIndex);
-    const completed = new Set(
-      pipelineOrder.filter((id) => pipelines.get(id)?.status === "completed"),
-    );
-    let remaining = new Set(targetIds);
-
-    while (remaining.size > 0) {
-      if (yield* isCancelled) return false;
-      const ready = [...remaining]
+  /**
+   * Starts every pipeline whose dependencies are already satisfied. Pipelines
+   * are forked, not awaited, so the orchestrator can take a steering pass while
+   * they run; the scheduler waits for them through `waitForPipelinesToSettle`.
+   */
+  const startReadyPipelines = Effect.fn("runAgentTunnel.startReadyPipelines")(function* () {
+    let started = 0;
+    for (;;) {
+      const startable = pipelineOrder
         .map((id) => pipelines.get(id))
         .filter(
           (pipeline): pipeline is PipelineState =>
             pipeline !== undefined &&
-            pipeline.dependsOn.every((dependency) => completed.has(dependency)),
+            !startedPipelineIds.has(pipeline.id) &&
+            pipeline.dependsOn.every(
+              (dependency) => pipelines.get(dependency)?.status === "completed",
+            ),
         );
-
-      if (ready.length === 0) {
-        for (const id of remaining) {
-          const pipeline = pipelines.get(id);
-          if (pipeline) pipeline.status = "failed";
-        }
-        yield* emitProgress("Pipeline dependency deadlock");
-        yield* emit({
-          type: "orchestrator.output",
-          text: `\n> ⚠️ **Pipeline dependency deadlock** — no pipelines can start due to circular dependencies.\n`,
-        });
-        return false;
+      if (startable.length === 0) break;
+      started += startable.length;
+      for (const pipeline of startable) {
+        startedPipelineIds.add(pipeline.id);
+        // `startImmediately: false` keeps the fork and the map insert atomic: a
+        // pipeline that finished first would otherwise delete itself before it
+        // was ever tracked, leaving a settled fiber in the running set.
+        const fiber = yield* runPipeline(pipeline).pipe(
+          Effect.ensuring(Effect.sync(() => runningPipelines.delete(pipeline.id))),
+          Effect.forkChild({ startImmediately: false }),
+        );
+        runningPipelines.set(pipeline.id, fiber);
       }
-
-      const results = yield* Effect.forEach(ready, runPipeline, { concurrency: "unbounded" });
-      ready.forEach((pipeline) => remaining.delete(pipeline.id));
-      ready.forEach((pipeline) => {
-        if (pipeline.status === "completed") completed.add(pipeline.id);
-      });
-      if (results.some((ok) => !ok)) return false;
     }
 
-    return true;
+    if (runningPipelines.size > 0 || pipelineOrder.every((id) => startedPipelineIds.has(id))) {
+      return { started, deadlocked: false };
+    }
+    // Nothing is running and nothing can start: what is left depends on work
+    // that never ran or never succeeded.
+    for (const id of pipelineOrder) {
+      if (startedPipelineIds.has(id)) continue;
+      const pipeline = pipelines.get(id);
+      if (pipeline) pipeline.status = "failed";
+    }
+    yield* emitProgress("Pipeline dependency deadlock");
+    yield* emit({
+      type: "orchestrator.output",
+      text: `\n> ⚠️ **Pipeline dependency deadlock** — no pipelines can start because their dependencies never completed.\n`,
+    });
+    return { started, deadlocked: true };
   });
+
+  const waitForPipelinesToSettle = Effect.fn("runAgentTunnel.waitForPipelinesToSettle")(
+    function* () {
+      // Cancelling a `Fiber.await` never touches the awaited fiber, so racing
+      // this against steering leaves the running agents working.
+      yield* Effect.forEach([...runningPipelines.values()], (fiber) => Fiber.await(fiber), {
+        concurrency: "unbounded",
+        discard: true,
+      });
+    },
+  );
 
   yield* emit({
     type: "workflow.started",
@@ -1203,56 +1281,99 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   }
 
   const runWorkflow = Effect.gen(function* () {
+    // Pipelines have run since the last summary pass: the orchestrator owes the
+    // round a check-in once that work settles.
+    let roundRanPipelines = false;
+    let planningPassOwed = true;
     while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
+      if (yield* isCancelled) {
+        yield* waitForPipelinesToSettle();
+        return yield* finish(
+          "stopped",
+          "The workflow was stopped before all planned work finished.",
+        );
+      }
+
+      // Steering wins over waiting: the user is blocked on it, and pipelines
+      // already running keep working while the pass runs. Only a settled round
+      // with nothing queued earns a summary pass.
+      const planning = planningPassOwed;
+      planningPassOwed = false;
+      let steering: ReadonlyArray<string> = [];
+      if (!planning) {
+        steering =
+          runningPipelines.size > 0
+            ? yield* Effect.race(
+                waitForPipelinesToSettle().pipe(Effect.as([] as ReadonlyArray<string>)),
+                // No channel means steering can never arrive here, so the wait
+                // is only ever the running round settling.
+                options.steering ? options.steering.takeWhenAvailable() : Effect.never,
+              )
+            : yield* options.steering?.pending() ?? Effect.succeed([]);
+        if (steering.length === 0) {
+          if (pipelineOrder.some((id) => pipelines.get(id)?.status === "failed")) {
+            const wasStopped = yield* isCancelled;
+            return yield* finish(
+              wasStopped ? "stopped" : "failed",
+              wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
+            );
+          }
+          const start = yield* startReadyPipelines();
+          if (start.deadlocked) {
+            return yield* finish("failed", "One or more pipelines failed.");
+          }
+          // A dependency chain just advanced: keep the round going instead of
+          // checking in between chain links.
+          if (start.started > 0) {
+            roundRanPipelines = true;
+            continue;
+          }
+          if (!roundRanPipelines) {
+            return yield* finish(
+              "completed",
+              "All planned work finished — the orchestrator found no follow-up tasks.",
+              finalReport,
+            );
+          }
+        }
+      }
+
+      const pass = orchestratorPasses;
+      orchestratorPasses += 1;
       const pipelineCountBefore = pipelineOrder.length;
       passDoneReport = null;
-      const orchestratorResult = yield* runOrchestratorPass(orchestratorPasses);
+      const orchestratorResult = yield* runOrchestratorPass({ pass, steering });
       if (yield* isCancelled) {
+        yield* waitForPipelinesToSettle();
         return yield* finish(
           "stopped",
           "The workflow was stopped before all planned work finished.",
         );
       }
       if (orchestratorResult.code !== 0) {
+        // Agents that are already running were not at fault; let them finish
+        // before the workflow reports the failure.
+        yield* waitForPipelinesToSettle();
         return yield* finish("failed", orchestratorResult.error ?? "the orchestrator failed");
       }
-      if (pipelineOrder.length === pipelineCountBefore) {
+      if (pipelineOrder.length === pipelineCountBefore && passDoneReport !== null) {
         // This pass dispatched no new pipelines, so its done payload — if any —
-        // is the workflow's final report. A planning pass's payload never wins
-        // because planning dispatches pipelines.
-        if (passDoneReport !== null) {
-          finalReport = passDoneReport;
-        }
-        const lateSteering = options.takeSteeringMessages
-          ? yield* options.takeSteeringMessages()
-          : [];
-        if (lateSteering.length === 0) {
-          return yield* finish(
-            "completed",
-            "All planned work finished — the orchestrator found no follow-up tasks.",
-            finalReport,
-          );
-        }
-        // Steering arrived while the pass was running: take one more pass so
-        // the orchestrator can weigh it instead of finishing silently.
-        pendingSteering.push(...lateSteering);
-        yield* emit({
-          type: "orchestrator.output",
-          text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
-        });
-        orchestratorPasses += 1;
-        continue;
+        // is the workflow's final report.
+        finalReport = passDoneReport;
       }
-      if (!(yield* runNewPipelines(pipelineCountBefore))) {
-        const wasStopped = yield* isCancelled;
-        return yield* finish(
-          wasStopped ? "stopped" : "failed",
-          wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
-        );
+      if (steering.length === 0) {
+        roundRanPipelines = false;
       }
-      orchestratorPasses += 1;
+      const start = yield* startReadyPipelines();
+      if (start.deadlocked) {
+        return yield* finish("failed", "One or more pipelines failed.");
+      }
+      if (start.started > 0) {
+        roundRanPipelines = true;
+      }
     }
 
+    yield* waitForPipelinesToSettle();
     return yield* finish(
       "completed",
       `Reached the maximum of ${options.settings.maxOrchestratorPasses} orchestrator passes.`,

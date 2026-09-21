@@ -85,6 +85,12 @@ models performed overall — and AgentTunnel appends those entries with the date
 You can edit any of these files at any time and the next orchestrator inherits your edits. Only one
 workflow updates the folder at a time.
 
+Messages you send while a workflow is running are steering: the orchestrator weighs them in a pass of
+its own, which starts as soon as no other pass is running — so a mid-run correction is acted on while
+your sub-agents keep working instead of waiting for them to finish. A sub-agent that is already
+running cannot be re-told mid-flight, so when steering changes what one of them is doing the
+orchestrator dispatches follow-up work for it rather than assuming it will adjust.
+
 | Provider   | CLI                                                      | Default binary | Log in with           |
 | ---------- | -------------------------------------------------------- | -------------- | --------------------- |
 | Codex      | [Codex CLI](https://developers.openai.com/codex/cli)     | `codex`        | `codex login`         |

@@ -152,6 +152,19 @@ planning `done` cannot overwrite it. The final assistant message leads with `###
 plain-text condensation of that result, and the report is stored in shared context as
 `workflow_result` and `next_steps` so a follow-up turn can resolve "continue" or "previous task".
 
+### Orchestrator passes and steering
+
+Passes and pipelines are not step-locked. Pipelines run as forked fibers and the orchestrator takes a
+pass on whichever comes first — the user steering or the running work settling — so steering never
+waits for subagents to finish: the pass weighs it while they keep working, and any pipeline that pass
+dispatches starts as soon as its dependencies allow. Steering that lands while a pass is already
+running waits for that pass, because a harness process cannot be handed another prompt mid-run; the
+queue starts the next pass as soon as the running one ends. A pass carrying steering uses a
+`## Steering pass` section and lists the sub-agents still running under `## Agents working right now`,
+so the orchestrator routes affected work to a follow-up dispatch — naming the running pipeline in
+`depends_on` when the change must land after it finishes — rather than assuming a running one-shot
+agent will adjust. A round that ran pipelines still earns its summary pass once that work settles.
+
 ### Model selection and auto mode
 
 Each role has a harness, model, and reasoning variant in provider settings. Harness and variant are
@@ -180,13 +193,13 @@ lessons back into it. The store lives in the hidden `.orchestrator-context/` fol
 environment's state directory: `GUIDE.md` explains how to navigate the rules, `rules/*.md` holds one
 file per category (`design-decisions`, `model-fit`, `model-quality`, plus any category an
 orchestrator introduces), and `LOG.md` is the chronological ledger. The adapter renders the guide and
-rules into the orchestrator prompt before `runAgentTunnel` (planning pass 0 and every summary pass)
-and appends the orchestrator's `record_learning` entries after the run, under an in-process semaphore
-plus a lock file, so concurrent workflows on one environment never interleave a read-modify-write.
-The summary pass prompt includes a dispatch-outcomes table (role, harness, model, status, task) so
-model-fit and model-quality entries are grounded in actual results, and the finish markdown lists the
-recorded entries. Every entry is stamped with its ISO date, project, thread, workflow, and terminal
-status. Prompt rendering caps the guide and each rules file and trims from the top when the budget is
+rules into the orchestrator prompt before `runAgentTunnel` (pass 0, steering passes, and summary
+passes) and appends the orchestrator's `record_learning` entries after the run, under an in-process
+semaphore plus a lock file, so concurrent workflows on one environment never interleave a
+read-modify-write. The summary and steering pass prompts include a dispatch-outcomes table (role,
+harness, model, status, task) so model-fit and model-quality entries are grounded in actual results,
+and the finish markdown lists the recorded entries. Every entry is stamped with its ISO date,
+project, thread, workflow, and terminal status. Prompt rendering caps the guide and each rules file and trims from the top when the budget is
 exceeded, so a long-lived context cannot blow up the planner prompt. Flushing is best-effort: it never
 fails a turn, and it logs a warning and skips the update if the lock stays held too long.
 

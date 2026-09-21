@@ -21,10 +21,10 @@ describe("shouldPreserveAssistantLineBreaks", () => {
 });
 
 describe("deriveUserMessageSteeringBadge", () => {
-  it("labels a queued steer as waiting for the next planning pass", () => {
+  it("labels a queued steer as waiting for the next orchestrator pass", () => {
     expect(deriveUserMessageSteeringBadge("queued")).toEqual({
       label: "Steering",
-      detail: "queued — will be injected at the next planning pass",
+      detail: "queued — the orchestrator takes it in its next pass",
       tone: "queued",
     });
   });
