@@ -7,11 +7,25 @@ export const AGENT_TUNNEL_ROLES = [
     variantKey: "orchestratorVariant",
   },
   {
+    id: "planner",
+    label: "Planner",
+    key: "plannerModel",
+    harnessKey: "plannerHarness",
+    variantKey: "plannerVariant",
+  },
+  {
     id: "executor",
     label: "Executor",
     key: "executorModel",
     harnessKey: "executorHarness",
     variantKey: "executorVariant",
+  },
+  {
+    id: "tester",
+    label: "Tester",
+    key: "testerModel",
+    harnessKey: "testerHarness",
+    variantKey: "testerVariant",
   },
   {
     id: "reviewer",
@@ -100,7 +114,9 @@ export function readAgentTunnelRoles(
       harness:
         typeof harness === "string" && harness.trim().length > 0 ? harness.trim() : "opencode",
       variant: typeof variant === "string" && variant.trim().length > 0 ? variant.trim() : null,
-      auto: autoMode && (role.id === "executor" || role.id === "reviewer"),
+      // Auto mode is per dispatched task, so every role except the orchestrator
+      // itself has its model chosen by the orchestrator.
+      auto: autoMode && role.id !== "orchestrator",
     };
   });
 }

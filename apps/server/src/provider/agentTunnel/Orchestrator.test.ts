@@ -1060,3 +1060,54 @@ it.effect("injects the inherited context and returns deduplicated learnings", ()
     NodeAssert.ok(!markdown.includes("DROP"));
   }),
 );
+
+it.effect("runs planner and tester tasks on their role harnesses and prompts", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const specs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      plannerHarness: "fake-planner",
+      testerHarness: "fake-tester",
+      maxOrchestratorPasses: 3,
+    });
+    const process = makeDispatchRunner({
+      specs,
+      dispatchLines: [
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"planner","task":"Plan the migration","pipeline":"plan"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"tester","task":"Verify the migration","pipeline":"verify","depends_on":["plan"]}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"archivist","task":"Not a role","pipeline":"bogus"}}',
+        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"tasks dispatched"}}',
+      ],
+    });
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "test role wiring",
+      cwd: "/tmp",
+      model: "test-model",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    const plannerSpec = specs.find((spec) => spec.harness === "fake-planner");
+    const testerSpec = specs.find((spec) => spec.harness === "fake-tester");
+    NodeAssert.match(plannerSpec?.prompt ?? "", /You are a planner agent in AgentTunnel/);
+    NodeAssert.match(testerSpec?.prompt ?? "", /You are a tester agent in AgentTunnel/);
+    const started = events.filter(
+      (event): event is Extract<AgentTunnelEvent, { type: "agent.started" }> =>
+        event.type === "agent.started",
+    );
+    NodeAssert.deepEqual(
+      started.map((event) => event.role),
+      ["planner", "tester"],
+    );
+    NodeAssert.match(collectMarkdown(events), /Invalid dispatch_task arguments/);
+  }),
+);

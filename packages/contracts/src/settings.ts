@@ -609,7 +609,7 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Auto mode",
         description:
-          "The orchestrator picks each executor/reviewer task's model; per-role models are fallbacks.",
+          "The orchestrator picks each sub-agent task's model; per-role models are fallbacks.",
         providerSettingsForm: { control: "switch" },
       }),
     ),
@@ -631,6 +631,20 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Reviewer harness",
         description: "CLI used by review sub-agents.",
+        providerSettingsForm: { placeholder: "opencode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    plannerHarness: makeBinaryPathSetting("opencode").pipe(
+      Schema.annotateKey({
+        title: "Planner harness",
+        description: "CLI used by planning sub-agents.",
+        providerSettingsForm: { placeholder: "opencode", clearWhenEmpty: "omit" },
+      }),
+    ),
+    testerHarness: makeBinaryPathSetting("opencode").pipe(
+      Schema.annotateKey({
+        title: "Tester harness",
+        description: "CLI used by test and QA sub-agents.",
         providerSettingsForm: { placeholder: "opencode", clearWhenEmpty: "omit" },
       }),
     ),
@@ -658,6 +672,22 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "Use the orchestrator model", clearWhenEmpty: "omit" },
       }),
     ),
+    plannerModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Planner model",
+        description: "Optional model override for planner agents.",
+        providerSettingsForm: { placeholder: "Use the orchestrator model", clearWhenEmpty: "omit" },
+      }),
+    ),
+    testerModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Tester model",
+        description: "Optional model override for tester agents.",
+        providerSettingsForm: { placeholder: "Use the orchestrator model", clearWhenEmpty: "omit" },
+      }),
+    ),
     orchestratorVariant: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -679,6 +709,22 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Reviewer reasoning",
         description: "Optional reasoning-effort variant passed to reviewer harnesses.",
+        providerSettingsForm: { placeholder: "Default", clearWhenEmpty: "omit" },
+      }),
+    ),
+    plannerVariant: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Planner reasoning",
+        description: "Optional reasoning-effort variant passed to planner harnesses.",
+        providerSettingsForm: { placeholder: "Default", clearWhenEmpty: "omit" },
+      }),
+    ),
+    testerVariant: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Tester reasoning",
+        description: "Optional reasoning-effort variant passed to tester harnesses.",
         providerSettingsForm: { placeholder: "Default", clearWhenEmpty: "omit" },
       }),
     ),
@@ -717,12 +763,18 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       "orchestratorHarness",
       "executorHarness",
       "reviewerHarness",
+      "plannerHarness",
+      "testerHarness",
       "orchestratorModel",
       "executorModel",
       "reviewerModel",
+      "plannerModel",
+      "testerModel",
       "orchestratorVariant",
       "executorVariant",
       "reviewerVariant",
+      "plannerVariant",
+      "testerVariant",
       "dangerouslySkipPermissions",
     ],
   },
