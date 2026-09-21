@@ -1,9 +1,11 @@
 name: AgentTunnel Release
 
 # Builds the desktop app for macOS, Linux, and Windows and publishes the
-# artifacts to a GitHub Release. Builds are unsigned: this repository has no
-# Apple/Azure signing secrets configured. Add them and pass --signed in the
-# build step if you want signed installers later.
+# artifacts to a GitHub Release. Builds are unsigned when no signing secrets are
+# configured. Add a Developer ID certificate (CSC_LINK/CSC_KEY_PASSWORD) plus an
+# App Store Connect notary key (APPLE_API_KEY/APPLE_API_KEY_ID/APPLE_API_ISSUER)
+# and macOS builds are signed and notarized automatically. The passkey
+# entitlements additionally need APPLE_TEAM_ID and MACOS_PROVISIONING_PROFILE.
 on:
   push:
     tags:
@@ -86,7 +88,8 @@ jobs:
       - name: Install Linux packaging dependencies
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install -y imagemagick
-      - name: Build desktop artifact
+      - id: build_artifact
+        name: Build desktop artifact
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -118,20 +121,31 @@ jobs:
           }
 
           if [[ "${{ matrix.platform }}" == "mac" ]]; then
-            if has_all "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER" "$APPLE_TEAM_ID" "$MACOS_PROVISIONING_PROFILE"; then
+            if has_all "$CSC_LINK" "$CSC_KEY_PASSWORD" "$APPLE_API_KEY" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER"; then
               key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
               printf '%s' "$APPLE_API_KEY" > "$key_path"
               export APPLE_API_KEY="$key_path"
 
-              profile_path="$RUNNER_TEMP/agenttunnel.provisionprofile"
-              printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
-              export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
-              export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
+              # Passkey (Associated Domains) entitlements are opt-in: they need an
+              # explicit provisioning profile. Without one the app is still
+              # Developer ID signed and notarized with the default entitlements.
+              if has_all "$APPLE_TEAM_ID" "$MACOS_PROVISIONING_PROFILE"; then
+                profile_path="$RUNNER_TEMP/agenttunnel.provisionprofile"
+                printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 -D > "$profile_path"
+                security cms -D -i "$profile_path" >/dev/null
+                export T3CODE_APPLE_TEAM_ID="$APPLE_TEAM_ID"
+                export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
+                echo "macOS passkey entitlements enabled."
+              else
+                echo "macOS passkey entitlements disabled (no APPLE_TEAM_ID/MACOS_PROVISIONING_PROFILE)."
+              fi
 
               echo "macOS signing enabled."
               args+=(--signed)
+              echo "signed=true" >> "$GITHUB_OUTPUT"
             else
               echo "macOS signing disabled (missing one or more Apple signing secrets)."
+              echo "signed=false" >> "$GITHUB_OUTPUT"
             fi
           elif [[ "${{ matrix.platform }}" == "win" ]]; then
             if has_all \
@@ -168,6 +182,12 @@ jobs:
             done
           done
           ls -la release-publish
+      # Travels with the artifacts so the release job can tell signed from
+      # unsigned builds without re-reading secrets. Consumed and removed there.
+      - name: Record macOS signing status
+        if: matrix.platform == 'mac' && steps.build_artifact.outputs.signed == 'true'
+        shell: bash
+        run: touch release-publish/macos-signed
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -185,6 +205,17 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+      - id: macos_signing
+        name: Detect macOS signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f release-assets/macos-signed ]]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            rm -f release-assets/macos-signed
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -195,6 +226,7 @@ jobs:
           generate_release_notes: true
           files: release-assets/*
       - name: Add install notes
+        if: steps.macos_signing.outputs.signed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -205,5 +237,5 @@ jobs:
           if [[ "$existing" == *"Install notes"* ]]; then
             exit 0
           fi
-          note="$(printf '\n### Install notes\n\nmacOS builds are unsigned, so Gatekeeper may report the app as damaged. After installing, clear the quarantine flag:\n\n```\nxattr -dr com.apple.quarantine "/Applications/AgentTunnel (Alpha).app"\n```\n\nAdding Apple signing secrets to the repository removes this step.\n')"
+          note="$(printf '\n### Install notes\n\nThis macOS build is unsigned, so Gatekeeper reports the app as damaged until the quarantine flag is cleared. With the GitHub CLI authenticated, install and clear it in one command:\n\n```\ngh api repos/%s/contents/scripts/install-macos.sh -H "Accept: application/vnd.github.raw" | bash -s -- --repo %s --version %s\n```\n\nOr, after installing the disk image manually:\n\n```\nxattr -dr com.apple.quarantine "/Applications/AgentTunnel (Alpha).app"\n```\n\nAdding Apple signing secrets to the repository removes this step.\n' "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$tag")"
           printf '%s%s' "$existing" "$note" | gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file -
