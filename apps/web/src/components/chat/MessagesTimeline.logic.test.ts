@@ -3,6 +3,7 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveUserMessageNav,
   deriveUserMessageSteeringBadge,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
@@ -1589,6 +1590,420 @@ describe("deriveMessagesTimelineRows", () => {
       });
     },
   );
+
+  it("replaces a collapsed response with one chip and keeps the prompt visible", () => {
+    const baseInput = {
+      timelineEntries: [
+        {
+          id: "entry-user-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "message-user-1" as never,
+            role: "user",
+            text: "First prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-assistant-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "message-assistant-1" as never,
+            role: "assistant",
+            text: "Answer one",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-work-1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Reading package.json",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "entry-user-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:03Z",
+          message: {
+            id: "message-user-2" as never,
+            role: "user",
+            text: "Second prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:03Z",
+            updatedAt: "2026-01-01T00:00:03Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-assistant-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:04Z",
+          message: {
+            id: "message-assistant-2" as never,
+            role: "assistant",
+            text: "Answer two",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:04Z",
+            updatedAt: "2026-01-01T00:00:04Z",
+            streaming: false,
+          },
+        },
+      ] as const,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    };
+
+    const expandedRows = deriveMessagesTimelineRows(baseInput);
+    const collapsedRows = deriveMessagesTimelineRows({
+      ...baseInput,
+      collapsedResponseUserMessageIds: new Set(["message-user-1" as never]),
+    });
+
+    // Everything between the two prompts is gone, replaced by exactly one chip.
+    expect(expandedRows.map((row) => row.id)).toEqual([
+      "entry-user-1",
+      "entry-assistant-1",
+      "work-toggle:entry-work-1",
+      "entry-user-2",
+      "entry-assistant-2",
+    ]);
+    expect(collapsedRows.map((row) => row.id)).toEqual([
+      "entry-user-1",
+      "response-collapsed:entry-user-1",
+      "entry-user-2",
+      "entry-assistant-2",
+    ]);
+    expect(collapsedRows[1]).toMatchObject({
+      kind: "response-collapsed",
+      userMessageId: "message-user-1",
+      userRowId: "entry-user-1",
+      hiddenCount: 2,
+    });
+    expect(collapsedRows[0]).toMatchObject({
+      kind: "message",
+      responseCollapsed: true,
+      responseHiddenCount: 2,
+    });
+    // The newest prompt keeps its own response: only the collapsed one hides rows.
+    expect(collapsedRows[2]).toMatchObject({ responseCollapsed: false, responseHiddenCount: 0 });
+
+    // Expanding round-trips to the identical row set.
+    expect(
+      deriveMessagesTimelineRows({ ...baseInput, collapsedResponseUserMessageIds: new Set() }),
+    ).toEqual(expandedRows);
+  });
+
+  it("collapses only the entries that follow the collapsed prompt", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-user-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "message-user-1" as never,
+            role: "user",
+            text: "First prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-assistant-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:01Z",
+          message: {
+            id: "message-assistant-1" as never,
+            role: "assistant",
+            text: "Answer one",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:01Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-user-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "message-user-2" as never,
+            role: "user",
+            text: "Second prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:02Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-assistant-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:03Z",
+          message: {
+            id: "message-assistant-2" as never,
+            role: "assistant",
+            text: "Answer two",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:03Z",
+            updatedAt: "2026-01-01T00:00:03Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-work-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:04Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:04Z",
+            label: "Running tests",
+            tone: "tool" as const,
+          },
+        },
+      ] as const,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      collapsedResponseUserMessageIds: new Set(["message-user-2" as never]),
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "entry-user-1",
+      "entry-assistant-1",
+      "entry-user-2",
+      "response-collapsed:entry-user-2",
+    ]);
+    expect(rows[3]).toMatchObject({ hiddenCount: 2 });
+  });
+
+  it("hides the running turn's live rows behind a collapsed response", () => {
+    const timelineEntries = [
+      {
+        id: "entry-user-1",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:00Z",
+        message: {
+          id: "message-user-1" as never,
+          role: "user" as const,
+          text: "Run it",
+          turnId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "entry-running",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:01Z",
+        entry: {
+          id: "work-running",
+          createdAt: "2026-01-01T00:00:01Z",
+          turnId: "turn-1" as never,
+          label: "Running command",
+          command: "rg status",
+          requestKind: "command" as const,
+          tone: "tool" as const,
+          toolLifecycleStatus: "inProgress" as const,
+        },
+      },
+    ];
+    const baseInput = {
+      timelineEntries,
+      latestTurn: {
+        turnId: "turn-1" as never,
+        state: "running" as const,
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: null,
+      },
+      runningTurnId: "turn-1" as never,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    };
+
+    // The live rows come from the same loop as everything else, so collapsing
+    // the running response takes them with it — the chip is the whole response.
+    expect(deriveMessagesTimelineRows(baseInput).map((row) => row.kind)).toEqual([
+      "message",
+      "working",
+      "work-live",
+    ]);
+    const collapsedRows = deriveMessagesTimelineRows({
+      ...baseInput,
+      collapsedResponseUserMessageIds: new Set(["message-user-1" as never]),
+    });
+    expect(collapsedRows.map((row) => row.id)).toEqual([
+      "entry-user-1",
+      "response-collapsed:entry-user-1",
+    ]);
+    expect(collapsedRows[1]).toMatchObject({ hiddenCount: 1 });
+  });
+});
+
+describe("deriveUserMessageNav", () => {
+  const baseInput = {
+    isWorking: false,
+    activeTurnStartedAt: null,
+    turnDiffSummaryByAssistantMessageId: new Map(),
+    revertTurnCountByUserMessageId: new Map(),
+  } as const;
+
+  it("returns no targets for a lone user message", () => {
+    const rows = deriveMessagesTimelineRows({
+      ...baseInput,
+      timelineEntries: [
+        {
+          id: "entry-user-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "message-user-1" as never,
+            role: "user",
+            text: "Only prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+      ],
+    });
+
+    expect(deriveUserMessageNav(rows).get("entry-user-1")).toEqual({
+      rowIndex: 0,
+      previousIndex: null,
+      nextIndex: null,
+    });
+  });
+
+  it("steps over folded turns and collapsed responses to the neighbouring prompts", () => {
+    const rows = deriveMessagesTimelineRows({
+      ...baseInput,
+      collapsedResponseUserMessageIds: new Set(["message-user-2" as never]),
+      timelineEntries: [
+        {
+          id: "entry-user-1",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "message-user-1" as never,
+            role: "user",
+            text: "First prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-work-folded",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work-folded",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
+            tone: "tool" as const,
+            toolLifecycleStatus: "completed" as const,
+          },
+        },
+        {
+          id: "entry-assistant-commentary",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "message-assistant-commentary" as never,
+            role: "assistant",
+            text: "Commentary",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:02Z",
+            updatedAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-assistant-final",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:03Z",
+          message: {
+            id: "message-assistant-final" as never,
+            role: "assistant",
+            text: "Answer one",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:03Z",
+            updatedAt: "2026-01-01T00:00:03Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-user-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:04Z",
+          message: {
+            id: "message-user-2" as never,
+            role: "user",
+            text: "Second prompt",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:04Z",
+            updatedAt: "2026-01-01T00:00:04Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "entry-assistant-2",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: "message-assistant-2" as never,
+            role: "assistant",
+            text: "Answer two",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:05Z",
+            updatedAt: "2026-01-01T00:00:05Z",
+            streaming: false,
+          },
+        },
+      ],
+    });
+
+    // The fold replaces the turn's hidden work, and the second response is
+    // collapsed, so each arrow must resolve to the row the list will show.
+    expect(rows.map((row) => row.id)).toEqual([
+      "entry-user-1",
+      "turn-fold:turn-1",
+      "entry-assistant-commentary",
+      "entry-assistant-final",
+      "entry-user-2",
+      "response-collapsed:entry-user-2",
+    ]);
+
+    const nav = deriveUserMessageNav(rows);
+    expect(nav.get("entry-user-1")).toEqual({ rowIndex: 0, previousIndex: null, nextIndex: 4 });
+    expect(nav.get("entry-user-2")).toEqual({ rowIndex: 4, previousIndex: 0, nextIndex: null });
+    expect(nav.size).toBe(2);
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {

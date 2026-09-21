@@ -58,11 +58,13 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   CircleAlertIcon,
   CornerDownRightIcon,
   DownloadIcon,
   EyeIcon,
   FileIcon,
+  FoldVerticalIcon,
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
@@ -72,6 +74,7 @@ import {
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
+  UnfoldVerticalIcon,
   WrenchIcon,
   XIcon,
   ZapIcon,
@@ -86,6 +89,7 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
+  deriveUserMessageNav,
   deriveUserMessageSteeringBadge,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
@@ -101,6 +105,7 @@ import {
   workEntryIsVisibleInGroup,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
+  type UserMessageNavEntry,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
@@ -161,6 +166,10 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
+  /** Step targets for the arrows above each user message, keyed by row id. */
+  userMessageNav: ReadonlyMap<string, UserMessageNavEntry>;
+  onJumpToRow: (rowIndex: number) => void;
+  onToggleResponseCollapse: (messageId: MessageId, anchorRowId: string) => void;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: (agentId?: string) => void;
 }
@@ -303,6 +312,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
+  const [collapsedResponseUserMessageIds, setCollapsedResponseUserMessageIds] = useState<
+    ReadonlySet<MessageId>
+  >(new Set());
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
   const disclosureAnchorKeyRef = useRef<string | null>(null);
@@ -394,6 +406,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [suspendEndScrollMaintenanceForDisclosure],
   );
+  // Anchored to the owning user message row, which survives both states.
+  const onToggleResponseCollapse = useCallback(
+    (messageId: MessageId, anchorRowId: string) => {
+      suspendEndScrollMaintenanceForDisclosure(anchorRowId);
+      setCollapsedResponseUserMessageIds((existing) => {
+        const next = new Set(existing);
+        if (next.has(messageId)) {
+          next.delete(messageId);
+        } else {
+          next.add(messageId);
+        }
+        return next;
+      });
+    },
+    [suspendEndScrollMaintenanceForDisclosure],
+  );
+  const onJumpToRow = useCallback(
+    (rowIndex: number) => {
+      onManualNavigation();
+      void listRef.current?.scrollToIndex({ index: rowIndex, animated: true, viewOffset: 24 });
+    },
+    [listRef, onManualNavigation],
+  );
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
   // place; the next turn (or a reload, since this is local state) folds it.
@@ -432,6 +467,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         runningTurnId,
         expandedTurnIds,
         expandedWorkGroupIds,
+        collapsedResponseUserMessageIds,
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
@@ -443,6 +479,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       runningTurnId,
       expandedTurnIds,
       expandedWorkGroupIds,
+      collapsedResponseUserMessageIds,
       isWorking,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
@@ -450,6 +487,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  // Derived from the rendered rows, so an arrow's index is the row LegendList
+  // scrolls to.
+  const userMessageNav = useMemo(() => deriveUserMessageNav(rows), [rows]);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -548,6 +588,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      userMessageNav,
+      onJumpToRow,
+      onToggleResponseCollapse,
       agentPanelModel,
       onOpenAgents,
     }),
@@ -566,6 +609,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      userMessageNav,
+      onJumpToRow,
+      onToggleResponseCollapse,
       agentPanelModel,
       onOpenAgents,
     ],
@@ -996,6 +1042,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work-live" ? <LiveWorkEntryTimelineRow row={row} /> : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
+      {row.kind === "response-collapsed" ? <ResponseCollapsedTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -1035,9 +1082,39 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
   const steeringBadge = deriveUserMessageSteeringBadge(row.message.steering);
+  const nav = ctx.userMessageNav.get(row.id);
+  const jumpTo = (targetIndex: number | null) => {
+    if (targetIndex !== null) {
+      ctx.onJumpToRow(targetIndex);
+    }
+  };
 
   return (
     <div className="group flex flex-col items-end gap-1">
+      {nav ? (
+        <div className="flex items-center gap-0.5 pe-1">
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            aria-label="Previous message"
+            disabled={nav.previousIndex === null}
+            onClick={() => jumpTo(nav.previousIndex)}
+          >
+            <ChevronUpIcon className="size-3" />
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            aria-label="Next message"
+            disabled={nav.nextIndex === null}
+            onClick={() => jumpTo(nav.nextIndex)}
+          >
+            <ChevronDownIcon className="size-3" />
+          </Button>
+        </div>
+      ) : null}
       {steeringBadge ? (
         <div
           className={cn(
@@ -1175,6 +1252,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           </Tooltip>
           <div className="flex items-center gap-0.5">
             {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+            <ToggleResponseCollapseButton
+              messageId={row.message.id}
+              rowId={row.id}
+              collapsed={row.responseCollapsed}
+            />
             {displayedUserMessage.copyText && (
               <MessageCopyButton text={displayedUserMessage.copyText} variant="ghost" />
             )}
@@ -1207,6 +1289,66 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
       </TooltipTrigger>
       <TooltipPopup side="top">Revert to this message</TooltipPopup>
     </Tooltip>
+  );
+}
+
+function ToggleResponseCollapseButton({
+  messageId,
+  rowId,
+  collapsed,
+}: {
+  messageId: MessageId;
+  rowId: string;
+  collapsed: boolean;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const label = collapsed ? "Expand response" : "Collapse response";
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => ctx.onToggleResponseCollapse(messageId, rowId)}
+            aria-label={label}
+          />
+        }
+      >
+        {collapsed ? (
+          <UnfoldVerticalIcon className="size-3" />
+        ) : (
+          <FoldVerticalIcon className="size-3" />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function ResponseCollapsedTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "response-collapsed" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+
+  return (
+    <div className="border-b border-border/60 pb-2 pt-1">
+      <button
+        type="button"
+        data-scroll-anchor-ignore
+        onClick={() => ctx.onToggleResponseCollapse(row.userMessageId, row.userRowId)}
+        className="flex w-full cursor-pointer select-none items-center gap-1 rounded-md px-1 text-left text-sm leading-relaxed text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      >
+        <ChevronRightIcon className="size-3.5" />
+        <span>
+          Response hidden · {row.hiddenCount} {row.hiddenCount === 1 ? "step" : "steps"}
+        </span>
+      </button>
+    </div>
   );
 }
 
