@@ -13,6 +13,7 @@ import {
   ModelSelection,
   NonNegativeInt,
   ThreadId,
+  ProviderAgentControlInput,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -48,7 +49,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  type ProviderAdapterError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -862,6 +867,46 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  /**
+   * Per-agent control. Adapters that do not run subagents leave the hooks
+   * undefined, so the operation fails with a request error naming the provider;
+   * the reactor turns that into a failed activity on the thread.
+   */
+  const agentControlMethod = (operation: "interruptAgent" | "retryAgent") =>
+    Effect.fn(`ProviderService.${operation}`)(function* (rawInput: unknown) {
+      const input = yield* decodeInputOrValidationError({
+        operation: `ProviderService.${operation}`,
+        schema: ProviderAgentControlInput,
+        payload: rawInput,
+      });
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: `ProviderService.${operation}`,
+          allowRecovery: true,
+        });
+        const handler = routed.adapter[operation];
+        if (handler === undefined) {
+          return yield* new ProviderAdapterRequestError({
+            provider: routed.adapter.provider,
+            method: operation,
+            detail: `${routed.adapter.provider} does not run agents this way, so ${operation === "interruptAgent" ? "stopping" : "retrying"} one is not supported.`,
+          });
+        }
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": operation === "interruptAgent" ? "interrupt-agent" : "retry-agent",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+          "provider.agent_id": input.agentId,
+        });
+        yield* handler(routed.threadId, input.agentId);
+      });
+    });
+
+  const interruptAgent: ProviderServiceMethod<"interruptAgent"> =
+    agentControlMethod("interruptAgent");
+  const retryAgent: ProviderServiceMethod<"retryAgent"> = agentControlMethod("retryAgent");
+
   const respondToRequest: ProviderServiceMethod<"respondToRequest"> = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1221,6 +1266,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    interruptAgent,
+    retryAgent,
     respondToRequest,
     respondToUserInput,
     stopSession,

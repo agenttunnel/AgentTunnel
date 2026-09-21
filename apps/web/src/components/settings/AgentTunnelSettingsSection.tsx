@@ -216,6 +216,8 @@ export function AgentTunnelSettingsSection({
   const skipPermissions = readConfigBoolean(config, "dangerouslySkipPermissions", true);
   const autoMode = readConfigBoolean(config, "autoMode", false);
   const maxPasses = readConfigNumber(config, "maxOrchestratorPasses", 4);
+  const maxAgentRetries = readConfigNumber(config, "maxAgentRetries", 1);
+  const agentRetryWaitMinutes = readConfigNumber(config, "agentRetryWaitMinutes", 3);
   const passTimeoutMinutes = readConfigNumber(config, "orchestratorPassTimeoutMinutes", 15);
   const recapIntervalSeconds = readConfigNumber(config, "orchestratorRecapIntervalSeconds", 30);
 
@@ -281,6 +283,24 @@ export function AgentTunnelSettingsSection({
               max={12}
               onCommit={(value) =>
                 writeConfigValue(config, onChange, "maxOrchestratorPasses", value)
+              }
+            />
+            <NumberRow
+              label="Agent retries"
+              description="Automatic re-runs of a failed subagent before the workflow waits for you."
+              value={Number.isFinite(maxAgentRetries) ? maxAgentRetries : 1}
+              min={0}
+              max={5}
+              onCommit={(value) => writeConfigValue(config, onChange, "maxAgentRetries", value)}
+            />
+            <NumberRow
+              label="Retry wait"
+              description="How long a failed workflow waits for a manual retry before giving up, in minutes (0 = never wait)."
+              value={Number.isFinite(agentRetryWaitMinutes) ? agentRetryWaitMinutes : 3}
+              min={0}
+              max={30}
+              onCommit={(value) =>
+                writeConfigValue(config, onChange, "agentRetryWaitMinutes", value)
               }
             />
             <NumberRow

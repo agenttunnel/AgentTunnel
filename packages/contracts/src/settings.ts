@@ -744,6 +744,18 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed(30)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    // A failed subagent is re-run automatically this many times before the
+    // workflow stops and waits for the user (see agentRetryWaitMinutes).
+    maxAgentRetries: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(1)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    // How long a workflow that still has failed agents waits for a manual
+    // retry from the Agents panel before it gives up. 0 = never wait.
+    agentRetryWaitMinutes: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 30 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(3)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     dangerouslySkipPermissions: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({
@@ -1112,6 +1124,8 @@ const AgentTunnelSettingsPatch = Schema.Struct({
   maxOrchestratorPasses: Schema.optionalKey(Schema.Int),
   orchestratorPassTimeoutMinutes: Schema.optionalKey(Schema.Int),
   orchestratorRecapIntervalSeconds: Schema.optionalKey(Schema.Int),
+  maxAgentRetries: Schema.optionalKey(Schema.Int),
+  agentRetryWaitMinutes: Schema.optionalKey(Schema.Int),
   dangerouslySkipPermissions: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });

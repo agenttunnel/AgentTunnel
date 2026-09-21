@@ -71,6 +71,19 @@ export interface ProviderAdapterShape<TError> {
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
 
   /**
+   * Stop one agent a provider is running on behalf of a thread. Providers that
+   * run subagents as child processes (AgentTunnel) implement this; the others
+   * leave it undefined and the service reports the operation as unsupported.
+   */
+  readonly interruptAgent?: (threadId: ThreadId, agentId: string) => Effect.Effect<void, TError>;
+
+  /**
+   * Re-run one agent that failed or was stopped, keeping its identity so the
+   * run can pick the result back up.
+   */
+  readonly retryAgent?: (threadId: ThreadId, agentId: string) => Effect.Effect<void, TError>;
+
+  /**
    * Respond to an interactive approval request.
    */
   readonly respondToRequest: (

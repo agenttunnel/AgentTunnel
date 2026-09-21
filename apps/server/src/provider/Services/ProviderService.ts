@@ -12,6 +12,7 @@
  * @module ProviderService
  */
 import type {
+  ProviderAgentControlInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -79,6 +80,20 @@ export interface ProviderServiceShape {
    */
   readonly stopSession: (
     input: ProviderStopSessionInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Stop one agent a provider is running on behalf of a thread.
+   */
+  readonly interruptAgent: (
+    input: ProviderAgentControlInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Re-run one agent that failed or was stopped.
+   */
+  readonly retryAgent: (
+    input: ProviderAgentControlInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
