@@ -265,6 +265,23 @@ export type MessagesTimelineRow =
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
+      /** User messages only: this response is folded behind a chip. */
+      responseCollapsed: boolean;
+      /** Entries the collapsed response hides; 0 while expanded. */
+      responseHiddenCount: number;
+    }
+  | {
+      /**
+       * Stands in for a collapsed response. Everything between this user
+       * message and the next one is hidden while it is rendered.
+       */
+      kind: "response-collapsed";
+      id: string;
+      createdAt: string;
+      userMessageId: MessageId;
+      /** Row id of the owning user message — the scroll anchor when expanding. */
+      userRowId: string;
+      hiddenCount: number;
     }
   | {
       kind: "proposed-plan";
@@ -696,12 +713,40 @@ function deriveTurnFolds(input: {
   return foldsByAnchorEntryId;
 }
 
+/**
+ * Entries a collapsed response hides, per collapsed user message: everything
+ * up to the next user message. Counted up front so the chip and the user row's
+ * toggle report the same number.
+ */
+function countCollapsedResponseEntries(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  collapsedUserMessageIds: ReadonlySet<MessageId> | undefined,
+): ReadonlyMap<MessageId, number> {
+  const counts = new Map<MessageId, number>();
+  if (collapsedUserMessageIds === undefined || collapsedUserMessageIds.size === 0) {
+    return counts;
+  }
+
+  let owner: MessageId | null = null;
+  for (const entry of timelineEntries) {
+    if (entry.kind === "message" && entry.message.role === "user") {
+      owner = collapsedUserMessageIds.has(entry.message.id) ? entry.message.id : null;
+      continue;
+    }
+    if (owner !== null) {
+      counts.set(owner, (counts.get(owner) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
+  collapsedResponseUserMessageIds?: ReadonlySet<MessageId>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
@@ -730,6 +775,10 @@ export function deriveMessagesTimelineRows(input: {
       }
     }
   }
+  const collapsedResponseHiddenCounts = countCollapsedResponseEntries(
+    input.timelineEntries,
+    input.collapsedResponseUserMessageIds,
+  );
 
   let activeTurnHeaderIndex = input.timelineEntries.length;
   if (input.isWorking) {
@@ -843,10 +892,51 @@ export function deriveMessagesTimelineRows(input: {
     }
   };
 
+  // Collapsed-response bookkeeping: the owner is the last user message seen,
+  // and each region emits one chip where its first hidden row would sit.
+  let responseOwnerUserMessageId: MessageId | null = null;
+  let responseOwnerRowId: string | null = null;
+  let collapsedResponseChipRowId: string | null = null;
+
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
     if (!timelineEntry) {
       continue;
+    }
+
+    const userMessage =
+      timelineEntry.kind === "message" && timelineEntry.message.role === "user"
+        ? timelineEntry.message
+        : null;
+    if (userMessage !== null) {
+      responseOwnerUserMessageId = userMessage.id;
+      responseOwnerRowId = timelineEntry.id;
+      collapsedResponseChipRowId = null;
+    }
+
+    // A collapsed response hides every row up to the next user message — the
+    // active turn's live rows included, since this loop emits them too — and
+    // puts a single chip where the first hidden row would have been.
+    if (
+      userMessage === null &&
+      responseOwnerUserMessageId !== null &&
+      responseOwnerRowId !== null
+    ) {
+      const hiddenCount = collapsedResponseHiddenCounts.get(responseOwnerUserMessageId) ?? 0;
+      if (hiddenCount > 0) {
+        if (collapsedResponseChipRowId !== responseOwnerRowId) {
+          collapsedResponseChipRowId = responseOwnerRowId;
+          nextRows.push({
+            kind: "response-collapsed",
+            id: `response-collapsed:${responseOwnerRowId}`,
+            createdAt: timelineEntry.createdAt,
+            userMessageId: responseOwnerUserMessageId,
+            userRowId: responseOwnerRowId,
+            hiddenCount,
+          });
+        }
+        continue;
+      }
     }
 
     if (input.isWorking && index === activeTurnHeaderIndex) {
@@ -1078,6 +1168,14 @@ export function deriveMessagesTimelineRows(input: {
         timelineEntry.message.role === "user"
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
+      responseCollapsed:
+        timelineEntry.message.role === "user"
+          ? (input.collapsedResponseUserMessageIds?.has(timelineEntry.message.id) ?? false)
+          : false,
+      responseHiddenCount:
+        timelineEntry.message.role === "user"
+          ? (collapsedResponseHiddenCounts.get(timelineEntry.message.id) ?? 0)
+          : 0,
     });
   }
 
@@ -1086,6 +1184,40 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+export interface UserMessageNavEntry {
+  /** Index of this user message inside the rendered rows. */
+  readonly rowIndex: number;
+  /** Row index of the prompt before this one, null on the first. */
+  readonly previousIndex: number | null;
+  /** Row index of the prompt after this one, null on the last. */
+  readonly nextIndex: number | null;
+}
+
+/**
+ * Step targets for the arrows above a user message. Built from the rendered
+ * rows (not the entries), so an index is exactly what the list scrolls to.
+ */
+export function deriveUserMessageNav(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): ReadonlyMap<string, UserMessageNavEntry> {
+  const userRows: Array<{ id: string; rowIndex: number }> = [];
+  for (const [rowIndex, row] of rows.entries()) {
+    if (row.kind === "message" && row.message.role === "user") {
+      userRows.push({ id: row.id, rowIndex });
+    }
+  }
+
+  const nav = new Map<string, UserMessageNavEntry>();
+  for (const [position, userRow] of userRows.entries()) {
+    nav.set(userRow.id, {
+      rowIndex: userRow.rowIndex,
+      previousIndex: userRows[position - 1]?.rowIndex ?? null,
+      nextIndex: userRows[position + 1]?.rowIndex ?? null,
+    });
+  }
+  return nav;
 }
 
 export function computeStableMessagesTimelineRows(
@@ -1167,6 +1299,16 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
 
+    case "response-collapsed": {
+      const bc = b as typeof a;
+      return (
+        a.createdAt === bc.createdAt &&
+        a.userMessageId === bc.userMessageId &&
+        a.userRowId === bc.userRowId &&
+        a.hiddenCount === bc.hiddenCount
+      );
+    }
+
     case "message": {
       const bm = b as typeof a;
       return (
@@ -1176,7 +1318,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
-        a.revertTurnCount === bm.revertTurnCount
+        a.revertTurnCount === bm.revertTurnCount &&
+        a.responseCollapsed === bm.responseCollapsed &&
+        a.responseHiddenCount === bm.responseHiddenCount
       );
     }
   }
