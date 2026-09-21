@@ -33,6 +33,10 @@ config.resolver = {
       : config.resolver?.blockList
         ? [config.resolver.blockList]
         : []),
+    // Worktree-local state dirs must not be watched/rebuilt by Metro: the new
+    // `.agenttunnel` name plus the pre-rename `.t3` one still present on
+    // worktrees that have not been migrated yet.
+    new RegExp(`${escapedWorkspaceRoot}[/\\\\]\\.agenttunnel[/\\\\].*`),
     new RegExp(`${escapedWorkspaceRoot}[/\\\\]\\.t3[/\\\\].*`),
   ],
   extraNodeModules: {

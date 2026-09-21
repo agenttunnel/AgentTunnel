@@ -68,7 +68,7 @@ export function isProxiableBindHost(host: string): boolean {
 }
 
 export const DEFAULT_T3_HOME = Effect.map(Effect.service(Path.Path), (path) =>
-  path.join(NodeOS.homedir(), ".t3"),
+  path.join(NodeOS.homedir(), ".agenttunnel"),
 );
 
 const MODE_ARGS = {
@@ -320,8 +320,9 @@ export function createDevRunnerEnv({
   return Effect.gen(function* () {
     const serverPort = port ?? BASE_SERVER_PORT + serverOffset;
     const webPort = BASE_WEB_PORT + webOffset;
-    // Precedence (--home-dir > worktree .t3 > ambient T3CODE_HOME) is resolved
-    // by the caller; an unset t3Home here genuinely means "use the default".
+    // Precedence (--home-dir > worktree .agenttunnel > ambient T3CODE_HOME) is
+    // resolved by the caller; an unset t3Home here genuinely means "use the
+    // default".
     const configuredBaseDir = t3Home?.trim() || undefined;
     const resolvedBaseDir = yield* resolveBaseDir(configuredBaseDir);
     const isDesktopMode = mode === "dev:desktop";
@@ -675,8 +676,8 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
 
     const hostEnvironment = yield* HostProcessEnvironment;
     // A dev server started inside a worktree defaults to that worktree's own
-    // (gitignored) `.t3` — see @t3tools/shared/devHome for why this must
-    // outrank an ambient T3CODE_HOME. `--home-dir` still wins.
+    // (gitignored) `.agenttunnel` — see @t3tools/shared/devHome for why this
+    // must outrank an ambient T3CODE_HOME. `--home-dir` still wins.
     const worktreeHome = yield* resolveWorktreeT3Home(yield* HostProcessWorkingDirectory);
     // Trim before choosing: `--home-dir ""` is not a selection, and treating it
     // as one would skip the worktree default and land on the shared home —
@@ -860,7 +861,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   t3Home: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Explicit AgentTunnel data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME). Inside a git worktree this defaults to that worktree's own .t3 so dev state stays off the shared home.",
+      "Explicit AgentTunnel data directory; runtime state is stored under userdata (equivalent to T3CODE_HOME). Inside a git worktree this defaults to that worktree's own .agenttunnel so dev state stays off the shared home.",
     ),
     Flag.optional,
     Flag.map(Option.getOrUndefined),

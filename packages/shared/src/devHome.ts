@@ -1,17 +1,72 @@
 /**
  * Where development state lives, and how to keep it away from the shared
- * `~/.t3` that a user's installed AgentTunnel runs against.
+ * `~/.agenttunnel` that a user's installed AgentTunnel runs against.
  *
- * A linked git worktree gets its own (gitignored) `.t3`: feature work in a
- * throwaway branch must not share a database with the real app, and an ambient
- * `T3CODE_HOME` counts as an explicit base dir — flipping the state directory
- * from `<base>/dev` to `<base>/userdata`, the live production database.
+ * A linked git worktree gets its own (gitignored) `.agenttunnel`: feature work
+ * in a throwaway branch must not share a database with the real app, and an
+ * ambient `T3CODE_HOME` counts as an explicit base dir — flipping the state
+ * directory from `<base>/dev` to `<base>/userdata`, the live production
+ * database.
  */
 
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+
+/** The internal AgentTunnel home directory name inside a home/repo directory. */
+export const AGENTTUNNEL_HOME_DIR = ".agenttunnel";
+/** The pre-rename home name; migrated to `AGENTTUNNEL_HOME_DIR` once at startup. */
+const LEGACY_AGENTTUNNEL_HOME_DIR = ".t3";
+
+/**
+ * One-time rename of a legacy `.t3` home directory. A user who upgraded from
+ * the pre-rename builds keeps their data at `~/.t3` (or `<worktree>/.t3`), so
+ * the first run after the rename moves it to the new name before anything is
+ * created there. Idempotent:
+ *
+ * - new home already exists → leave both alone, use the new home;
+ * - legacy home missing → nothing to move, use the new home;
+ * - legacy home present → rename it, and on failure keep using the legacy
+ *   home rather than strand the data behind a fresh empty directory (the next
+ *   start retries).
+ */
+export const resolveAgentTunnelHomeDir = Effect.fn("resolveAgentTunnelHomeDir")(function* (
+  parentDirectory: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const agentTunnelHome = path.join(parentDirectory, AGENTTUNNEL_HOME_DIR);
+  const legacyHome = path.join(parentDirectory, LEGACY_AGENTTUNNEL_HOME_DIR);
+  const agentTunnelExists = yield* fileSystem
+    .exists(agentTunnelHome)
+    .pipe(Effect.orElseSucceed(() => false));
+  if (agentTunnelExists) {
+    return agentTunnelHome;
+  }
+  const legacyExists = yield* fileSystem.exists(legacyHome).pipe(Effect.orElseSucceed(() => false));
+  if (!legacyExists) {
+    return agentTunnelHome;
+  }
+  yield* fileSystem.rename(legacyHome, agentTunnelHome).pipe(
+    Effect.tap(() => Effect.logInfo("Migrated AgentTunnel home from .t3 to .agenttunnel.")),
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not migrate the legacy .t3 home; keeping it in place.", {
+        cause,
+        legacyHome,
+        agentTunnelHome,
+      }),
+    ),
+  );
+  const renamed = yield* fileSystem.exists(agentTunnelHome).pipe(Effect.orElseSucceed(() => false));
+  if (renamed) {
+    return agentTunnelHome;
+  }
+  return yield* fileSystem.exists(legacyHome).pipe(
+    Effect.map((stillThere) => (stillThere ? legacyHome : agentTunnelHome)),
+    Effect.orElseSucceed(() => agentTunnelHome),
+  );
+});
 
 /**
  * A `.git` file points at the real git directory. A linked worktree's lives at
@@ -88,7 +143,8 @@ export const resolveGitWorktreePath = (
 /**
  * The worktree-local data directory for `cwd`, or undefined outside a linked
  * worktree. Deliberately does not require the directory to exist yet: falling
- * back because it is missing would send callers at the shared home.
+ * back because it is missing would send callers at the shared home. When a
+ * pre-rename `.t3` exists it is migrated once to `.agenttunnel`.
  */
 export const resolveWorktreeT3Home = (
   cwd: string,
@@ -98,6 +154,5 @@ export const resolveWorktreeT3Home = (
     if (worktreePath === undefined) {
       return undefined;
     }
-    const path = yield* Path.Path;
-    return path.join(worktreePath, ".t3");
+    return yield* resolveAgentTunnelHomeDir(worktreePath);
   });
