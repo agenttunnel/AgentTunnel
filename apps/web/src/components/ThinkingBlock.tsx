@@ -1,15 +1,20 @@
-import { ChevronDown, ChevronRight, Terminal } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "~/lib/utils";
 
 import ChatMarkdown from "./ChatMarkdown";
-import { splitThinkingText } from "./ThinkingBlock.logic";
+import { parseAgentOutputText } from "./AgentWorkflowMessage.logic";
+import { ToolCallRow } from "./ToolCallRow";
 
-/** Muted, indented aside for model reasoning — opencode's thinking part. */
+/**
+ * Muted, indented aside for model reasoning — opencode's thinking part. The
+ * body carries the same `→ tool: detail` / `✗ error` display lines as subagent
+ * output, so it parses and renders with the same rows.
+ */
 export function ThinkingBlock({ text, className }: { text: string; className?: string }) {
   const [open, setOpen] = useState(true);
-  const segments = splitThinkingText(text);
+  const segments = parseAgentOutputText(text, undefined);
   return (
     <div className={cn("ms-2 border-s border-border/60 ps-3", className)}>
       <button
@@ -29,13 +34,19 @@ export function ThinkingBlock({ text, className }: { text: string; className?: s
         <div className="flex flex-col gap-1 pt-1 opacity-75">
           {segments.map((segment) =>
             segment.kind === "tool" ? (
-              <div
+              <ToolCallRow
                 key={segment.id}
-                className="flex items-start gap-1.5 font-mono text-[.68rem] leading-relaxed text-muted-foreground/80"
+                tool={segment.tool}
+                detail={segment.displayDetail}
+                fullDetail={segment.detail}
+              />
+            ) : segment.kind === "error" ? (
+              <p
+                key={segment.id}
+                className="whitespace-pre-wrap break-words font-mono text-[.68rem] leading-relaxed text-destructive-foreground/90"
               >
-                <Terminal aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground/60" />
-                <span className="min-w-0 whitespace-pre-wrap break-words">{segment.text}</span>
-              </div>
+                {segment.text}
+              </p>
             ) : (
               <ChatMarkdown key={segment.id} text={segment.text} cwd={undefined} lineBreaks />
             ),

@@ -1,52 +1,13 @@
 import type { OrchestrationAgentLogEntry } from "@t3tools/contracts";
-import {
-  Bot,
-  Check,
-  ChevronDown,
-  Eye,
-  FilePen,
-  Globe,
-  ListChecks,
-  Search,
-  Terminal,
-  Wrench,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Check, ChevronDown, X } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "~/lib/utils";
 
 import ChatMarkdown from "./ChatMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { toolIcon } from "./ToolCallRow";
 import { foldAgentLogEntries, type AgentLogBlock } from "./AgentLogView.logic";
-
-function toolIcon(tool: string): LucideIcon {
-  switch (tool) {
-    case "bash":
-    case "shell":
-      return Terminal;
-    case "read":
-      return Eye;
-    case "edit":
-    case "write":
-    case "patch":
-      return FilePen;
-    case "grep":
-    case "glob":
-    case "list":
-      return Search;
-    case "webfetch":
-    case "websearch":
-      return Globe;
-    case "task":
-      return Bot;
-    case "todowrite":
-      return ListChecks;
-    default:
-      return Wrench;
-  }
-}
 
 function MarkdownBlock({ text }: { text: string }) {
   return (

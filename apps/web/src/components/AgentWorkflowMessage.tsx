@@ -5,12 +5,84 @@ import { useMemo, useState } from "react";
 import { cn } from "~/lib/utils";
 
 import ChatMarkdown from "./ChatMarkdown";
-import { parseAgentWorkflowMessage } from "./AgentWorkflowMessage.logic";
+import {
+  groupAgentOutputSegments,
+  parseAgentOutputText,
+  parseAgentWorkflowMessage,
+  summarizeAgentOutput,
+  type AgentOutputToolRun,
+} from "./AgentWorkflowMessage.logic";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { ToolCallRow } from "./ToolCallRow";
 
-function OutputCard({ label, text }: { label: string; text: string }) {
+function countLabel(count: number, noun: string): string {
+  if (count === 0) return "";
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** Collapsed row for a long stretch of tool calls: one line, expandable in place. */
+function ToolRunRow({ run }: { run: AgentOutputToolRun }) {
   const [open, setOpen] = useState(false);
-  const lineCount = text.length === 0 ? 0 : text.split("\n").length;
+  return (
+    <div className="overflow-hidden rounded border border-border/40 bg-card/20">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-accent/30"
+      >
+        <Bot aria-hidden className="size-3 shrink-0 text-muted-foreground/60" />
+        <span className="min-w-0 flex-1 truncate text-[.7rem] font-medium text-foreground/80">
+          {run.summary}
+        </span>
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground/50 transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-1 border-t border-border/40 px-2 py-1.5">
+          {run.tools.map((tool) => (
+            <ToolCallRow
+              key={tool.id}
+              tool={tool.tool}
+              detail={tool.displayDetail}
+              fullDetail={tool.detail}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OutputCard({
+  label,
+  text,
+  cwd,
+}: {
+  label: string;
+  text: string;
+  cwd: string | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const { groups, counts } = useMemo(() => {
+    const segments = parseAgentOutputText(text, cwd);
+    return {
+      groups: groupAgentOutputSegments(segments),
+      counts: summarizeAgentOutput(segments),
+    };
+  }, [text, cwd]);
+  const countSummary = [
+    countLabel(counts.lines, "line"),
+    countLabel(counts.toolCalls, "tool call"),
+    countLabel(counts.errors, "error"),
+  ]
+    .filter((part) => part.length > 0)
+    .join(" · ");
   return (
     <div className="overflow-hidden rounded-md border border-info/25 bg-info/[0.04]">
       <button
@@ -25,7 +97,7 @@ function OutputCard({ label, text }: { label: string; text: string }) {
           <span className="text-muted-foreground"> · {label}</span>
         </span>
         <span className="shrink-0 font-mono text-[.65rem] text-muted-foreground/60">
-          {lineCount} {lineCount === 1 ? "line" : "lines"}
+          {countSummary}
         </span>
         <ChevronDown
           aria-hidden
@@ -36,9 +108,42 @@ function OutputCard({ label, text }: { label: string; text: string }) {
         />
       </button>
       {open ? (
-        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-info/20 bg-background/50 p-2 font-mono text-[.68rem] leading-relaxed text-foreground/80">
-          {text.length > 0 ? text : "No output."}
-        </pre>
+        <div className="flex max-h-80 flex-col gap-1.5 overflow-auto border-t border-info/20 bg-background/50 p-2">
+          {groups.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No output.</p>
+          ) : (
+            groups.map((group) => {
+              switch (group.kind) {
+                case "prose":
+                  return (
+                    <div key={group.id} className="text-xs leading-relaxed text-foreground/90">
+                      <ChatMarkdown text={group.text} cwd={cwd} lineBreaks />
+                    </div>
+                  );
+                case "tool":
+                  return (
+                    <ToolCallRow
+                      key={group.id}
+                      tool={group.tool}
+                      detail={group.displayDetail}
+                      fullDetail={group.detail}
+                    />
+                  );
+                case "error":
+                  return (
+                    <p
+                      key={group.id}
+                      className="whitespace-pre-wrap break-words rounded-md border border-destructive/40 px-2 py-1.5 font-mono text-[.7rem] leading-relaxed text-destructive-foreground"
+                    >
+                      {group.text}
+                    </p>
+                  );
+                case "toolRun":
+                  return <ToolRunRow key={group.id} run={group} />;
+              }
+            })
+          )}
+        </div>
       ) : null}
     </div>
   );
@@ -111,7 +216,7 @@ export function AgentWorkflowMessage({
               <ThinkingBlock key={block.id} text={block.text} className="agent-workflow-thinking" />
             );
           case "output":
-            return <OutputCard key={block.id} label={block.label} text={block.text} />;
+            return <OutputCard key={block.id} label={block.label} text={block.text} cwd={cwd} />;
         }
       })}
     </div>
