@@ -548,10 +548,72 @@ describe("applyPiEvent text and thinking deltas", () => {
     expect(emissions[1]?.payload).toEqual({
       usage: {
         usedTokens: 14,
+        lastUsedTokens: 14,
         inputTokens: 10,
         lastInputTokens: 10,
         outputTokens: 4,
         lastOutputTokens: 4,
+        totalProcessedTokens: 14,
+      },
+    });
+  });
+
+  it("includes cached input and reasoning and accumulates processed tokens", () => {
+    const state = createPiEventMapperState();
+    applyPiEvent(state, { type: "message_start", message: { role: "assistant" } });
+    const first = applyPiEvent(state, {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        stopReason: "toolUse",
+        usage: {
+          input: 100,
+          output: 40,
+          cacheRead: 1000,
+          cacheWrite: 20,
+          reasoning: 25,
+          totalTokens: 1160,
+        },
+      },
+    });
+    // Cached input is part of the snapshot's inclusive input total, and
+    // reasoning stays a subset of output.
+    expect(first[1]?.payload).toEqual({
+      usage: {
+        usedTokens: 1160,
+        lastUsedTokens: 1160,
+        inputTokens: 1120,
+        lastInputTokens: 1120,
+        cachedInputTokens: 1020,
+        lastCachedInputTokens: 1020,
+        outputTokens: 40,
+        lastOutputTokens: 40,
+        reasoningOutputTokens: 25,
+        lastReasoningOutputTokens: 25,
+        totalProcessedTokens: 1160,
+      },
+    });
+
+    applyPiEvent(state, { type: "message_start", message: { role: "assistant" } });
+    const second = applyPiEvent(state, {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        stopReason: "stop",
+        usage: { input: 5, output: 3, cacheRead: 7, cacheWrite: 0, totalTokens: 15 },
+      },
+    });
+    expect(second[1]?.payload).toEqual({
+      usage: {
+        usedTokens: 15,
+        lastUsedTokens: 15,
+        inputTokens: 12,
+        lastInputTokens: 12,
+        cachedInputTokens: 7,
+        lastCachedInputTokens: 7,
+        outputTokens: 3,
+        lastOutputTokens: 3,
+        totalProcessedTokens: 1175,
       },
     });
   });

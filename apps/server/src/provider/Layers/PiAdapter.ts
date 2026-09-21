@@ -157,6 +157,8 @@ export interface PiEventMapperState {
   contentBuffers: Map<number, string>;
   lastStopReason: string | undefined;
   compactionItemId: string | undefined;
+  /** Session-cumulative tokens, summed from every reported assistant message. */
+  totalProcessedTokens: number;
 }
 
 export function createPiEventMapperState(options?: {
@@ -173,6 +175,7 @@ export function createPiEventMapperState(options?: {
     contentBuffers: new Map(),
     lastStopReason: undefined,
     compactionItemId: undefined,
+    totalProcessedTokens: 0,
   };
 }
 
@@ -194,20 +197,50 @@ const PI_BLOCKING_EXTENSION_UI_METHODS: ReadonlySet<string> = new Set([
 const asFiniteInt = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : undefined;
 
-function mapPiUsage(usage: PiRpcValue): Record<string, unknown> | undefined {
+interface MappedPiUsage {
+  readonly usedTokens: number;
+  readonly snapshot: Record<string, unknown>;
+}
+
+/**
+ * Maps pi's `Usage` into the thread snapshot contract. pi reports uncached
+ * `input` beside `cacheRead`/`cacheWrite`, and folds `reasoning` into `output`;
+ * the snapshot's input/output are the inclusive totals with cached and
+ * reasoning as subsets, matching the Claude, Codex, and AgentTunnel snapshots.
+ *
+ * pi emits per-message usage, so there is no session total here; callers
+ * accumulate `usedTokens` to derive `totalProcessedTokens`.
+ */
+function mapPiUsage(usage: PiRpcValue): MappedPiUsage | undefined {
   const input = asFiniteInt(usage.input);
   const output = asFiniteInt(usage.output);
-  const cached = asFiniteInt(usage.cacheRead);
+  const cacheRead = asFiniteInt(usage.cacheRead);
+  const cacheWrite = asFiniteInt(usage.cacheWrite);
+  const reasoning = asFiniteInt(usage.reasoning);
+  const cachedInputTokens = (cacheRead ?? 0) + (cacheWrite ?? 0);
   const total = asFiniteInt(usage.totalTokens);
-  const usedTokens = total ?? (input ?? 0) + (output ?? 0);
+  const usedTokens = total ?? (input ?? 0) + cachedInputTokens + (output ?? 0);
   if (usedTokens === 0 && input === undefined && output === undefined) {
     return undefined;
   }
+  const inputTokens = (input ?? 0) + cachedInputTokens;
+  const outputTokens = output ?? 0;
   return {
     usedTokens,
-    ...(input !== undefined ? { inputTokens: input, lastInputTokens: input } : {}),
-    ...(cached !== undefined ? { cachedInputTokens: cached, lastCachedInputTokens: cached } : {}),
-    ...(output !== undefined ? { outputTokens: output, lastOutputTokens: output } : {}),
+    snapshot: {
+      usedTokens,
+      lastUsedTokens: usedTokens,
+      inputTokens,
+      lastInputTokens: inputTokens,
+      ...(cachedInputTokens > 0
+        ? { cachedInputTokens, lastCachedInputTokens: cachedInputTokens }
+        : {}),
+      outputTokens,
+      lastOutputTokens: outputTokens,
+      ...(reasoning !== undefined
+        ? { reasoningOutputTokens: reasoning, lastReasoningOutputTokens: reasoning }
+        : {}),
+    },
   };
 }
 
@@ -379,9 +412,16 @@ export function applyPiEvent(
       const usage = asPiRecord(message.usage);
       const mappedUsage = usage === undefined ? undefined : mapPiUsage(usage);
       if (mappedUsage !== undefined) {
+        // pi reports per-message usage, so the session total is the running sum.
+        state.totalProcessedTokens += mappedUsage.usedTokens;
         emissions.push({
           type: "thread.token-usage.updated",
-          payload: { usage: mappedUsage },
+          payload: {
+            usage: {
+              ...mappedUsage.snapshot,
+              totalProcessedTokens: state.totalProcessedTokens,
+            },
+          },
         });
       }
       return emissions;
