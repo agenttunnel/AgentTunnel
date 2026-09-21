@@ -138,11 +138,16 @@ shows only harnesses that are enabled (or currently selected by a role). There i
 Providers settings page.
 
 The driver branches on the harness CLI basename: `opencode` uses the OpenCode inventory probe
-(`<harness> models --verbose`) and `run --format json`, while `pi` uses `pi --list-models` for the
-model list and one-shot `pi --mode json -p <prompt> --no-session` per role, translating pi's JSONL
-`message_end` text into the same `__AGENTTUNNEL_TOOL__` protocol. Any other basename keeps the generic
-`run` invocation. Model probes never read stdin and are wrapped in a timeout, so a wedged or
-interactive harness degrades to a readable provider warning instead of blocking the registry.
+(`<harness> models --verbose`) and `run --format json`; `pi` uses `pi --list-models` for the model
+list and one-shot `pi --mode json -p <prompt> --no-session` per role; `claude` runs
+`claude --print --output-format stream-json --verbose`; `codex` runs
+`codex exec --json --ephemeral --skip-git-repo-check`. Each of those transports translates its CLI's
+JSONL stream into the same `__AGENTTUNNEL_TOOL__` protocol and the same per-step token frames, so a
+role's usage reaches the thread either way — OpenCode reports it on `step_finish`, pi on
+`message_end`, Claude Code per assistant message with the run's cost on its closing `result`, and
+Codex on `turn.completed`. Any other basename keeps the generic `run` invocation and contributes no
+usage. Model probes never read stdin and are wrapped in a timeout, so a wedged or interactive harness
+degrades to a readable provider warning instead of blocking the registry.
 
 A completed workflow ends with a real final report rather than just the machinery tables. The
 orchestrator's closing `done` action may carry `summary` (what happened) and `next_steps`, and only a

@@ -19,14 +19,15 @@ const step = {
 it("addHarnessUsageTotals accumulates step deltas field-wise", () => {
   const totals = emptyHarnessUsageTotals();
   addHarnessUsageTotals(totals, step);
-  addHarnessUsageTotals(totals, {
+  const second = {
     ...step,
     totalTokens: 100,
     inputTokens: 80,
     cachedInputTokens: 0,
     outputTokens: 15,
     reasoningOutputTokens: 5,
-  });
+  };
+  addHarnessUsageTotals(totals, second);
 
   NodeAssert.deepEqual(totals, {
     totalTokens: 24_722,
@@ -35,7 +36,45 @@ it("addHarnessUsageTotals accumulates step deltas field-wise", () => {
     outputTokens: 228,
     reasoningOutputTokens: 487,
     costUsd: 0,
+    lastTokenStep: second,
   });
+});
+
+it("addHarnessUsageTotals folds a repeated step once", () => {
+  const totals = emptyHarnessUsageTotals();
+  // Claude repeats a message's usage on each content-block event of the stream.
+  const first = { ...step, stepId: "msg_1" };
+  const repeat = { ...step, stepId: "msg_1" };
+  const next = { ...step, totalTokens: 10, stepId: "msg_2" };
+
+  NodeAssert.notEqual(addHarnessUsageTotals(totals, first), undefined);
+  NodeAssert.equal(addHarnessUsageTotals(totals, repeat), undefined);
+  NodeAssert.notEqual(addHarnessUsageTotals(totals, next), undefined);
+
+  NodeAssert.equal(totals.totalTokens, step.totalTokens + 10);
+});
+
+it("threadUsageSnapshotFromStep repeats the last token-bearing step for a cost-only frame", () => {
+  const totals = emptyHarnessUsageTotals();
+  addHarnessUsageTotals(totals, step);
+  // Claude prices the run on its closing frame, which carries no tokens.
+  const costOnly = {
+    totalTokens: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    costUsd: 0.4,
+  };
+  addHarnessUsageTotals(totals, costOnly);
+
+  const snapshot = threadUsageSnapshotFromStep(costOnly, totals);
+
+  NodeAssert.equal(snapshot.usedTokens, step.totalTokens);
+  NodeAssert.equal(snapshot.inputTokens, step.inputTokens + step.cachedInputTokens);
+  NodeAssert.equal(snapshot.outputTokens, step.outputTokens + step.reasoningOutputTokens);
+  NodeAssert.equal(snapshot.totalProcessedTokens, step.totalTokens);
+  NodeAssert.equal(snapshot.totalCostUsd, 0.4);
 });
 
 it("addHarnessUsageTotals accumulates only the costs a harness reported", () => {

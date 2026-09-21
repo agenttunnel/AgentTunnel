@@ -41,6 +41,7 @@ those rows show a dash instead of an estimate.
 
 Subagent tokens count toward the turn that spawned the agent. Figures are exactly what the provider
 reported; providers that report no usage leave the pane empty instead of estimating. AgentTunnel
-threads count tokens streamed by their harness runs — the OpenCode and Pi harnesses both report
-per-step frames — so the orchestrator, executor, and reviewer rows each carry the tokens their own
-CLI reported.
+threads count tokens from every harness that streams them — OpenCode, Pi, Claude Code, and Codex each
+report per-step usage, so the orchestrator, executor, and reviewer rows carry the tokens their own
+CLI reported. Role runs on Cursor or Grok Build have no transport yet and contribute nothing rather
+than a guess.
