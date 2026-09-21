@@ -12,8 +12,14 @@ import * as Stream from "effect/Stream";
 import {
   normalizeContextLearning,
   type AgentTunnelContextLearning,
+  type AgentTunnelDispatchOutcome,
 } from "./InheritedContextStore.ts";
 import { AgentTunnelSharedContext } from "./SharedContext.ts";
+import {
+  addHarnessUsageTotals,
+  emptyHarnessUsageTotals,
+  type HarnessUsageTotals,
+} from "./harnessUsage.ts";
 import { parseAgentTunnelToolCall, type AgentTunnelToolCall } from "./protocol.ts";
 import {
   EXECUTOR_PROMPT,
@@ -89,6 +95,12 @@ export interface AgentTunnelProcessSpec {
   readonly cwd: string;
   readonly prompt: string;
   readonly dangerouslySkipPermissions: boolean;
+  /**
+   * Accumulator the runner fills from harness token frames. The caller owns it,
+   * so it can read what the process cost after the stream ends — including when
+   * the pass hit its timeout.
+   */
+  readonly usage?: HarnessUsageTotals;
 }
 
 export class AgentTunnelProcessError extends Schema.TaggedErrorClass<AgentTunnelProcessError>()(
@@ -181,6 +193,8 @@ export interface AgentTunnelRunResult {
   readonly contextDump?: string;
   /** Durable cross-project lessons the orchestrator recorded for the inherited context. */
   readonly learnings?: ReadonlyArray<AgentTunnelContextLearning>;
+  /** What every process this workflow ran cost, for the role-candidate ledger. */
+  readonly dispatches: ReadonlyArray<AgentTunnelDispatchOutcome>;
 }
 
 export interface AgentTunnelRunOptions {
@@ -199,6 +213,13 @@ export interface AgentTunnelRunOptions {
   readonly priorSharedContext?: string;
   /** Rendered global context inherited from earlier orchestrators. */
   readonly inheritedContext?: string;
+  /** Size of that rendered context, for the orchestrator's own budget accounting. */
+  readonly inheritedContextChars?: number;
+  /**
+   * Session-cumulative orchestrator usage before this turn, so the planner sees
+   * the thread's total spend, not just this workflow's share.
+   */
+  readonly sessionUsage?: HarnessUsageTotals;
   readonly takeSteeringMessages?: () => Effect.Effect<ReadonlyArray<string>>;
 }
 
@@ -223,10 +244,13 @@ interface PipelineState {
 interface ProcessResult {
   readonly code: number | null;
   readonly error?: string;
+  /** What the harness reported for this process; zeroes when it reports none. */
+  readonly usage: HarnessUsageTotals;
 }
 
 interface TaskRecord {
   readonly id: string;
+  readonly agentId: string;
   readonly role: AgentTunnelRole;
   readonly label: string;
   readonly pipelineId: string;
@@ -237,6 +261,14 @@ interface TaskRecord {
   readonly harness: string;
   readonly model?: string;
   readonly error?: string;
+  /** Tokens and cost the harness reported for this agent. */
+  readonly usage: HarnessUsageTotals;
+  /** Characters of the brief this agent received. */
+  readonly promptChars: number;
+  /** Shared-context keys this agent wrote with note_finding or a review verdict. */
+  readonly findingKeys: ReadonlyArray<string>;
+  /** Shared-context key its captured output landed under. */
+  readonly resultKey: string;
 }
 
 /**
@@ -276,6 +308,40 @@ function formatDuration(durationMs: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/** Thousands-separated integer, without depending on the host locale. */
+function formatTokenCount(value: number): string {
+  return Math.round(value)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Costs below a cent keep four decimals; harness pricing is per-token. */
+function formatCost(value: number): string {
+  return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
+}
+
+/** Usage totals in the shape the inherited-context ledger stores. */
+function dispatchUsageTotals(
+  totals: HarnessUsageTotals,
+): Pick<
+  AgentTunnelDispatchOutcome,
+  | "totalTokens"
+  | "inputTokens"
+  | "outputTokens"
+  | "cachedInputTokens"
+  | "reasoningOutputTokens"
+  | "costUsd"
+> {
+  return {
+    totalTokens: totals.totalTokens,
+    inputTokens: totals.inputTokens,
+    outputTokens: totals.outputTokens + totals.reasoningOutputTokens,
+    cachedInputTokens: totals.cachedInputTokens,
+    reasoningOutputTokens: totals.reasoningOutputTokens,
+    ...(totals.costUsd > 0 ? { costUsd: totals.costUsd } : {}),
+  };
 }
 
 function humanTaskLabel(task: string, max = TASK_LABEL_MAX_CHARS): string {
@@ -379,7 +445,15 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const taskRecords: TaskRecord[] = [];
   const recordedLearnings: AgentTunnelContextLearning[] = [];
   const recordedLearningKeys = new Set<string>();
+  /** Tokens and cost every sub-agent burned in this workflow. */
+  const workflowUsage = emptyHarnessUsageTotals();
+  /** Tokens and cost this workflow's orchestrator passes burned. */
+  const orchestratorUsage = emptyHarnessUsageTotals();
+  /** Findings each agent wrote into the shared notebook, keyed by agent id. */
+  const agentFindingKeys = new Map<string, ReadonlyArray<string>>();
   const workflowStartedAt = yield* Clock.currentTimeMillis;
+  let orchestratorPassMs = 0;
+  let lastOrchestratorPromptChars = 0;
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
   let orchestratorThinkingOpen = false;
@@ -397,6 +471,14 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const orchestratorPassTimeout =
     options.orchestratorPassTimeout ??
     Duration.minutes(options.settings.orchestratorPassTimeoutMinutes);
+
+  /** Keeps the per-agent finding list the ledger is built from, duplicate-free. */
+  const recordAgentFinding = (agentId: string, key: string): void => {
+    if (key.length === 0) return;
+    const keys = agentFindingKeys.get(agentId) ?? [];
+    if (keys.includes(key)) return;
+    agentFindingKeys.set(agentId, [...keys, key]);
+  };
 
   yield* trace("workflow started", {
     workflowId: options.workflowId,
@@ -458,6 +540,29 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         summary: resolved.plainSummary.slice(0, 160),
       });
       const finishedAt = yield* Clock.currentTimeMillis;
+      // Every process this workflow ran, orchestrator included, as one durable
+      // outcome list: the adapter folds it into the inherited role ledger.
+      const orchestratorModel = options.settings.orchestratorModel || options.model;
+      const dispatches: ReadonlyArray<AgentTunnelDispatchOutcome> = [
+        {
+          role: "orchestrator",
+          harness: options.settings.orchestratorHarness,
+          ...(orchestratorModel ? { model: orchestratorModel } : {}),
+          status,
+          durationMs: orchestratorPassMs,
+          ...dispatchUsageTotals(orchestratorUsage),
+        },
+        ...taskRecords.map(
+          (record): AgentTunnelDispatchOutcome => ({
+            role: record.role,
+            harness: record.harness,
+            ...(record.model ? { model: record.model } : {}),
+            status: record.status,
+            durationMs: record.durationMs,
+            ...dispatchUsageTotals(record.usage),
+          }),
+        ),
+      ];
       yield* emit({
         type: "orchestrator.output",
         text: formatWorkflowFinishMarkdown({
@@ -470,6 +575,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           taskRecords,
           learnings: recordedLearnings,
           durationMs: finishedAt - workflowStartedAt,
+          orchestratorUsage,
+          workflowUsage,
         }),
       });
       yield* emit({
@@ -483,6 +590,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         summary: resolved.plainSummary,
         contextDump: context.renderForPrompt(),
         ...(recordedLearnings.length > 0 ? { learnings: [...recordedLearnings] } : {}),
+        dispatches,
       } satisfies AgentTunnelRunResult;
     });
 
@@ -517,6 +625,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     onLine: (line: string) => Effect.Effect<void>,
     timeout?: Duration.Input,
   ) {
+    // The runner fills this from harness token frames as they stream. Reading it
+    // after the process (or its timeout) has settled is the only place the loop
+    // learns what the pass or task cost.
+    const usage = emptyHarnessUsageTotals();
     yield* trace("spawning harness process", {
       id: spec.id,
       harness: spec.harness,
@@ -527,7 +639,9 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       skipPermissions: spec.dangerouslySkipPermissions,
     });
     const inner = Effect.scoped(
-      options.process.spawn(spec).pipe(Effect.flatMap((handle) => processOutput(handle, onLine))),
+      options.process
+        .spawn({ ...spec, usage })
+        .pipe(Effect.flatMap((handle) => processOutput(handle, onLine))),
     );
     const wrapped = timeout
       ? inner.pipe(Effect.timeoutOption(timeout))
@@ -538,6 +652,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       return {
         code: null,
         error: Cause.pretty(result.cause),
+        usage,
       };
     }
     const value = result.value;
@@ -550,6 +665,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         code: null,
         error:
           "orchestrator pass timed out — raise the pass timeout in AgentTunnel settings if the planner needs longer",
+        usage,
       };
     }
     yield* trace("harness process finished", {
@@ -557,7 +673,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       code: value.value.code,
       ...(value.value.error ? { error: value.value.error } : {}),
     });
-    return value.value;
+    return { ...value.value, usage };
   });
 
   const handleOrchestratorToolCall = Effect.fn("runAgentTunnel.handleOrchestratorToolCall")(
@@ -768,14 +884,29 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     return `\n\n## Inherited context\n\nDurable cross-project rules recorded by earlier orchestrators. Treat them as binding guidance unless the current task overrides them.\n\n${inherited}`;
   };
 
-  const dispatchOutcomesBlock = (): string => {
+  const spendText = (totals: HarnessUsageTotals): string =>
+    `${formatTokenCount(totals.totalTokens)} tokens${totals.costUsd > 0 ? ` · ${formatCost(totals.costUsd)}` : ""}`;
+
+  /**
+   * What the workflow has spent and what every agent wrote into the shared
+   * notebook. This is the orchestrator's own accounting: without it, model
+   * choice for follow-up passes is guesswork.
+   */
+  const workflowStateBlock = (): string => {
     if (taskRecords.length === 0) return "";
     const orchestratorModel = options.settings.orchestratorModel || options.model;
-    const rows = taskRecords.map(
-      (record) =>
-        `| ${record.role} | ${record.harness} | ${record.model ?? "default"} | ${record.status} | ${record.label} |`,
-    );
-    return `\n\n## Dispatch outcomes this workflow\n\nUse these actual harness/model/status results when recording model-fit and model-quality learnings before you call done.\n\nOrchestrator: \`${options.settings.orchestratorHarness}\`${orchestratorModel ? ` · \`${orchestratorModel}\`` : ""}\n\n| Role | Harness | Model | Status | Task |\n| --- | --- | --- | --- | --- |\n${rows.join("\n")}`;
+    const sessionTokens = (options.sessionUsage?.totalTokens ?? 0) + orchestratorUsage.totalTokens;
+    const sessionCost = (options.sessionUsage?.costUsd ?? 0) + orchestratorUsage.costUsd;
+    const sharedContext = context.renderForPrompt();
+    const rows = taskRecords.map((record) => {
+      const harness = `${record.harness}${record.model ? ` · ${record.model}` : ""}`;
+      const findings =
+        record.findingKeys.length > 0
+          ? record.findingKeys.map((key) => `\`${key}\``).join(", ")
+          : "—";
+      return `| ${record.role} | ${harness} | ${record.status} | ${record.usage.totalTokens > 0 ? formatTokenCount(record.usage.totalTokens) : "—"} | ${record.usage.costUsd > 0 ? formatCost(record.usage.costUsd) : "—"} | ${findings} | \`${record.resultKey}\` | ${record.label} |`;
+    });
+    return `\n\n## Workflow state\n\nWhat this workflow has spent, and what each agent wrote into the shared notebook. Use it to choose models and briefs for follow-up work.\n\n- Orchestrator: \`${options.settings.orchestratorHarness}\`${orchestratorModel ? ` · \`${orchestratorModel}\`` : ""} — ${orchestratorPasses} completed ${orchestratorPasses === 1 ? "pass" : "passes"} · ${spendText(orchestratorUsage)}${sessionTokens > 0 ? ` · session total ${formatTokenCount(sessionTokens)} tokens${sessionCost > 0 ? ` · ${formatCost(sessionCost)}` : ""}` : ""}\n- Sub-agents: ${taskRecords.length} ${taskRecords.length === 1 ? "task" : "tasks"} · ${spendText(workflowUsage)}\n- Shared context: ${context.list().length} ${context.list().length === 1 ? "entry" : "entries"} · ${formatTokenCount(sharedContext.length)} chars (injected into each pass)\n- Your previous pass prompt: ${formatTokenCount(lastOrchestratorPromptChars)} chars${options.inheritedContextChars !== undefined ? ` · inherited context ${formatTokenCount(options.inheritedContextChars)} chars` : ""}\n\n| Role | Harness · model | Status | Tokens | Cost | Findings | Result key | Task |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n${rows.join("\n")}`;
   };
 
   const steeringBlock = (steering: ReadonlyArray<string>): string =>
@@ -790,7 +921,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         return `- ${id}: ${pipeline?.status ?? "pending"}`;
       })
       .join("\n");
-    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}${inheritedContextBlock()}${dispatchOutcomesBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
+    return `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${steeringBlock(steering)}${inheritedContextBlock()}${workflowStateBlock()}\n\n## Summary pass\n\nThe team has completed the following work. Dispatch follow-up tasks when needed, or call done.\n\n### Pipelines\n${pipelineSummary || "(none)"}\n\n### Shared context\n${context.renderForPrompt()}`;
   };
 
   const runOrchestratorPass = Effect.fn("runAgentTunnel.runOrchestratorPass")(function* (
@@ -815,6 +946,11 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         text: `\n> \ud83d\udce5 **Steering received** \u2014 the orchestrator is weighing it now.\n\n`,
       });
     }
+    const prompt =
+      pass === 0
+        ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${inheritedContextBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
+        : summaryPrompt(steering);
+    const passStartedAt = yield* Clock.currentTimeMillis;
     const result = yield* runProcess(
       {
         id: `orchestrator_${pass + 1}`,
@@ -827,15 +963,15 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           ? { variant: options.settings.orchestratorVariant }
           : {}),
         cwd: options.cwd,
-        prompt:
-          pass === 0
-            ? `${ORCHESTRATOR_PROMPT}${historyBlock()}${availableModelsBlock()}${inheritedContextBlock()}\n\n## Shared context\n${context.renderForPrompt()}\n\n## Current user task\n${options.userTask}`
-            : summaryPrompt(steering),
+        prompt,
         dangerouslySkipPermissions: options.settings.dangerouslySkipPermissions,
       },
       handleOrchestratorLine,
       orchestratorPassTimeout,
     );
+    addHarnessUsageTotals(orchestratorUsage, result.usage);
+    orchestratorPassMs += (yield* Clock.currentTimeMillis) - passStartedAt;
+    lastOrchestratorPromptChars = prompt.length;
     yield* closeOrchestratorThinking();
     return result;
   });
@@ -848,6 +984,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       const key = stringValue(call.arguments.key);
       const error = appendContext(context, key, stringValue(call.arguments.value), agentId);
       if (!error) {
+        recordAgentFinding(agentId, key);
         yield* emit({
           type: "agent.progress",
           workflowId: options.workflowId,
@@ -871,6 +1008,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           ? "Reviewer approved the work."
           : `Reviewer requested changes: ${stringValue(call.arguments.reason)}`;
       context.append("review_findings", reason, agentId);
+      recordAgentFinding(agentId, "review_findings");
       yield* emit({
         type: "agent.progress",
         workflowId: options.workflowId,
@@ -1008,14 +1146,20 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     const outcomeDetail = errorExcerpt
       ? ` — ${errorExcerpt}`
       : ` · ${progressLineCount} line${progressLineCount === 1 ? "" : "s"} of output`;
-    const completionMarkdown = `${statusIcon(status)} **${task.role} · ${label}** ${statusLabel(status)} in ${duration}${outcomeDetail}`;
-    const completionSummary = `${label} — ${statusLabel(status)} in ${duration}${outcomeDetail}`;
+    addHarnessUsageTotals(workflowUsage, result.usage);
+    const spendDetail =
+      result.usage.totalTokens > 0
+        ? ` · ${formatTokenCount(result.usage.totalTokens)} tokens${result.usage.costUsd > 0 ? ` · ${formatCost(result.usage.costUsd)}` : ""}`
+        : "";
+    const completionMarkdown = `${statusIcon(status)} **${task.role} · ${label}** ${statusLabel(status)} in ${duration}${outcomeDetail}${spendDetail}`;
+    const completionSummary = `${label} — ${statusLabel(status)} in ${duration}${outcomeDetail}${spendDetail}`;
     yield* emit({
       type: "orchestrator.output",
       text: `${completionMarkdown}\n\n`,
     });
     taskRecords.push({
       id: task.id,
+      agentId,
       role: task.role,
       label,
       pipelineId: task.pipelineId,
@@ -1026,6 +1170,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       harness,
       ...(model ? { model } : {}),
       ...(errorExcerpt ? { error: errorExcerpt } : {}),
+      usage: result.usage,
+      promptChars: prompt.length,
+      findingKeys: agentFindingKeys.get(agentId) ?? [],
+      resultKey,
     });
     yield* emit({
       type: "agent.completed",
@@ -1329,6 +1477,8 @@ function formatWorkflowFinishMarkdown(input: {
   readonly taskRecords: ReadonlyArray<TaskRecord>;
   readonly learnings: ReadonlyArray<AgentTunnelContextLearning>;
   readonly durationMs: number;
+  readonly orchestratorUsage: HarnessUsageTotals;
+  readonly workflowUsage: HarnessUsageTotals;
 }): string {
   const {
     status,
@@ -1340,8 +1490,12 @@ function formatWorkflowFinishMarkdown(input: {
     taskRecords,
     learnings,
     durationMs,
+    orchestratorUsage,
+    workflowUsage,
   } = input;
   const icon = status === "completed" ? "✅" : status === "failed" ? "❌" : "⏹️";
+  const totalTokens = orchestratorUsage.totalTokens + workflowUsage.totalTokens;
+  const totalCost = orchestratorUsage.costUsd + workflowUsage.costUsd;
   const orderedRecords = [...taskRecords].sort(
     (left, right) =>
       pipelineOrder.indexOf(left.pipelineId) - pipelineOrder.indexOf(right.pipelineId) ||
@@ -1350,7 +1504,7 @@ function formatWorkflowFinishMarkdown(input: {
   // Visible by default: the workflow's actual outcome and what to do next lead
   // the report, ahead of the machinery tables.
   const lines: string[] = [
-    `\n---\n\n## ${icon} Workflow ${status} · ${formatDuration(durationMs)}\n\n${summary}\n`,
+    `\n---\n\n## ${icon} Workflow ${status} · ${formatDuration(durationMs)}${totalTokens > 0 ? ` · ${formatTokenCount(totalTokens)} tokens${totalCost > 0 ? ` · ${formatCost(totalCost)}` : ""}` : ""}\n\n${summary}\n`,
     `\n### What happened\n\n${resultText}\n`,
     `\n### Next steps\n\n${nextSteps.map((step) => `- ${step}`).join("\n")}\n`,
   ];
@@ -1388,11 +1542,13 @@ function formatWorkflowFinishMarkdown(input: {
 
   if (orderedRecords.length > 0) {
     lines.push("\n### Agents\n");
-    lines.push("| Agent | Pipeline | Status | Time | Output |");
-    lines.push("| --- | --- | --- | --- | --- |");
+    lines.push("| Agent | Pipeline | Status | Tokens | Time | Output |");
+    lines.push("| --- | --- | --- | --- | --- | --- |");
     for (const record of orderedRecords) {
+      const tokens =
+        record.usage.totalTokens > 0 ? formatTokenCount(record.usage.totalTokens) : "—";
       lines.push(
-        `| ${roleIcon(record.role)} ${record.role} · ${record.label} | \`${record.pipelineId}\` | ${statusIcon(record.status)} ${statusLabel(record.status)} | ${formatDuration(record.durationMs)} | ${record.outputLines} ${record.outputLines === 1 ? "line" : "lines"} |`,
+        `| ${roleIcon(record.role)} ${record.role} · ${record.label} | \`${record.pipelineId}\` | ${statusIcon(record.status)} ${statusLabel(record.status)} | ${tokens} | ${formatDuration(record.durationMs)} | ${record.outputLines} ${record.outputLines === 1 ? "line" : "lines"} |`,
       );
     }
     lines.push("");
