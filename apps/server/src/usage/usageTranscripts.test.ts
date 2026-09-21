@@ -3,9 +3,11 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   GROK_COST_USD_TICKS_PER_DOLLAR,
   initialCodexScanState,
+  initialPiScanState,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -562,5 +564,209 @@ describe("parseGrokLine", () => {
 
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
+  });
+});
+
+/** Shaped after a real pi session assistant message. */
+function piAssistantLine(overrides: {
+  id: string;
+  usage?: Record<string, unknown>;
+  model?: string;
+  provider?: string;
+}): string {
+  return JSON.stringify({
+    type: "message",
+    id: overrides.id,
+    parentId: "parent",
+    timestamp: "2026-09-01T22:40:00.000Z",
+    message: {
+      role: "assistant",
+      provider: overrides.provider ?? "opencode-go",
+      model: overrides.model ?? "deepseek-v4-flash",
+      usage: {
+        input: 3536,
+        output: 10942,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 14478,
+        cost: { input: 0.0005, output: 0.0031, cacheRead: 0, cacheWrite: 0, total: 0.0036 },
+        ...overrides.usage,
+      },
+    },
+  });
+}
+
+describe("parsePiLine", () => {
+  it("extracts token totals, model attribution, and reported cost", () => {
+    const state = initialPiScanState();
+    const records = parsePiLine(piAssistantLine({ id: "a1" }), state);
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      provider: "pi",
+      model: "opencode-go/deepseek-v4-flash",
+      reportedCostUsd: 0.0036,
+      timestampMs: Date.parse("2026-09-01T22:40:00.000Z"),
+      totals: {
+        uncachedInputTokens: 3536,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 10942,
+        reasoningTokens: 0,
+      },
+    });
+    // Copies of this entry in a forked session key on id + timestamp.
+    expect(records[0]?.dedupeKey).toBe("a1:2026-09-01T22:40:00.000Z");
+  });
+
+  it("keeps cached input, cache writes, and reasoning disjoint from output", () => {
+    const state = initialPiScanState();
+    const records = parsePiLine(
+      piAssistantLine({
+        id: "a2",
+        usage: { input: 100, output: 40, cacheRead: 1000, cacheWrite: 20, reasoning: 25 },
+      }),
+      state,
+    );
+
+    expect(records[0]?.totals).toEqual({
+      uncachedInputTokens: 100,
+      cachedInputTokens: 1000,
+      cacheCreationTokens: 20,
+      outputTokens: 40,
+      reasoningTokens: 25,
+    });
+  });
+
+  it("records the session id from the header and carries the model to nested usage", () => {
+    const state = initialPiScanState();
+    expect(
+      parsePiLine(JSON.stringify({ type: "session", id: "sess-1", cwd: "/project" }), state),
+    ).toEqual([]);
+    expect(
+      parsePiLine(
+        JSON.stringify({
+          type: "model_change",
+          id: "m1",
+          provider: "anthropic",
+          modelId: "claude-fable-5",
+        }),
+        state,
+      ),
+    ).toEqual([]);
+    const records = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        id: "t1",
+        timestamp: "2026-09-01T22:41:00.000Z",
+        message: {
+          role: "toolResult",
+          toolName: "bash",
+          usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12 },
+        },
+      }),
+      state,
+    );
+
+    expect(records[0]).toMatchObject({
+      sessionId: "sess-1",
+      model: "anthropic/claude-fable-5",
+      totals: {
+        uncachedInputTokens: 10,
+        outputTokens: 2,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+      },
+    });
+  });
+
+  it("records model-attributed usage entries", () => {
+    const state = initialPiScanState();
+    const records = parsePiLine(
+      JSON.stringify({
+        type: "usage",
+        id: "u1",
+        timestamp: "2026-09-01T22:42:00.000Z",
+        kind: "cache_warm",
+        provider: "anthropic",
+        model: "claude-fable-5",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 50000,
+          cacheWrite: 0,
+          totalTokens: 50000,
+          cost: { total: 0.015 },
+        },
+      }),
+      state,
+    );
+
+    expect(records[0]).toMatchObject({
+      model: "anthropic/claude-fable-5",
+      reportedCostUsd: 0.015,
+      totals: { cachedInputTokens: 50000, uncachedInputTokens: 0, outputTokens: 0 },
+    });
+  });
+
+  it("uses responseModel for attribution when the provider routes to another model", () => {
+    const state = initialPiScanState();
+    const records = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        id: "a3",
+        timestamp: "2026-09-01T22:43:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5",
+          responseModel: "gpt-5-2026-06",
+          usage: { input: 1, output: 1, totalTokens: 2 },
+        },
+      }),
+      state,
+    );
+
+    expect(records[0]?.model).toBe("openai/gpt-5-2026-06");
+  });
+
+  it("ignores lines with no usage, unknown types, and malformed JSON", () => {
+    const state = initialPiScanState();
+    expect(parsePiLine("not json", state)).toEqual([]);
+    expect(parsePiLine(JSON.stringify({ type: "thinking_level_change", id: "x" }), state)).toEqual(
+      [],
+    );
+    expect(
+      parsePiLine(
+        JSON.stringify({
+          type: "message",
+          id: "u1",
+          timestamp: "2026-09-01T22:44:00.000Z",
+          message: { role: "user", content: "hi" },
+        }),
+        state,
+      ),
+    ).toEqual([]);
+  });
+
+  it("drops zero-token records with no reported cost", () => {
+    const state = initialPiScanState();
+    const records = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        id: "a4",
+        timestamp: "2026-09-01T22:45:00.000Z",
+        message: {
+          role: "assistant",
+          provider: "local",
+          model: "llama",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+        },
+      }),
+      state,
+    );
+
+    expect(records).toEqual([]);
   });
 });

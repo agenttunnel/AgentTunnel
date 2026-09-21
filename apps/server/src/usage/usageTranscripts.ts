@@ -70,6 +70,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "pi") return line.includes('"usage"');
   return line.includes('"token_count"');
 }
 
@@ -483,6 +484,152 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
     });
   }
   return results;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pi                                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Rolling state for a single pi session file.
+ *
+ * pi attributes assistant usage to the message's own model, but nested usage
+ * (tool results, compaction and branch summaries) carries no model, so the last
+ * known model is carried forward. The session id comes from the header line.
+ */
+export interface PiScanState {
+  model: string;
+  sessionId: string;
+}
+
+export function initialPiScanState(): PiScanState {
+  return { model: "", sessionId: "" };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function piProviderModel(provider: unknown, model: unknown): string {
+  const id = typeof model === "string" ? model.trim() : "";
+  if (id.length === 0) return "";
+  const providerName = typeof provider === "string" ? provider.trim() : "";
+  return providerName.length === 0 ? id : `${providerName}/${id}`;
+}
+
+function readPiUsage(usage: Record<string, unknown>): {
+  readonly totals: UsageTokenTotals;
+  readonly reportedCostUsd: number | null;
+} {
+  const outputTokens = int(usage["output"]);
+  const cost = asRecord(usage["cost"]);
+  const rawCost = cost === null ? undefined : cost["total"];
+  return {
+    totals: {
+      // pi reports uncached `input` beside the cache columns; they stay disjoint
+      // as the UsageTokenTotals contract requires.
+      uncachedInputTokens: int(usage["input"]),
+      cachedInputTokens: int(usage["cacheRead"]),
+      // `cacheWrite1h` is a subset of `cacheWrite` and must not be added again.
+      cacheCreationTokens: int(usage["cacheWrite"]),
+      outputTokens,
+      reasoningTokens: Math.min(outputTokens, int(usage["reasoning"])),
+    },
+    reportedCostUsd:
+      typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null,
+  };
+}
+
+/**
+ * Parses one line of a pi session file (`~/.pi/agent/sessions/**\/*.jsonl`).
+ *
+ * Usage lands on assistant messages, `usage` entries (cache warming, for
+ * example), and the optional `usage` on tool-result messages, compaction, and
+ * branch summaries. Pi stores reported cost on the same objects, so most
+ * records price as `providerReported` rather than through the rate table.
+ *
+ * Returns every record for the line (0 or more). Callers stream line-by-line
+ * and flatten.
+ */
+export function parsePiLine(line: string, state: PiScanState): readonly UsageRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  const entry = asRecord(parsed);
+  if (entry === null) return [];
+
+  const type = entry["type"];
+  if (type === "session") {
+    if (typeof entry["id"] === "string") state.sessionId = entry["id"];
+    return [];
+  }
+  if (type === "model_change") {
+    const model = piProviderModel(entry["provider"], entry["modelId"]);
+    if (model.length > 0) state.model = model;
+    return [];
+  }
+
+  let usage: Record<string, unknown> | null = null;
+  let model = "";
+  let messageTimestampMs: number | null = null;
+
+  if (type === "message") {
+    const message = asRecord(entry["message"]);
+    if (message === null) return [];
+    const role = message["role"];
+    if (role === "assistant") {
+      model = piProviderModel(message["provider"], message["responseModel"] ?? message["model"]);
+      if (model.length === 0) model = state.model;
+    } else if (role === "toolResult") {
+      model = state.model;
+    } else {
+      return [];
+    }
+    usage = asRecord(message["usage"]);
+    if (model.length > 0) state.model = model;
+    const messageTimestamp = message["timestamp"];
+    if (typeof messageTimestamp === "number" && Number.isFinite(messageTimestamp)) {
+      messageTimestampMs = messageTimestamp;
+    }
+  } else if (type === "usage") {
+    usage = asRecord(entry["usage"]);
+    model = piProviderModel(entry["provider"], entry["model"]);
+  } else if (type === "compaction" || type === "branch_summary") {
+    usage = asRecord(entry["usage"]);
+    model = state.model;
+  }
+  if (usage === null || model.length === 0) return [];
+
+  const timestampMs = parseTimestampMs(entry["timestamp"]) ?? messageTimestampMs;
+  if (timestampMs === null) return [];
+
+  const { totals, reportedCostUsd } = readPiUsage(usage);
+  if (totalTokens(totals) === 0 && (reportedCostUsd === null || reportedCostUsd === 0)) return [];
+
+  const entryId = typeof entry["id"] === "string" ? entry["id"] : null;
+  const entryTimestamp = typeof entry["timestamp"] === "string" ? entry["timestamp"] : null;
+  // pi's /fork and /clone copy the source branch's entries verbatim — ids and
+  // timestamps included — into a new file with a `parentSession` header. Keying
+  // on the copied pair lets the global dedupe drop the duplicate copy.
+  const dedupeKey =
+    entryId === null || entryTimestamp === null ? null : `${entryId}:${entryTimestamp}`;
+
+  return [
+    {
+      provider: "pi",
+      timestampMs,
+      model,
+      sessionId: state.sessionId,
+      totals,
+      reportedCostUsd,
+      dedupeKey,
+    },
+  ];
 }
 
 export { EMPTY_TOTALS };

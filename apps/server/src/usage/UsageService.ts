@@ -1,9 +1,10 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than AgentTunnel's orchestration projections, so usage covers
- * turns driven outside AgentTunnel too. This is the approach `ccusage` takes.
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex,
+ * Grok Build, and Pi) rather than AgentTunnel's orchestration projections, so
+ * usage covers turns driven outside AgentTunnel too. This is the approach
+ * `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -229,6 +230,20 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
+    // Pi Settings only expose the binary path. Its session root is
+    // `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`,
+    // else `~/.pi/agent/sessions` (Pi's own defaults).
+    const piSessionDirEnv = hostEnvironment["PI_CODING_AGENT_SESSION_DIR"]?.trim() ?? "";
+    const piConfigDirEnv = hostEnvironment["PI_CODING_AGENT_DIR"]?.trim() ?? "";
+    const piConfigDir =
+      piConfigDirEnv.length > 0
+        ? path.resolve(expandHomePath(piConfigDirEnv))
+        : path.join(NodeOS.homedir(), ".pi", "agent");
+    const piSessionDir =
+      piSessionDirEnv.length > 0
+        ? path.resolve(expandHomePath(piSessionDirEnv))
+        : path.join(piConfigDir, "sessions");
+
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
@@ -237,6 +252,7 @@ export const make = Effect.gen(function* () {
         dir: path.join(grokHome, "sessions"),
         fileName: "updates.jsonl",
       },
+      { provider: "pi" as const, dir: piSessionDir },
     ];
   });
 
