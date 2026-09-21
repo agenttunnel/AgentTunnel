@@ -17,6 +17,7 @@ import {
 } from "./modelPickerKeys";
 import { isModelPickerNewModel } from "./modelPickerModelHighlights";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
+import { modelMatchesHarnessFilter, resolveModelPickerHarnessFilter } from "./modelPickerHarness";
 import {
   Combobox,
   ComboboxEmpty,
@@ -48,6 +49,7 @@ type ModelPickerItem = {
   name: string;
   shortName?: string;
   subProvider?: string;
+  harnesses?: ReadonlyArray<string>;
   instanceId: ProviderInstanceId;
   driverKind: ProviderDriverKind;
   instanceDisplayName: string;
@@ -316,6 +318,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           name: model.name,
           ...(model.shortName ? { shortName: model.shortName } : {}),
           ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+          ...(model.harnesses ? { harnesses: [...model.harnesses] } : {}),
           ...(model.isLegacy ? { isLegacy: true } : {}),
           ...(model.isUnavailable ? { isUnavailable: true } : {}),
           instanceId,
@@ -333,6 +336,27 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
+  // A workflow role runs its harness CLI, so its model list narrows to the
+  // models that harness reported. Rows the harness cannot run stay out of the
+  // way instead of being assignable and failing at dispatch.
+  const harnessFilter = useMemo(
+    () =>
+      resolveModelPickerHarnessFilter({
+        harness: workflowHarnessRole?.harness ?? null,
+        models: flatModels,
+      }),
+    [flatModels, workflowHarnessRole],
+  );
+  const harnessModels = useMemo(
+    () => flatModels.filter((model) => modelMatchesHarnessFilter(model, harnessFilter)),
+    [flatModels, harnessFilter],
+  );
+  const harnessInstanceIds = useMemo(() => {
+    if (harnessFilter === null) {
+      return undefined;
+    }
+    return new Set(harnessModels.map((model) => model.instanceId));
+  }, [harnessFilter, harnessModels]);
   const lockedDisabledInstanceIds = useMemo(() => {
     if (!isLocked) {
       return undefined;
@@ -346,7 +370,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return disabled;
   }, [instanceEntries, isLocked, matchesLockedProvider]);
   const sidebarInstanceEntries = useMemo(() => {
-    const enabledEntries = instanceEntries.filter(isProviderInstancePickerVisible);
+    const enabledEntries = instanceEntries.filter(
+      (entry) =>
+        isProviderInstancePickerVisible(entry) &&
+        (harnessInstanceIds === undefined || harnessInstanceIds.has(entry.instanceId)),
+    );
     if (!isLocked) {
       return enabledEntries;
     }
@@ -360,16 +388,34 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }
     }
     return [...available, ...disabled];
-  }, [instanceEntries, isLocked, matchesLockedProvider]);
+  }, [harnessInstanceIds, instanceEntries, isLocked, matchesLockedProvider]);
   const showSidebar = !isSearching && sidebarInstanceEntries.length > 0;
   const instanceOrder = useMemo(
     () => instanceEntries.map((entry) => entry.instanceId),
     [instanceEntries],
   );
 
+  // Follow the harness: when the selected instance carries none of the
+  // harness's models — a workflow whose orchestrator is opencode while this
+  // role runs pi — move the rail to an instance that does, preferring the
+  // workflow provider so the choice stays a workflow model.
+  const listInstanceId = useMemo(() => {
+    if (
+      harnessInstanceIds === undefined ||
+      selectedInstanceId === "favorites" ||
+      harnessInstanceIds.has(selectedInstanceId)
+    ) {
+      return selectedInstanceId;
+    }
+    const candidate = sidebarInstanceEntries.find(
+      (entry) => entry.instanceId === props.activeInstanceId,
+    );
+    return candidate?.instanceId ?? sidebarInstanceEntries[0]?.instanceId ?? selectedInstanceId;
+  }, [harnessInstanceIds, props.activeInstanceId, selectedInstanceId, sidebarInstanceEntries]);
+
   // Filter models based on search query and selected instance
   const filteredModels = useMemo(() => {
-    let result = flatModels;
+    let result = harnessModels;
 
     // Apply tokenized fuzzy search across the combined provider/model search fields.
     if (searchQuery.trim()) {
@@ -447,34 +493,34 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
     if (props.lockedProvider !== null) {
       result = result.filter((m) => matchesLockedProvider(m));
-      if (selectedInstanceId === "favorites") {
+      if (listInstanceId === "favorites") {
         result = result.filter((m) => favoritesSet.has(providerModelKey(m.instanceId, m.slug)));
       } else {
-        result = result.filter((m) => m.instanceId === selectedInstanceId);
+        result = result.filter((m) => m.instanceId === listInstanceId);
       }
-    } else if (selectedInstanceId === "favorites") {
+    } else if (listInstanceId === "favorites") {
       result = result.filter((m) => favoritesSet.has(providerModelKey(m.instanceId, m.slug)));
     } else {
-      result = result.filter((m) => m.instanceId === selectedInstanceId);
+      result = result.filter((m) => m.instanceId === listInstanceId);
     }
 
     return sortProviderModelItems(result, {
       favoriteModelKeys: favoritesSet,
-      groupFavorites: selectedInstanceId !== "favorites",
-      instanceOrder: selectedInstanceId === "favorites" ? instanceOrder : [],
+      groupFavorites: listInstanceId !== "favorites",
+      instanceOrder: listInstanceId === "favorites" ? instanceOrder : [],
     });
   }, [
     favoritesSet,
-    flatModels,
+    harnessModels,
     instanceOrder,
+    listInstanceId,
     matchesLockedProvider,
     props.lockedProvider,
     searchQuery,
-    selectedInstanceId,
   ]);
 
   const legacySection = useMemo(() => {
-    if (isSearching || selectedInstanceId === "favorites") {
+    if (isSearching || listInstanceId === "favorites") {
       return null;
     }
     const currentModels = filteredModels.filter((model) => !model.isLegacy);
@@ -483,12 +529,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       return null;
     }
     return {
-      key: modelPickerLegacySectionKey(selectedInstanceId),
+      key: modelPickerLegacySectionKey(listInstanceId),
       currentModels,
       legacyModels,
-      isExpanded: expandedLegacyInstances.has(selectedInstanceId),
+      isExpanded: expandedLegacyInstances.has(listInstanceId),
     };
-  }, [expandedLegacyInstances, filteredModels, isSearching, selectedInstanceId]);
+  }, [expandedLegacyInstances, filteredModels, isSearching, listInstanceId]);
 
   const visibleModels = useMemo(() => {
     if (!legacySection) {
@@ -587,14 +633,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   );
   const allItemKeys = useMemo(
     (): string[] => [
-      ...flatModels.map((model) => modelPickerModelKey(model.instanceId, model.slug)),
+      ...harnessModels.map((model) => modelPickerModelKey(model.instanceId, model.slug)),
       ...new Set(
-        flatModels
+        harnessModels
           .filter((model) => model.isLegacy)
           .map((model) => modelPickerLegacySectionKey(model.instanceId)),
       ),
     ],
-    [flatModels],
+    [harnessModels],
   );
   const filteredItemKeys = useMemo((): string[] => {
     const modelKeys = visibleModels.map((model) =>
@@ -718,7 +764,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         {/* Sidebar */}
         {showSidebar && (
           <ModelPickerSidebar
-            selectedInstanceId={selectedInstanceId}
+            selectedInstanceId={listInstanceId}
             onSelectInstance={handleSelectInstance}
             instanceEntries={sidebarInstanceEntries}
             showFavorites

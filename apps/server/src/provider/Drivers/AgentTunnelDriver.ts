@@ -76,7 +76,6 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
       const serverConfig = yield* ServerConfig;
       const processEnvironment = mergeProviderInstanceEnvironment(environment);
       const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
-      const harnessKind = agentTunnelHarnessKind(config.orchestratorHarness);
       const loadOpenCodeModels = (binaryPath: string) =>
         openCodeRuntime
           .loadInventoryFromCli({
@@ -84,7 +83,7 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
             cwd: serverConfig.cwd,
             environment: processEnvironment,
           })
-          .pipe(Effect.map((inventory) => modelsFromInventory(inventory, config.customModels)));
+          .pipe(Effect.map((inventory) => modelsFromInventory(inventory)));
       const loadPiModels = (binaryPath: string) =>
         Effect.gen(function* () {
           const result = yield* openCodeRuntime.runOpenCodeCommand({
@@ -102,31 +101,67 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
               detail: `\`${binaryPath} --list-models\` exited with code ${result.code}.`,
             });
           }
-          return mergeProviderModels(piListedModelsToServerModels(rows), config.customModels);
+          return piListedModelsToServerModels(rows);
         });
+      const loadHarnessCatalog = (harness: string) =>
+        (agentTunnelHarnessKind(harness) === "pi"
+          ? loadPiModels(harness)
+          : loadOpenCodeModels(harness)
+        ).pipe(Effect.map((models) => ({ harness, models })));
       // A wedged or interactive harness CLI must never block the registry
-      // build; the probe degrades to a warning snapshot with a readable reason.
-      const probeTimeout = harnessKind === "pi" ? "8 seconds" : "4 seconds";
-      let models = customModelsToServerModels(config.customModels);
+      // build; the probe degrades to a readable reason instead of hanging.
+      const probeTimeoutFor = (harness: string) =>
+        agentTunnelHarnessKind(harness) === "pi" ? "8 seconds" : "4 seconds";
+      const orchestratorHarness = config.orchestratorHarness;
+      const plan = catalogHarnesses(config);
+      const catalogs: HarnessCatalog[] = [];
       let probeFailed = false;
       let probeMessage: string | undefined;
       if (enabled) {
-        const attempt = yield* Effect.exit(
-          (harnessKind === "pi"
-            ? loadPiModels(config.orchestratorHarness)
-            : loadOpenCodeModels(config.orchestratorHarness)
-          ).pipe(Effect.timeoutOption(probeTimeout)),
+        const attempts = yield* Effect.forEach(
+          plan,
+          (harness) =>
+            loadHarnessCatalog(harness).pipe(
+              Effect.timeoutOption(probeTimeoutFor(harness)),
+              Effect.exit,
+            ),
+          { concurrency: "unbounded" },
         );
-        if (attempt._tag === "Failure") {
-          probeFailed = true;
-          probeMessage = Cause.pretty(attempt.cause);
-        } else if (Option.isNone(attempt.value)) {
-          probeFailed = true;
-          probeMessage = `Timed out after ${probeTimeout} reading models from the "${config.orchestratorHarness}" harness. Check that the harness CLI is installed and does not wait for input.`;
-        } else {
-          models = attempt.value.value;
+        for (const [index, attempt] of attempts.entries()) {
+          const harness = plan[index] ?? "";
+          // Only the coordinator's catalog drives the snapshot state: a role
+          // harness that cannot answer is a missing catalog, not a broken
+          // provider.
+          const fatal = harness === orchestratorHarness;
+          if (attempt._tag === "Failure") {
+            if (fatal) {
+              probeFailed = true;
+              probeMessage = Cause.pretty(attempt.cause);
+            } else {
+              yield* Effect.logDebug(`agenttunnel: no model catalog from ${harness}`, {
+                cause: Cause.pretty(attempt.cause),
+              });
+            }
+            continue;
+          }
+          if (Option.isNone(attempt.value)) {
+            if (fatal) {
+              probeFailed = true;
+              probeMessage = `Timed out after ${probeTimeoutFor(harness)} reading models from the "${harness}" harness. Check that the harness CLI is installed and does not wait for input.`;
+            }
+            continue;
+          }
+          catalogs.push(attempt.value.value);
         }
       }
+      const models = mergeHarnessCatalogs(catalogs, config.customModels);
+      // Auto mode and text generation only receive the coordinator's models:
+      // what another role's harness reports is not a model this one can run.
+      const orchestratorModels = models
+        .filter(
+          (model) => model.harnesses === undefined || model.harnesses.includes(orchestratorHarness),
+        )
+        .map((model) => model.slug);
       const snapshot: ServerProvider = {
         instanceId,
         driver: DRIVER_KIND,
@@ -164,28 +199,28 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
       };
       const adapter = yield* makeAgentTunnelAdapter(config, {
         instanceId,
-        availableModels: models.map((model) => model.slug),
+        availableModels: orchestratorModels,
         ...(environment ? { environment } : {}),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration =
-        harnessKind === "pi"
+        agentTunnelHarnessKind(orchestratorHarness) === "pi"
           ? yield* makePiTextGeneration(
               decodePiSettings({
                 enabled,
-                binaryPath: config.orchestratorHarness,
+                binaryPath: orchestratorHarness,
                 customModels: [...config.customModels],
               }),
               processEnvironment,
             )
           : yield* Effect.gen(function* () {
               const serverOwner = yield* OpenCodeServerOwner.make({
-                binaryPath: config.orchestratorHarness,
+                binaryPath: orchestratorHarness,
                 directory: serverConfig.cwd,
                 environment: processEnvironment,
               });
               return yield* makeAgentTunnelTextGeneration(config, undefined, {
-                availableModels: models.map((model) => model.slug),
+                availableModels: orchestratorModels,
               }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
             });
       const continuationIdentity = defaultProviderContinuationIdentity({
@@ -217,22 +252,77 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
     ),
 };
 
-function customModelsToServerModels(
-  customModels: ReadonlyArray<string>,
-): ReadonlyArray<ServerProvider["models"][number]> {
-  return mergeProviderModels([], customModels);
+/** One harness CLI's model catalog, as reported by its own listing probe. */
+export interface HarnessCatalog {
+  readonly harness: string;
+  readonly models: ReadonlyArray<ServerProvider["models"][number]>;
 }
 
-function mergeProviderModels(
-  listed: ReadonlyArray<ServerProvider["models"][number]>,
+/**
+ * The harness presets this driver can list models for. Other CLIs keep the
+ * generic `run` invocation and expose no catalog, so the model config shows
+ * them through their own provider instance instead.
+ */
+const ENUMERABLE_HARNESS_PRESETS: ReadonlyArray<string> = ["opencode", "pi"];
+
+/**
+ * Harness CLIs whose catalogs the snapshot should carry, coordinator first.
+ *
+ * Configured role harnesses come first so the coordinator's models stay at the
+ * top of the list; the enumerable presets follow, so switching a role (or a
+ * thread's own model config) to `pi`/`opencode` still finds a catalog even when
+ * the environment's role harnesses all point at one CLI. Harnesses with no
+ * listing command are left to their own provider instance — except the
+ * coordinator, whose probe failure is what marks the provider as limited.
+ */
+export function catalogHarnesses(config: AgentTunnelSettings): ReadonlyArray<string> {
+  const harnesses: string[] = [];
+  const add = (value: string) => {
+    const harness = value.trim();
+    if (harness.length === 0 || harnesses.includes(harness)) return;
+    harnesses.push(harness);
+  };
+  add(config.orchestratorHarness);
+  add(config.plannerHarness);
+  add(config.executorHarness);
+  add(config.testerHarness);
+  add(config.reviewerHarness);
+  for (const preset of ENUMERABLE_HARNESS_PRESETS) add(preset);
+  return harnesses.filter(
+    (harness) =>
+      agentTunnelHarnessKind(harness) !== "other" || harness === config.orchestratorHarness,
+  );
+}
+
+/**
+ * Flatten per-harness catalogs into one model list. A slug two harnesses both
+ * report stays a single row tagged with both, so the picker can filter by
+ * harness without rendering duplicates. Custom models carry no harness: the
+ * user typed them for the workflow, not for one CLI.
+ */
+export function mergeHarnessCatalogs(
+  catalogs: ReadonlyArray<HarnessCatalog>,
   customModels: ReadonlyArray<string>,
 ): ReadonlyArray<ServerProvider["models"][number]> {
-  const models = [...listed];
-  const seen = new Set(models.map((model) => model.slug));
+  const models: Array<ServerProvider["models"][number]> = [];
+  const indexBySlug = new Map<string, number>();
+  for (const catalog of catalogs) {
+    for (const model of catalog.models) {
+      const index = indexBySlug.get(model.slug);
+      if (index === undefined) {
+        indexBySlug.set(model.slug, models.length);
+        models.push({ ...model, harnesses: [catalog.harness] });
+        continue;
+      }
+      const current = models[index];
+      if (!current || current.harnesses?.includes(catalog.harness)) continue;
+      models[index] = { ...current, harnesses: [...(current.harnesses ?? []), catalog.harness] };
+    }
+  }
   for (const candidate of customModels) {
     const slug = candidate.trim();
-    if (slug.length === 0 || seen.has(slug)) continue;
-    seen.add(slug);
+    if (slug.length === 0 || indexBySlug.has(slug)) continue;
+    indexBySlug.set(slug, models.length);
     models.push({ slug, name: slug, isCustom: true, capabilities: null });
   }
   return models;
@@ -240,7 +330,6 @@ function mergeProviderModels(
 
 function modelsFromInventory(
   inventory: OpenCodeInventoryLike | undefined,
-  customModels: ReadonlyArray<string>,
 ): ReadonlyArray<ServerProvider["models"][number]> {
   const models: Array<ServerProvider["models"][number]> = [];
   const seen = new Set<string>();
@@ -264,13 +353,6 @@ function modelsFromInventory(
         capabilities: null,
       });
     }
-  }
-
-  for (const candidate of customModels) {
-    const slug = candidate.trim();
-    if (slug.length === 0 || seen.has(slug)) continue;
-    seen.add(slug);
-    models.push({ slug, name: slug, isCustom: true, capabilities: null });
   }
 
   return models;
