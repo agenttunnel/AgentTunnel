@@ -189,6 +189,11 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemoteLaunchScript(), "wait_ready");
     assert.include(buildRemoteLaunchScript(), '"$RUNNER_FILE" serve --host 127.0.0.1');
     assert.include(buildRemoteLaunchScript(), '--base-dir "$DEFAULT_SERVER_HOME"');
+    assert.include(buildRemoteLaunchScript(), 'T3_HOME="$HOME/.agenttunnel"');
+    assert.include(buildRemoteLaunchScript(), 'if [ ! -e "$T3_HOME" ] && [ -e "$HOME/.t3" ]; then');
+    assert.include(buildRemoteLaunchScript(), 'STATE_DIR="$T3_HOME/ssh-launch/$STATE_KEY"');
+    assert.include(buildRemoteLaunchScript(), 'DEFAULT_SERVER_HOME="$T3_HOME"');
+    assert.notInclude(buildRemoteLaunchScript(), "@@T3_HOME_ADOPT_SCRIPT@@");
     assert.notInclude(buildRemoteLaunchScript(), "server-home");
     assert.include(buildRemoteLaunchScript(), "Remote AgentTunnel server did not become ready");
     assert.include(buildRemoteLaunchScript(), 'wait_ready "60000"');
@@ -200,6 +205,11 @@ describe("ssh tunnel scripts", () => {
       '"$RUNNER_FILE" auth pairing create --base-dir "$PAIRING_BASE_DIR" --json',
     );
     assert.include(buildRemotePairingScript(target), 'PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"');
+    assert.include(
+      buildRemotePairingScript(target),
+      'if [ ! -e "$T3_HOME" ] && [ -e "$HOME/.t3" ]; then',
+    );
+    assert.notInclude(buildRemotePairingScript(target), "@@T3_HOME_ADOPT_SCRIPT@@");
     assert.notInclude(buildRemotePairingScript(target), "server-home");
     assert.include(buildRemotePairingScript(target, { packageSpec: "t3@nightly" }), "t3@nightly");
     assert.include(
@@ -208,6 +218,11 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(buildRemoteStopScript(target), 'kill "$REMOTE_PID" 2>/dev/null || true');
     assert.include(buildRemoteStopScript(target), 'rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"');
+    assert.include(
+      buildRemoteStopScript(target),
+      'if [ ! -e "$T3_HOME" ] && [ -e "$HOME/.t3" ]; then',
+    );
+    assert.notInclude(buildRemoteStopScript(target), "@@T3_HOME_ADOPT_SCRIPT@@");
     assert.include(
       buildRemoteLaunchScript(),
       'DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"',

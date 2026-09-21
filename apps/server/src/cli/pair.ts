@@ -254,9 +254,12 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
   if (explicitBaseDir !== undefined && explicitBaseDir.trim().length > 0) {
     bases.push(yield* resolveBaseDir(explicitBaseDir));
   } else {
-    // Same precedence as dev-runner: inside a linked worktree its own `.agenttunnel`
+    // Same precedence as dev-runner: inside a linked worktree its own home
     // outranks the shared home, so `t3 pair` in a worktree pairs with the dev
-    // server under test rather than the daily-driver install.
+    // server under test rather than the daily-driver install. That first hop is
+    // read-only — a worktree that has not migrated yet answers with its legacy
+    // `.t3`, where a pre-rename dev server is still running, and stays there
+    // until its own runner adopts it.
     const worktreeHome = yield* resolveWorktreeT3Home(process.cwd());
     if (worktreeHome !== undefined) {
       bases.push(worktreeHome);

@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import {
   resolveAgentTunnelHomeDir,
   resolveGitWorktreePath,
+  resolveOrMigrateWorktreeT3Home,
   resolveWorktreeT3Home,
 } from "./devHome.ts";
 
@@ -105,6 +106,33 @@ describe("resolveWorktreeT3Home", () => {
       const home = yield* resolveWorktreeT3Home(nested);
       assert.equal(home, NodePath.join(NodePath.resolve(root), ".agenttunnel"));
       assert.isFalse(NodeFS.existsSync(home ?? ""));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("answers with an unmigrated .t3 without moving it", () =>
+    Effect.gen(function* () {
+      const { root, nested } = yield* makeRepo("worktree");
+      const legacy = NodePath.join(root, ".t3");
+      NodeFS.mkdirSync(legacy);
+      const home = yield* resolveWorktreeT3Home(nested);
+      assert.equal(home, legacy);
+      assert.isTrue(NodeFS.existsSync(legacy));
+      assert.isFalse(NodeFS.existsSync(NodePath.join(root, ".agenttunnel")));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("resolveOrMigrateWorktreeT3Home", () => {
+  it.effect("adopts a pre-rename .t3 in the worktree", () =>
+    Effect.gen(function* () {
+      const { root, nested } = yield* makeRepo("worktree");
+      const legacy = NodePath.join(root, ".t3");
+      NodeFS.mkdirSync(legacy);
+      NodeFS.writeFileSync(NodePath.join(legacy, "state.sqlite"), "data");
+      const home = yield* resolveOrMigrateWorktreeT3Home(nested);
+      assert.equal(home, NodePath.join(NodePath.resolve(root), ".agenttunnel"));
+      assert.isFalse(NodeFS.existsSync(legacy));
+      assert.equal(NodeFS.readFileSync(NodePath.join(home ?? "", "state.sqlite"), "utf8"), "data");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

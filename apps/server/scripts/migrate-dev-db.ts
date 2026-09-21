@@ -28,7 +28,11 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
-import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
+import {
+  AGENTTUNNEL_HOME_DIR,
+  LEGACY_AGENTTUNNEL_HOME_DIR,
+  resolveOrMigrateWorktreeT3Home,
+} from "@t3tools/shared/devHome";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -55,7 +59,7 @@ export class MigrateDevDbSharedHomeError extends Schema.TaggedErrorClass<Migrate
   {},
 ) {
   override get message(): string {
-    return "Refusing to rebuild the shared ~/.agenttunnel database. Use an isolated --base-dir.";
+    return "Refusing to rebuild the shared AgentTunnel data directory. Use an isolated --base-dir.";
   }
 }
 
@@ -362,8 +366,11 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const path = yield* Path.Path;
 
   const sharedHome = path.resolve(
-    options.sharedHome ?? path.join(NodeOS.homedir(), ".agenttunnel"),
+    options.sharedHome ?? path.join(NodeOS.homedir(), AGENTTUNNEL_HOME_DIR),
   );
+  // The pre-rename name stays protected: it is still the live database for
+  // anyone who pinned T3CODE_HOME to it or has not restarted since the rename.
+  const legacySharedHome = path.join(path.dirname(sharedHome), LEGACY_AGENTTUNNEL_HOME_DIR);
   const sourcePath = path.resolve(
     input.source ?? path.join(sharedHome, "userdata", "state.sqlite"),
   );
@@ -371,7 +378,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   const baseDir =
     input.baseDir !== undefined
       ? path.resolve(input.baseDir)
-      : yield* resolveWorktreeT3Home(process.cwd());
+      : yield* resolveOrMigrateWorktreeT3Home(process.cwd());
   if (baseDir === undefined) {
     return yield* new MigrateDevDbNotInWorktreeError();
   }
@@ -382,11 +389,12 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   if (!(yield* fs.exists(sourcePath))) {
     return yield* new MigrateDevDbSourceMissingError({ sourcePath });
   }
-  const [canonicalBaseDir, canonicalSharedHome] = yield* Effect.all([
+  const [canonicalBaseDir, ...canonicalSharedHomes] = yield* Effect.all([
     fs.realPath(baseDir).pipe(Effect.orElseSucceed(() => baseDir)),
     fs.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
+    fs.realPath(legacySharedHome).pipe(Effect.orElseSucceed(() => legacySharedHome)),
   ]);
-  if (canonicalBaseDir === canonicalSharedHome) {
+  if (canonicalSharedHomes.includes(canonicalBaseDir)) {
     return yield* new MigrateDevDbSharedHomeError();
   }
   // The destination db and snapshot both get deleted below; a --source that
