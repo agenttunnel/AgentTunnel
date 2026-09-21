@@ -223,6 +223,10 @@ export function AgentTunnelSettingsSection({
 
   return (
     <div className="space-y-3">
+      <p className="px-1 text-xs leading-5 text-muted-foreground">
+        Defaults for new threads. A thread keeps the model config it was created with — change it
+        per thread from the composer&apos;s model config panel.
+      </p>
       <div className="overflow-hidden rounded-lg border border-border/60">
         <div
           className={cn(

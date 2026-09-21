@@ -15,6 +15,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
+  type ThreadModelConfig,
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
@@ -180,6 +181,7 @@ import {
   applyAgentTunnelRoleModel,
   applyAgentTunnelRoleVariant,
   applyAgentTunnelAutoMode,
+  readAgentTunnelModelConfig,
   readAgentTunnelRoles,
 } from "./agentTunnelRoles.logic";
 import { getDriverOption } from "./settings/providerDriverMeta";
@@ -1439,6 +1441,10 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const setComposerDraftReviewComments = useComposerDraftStore((store) => store.setReviewComments);
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
+  const setComposerDraftModelConfig = useComposerDraftStore((store) => store.setModelConfig);
+  const composerModelConfig = useComposerDraftStore(
+    (store) => store.getComposerDraft(composerDraftTarget)?.modelConfig ?? null,
+  );
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
@@ -1669,6 +1675,11 @@ function ChatViewContent(props: ChatViewProps) {
     ? (composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE)
     : DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
+  // A draft thread has no server record yet, so its model config lives in the
+  // composer draft until `thread.create` carries it over.
+  const activeThreadModelConfig = isLocalDraftThread
+    ? composerModelConfig
+    : (activeServerThread?.modelConfig ?? null);
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadEnvironmentId = activeThread?.environmentId ?? null;
@@ -2149,6 +2160,38 @@ function ChatViewContent(props: ChatViewProps) {
     : (primaryEnvironment?.serverConfig ?? null);
   const pullRequestsCapabilityKnown = serverConfig !== null;
   const supportsPullRequests = serverConfig?.environment.capabilities.pullRequests === true;
+  // Servers without this capability only understand environment-wide role
+  // config, so the composer keeps writing the provider instance settings there.
+  const supportsThreadModelConfig =
+    serverConfig?.environment.capabilities.threadModelConfig === true;
+  /**
+   * Model config a brand-new thread starts with: the config the composer is
+   * showing (a draft's staged config, or the thread a plan is implemented
+   * from), otherwise a snapshot of the provider instance's defaults. Threads
+   * keep their snapshot, so later default changes only affect new ones.
+   */
+  const resolveNewThreadModelConfig = useCallback(
+    (instanceId: ProviderInstanceId): ThreadModelConfig | undefined => {
+      if (!supportsThreadModelConfig) {
+        return undefined;
+      }
+      if (activeThreadModelConfig !== null) {
+        return activeThreadModelConfig;
+      }
+      const instance = settings.providerInstances[instanceId];
+      const driver = instance?.driver ?? instanceId;
+      if (driver !== "agenttunnel") {
+        return undefined;
+      }
+      const defaults =
+        instance?.config ??
+        (instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("agenttunnel"))
+          ? settings.providers.agenttunnel
+          : undefined);
+      return readAgentTunnelModelConfig(defaults as Record<string, unknown> | undefined);
+    },
+    [activeThreadModelConfig, settings, supportsThreadModelConfig],
+  );
   const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsAttachmentUploads =
@@ -6130,6 +6173,9 @@ function ChatViewContent(props: ChatViewProps) {
 
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
+      const newThreadModelConfig = resolveNewThreadModelConfig(
+        threadCreateModelSelection.instanceId,
+      );
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
           ? {
@@ -6139,6 +6185,7 @@ function ChatViewContent(props: ChatViewProps) {
                       projectId: activeProject.id,
                       title,
                       modelSelection: threadCreateModelSelection,
+                      ...(newThreadModelConfig ? { modelConfig: newThreadModelConfig } : {}),
                       runtimeMode,
                       interactionMode,
                       branch: activeThreadBranch,
@@ -6690,6 +6737,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
     const nextThreadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModelSelection: ModelSelection = ctxSelectedModelSelection;
+    const nextThreadModelConfig = resolveNewThreadModelConfig(nextThreadModelSelection.instanceId);
 
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: false });
@@ -6705,6 +6753,7 @@ function ChatViewContent(props: ChatViewProps) {
         projectId: activeProject.id,
         title: nextThreadTitle,
         modelSelection: nextThreadModelSelection,
+        ...(nextThreadModelConfig ? { modelConfig: nextThreadModelConfig } : {}),
         runtimeMode,
         interactionMode: "default",
         branch: activeThreadBranch,
@@ -6926,46 +6975,135 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [scheduleComposerFocus, settings, updateSettings],
   );
+  /** Provider-instance defaults for a workflow instance, as a config record. */
+  const agentTunnelDefaultConfig = useCallback(
+    (instanceId: ProviderInstanceId): Record<string, unknown> => {
+      const driver = ProviderDriverKind.make("agenttunnel");
+      const existing = settings.providerInstances[instanceId];
+      return (existing?.config ??
+        (instanceId === defaultInstanceIdForDriver(driver)
+          ? settings.providers.agenttunnel
+          : {})) as Record<string, unknown>;
+    },
+    [settings],
+  );
+  /** Persists a model config on whichever thread owns the composer. */
+  const writeAgentTunnelModelConfig = useCallback(
+    async (modelConfig: ThreadModelConfig) => {
+      if (isLocalDraftThread) {
+        setComposerDraftModelConfig(composerDraftTarget, modelConfig);
+        scheduleComposerFocus();
+        return;
+      }
+      if (activeServerThread === null) {
+        return;
+      }
+      const result = await updateThreadMetadata({
+        environmentId,
+        input: { threadId: activeServerThread.id, modelConfig },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not save this thread's model config",
+          description: error instanceof Error ? error.message : "The server rejected the update.",
+        });
+        return;
+      }
+      scheduleComposerFocus();
+    },
+    [
+      activeServerThread,
+      composerDraftTarget,
+      environmentId,
+      isLocalDraftThread,
+      scheduleComposerFocus,
+      setComposerDraftModelConfig,
+      updateThreadMetadata,
+    ],
+  );
+  /**
+   * Applies a role edit to the thread's own model config. The environment
+   * settings stay the defaults for new threads: a thread without a snapshot
+   * seeds one from them on its first edit, and a draft thread stages the
+   * snapshot until `thread.create` carries it over.
+   */
+  const updateAgentTunnelModelConfig = useCallback(
+    (
+      instanceId: ProviderInstanceId,
+      mutate: (config: Record<string, unknown>) => Record<string, unknown>,
+    ) => {
+      if (!supportsThreadModelConfig) {
+        updateAgentTunnelRoleConfig(instanceId, mutate);
+        return;
+      }
+      void writeAgentTunnelModelConfig(
+        readAgentTunnelModelConfig(
+          mutate(activeThreadModelConfig ?? agentTunnelDefaultConfig(instanceId)),
+        ),
+      );
+    },
+    [
+      activeThreadModelConfig,
+      agentTunnelDefaultConfig,
+      supportsThreadModelConfig,
+      updateAgentTunnelRoleConfig,
+      writeAgentTunnelModelConfig,
+    ],
+  );
+  /** Re-snapshots the thread's config from the environment defaults. */
+  const onAgentTunnelModelConfigReset = useCallback(
+    (instanceId: ProviderInstanceId) => {
+      if (!supportsThreadModelConfig) {
+        return;
+      }
+      void writeAgentTunnelModelConfig(
+        readAgentTunnelModelConfig(agentTunnelDefaultConfig(instanceId)),
+      );
+    },
+    [agentTunnelDefaultConfig, supportsThreadModelConfig, writeAgentTunnelModelConfig],
+  );
   const onAgentTunnelRoleModelSelect = useCallback(
     (instanceId: ProviderInstanceId, roleId: string, model: string) => {
       if (agentTunnelRoleModelKey(roleId) === null) {
         return;
       }
-      updateAgentTunnelRoleConfig(instanceId, (config) =>
+      updateAgentTunnelModelConfig(instanceId, (config) =>
         applyAgentTunnelRoleModel(config, roleId, model),
       );
     },
-    [updateAgentTunnelRoleConfig],
+    [updateAgentTunnelModelConfig],
   );
   const onAgentTunnelRoleHarnessSelect = useCallback(
     (instanceId: ProviderInstanceId, roleId: string, harness: string) => {
       if (agentTunnelRoleHarnessKey(roleId) === null) {
         return;
       }
-      updateAgentTunnelRoleConfig(instanceId, (config) =>
+      updateAgentTunnelModelConfig(instanceId, (config) =>
         applyAgentTunnelRoleHarness(config, roleId, harness),
       );
     },
-    [updateAgentTunnelRoleConfig],
+    [updateAgentTunnelModelConfig],
   );
   const onAgentTunnelRoleReasoningSelect = useCallback(
     (instanceId: ProviderInstanceId, roleId: string, variant: string) => {
       if (agentTunnelRoleVariantKey(roleId) === null) {
         return;
       }
-      updateAgentTunnelRoleConfig(instanceId, (config) =>
+      updateAgentTunnelModelConfig(instanceId, (config) =>
         applyAgentTunnelRoleVariant(config, roleId, variant),
       );
     },
-    [updateAgentTunnelRoleConfig],
+    [updateAgentTunnelModelConfig],
   );
   const onAgentTunnelAutoModeChange = useCallback(
     (instanceId: ProviderInstanceId, autoMode: boolean) => {
-      updateAgentTunnelRoleConfig(instanceId, (config) =>
+      updateAgentTunnelModelConfig(instanceId, (config) =>
         applyAgentTunnelAutoMode(config, autoMode),
       );
     },
-    [updateAgentTunnelRoleConfig],
+    [updateAgentTunnelModelConfig],
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
@@ -7475,6 +7613,7 @@ function ChatViewContent(props: ChatViewProps) {
                               activeProject?.defaultModelSelection
                             }
                             activeThreadModelSelection={activeThread?.modelSelection}
+                            activeThreadModelConfig={activeThreadModelConfig}
                             activeContextWindow={activeContextWindow}
                             compactDisabled={compactDisabled}
                             compactDisabledReason={compactDisabledReason}
@@ -7507,6 +7646,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onAgentTunnelRoleHarnessSelect={onAgentTunnelRoleHarnessSelect}
                             onAgentTunnelRoleReasoningSelect={onAgentTunnelRoleReasoningSelect}
                             onAgentTunnelAutoModeChange={onAgentTunnelAutoModeChange}
+                            onAgentTunnelModelConfigReset={onAgentTunnelModelConfigReset}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}

@@ -10,6 +10,7 @@ import type {
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
+  ThreadModelConfig,
   TurnId,
 } from "@t3tools/contracts";
 import {
@@ -643,6 +644,11 @@ export interface ChatComposerProps {
   providerStatuses: ServerProvider[];
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
+  /**
+   * The active thread's own workflow model config, when it has one. Draft
+   * threads surface the config staged in the composer draft store instead.
+   */
+  activeThreadModelConfig?: ThreadModelConfig | null | undefined;
 
   // Context window
   activeContextWindow: ContextWindowSnapshot | null;
@@ -700,6 +706,8 @@ export interface ChatComposerProps {
     variant: string,
   ) => void;
   onAgentTunnelAutoModeChange?: (instanceId: ProviderInstanceId, autoMode: boolean) => void;
+  /** Re-snapshots the thread's model config from the environment defaults. */
+  onAgentTunnelModelConfigReset?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -757,6 +765,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     providerStatuses,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
+    activeThreadModelConfig,
     activeContextWindow,
     compactDisabled,
     compactDisabledReason,
@@ -784,6 +793,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onAgentTunnelRoleHarnessSelect,
     onAgentTunnelRoleReasoningSelect,
     onAgentTunnelAutoModeChange,
+    onAgentTunnelModelConfigReset,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -1077,6 +1087,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (selectedProviderEntry?.driverKind !== "agenttunnel") {
       return undefined;
     }
+    // The thread's own snapshot wins: a thread keeps the roles it was created
+    // with even after the environment defaults change. Only threads without a
+    // snapshot (created before per-thread configs, or on another client) fall
+    // back to the provider instance's defaults.
+    if (activeThreadModelConfig) {
+      return activeThreadModelConfig as Record<string, unknown>;
+    }
     const instanceConfig = settings.providerInstances[selectedProviderEntry.instanceId]?.config;
     const legacyConfig =
       selectedProviderEntry.instanceId ===
@@ -1084,7 +1101,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ? settings.providers.agenttunnel
         : undefined;
     return (instanceConfig ?? legacyConfig) as Record<string, unknown> | undefined;
-  }, [selectedProviderEntry, settings]);
+  }, [activeThreadModelConfig, selectedProviderEntry, settings]);
   const workflowRoles = useMemo(
     () => (workflowConfig ? readAgentTunnelRoles(workflowConfig) : undefined),
     [workflowConfig],
@@ -4121,6 +4138,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? {
                             onWorkflowAutoModeChange: (autoMode: boolean) =>
                               onAgentTunnelAutoModeChange(selectedInstanceId, autoMode),
+                          }
+                        : {})}
+                      {...(onAgentTunnelModelConfigReset
+                        ? {
+                            onWorkflowModelConfigReset: () =>
+                              onAgentTunnelModelConfigReset(selectedInstanceId),
                           }
                         : {})}
                       workflowReasoningOptions={AGENT_TUNNEL_REASONING_OPTIONS}

@@ -34,7 +34,7 @@ import {
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
-import { TooltipProvider } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
@@ -151,6 +151,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   workflowAutoMode?: boolean;
   onWorkflowAutoModeChange?: (autoMode: boolean) => void;
+  /** Re-snapshots the thread's model config from the environment defaults. */
+  onWorkflowModelConfigReset?: () => void;
   workflowReasoningOptions?: ReadonlyArray<{
     readonly value: string;
     readonly label: string;
@@ -861,6 +863,24 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     ) : null}
                   </button>
                 ))}
+                {props.onWorkflowModelConfigReset ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          onClick={() => props.onWorkflowModelConfigReset?.()}
+                          className="ms-1 inline-flex items-center rounded-sm border border-transparent px-1.5 py-0.5 font-mono text-[.68rem] text-muted-foreground/70 hover:border-border/60 hover:bg-accent/40 hover:text-foreground"
+                        />
+                      }
+                    >
+                      Reset
+                    </TooltipTrigger>
+                    <TooltipPopup side="bottom">
+                      Use the environment defaults for this thread again
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
               </div>
             ) : null}
 

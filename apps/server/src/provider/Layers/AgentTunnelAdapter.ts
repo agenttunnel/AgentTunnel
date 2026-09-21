@@ -863,6 +863,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         : context.session.model;
     const effectiveSettings: AgentTunnelSettings = {
       ...settings,
+      // The thread's own config wins over the instance defaults captured when
+      // this adapter was built: a thread keeps running the roles it was
+      // configured with even after the environment defaults change.
+      ...input.modelConfig,
       dangerouslySkipPermissions:
         settings.dangerouslySkipPermissions ||
         context.approvalPolicy === "never" ||

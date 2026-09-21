@@ -1040,6 +1040,9 @@ const makeWsRpcLayer = (
                 projectId: bootstrap.createThread.projectId,
                 title: bootstrap.createThread.title,
                 modelSelection: bootstrap.createThread.modelSelection,
+                ...(bootstrap.createThread.modelConfig !== undefined
+                  ? { modelConfig: bootstrap.createThread.modelConfig }
+                  : {}),
                 runtimeMode: bootstrap.createThread.runtimeMode,
                 interactionMode: bootstrap.createThread.interactionMode,
                 branch: bootstrap.createThread.branch,

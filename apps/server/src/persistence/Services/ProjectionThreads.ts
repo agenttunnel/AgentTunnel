@@ -16,6 +16,7 @@ import {
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadId,
+  ThreadModelConfig,
   TurnId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -30,6 +31,12 @@ export const ProjectionThread = Schema.Struct({
   projectId: ProjectId,
   title: Schema.String,
   modelSelection: ModelSelection,
+  /**
+   * Per-thread workflow model config. Null on threads created before
+   * per-thread configs existed: those keep following the provider instance
+   * defaults.
+   */
+  modelConfig: Schema.optional(Schema.NullOr(ThreadModelConfig)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),

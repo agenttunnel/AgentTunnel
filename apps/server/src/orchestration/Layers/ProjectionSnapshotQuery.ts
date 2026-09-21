@@ -26,6 +26,7 @@ import {
   ProjectId,
   ThreadLinkedPullRequest,
   ThreadId,
+  ThreadModelConfig,
   ThreadMessageSteeringStatus,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
@@ -92,6 +93,7 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
+    modelConfig: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadModelConfig))),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
   }),
 );
@@ -422,6 +424,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          model_config_json AS "modelConfig",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -460,6 +463,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          model_config_json AS "modelConfig",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -500,6 +504,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          model_config_json AS "modelConfig",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -945,6 +950,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          model_config_json AS "modelConfig",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -1706,6 +1712,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 projectId: row.projectId,
                 title: row.title,
                 modelSelection: row.modelSelection,
+                ...(row.modelConfig === undefined || row.modelConfig === null
+                  ? {}
+                  : { modelConfig: row.modelConfig }),
                 runtimeMode: row.runtimeMode,
                 interactionMode: row.interactionMode,
                 branch: row.branch,
@@ -1917,6 +1926,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   projectId: row.projectId,
                   title: row.title,
                   modelSelection: row.modelSelection,
+                  ...(row.modelConfig === undefined || row.modelConfig === null
+                    ? {}
+                    : { modelConfig: row.modelConfig }),
                   runtimeMode: row.runtimeMode,
                   interactionMode: row.interactionMode,
                   branch: row.branch,
@@ -2634,6 +2646,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
+        ...(threadRow.value.modelConfig === undefined || threadRow.value.modelConfig === null
+          ? {}
+          : { modelConfig: threadRow.value.modelConfig }),
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,

@@ -446,11 +446,42 @@ export const ThreadLinkedPullRequest = Schema.Struct({
 });
 export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 
+/**
+ * Thread-scoped workflow model config (AgentTunnel): which harness, model, and
+ * reasoning variant each role runs with, plus auto mode. Keys mirror the role
+ * keys of `AgentTunnelSettings`, which stay the environment-wide defaults for
+ * new threads; a thread keeps its own copy so changing the defaults never
+ * rewrites how an existing thread runs. Absent on threads created before
+ * per-thread configs existed, and on non-workflow providers — those follow the
+ * provider instance's defaults.
+ */
+export const ThreadModelConfig = Schema.Struct({
+  autoMode: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  orchestratorHarness: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("opencode"))),
+  plannerHarness: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("opencode"))),
+  executorHarness: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("opencode"))),
+  testerHarness: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("opencode"))),
+  reviewerHarness: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("opencode"))),
+  orchestratorModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  plannerModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  executorModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  testerModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  reviewerModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  orchestratorVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  plannerVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  executorVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  testerVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  reviewerVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+});
+export type ThreadModelConfig = typeof ThreadModelConfig.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
+  // Optional so payloads from pre-per-thread-config servers still decode.
+  modelConfig: Schema.optional(ThreadModelConfig),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
@@ -751,6 +782,8 @@ const ThreadCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
+  /** Snapshot of the workflow model config the thread runs with. */
+  modelConfig: Schema.optional(ThreadModelConfig),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
@@ -849,6 +882,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
+  modelConfig: Schema.optional(ThreadModelConfig),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -881,6 +915,8 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
+  /** Snapshot of the workflow model config the thread runs with. */
+  modelConfig: Schema.optional(ThreadModelConfig),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
@@ -1247,6 +1283,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
+  /** Optional so events recorded before per-thread configs still decode. */
+  modelConfig: Schema.optional(ThreadModelConfig),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
@@ -1333,6 +1371,8 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   /** Pending state shared with clients. Null clears a matching request. */
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   modelSelection: Schema.optional(ModelSelection),
+  /** Full replacement snapshot of the thread's workflow model config. */
+  modelConfig: Schema.optional(ThreadModelConfig),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),

@@ -1,3 +1,5 @@
+import type { ThreadModelConfig } from "@t3tools/contracts";
+
 export const AGENT_TUNNEL_ROLES = [
   {
     id: "orchestrator",
@@ -162,6 +164,41 @@ export function applyAgentTunnelRoleHarness(
 /** Reads the workflow auto mode flag: the orchestrator picks per-task models. */
 export function readAgentTunnelAutoMode(config: Record<string, unknown> | undefined): boolean {
   return config?.autoMode === true;
+}
+
+/**
+ * Snapshot of the role config a thread runs with: the same keys as the
+ * AgentTunnel provider settings, with the settings' defaults filled in.
+ * Threads store this snapshot so later default changes never rewrite how an
+ * existing thread runs; unknown keys (pass limits, permission flags, …) are
+ * deliberately dropped — they stay environment settings, not thread state.
+ */
+export function readAgentTunnelModelConfig(
+  config: Record<string, unknown> | undefined,
+): ThreadModelConfig {
+  const source = config ?? {};
+  const read = (key: string, fallback: string): string => {
+    const value = source[key];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+  };
+  return {
+    autoMode: source.autoMode === true,
+    orchestratorHarness: read("orchestratorHarness", "opencode"),
+    plannerHarness: read("plannerHarness", "opencode"),
+    executorHarness: read("executorHarness", "opencode"),
+    testerHarness: read("testerHarness", "opencode"),
+    reviewerHarness: read("reviewerHarness", "opencode"),
+    orchestratorModel: read("orchestratorModel", ""),
+    plannerModel: read("plannerModel", ""),
+    executorModel: read("executorModel", ""),
+    testerModel: read("testerModel", ""),
+    reviewerModel: read("reviewerModel", ""),
+    orchestratorVariant: read("orchestratorVariant", ""),
+    plannerVariant: read("plannerVariant", ""),
+    executorVariant: read("executorVariant", ""),
+    testerVariant: read("testerVariant", ""),
+    reviewerVariant: read("reviewerVariant", ""),
+  };
 }
 
 /** Enables or disables workflow auto mode. */

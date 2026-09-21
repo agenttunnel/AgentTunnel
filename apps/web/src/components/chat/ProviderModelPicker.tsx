@@ -86,6 +86,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   /** Global workflow auto mode for AgentTunnel. */
   workflowAutoMode?: boolean;
   onWorkflowAutoModeChange?: (autoMode: boolean) => void;
+  /** Re-snapshots the thread's model config from the environment defaults. */
+  onWorkflowModelConfigReset?: () => void;
   workflowReasoningOptions?: ReadonlyArray<{ readonly value: string; readonly label: string }>;
   onWorkflowRoleReasoningSelect?: (roleId: string, variant: string) => void;
   /** Composer uses the modal-sized picker. */
@@ -305,6 +307,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         : {})}
       {...(props.onWorkflowAutoModeChange
         ? { onWorkflowAutoModeChange: props.onWorkflowAutoModeChange }
+        : {})}
+      {...(props.onWorkflowModelConfigReset
+        ? { onWorkflowModelConfigReset: props.onWorkflowModelConfigReset }
         : {})}
       {...(props.workflowReasoningOptions
         ? { workflowReasoningOptions: props.workflowReasoningOptions }
