@@ -835,6 +835,9 @@ const make = Effect.gen(function* () {
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
+      // Workflow providers read this to run the thread's own role config
+      // instead of the environment-wide defaults.
+      ...(thread.modelConfig !== undefined ? { modelConfig: thread.modelConfig } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     };
   });

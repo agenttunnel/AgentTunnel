@@ -17,6 +17,7 @@ import {
   type ScopedProjectRef,
   type ScopedThreadRef,
   ThreadId,
+  ThreadModelConfig,
 } from "@t3tools/contracts";
 import {
   parseScopedProjectKey,
@@ -200,6 +201,12 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   // selections (project default / sticky) leave it unset so later seeds can
   // replace them; legacy entries predate the flag and read as seeded too.
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Workflow model config chosen for a thread that does not exist on the
+   * server yet. Carried into `thread.create` (or the turn-start bootstrap) so
+   * the thread starts with the config the user set up in the composer.
+   */
+  modelConfig: Schema.optionalKey(ThreadModelConfig),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
@@ -335,6 +342,11 @@ export interface ComposerThreadDraftState {
    * may replace it. Legacy entries predate the flag and read as seeded.
    */
   modelSelectionExplicit?: boolean;
+  /**
+   * Workflow model config for a thread that has no server record yet (see
+   * `PersistedComposerThreadDraftState.modelConfig`).
+   */
+  modelConfig: ThreadModelConfig | null;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
 }
@@ -529,6 +541,8 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     runtimeMode: RuntimeMode | null | undefined,
   ) => void;
+  /** Replaces the thread's workflow model config draft (draft threads only). */
+  setModelConfig: (threadRef: ComposerThreadTarget, modelConfig: ThreadModelConfig) => void;
   setInteractionMode: (
     threadRef: ComposerThreadTarget,
     interactionMode: ProviderInteractionMode | null | undefined,
@@ -711,6 +725,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   reviewComments: EMPTY_REVIEW_COMMENTS,
   modelSelectionByProvider: EMPTY_MODEL_SELECTION_BY_PROVIDER,
   activeProvider: null,
+  modelConfig: null,
   runtimeMode: null,
   interactionMode: null,
 });
@@ -734,6 +749,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     reviewComments: [],
     modelSelectionByProvider: {},
     activeProvider: null,
+    modelConfig: null,
     runtimeMode: null,
     interactionMode: null,
   };
@@ -808,6 +824,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.reviewComments.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
+    draft.modelConfig === null &&
     draft.runtimeMode === null &&
     draft.interactionMode === null
   );
@@ -2019,6 +2036,7 @@ function partializeComposerDraftStoreState(
       draft.previewAnnotations.length === 0 &&
       draft.reviewComments.length === 0 &&
       !hasModelData &&
+      draft.modelConfig === null &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
     ) {
@@ -2097,6 +2115,7 @@ function partializeComposerDraftStoreState(
             ...(draft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
           }
         : {}),
+      ...(draft.modelConfig !== null ? { modelConfig: draft.modelConfig } : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
       ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
     };
@@ -2359,6 +2378,7 @@ function toHydratedThreadDraft(
     modelSelectionByProvider,
     activeProvider,
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+    modelConfig: persistedDraft.modelConfig ?? null,
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
@@ -3067,6 +3087,29 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...base,
               runtimeMode: nextRuntimeMode,
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        setModelConfig: (threadRef, modelConfig) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const base = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            if (Equal.equals(base.modelConfig, modelConfig)) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...base,
+              modelConfig,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

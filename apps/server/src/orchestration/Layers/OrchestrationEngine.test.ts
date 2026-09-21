@@ -7,6 +7,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type ThreadModelConfig,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -79,6 +80,29 @@ async function createOrchestrationSystem() {
 
 function now() {
   return "2026-01-01T00:00:00.000Z";
+}
+
+/** Complete workflow model config, the shape a client snapshots onto a thread. */
+function fullModelConfig(overrides: Partial<ThreadModelConfig> = {}): ThreadModelConfig {
+  return {
+    autoMode: false,
+    orchestratorHarness: "opencode",
+    plannerHarness: "opencode",
+    executorHarness: "opencode",
+    testerHarness: "opencode",
+    reviewerHarness: "opencode",
+    orchestratorModel: "",
+    plannerModel: "",
+    executorModel: "",
+    testerModel: "",
+    reviewerModel: "",
+    orchestratorVariant: "",
+    plannerVariant: "",
+    executorVariant: "",
+    testerVariant: "",
+    reviewerVariant: "",
+    ...overrides,
+  };
 }
 
 const hasMetricSnapshot = (
@@ -451,6 +475,70 @@ describe("OrchestrationEngine", () => {
       "thread.created",
       "thread.deleted",
     ]);
+    await system.dispose();
+  });
+
+  it("keeps a thread's workflow model config across create and meta updates", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const threadId = ThreadId.make("thread-model-config");
+    const createdConfig = fullModelConfig({ orchestratorModel: "anthropic/claude-opus-4-6" });
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-model-config-create"),
+        projectId: asProjectId("project-model-config"),
+        title: "Model config",
+        workspaceRoot: "/tmp/project-model-config",
+        defaultModelSelection: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-model-config-create"),
+        threadId,
+        projectId: asProjectId("project-model-config"),
+        title: "thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("agenttunnel"),
+          model: "anthropic/claude-opus-4-6",
+        },
+        modelConfig: createdConfig,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const created = await system.readModel();
+    expect(created.threads.find((thread) => thread.id === threadId)?.modelConfig).toEqual(
+      createdConfig,
+    );
+
+    const updatedConfig = fullModelConfig({
+      autoMode: true,
+      orchestratorModel: "anthropic/claude-opus-4-6",
+      reviewerHarness: "codex",
+    });
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-model-config-update"),
+        threadId,
+        modelConfig: updatedConfig,
+      }),
+    );
+
+    const updated = await system.readModel();
+    expect(updated.threads.find((thread) => thread.id === threadId)?.modelConfig).toEqual(
+      updatedConfig,
+    );
     await system.dispose();
   });
 

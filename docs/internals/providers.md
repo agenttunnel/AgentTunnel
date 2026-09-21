@@ -167,10 +167,21 @@ agent will adjust. A round that ran pipelines still earns its summary pass once 
 
 ### Model selection and auto mode
 
-Each role has a harness, model, and reasoning variant in provider settings. Harness and variant are
-always settings-driven. By default (`AgentTunnelSettings.autoMode` off), a child's model follows the
-existing precedence: the role's model (`executorModel`, `testerModel`, and so on) when set, then
-`orchestratorModel`, then the session model. Task-level models are ignored entirely in this mode.
+Each role has a harness, model, and reasoning variant. Those live in provider settings as the
+environment's **defaults**, and each thread stores its own copy of them: `thread.modelConfig`, set
+from the defaults when the thread is created and editable per thread from the composer's model
+config panel. A thread keeps its snapshot for its whole life, so changing the defaults only affects
+threads created afterwards; the panel's reset action re-snapshots the thread from the current
+defaults. Threads created before per-thread configs existed (and threads created by clients that do
+not send one) have no snapshot and follow the defaults live. On the wire the snapshot rides
+`thread.create` / `thread.meta.update` (guarded by the `threadModelConfig` environment capability)
+and reaches the adapter on `ProviderSendTurnInput.modelConfig`, which the adapter spreads over the
+instance settings for that turn. `autoMode` rides along with it.
+
+Harness and variant otherwise come straight from the effective config. By default
+(`autoMode` off), a child's model follows the existing precedence: the role's model (`executorModel`,
+`testerModel`, and so on) when set, then `orchestratorModel`, then the session model. Task-level
+models are ignored entirely in this mode.
 
 Auto mode lets the orchestrator choose a model per dispatched task. The driver builds
 `availableModels` from the AgentTunnel provider's model snapshot (`modelsFromInventory`, which merges

@@ -82,6 +82,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
   /** Server persists a pull request reference on thread.meta.update. */
   threadPullRequestLinking: Schema.optionalKey(Schema.Boolean),
+  /** Server persists a per-thread workflow model config (thread.create /
+      thread.meta.update carry modelConfig, and workflow turns honour it).
+      Absent on older servers, which keep the config environment-wide. */
+  threadModelConfig: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */

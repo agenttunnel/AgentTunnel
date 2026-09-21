@@ -10,6 +10,7 @@ import {
   applyAgentTunnelRoleVariant,
   applyAgentTunnelAutoMode,
   readAgentTunnelAutoMode,
+  readAgentTunnelModelConfig,
   readAgentTunnelRoles,
 } from "./agentTunnelRoles.logic";
 
@@ -136,6 +137,48 @@ describe("agentTunnelRoles", () => {
     expect(agentTunnelHarnessProviderKind("opencode")).toBe("opencode");
     expect(agentTunnelHarnessProviderKind("claude")).toBe("claudeAgent");
     expect(agentTunnelHarnessProviderKind("/usr/local/bin/codex")).toBeNull();
+  });
+
+  it("snapshots the role config a thread keeps", () => {
+    expect(
+      readAgentTunnelModelConfig({
+        autoMode: true,
+        plannerModel: "p/m",
+        reviewerHarness: " codex ",
+        // Settings that are not thread state: they must not leak into the
+        // snapshot, so a thread cannot pin the environment's pass limits.
+        maxOrchestratorPasses: 7,
+        dangerouslySkipPermissions: false,
+      }),
+    ).toEqual({
+      autoMode: true,
+      orchestratorHarness: "opencode",
+      plannerHarness: "opencode",
+      executorHarness: "opencode",
+      testerHarness: "opencode",
+      reviewerHarness: "codex",
+      orchestratorModel: "",
+      plannerModel: "p/m",
+      executorModel: "",
+      testerModel: "",
+      reviewerModel: "",
+      orchestratorVariant: "",
+      plannerVariant: "",
+      executorVariant: "",
+      testerVariant: "",
+      reviewerVariant: "",
+    });
+  });
+
+  it("reads blank role values as unset when snapshotting", () => {
+    const snapshot = readAgentTunnelModelConfig({ executorHarness: "   ", executorModel: "" });
+    expect(snapshot.executorHarness).toBe("opencode");
+    expect(snapshot.executorModel).toBe("");
+    expect(readAgentTunnelModelConfig(undefined)).toMatchObject({
+      autoMode: false,
+      orchestratorHarness: "opencode",
+      orchestratorModel: "",
+    });
   });
 
   it("reads and applies auto mode", () => {

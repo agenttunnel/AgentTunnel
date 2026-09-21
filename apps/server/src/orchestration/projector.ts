@@ -294,6 +294,7 @@ export function projectEvent(
             projectId: payload.projectId,
             title: payload.title,
             modelSelection: payload.modelSelection,
+            ...(payload.modelConfig !== undefined ? { modelConfig: payload.modelConfig } : {}),
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
@@ -467,6 +468,7 @@ export function projectEvent(
             ...(payload.modelSelection !== undefined
               ? { modelSelection: payload.modelSelection }
               : {}),
+            ...(payload.modelConfig !== undefined ? { modelConfig: payload.modelConfig } : {}),
             ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
             ...(payload.linkedPullRequest !== undefined

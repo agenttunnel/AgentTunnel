@@ -9,7 +9,9 @@ import {
   ProviderSession,
   ProviderDriverKind,
   ProviderInstanceId,
+  ThreadModelConfig,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
   ApprovalRequestId,
@@ -64,6 +66,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
 
+const decodeThreadModelConfig = Schema.decodeUnknownSync(ThreadModelConfig);
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
@@ -573,6 +576,44 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("sends the thread's own workflow model config with the turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const modelConfig = decodeThreadModelConfig({
+      autoMode: true,
+      orchestratorModel: "anthropic/claude-opus-4-6",
+      reviewerHarness: "codex",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-model-config-set"),
+        threadId: ThreadId.make("thread-1"),
+        modelConfig,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-model-config"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-model-config"),
+          role: "user",
+          text: "run with the thread's roles",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ modelConfig });
   });
 
   effectIt.effect("projects starting before a slow provider session finishes", () =>
