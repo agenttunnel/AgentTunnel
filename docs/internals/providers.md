@@ -173,22 +173,49 @@ empty or missing list means no task model is ever valid. A non-empty slug outsid
 model > `orchestratorModel` > session model. The chosen model is shown in the queued dispatch message
 and in the `agent.started` event, so the thread timeline and Agents panel surface it per task.
 
+Auto mode is where the token accounting pays off. The orchestrator prompt tells the planner to read
+the `## Workflow state` ledger and the recorded role candidates before choosing a model: cheap models
+for mechanical executor work, larger ones for ambiguous design work, escalation when a task stalled or
+failed, and web search from the harness when a model slug is unfamiliar. The prompt asks for durable
+`model-fit`, `model-quality`, and `role-fit` learnings so the next workflow starts from recorded
+costs and completion rates.
+
 ### Inherited context
 
 Every workflow inherits a global, cross-project context from earlier orchestrators and feeds durable
 lessons back into it. The store lives in the hidden `.orchestrator-context/` folder under the
 environment's state directory: `GUIDE.md` explains how to navigate the rules, `rules/*.md` holds one
-file per category (`design-decisions`, `model-fit`, `model-quality`, plus any category an
-orchestrator introduces), and `LOG.md` is the chronological ledger. The adapter renders the guide and
-rules into the orchestrator prompt before `runAgentTunnel` (planning pass 0 and every summary pass)
-and appends the orchestrator's `record_learning` entries after the run, under an in-process semaphore
-plus a lock file, so concurrent workflows on one environment never interleave a read-modify-write.
-The summary pass prompt includes a dispatch-outcomes table (role, harness, model, status, task) so
-model-fit and model-quality entries are grounded in actual results, and the finish markdown lists the
-recorded entries. Every entry is stamped with its ISO date, project, thread, workflow, and terminal
-status. Prompt rendering caps the guide and each rules file and trims from the top when the budget is
-exceeded, so a long-lived context cannot blow up the planner prompt. Flushing is best-effort: it never
-fails a turn, and it logs a warning and skips the update if the lock stays held too long.
+file per category (`design-decisions`, `model-fit`, `model-quality`, `role-fit`, plus any category an
+orchestrator introduces), `role-stats.json` is the machine-maintained per-role outcome ledger, and
+`LOG.md` is the chronological ledger. The adapter renders the guide, the rules, and the recorded role
+candidates into the orchestrator prompt before `runAgentTunnel` (planning pass 0 and every summary
+pass) and appends the orchestrator's `record_learning` entries after the run, under an in-process
+semaphore plus a lock file, so concurrent workflows on one environment never interleave a
+read-modify-write. Every entry is stamped with its ISO date, project, thread, workflow, and terminal
+status. Prompt rendering caps the guide, each rules file, and the candidates table, and trims from the
+top when the budget is exceeded, so a long-lived context cannot blow up the planner prompt. Flushing
+is best-effort: it never fails a turn, and it logs a warning and skips the update if the lock stays
+held too long.
+
+### Token accounting and the role ledger
+
+The workflow loop owns the token bill. The adapter's process runner fills a caller-owned
+`HarnessUsageTotals` accumulator from the same harness frames that feed the thread usage snapshot, so
+`runAgentTunnel` reads what each pass and each agent cost after its process settles — timeout
+included — without the handle leaving the spawn scope. The loop keeps a per-agent ledger (tokens,
+cost, prompt size, the shared-context keys the agent wrote with `note_finding` or a review verdict,
+and the result key its output landed under) and renders it into every summary pass as
+`## Workflow state`, next to the orchestrator's own spend, the session-cumulative total, and the size
+of the shared context. The finished workflow returns the same data as `dispatches`.
+
+The adapter folds that list into `role-stats.json`, one entry per role and harness+model candidate:
+runs, completed/failed/stopped, token sums, priced runs, cost, and duration. The file is
+machine-owned (rewritten whole at flush time, corrupt content rebuilt rather than failing the run),
+newest-first per role, capped at sixteen candidates per role, and parsed with `Schema.fromJsonString`
+rather than hand-rolled JSON. The orchestrator prompt shows the newest candidates per role as
+`## Recorded role candidates`, so model choice for the next workflow starts from recorded completion
+rates and token costs instead of a blank slate. The finish markdown carries the spend in its heading
+and tokens per agent in the agents table.
 
 ## How provider work is requested
 

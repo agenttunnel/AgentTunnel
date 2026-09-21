@@ -15,6 +15,7 @@ import {
   type AgentTunnelProcessSpec,
   runAgentTunnel,
 } from "./Orchestrator.ts";
+import { addHarnessUsageTotals, emptyHarnessUsageTotals } from "./harnessUsage.ts";
 
 const decodeSettings = Schema.decodeSync(AgentTunnelSettings);
 
@@ -449,7 +450,10 @@ it.effect("emits well-formed, human-readable workflow markdown", () =>
     NodeAssert.match(markdown, /✅ \*\*Pipeline `research` completed\*\* · 2\/2 completed/);
     NodeAssert.match(markdown, /## ✅ Workflow completed · \d+s/);
     NodeAssert.match(markdown, /### Pipelines\n\n\| Pipeline \| Agents \| Status \| Time \|/);
-    NodeAssert.match(markdown, /### Agents\n\n\| Agent \| Pipeline \| Status \| Time \| Output \|/);
+    NodeAssert.match(
+      markdown,
+      /### Agents\n\n\| Agent \| Pipeline \| Status \| Tokens \| Time \| Output \|/,
+    );
     NodeAssert.match(markdown, /\| 🛠️ executor · Research B \| `research` \| ✅ completed \|/);
     NodeAssert.match(
       markdown,
@@ -1041,11 +1045,12 @@ it.effect("injects the inherited context and returns deduplicated learnings", ()
     NodeAssert.match(planning?.prompt ?? "", /## Inherited context/);
     NodeAssert.match(planning?.prompt ?? "", /codex is strong at multi-file refactors\./);
     const summary = specs.find((spec) => spec.prompt.includes("Summary pass"));
-    NodeAssert.match(summary?.prompt ?? "", /\| Role \| Harness \| Model \| Status \| Task \|/);
+    NodeAssert.match(summary?.prompt ?? "", /## Workflow state/);
     NodeAssert.match(
       summary?.prompt ?? "",
-      /\| executor \| fake-executor \| test-model \| completed \|/,
+      /\| executor \| fake-executor · test-model \| completed \|/,
     );
+    NodeAssert.match(summary?.prompt ?? "", /`result_research`/);
     NodeAssert.match(summary?.prompt ?? "", /- codex is strong at multi-file refactors\./);
 
     NodeAssert.deepEqual(result.learnings, [
@@ -1110,4 +1115,94 @@ it.effect("runs planner and tester tasks on their role harnesses and prompts", (
     );
     NodeAssert.match(collectMarkdown(events), /Invalid dispatch_task arguments/);
   }),
+);
+
+it.effect(
+  "accounts for what each pass and agent cost, and hands the ledger to the summary pass",
+  () =>
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const specs: Array<AgentTunnelProcessSpec> = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 3,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) => {
+          specs.push(spec);
+          // Harness token frames fill the caller's accumulator, which is exactly
+          // how the adapter's usage tap feeds the workflow loop.
+          if (spec.usage) {
+            addHarnessUsageTotals(spec.usage, {
+              totalTokens: spec.id.startsWith("orchestrator") ? 100 : 1_000,
+              inputTokens: spec.id.startsWith("orchestrator") ? 90 : 900,
+              cachedInputTokens: 0,
+              outputTokens: spec.id.startsWith("orchestrator") ? 10 : 100,
+              reasoningOutputTokens: 0,
+              costUsd: 0.01,
+            });
+          }
+          const lines = spec.prompt.includes("Summary pass")
+            ? ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}']
+            : spec.id.startsWith("orchestrator")
+              ? [
+                  '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Research A","pipeline":"research"}}',
+                  '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"task dispatched"}}',
+                ]
+              : [
+                  '__AGENTTUNNEL_TOOL__ {"name":"note_finding","arguments":{"key":"findings","value":"found it"}}',
+                  '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}',
+                ];
+          return Effect.succeed({
+            pid: 1,
+            lines: Stream.fromIterable(lines),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle);
+        },
+      };
+
+      const result = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "account for spend",
+        cwd: "/tmp",
+        model: "test-model",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+        sessionUsage: { ...emptyHarnessUsageTotals(), totalTokens: 5_000, costUsd: 0.5 },
+      });
+
+      NodeAssert.equal(result.status, "completed");
+      const summary = specs.find((spec) => spec.prompt.includes("Summary pass"));
+      const summaryPrompt = summary?.prompt ?? "";
+      // Spend, findings, and result keys, per agent and per pass.
+      NodeAssert.match(
+        summaryPrompt,
+        /Orchestrator: `fake-orchestrator` · `test-model` — 1 completed pass · 100 tokens · \$0\.01 · session total 5,100 tokens · \$0\.51/,
+      );
+      NodeAssert.match(summaryPrompt, /- Sub-agents: 1 task · 1,000 tokens · \$0\.01/);
+      NodeAssert.match(
+        summaryPrompt,
+        /\| executor \| fake-executor · test-model \| completed \| 1,000 \| \$0\.01 \| `findings` \| `result_research` \|/,
+      );
+      // The adapter folds these into the inherited role ledger.
+      NodeAssert.deepEqual(
+        result.dispatches.map((dispatch) => [dispatch.role, dispatch.totalTokens, dispatch.status]),
+        [
+          ["orchestrator", 200, "completed"],
+          ["executor", 1_000, "completed"],
+        ],
+      );
+      const markdown = collectMarkdown(events);
+      NodeAssert.match(markdown, /## ✅ Workflow completed · \d+s · 1,200 tokens · \$0\.03/);
+      NodeAssert.match(
+        markdown,
+        /completed in \d+s · \d+ lines? of output · 1,000 tokens · \$0\.01/,
+      );
+    }),
 );

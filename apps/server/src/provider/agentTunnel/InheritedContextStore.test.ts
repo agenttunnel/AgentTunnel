@@ -9,6 +9,8 @@ import * as NodeAssert from "node:assert/strict";
 import {
   makeAgentTunnelInheritedContext,
   normalizeContextLearning,
+  parseRoleStats,
+  type AgentTunnelDispatchOutcome,
 } from "./InheritedContextStore.ts";
 
 const makeStore = Effect.gen(function* () {
@@ -69,7 +71,8 @@ it.layer(NodeServices.layer)("InheritedContextStore", (it) => {
           ],
           attribution,
         });
-        NodeAssert.equal(written, 3);
+        NodeAssert.equal(written.learnings, 3);
+        NodeAssert.equal(written.candidates, 0);
 
         const modelFit = yield* fs.readFileString(path.join(rulesDir, "model-fit.md"));
         NodeAssert.match(modelFit, /## \d{4}-\d{2}-\d{2}T[\d:.]+Z · completed/);
@@ -114,8 +117,8 @@ it.layer(NodeServices.layer)("InheritedContextStore", (it) => {
             attribution: { ...attribution, threadId: "thread-b" },
           })
           .pipe(Effect.forkChild);
-        NodeAssert.equal(yield* Fiber.join(first), 1);
-        NodeAssert.equal(yield* Fiber.join(second), 1);
+        NodeAssert.equal((yield* Fiber.join(first)).learnings, 1);
+        NodeAssert.equal((yield* Fiber.join(second)).learnings, 1);
 
         const contents = yield* fs.readFileString(path.join(rulesDir, "model-quality.md"));
         NodeAssert.match(contents, /first concurrent entry/);
@@ -133,7 +136,7 @@ it.layer(NodeServices.layer)("InheritedContextStore", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
 
-        NodeAssert.equal(
+        NodeAssert.deepEqual(
           yield* store.record({
             learnings: [
               { category: "!!!", entry: "no category" },
@@ -141,17 +144,17 @@ it.layer(NodeServices.layer)("InheritedContextStore", (it) => {
             ],
             attribution,
           }),
-          0,
+          { learnings: 0, candidates: 0 },
         );
 
-        NodeAssert.equal(
+        NodeAssert.deepEqual(
           yield* store.record({
             learnings: [
               { category: "Release Hygiene", entry: "Run the focused suite before committing." },
             ],
             attribution,
           }),
-          1,
+          { learnings: 1, candidates: 0 },
         );
         const created = yield* fs.readFileString(path.join(rulesDir, "release-hygiene.md"));
         NodeAssert.match(created, /Run the focused suite before committing\./);
@@ -162,6 +165,111 @@ it.layer(NodeServices.layer)("InheritedContextStore", (it) => {
         NodeAssert.ok(clipped);
         NodeAssert.equal(clipped.entry.length, 1_200);
         NodeAssert.ok(clipped.entry.endsWith("…"));
+      }),
+    ),
+  );
+
+  it.effect("folds dispatch outcomes into per-role candidates across workflows", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { contextDir, store } = yield* makeStore;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const statsPath = path.join(contextDir, "role-stats.json");
+
+        const executorDispatch = (
+          overrides: Partial<AgentTunnelDispatchOutcome> = {},
+        ): AgentTunnelDispatchOutcome => ({
+          role: "executor",
+          harness: "opencode",
+          model: "qwen/qwen3-coder-27b",
+          status: "completed",
+          durationMs: 1_000,
+          totalTokens: 1_000,
+          inputTokens: 900,
+          outputTokens: 100,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+          ...overrides,
+        });
+
+        const first = yield* store.record({
+          learnings: [],
+          dispatches: [
+            executorDispatch(),
+            executorDispatch({ status: "failed", totalTokens: 3_000, costUsd: 0.02 }),
+            {
+              role: "tester",
+              harness: "pi",
+              status: "completed",
+              durationMs: 500,
+              totalTokens: 500,
+              inputTokens: 400,
+              outputTokens: 100,
+              cachedInputTokens: 0,
+              reasoningOutputTokens: 0,
+            },
+            executorDispatch({ role: "   " }),
+          ],
+          attribution,
+        });
+        NodeAssert.equal(first.candidates, 3);
+
+        // A later workflow merges into the same candidate instead of replacing it.
+        yield* store.record({
+          learnings: [],
+          dispatches: [executorDispatch({ totalTokens: 2_000, costUsd: 0.01 })],
+          attribution: { ...attribution, workflowId: "workflow-2" },
+        });
+
+        const stats = parseRoleStats(yield* fs.readFileString(statsPath), "");
+        const candidate = stats.roles["executor"]?.[0];
+        NodeAssert.equal(stats.roles["executor"]?.length, 1);
+        NodeAssert.equal(candidate?.tasks, 3);
+        NodeAssert.equal(candidate?.totalTokens, 6_000);
+        NodeAssert.equal(stats.roles["tester"]?.length, 1);
+
+        const rendered = yield* store.renderForPrompt();
+        NodeAssert.match(rendered, /## Recorded role candidates/);
+        NodeAssert.match(
+          rendered,
+          /\| executor \| opencode \| qwen\/qwen3-coder-27b \| 3 \| 2 \| 1 \| 2,000 \| 6,000 \| \$0\.03 \|/,
+        );
+        NodeAssert.match(rendered, /\| tester \| pi \| default \| 1 \| 1 \| 0 \|/);
+      }),
+    ),
+  );
+
+  it.effect("rebuilds a corrupt candidate ledger instead of failing the flush", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { contextDir, store } = yield* makeStore;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const statsPath = path.join(contextDir, "role-stats.json");
+        yield* fs.writeFileString(statsPath, "{ not json");
+
+        const written = yield* store.record({
+          learnings: [],
+          dispatches: [
+            {
+              role: "reviewer",
+              harness: "claude",
+              status: "completed",
+              durationMs: 10,
+              totalTokens: 42,
+              inputTokens: 40,
+              outputTokens: 2,
+              cachedInputTokens: 0,
+              reasoningOutputTokens: 0,
+            },
+          ],
+          attribution,
+        });
+        NodeAssert.equal(written.candidates, 1);
+
+        const stats = parseRoleStats(yield* fs.readFileString(statsPath), "");
+        NodeAssert.equal(stats.roles["reviewer"]?.[0]?.tasks, 1);
       }),
     ),
   );

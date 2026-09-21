@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
@@ -25,9 +26,36 @@ export interface AgentTunnelContextAttribution {
   readonly status: "completed" | "failed" | "stopped";
 }
 
+/**
+ * One dispatched agent's outcome, recorded so later orchestrators can compare
+ * role candidates on completion rate, tokens burned, and cost. `role` is a
+ * dispatched role, or "orchestrator" for the workflow's own passes.
+ */
+export interface AgentTunnelDispatchOutcome {
+  readonly role: string;
+  readonly harness: string;
+  readonly model?: string;
+  readonly status: "completed" | "failed" | "stopped";
+  readonly durationMs: number;
+  readonly totalTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly reasoningOutputTokens: number;
+  /** Harness-computed cost, present only when the harness reported one. */
+  readonly costUsd?: number;
+}
+
 export interface AgentTunnelInheritedContextRecord {
   readonly learnings: ReadonlyArray<AgentTunnelContextLearning>;
+  /** Per-agent outcomes folded into the role-candidate stats. */
+  readonly dispatches?: ReadonlyArray<AgentTunnelDispatchOutcome>;
   readonly attribution: AgentTunnelContextAttribution;
+}
+
+export interface AgentTunnelInheritedContextFlush {
+  readonly learnings: number;
+  readonly candidates: number;
 }
 
 /**
@@ -36,16 +64,25 @@ export interface AgentTunnelInheritedContextRecord {
  * cross-process lock file so only one orchestrator updates the context at a time.
  */
 export interface AgentTunnelInheritedContext {
-  /** Renders the guide plus every rules file for injection into a prompt. */
+  /** Renders the guide, every rules file, and the role candidates for a prompt. */
   readonly renderForPrompt: () => Effect.Effect<string>;
-  /** Appends learnings under the semaphore; returns how many entries landed. */
-  readonly record: (input: AgentTunnelInheritedContextRecord) => Effect.Effect<number>;
+  /** Appends learnings and folds dispatch outcomes in, under the semaphore. */
+  readonly record: (
+    input: AgentTunnelInheritedContextRecord,
+  ) => Effect.Effect<AgentTunnelInheritedContextFlush>;
 }
 
 const RULES_DIR = "rules";
 const GUIDE_FILE = "GUIDE.md";
 const LOG_FILE = "LOG.md";
 const LOCK_FILE = ".lock";
+const ROLE_STATS_FILE = "role-stats.json";
+const ROLE_STATS_VERSION = 1;
+/** Distinct harness+model candidates kept per role; least recently used drop first. */
+const MAX_ROLE_CANDIDATES = 16;
+/** Candidate rows per role rendered into the orchestrator prompt. */
+const MAX_ROLE_ROWS = 6;
+const MAX_ROLE_STATS_PROMPT_CHARS = 4_000;
 const CATEGORY_MAX_CHARS = 40;
 const ENTRY_MAX_CHARS = 1_200;
 const MAX_PROMPT_CHARS = 20_000;
@@ -84,6 +121,15 @@ TypeScript refactor" or "small CSS fix").`,
     description: "Overall quality judgments per model, independent of task type.",
     body: `Overall judgments about each model: reasoning depth, instruction following, speed,
 verbosity, and where it tends to fail. Independent of any single task type.`,
+  },
+  {
+    fileName: "role-fit.md",
+    title: "Best candidates per role",
+    description: "Which harness and model is the best candidate for each dispatched role.",
+    body: `The best known candidate per role — planner, executor, tester, reviewer — and why:
+completion rate, tokens burned, cost, and speed. Name the harness and the exact model slug,
+and say when a small, cheap model is good enough for a role. The machine-maintained
+\`${ROLE_STATS_FILE}\` file carries the recorded numbers; this file carries the judgment.`,
   },
 ];
 
@@ -136,6 +182,10 @@ lives outside any repository.
 3. When entries conflict, the newer entry wins. Treat rules as binding guidance unless the
    user's current task overrides them.
 4. \`${LOG_FILE}\` is the chronological ledger of every context update.
+5. \`${ROLE_STATS_FILE}\` is machine-maintained: the per-role outcome ledger (runs, tokens,
+   cost) behind the "Recorded role candidates" section of the orchestrator prompt. It is
+   rewritten at the end of every workflow, so record judgments in
+   \`${RULES_DIR}/role-fit.md\` instead of editing it.
 
 ## Rules files
 
@@ -187,6 +237,221 @@ export function normalizeContextLearning(
   return { category: slug, entry: cleaned };
 }
 
+/**
+ * What one harness + model candidate has done for one role: how often it ran,
+ * how it ended, and what it burned. Tokens and cost are sums, so callers can
+ * read `tasks` for the average.
+ */
+export interface AgentTunnelRoleCandidate {
+  readonly harness: string;
+  readonly model: string | null;
+  readonly tasks: number;
+  readonly completed: number;
+  readonly failed: number;
+  readonly stopped: number;
+  readonly totalTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly costUsd: number;
+  readonly pricedTasks: number;
+  readonly durationMs: number;
+  readonly lastUsedAt: string;
+}
+
+export interface AgentTunnelRoleStats {
+  readonly version: number;
+  readonly updatedAt: string;
+  readonly roles: Record<string, ReadonlyArray<AgentTunnelRoleCandidate>>;
+}
+
+const candidateKey = (candidate: { harness: string; model?: string | null }): string =>
+  `${candidate.harness}\u0000${candidate.model ?? ""}`;
+
+const emptyRoleStats = (updatedAt: string): AgentTunnelRoleStats => ({
+  version: ROLE_STATS_VERSION,
+  updatedAt,
+  roles: {},
+});
+
+const readNumber = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : 0;
+
+/** Structurally validates one stored candidate, dropping anything unusable. */
+function parseRoleCandidate(value: unknown): AgentTunnelRoleCandidate | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.harness !== "string" || record.harness.length === 0) return null;
+  return {
+    harness: record.harness,
+    model: typeof record.model === "string" && record.model.length > 0 ? record.model : null,
+    tasks: readNumber(record.tasks),
+    completed: readNumber(record.completed),
+    failed: readNumber(record.failed),
+    stopped: readNumber(record.stopped),
+    totalTokens: readNumber(record.totalTokens),
+    inputTokens: readNumber(record.inputTokens),
+    outputTokens: readNumber(record.outputTokens),
+    cachedInputTokens: readNumber(record.cachedInputTokens),
+    reasoningOutputTokens: readNumber(record.reasoningOutputTokens),
+    costUsd: readNumber(record.costUsd),
+    pricedTasks: readNumber(record.pricedTasks),
+    durationMs: readNumber(record.durationMs),
+    lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : "",
+  };
+}
+
+/** The stats file is machine-owned JSON: decode and encode it through one schema. */
+const roleStatsJson = Schema.fromJsonString(Schema.Unknown);
+const decodeRoleStatsJson = Schema.decodeUnknownOption(roleStatsJson);
+
+/**
+ * Parses the stored stats file. A hand-edited or truncated file falls back to
+ * empty stats rather than failing the flush: the ledger is a cache of outcomes,
+ * not a source of truth anything else depends on.
+ */
+export function parseRoleStats(raw: string, updatedAt: string): AgentTunnelRoleStats {
+  if (raw.trim().length === 0) return emptyRoleStats(updatedAt);
+  const decoded = decodeRoleStatsJson(raw);
+  if (Option.isNone(decoded)) return emptyRoleStats(updatedAt);
+  const parsed = decoded.value;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return emptyRoleStats(updatedAt);
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.version !== ROLE_STATS_VERSION) return emptyRoleStats(updatedAt);
+  const rolesValue = record.roles;
+  if (rolesValue === null || typeof rolesValue !== "object" || Array.isArray(rolesValue)) {
+    return emptyRoleStats(updatedAt);
+  }
+  const roles: Record<string, ReadonlyArray<AgentTunnelRoleCandidate>> = {};
+  for (const [role, candidates] of Object.entries(rolesValue as Record<string, unknown>)) {
+    if (!Array.isArray(candidates)) continue;
+    const parsedCandidates = candidates
+      .map(parseRoleCandidate)
+      .filter((candidate): candidate is AgentTunnelRoleCandidate => candidate !== null);
+    if (parsedCandidates.length > 0) roles[role] = parsedCandidates;
+  }
+  return {
+    version: ROLE_STATS_VERSION,
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : updatedAt,
+    roles,
+  };
+}
+
+/** The stats file is machine-owned, so it is written from the same shape it is read as. */
+const encodeRoleStats = Schema.encodeSync(roleStatsJson);
+
+const foldDispatch = (
+  candidate: AgentTunnelRoleCandidate,
+  dispatch: AgentTunnelDispatchOutcome,
+  updatedAt: string,
+): AgentTunnelRoleCandidate => ({
+  harness: candidate.harness,
+  model: candidate.model,
+  tasks: candidate.tasks + 1,
+  completed: candidate.completed + (dispatch.status === "completed" ? 1 : 0),
+  failed: candidate.failed + (dispatch.status === "failed" ? 1 : 0),
+  stopped: candidate.stopped + (dispatch.status === "stopped" ? 1 : 0),
+  totalTokens: candidate.totalTokens + dispatch.totalTokens,
+  inputTokens: candidate.inputTokens + dispatch.inputTokens,
+  outputTokens: candidate.outputTokens + dispatch.outputTokens,
+  cachedInputTokens: candidate.cachedInputTokens + dispatch.cachedInputTokens,
+  reasoningOutputTokens: candidate.reasoningOutputTokens + dispatch.reasoningOutputTokens,
+  costUsd: candidate.costUsd + (dispatch.costUsd ?? 0),
+  pricedTasks: candidate.pricedTasks + (dispatch.costUsd === undefined ? 0 : 1),
+  durationMs: candidate.durationMs + dispatch.durationMs,
+  lastUsedAt: updatedAt,
+});
+
+/** Folds this workflow's dispatch outcomes into the stored per-role stats. */
+export function mergeDispatchOutcomes(
+  stats: AgentTunnelRoleStats,
+  dispatches: ReadonlyArray<AgentTunnelDispatchOutcome>,
+  updatedAt: string,
+): AgentTunnelRoleStats {
+  if (dispatches.length === 0) return stats;
+  const roles: Record<string, ReadonlyArray<AgentTunnelRoleCandidate>> = { ...stats.roles };
+  for (const dispatch of dispatches) {
+    const role = dispatch.role.trim();
+    if (role.length === 0) continue;
+    const candidates = [...(roles[role] ?? [])];
+    const key = candidateKey(dispatch);
+    const index = candidates.findIndex((candidate) => candidateKey(candidate) === key);
+    const existing = index >= 0 ? candidates[index] : undefined;
+    const base: AgentTunnelRoleCandidate = existing ?? {
+      harness: dispatch.harness,
+      model: dispatch.model ?? null,
+      tasks: 0,
+      completed: 0,
+      failed: 0,
+      stopped: 0,
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      costUsd: 0,
+      pricedTasks: 0,
+      durationMs: 0,
+      lastUsedAt: updatedAt,
+    };
+    const folded = foldDispatch(base, dispatch, updatedAt);
+    if (index >= 0) candidates[index] = folded;
+    else candidates.push(folded);
+    candidates.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
+    roles[role] = candidates.slice(0, MAX_ROLE_CANDIDATES);
+  }
+  return { version: ROLE_STATS_VERSION, updatedAt, roles };
+}
+
+const formatTokenCount = (value: number): string =>
+  Math.round(value)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+const formatUsd = (value: number): string =>
+  value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
+
+const averageTokens = (candidate: AgentTunnelRoleCandidate): number =>
+  candidate.tasks === 0 ? 0 : candidate.totalTokens / candidate.tasks;
+
+/**
+ * Renders the recorded candidates for the orchestrator prompt. Newest first
+ * per role, capped rows, capped total: this section competes with the rules
+ * files for one prompt budget.
+ */
+export function renderRoleCandidates(stats: AgentTunnelRoleStats): string {
+  const roles = Object.keys(stats.roles).sort();
+  const rows: string[] = [];
+  let clipped = false;
+  for (const role of roles) {
+    const candidates = [...(stats.roles[role] ?? [])].sort((left, right) =>
+      right.lastUsedAt.localeCompare(left.lastUsedAt),
+    );
+    if (candidates.length > MAX_ROLE_ROWS) clipped = true;
+    for (const candidate of candidates.slice(0, MAX_ROLE_ROWS)) {
+      rows.push(
+        `| ${role} | ${candidate.harness} | ${candidate.model ?? "default"} | ${candidate.tasks} | ${candidate.completed} | ${candidate.failed} | ${formatTokenCount(averageTokens(candidate))} | ${formatTokenCount(candidate.totalTokens)} | ${candidate.pricedTasks > 0 ? formatUsd(candidate.costUsd) : "—"} | ${candidate.lastUsedAt.slice(0, 10) || "—"} |`,
+      );
+    }
+  }
+  if (rows.length === 0) return "";
+  const section = `## Recorded role candidates
+
+Only the newest rows per role are kept; the rest are dropped as the ledger grows.
+Completion rate is the first signal, tokens and cost the second: a cheap model that
+finishes the task beats an expensive one that stalls.${clipped ? "\n_(Older candidates omitted.)_" : ""}
+
+| Role | Harness | Model | Runs | Completed | Failed | Avg tokens | Total tokens | Cost | Last used |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+${rows.join("\n")}`;
+  return section.length <= MAX_ROLE_STATS_PROMPT_CHARS
+    ? section
+    : `${section.slice(0, MAX_ROLE_STATS_PROMPT_CHARS - 20).trimEnd()}\n_(truncated)_`;
+}
+
 export const makeAgentTunnelInheritedContext = (contextDir: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -196,6 +461,7 @@ export const makeAgentTunnelInheritedContext = (contextDir: string) =>
     const guidePath = path.join(contextDir, GUIDE_FILE);
     const logPath = path.join(contextDir, LOG_FILE);
     const lockPath = path.join(contextDir, LOCK_FILE);
+    const roleStatsPath = path.join(contextDir, ROLE_STATS_FILE);
 
     const readIfExists = (filePath: string) =>
       fs.readFileString(filePath).pipe(Effect.orElseSucceed(() => ""));
@@ -256,6 +522,20 @@ export const makeAgentTunnelInheritedContext = (contextDir: string) =>
           sections.push(clippedGuide);
           budget -= clippedGuide.length;
         }
+        // Candidates come before the rules files: they are the freshest signal
+        // for model choice, and a table never survives being clipped from the top.
+        const updatedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        const candidates = renderRoleCandidates(
+          parseRoleStats(yield* readIfExists(roleStatsPath), updatedAt),
+        );
+        if (candidates.length > 0) {
+          if (candidates.length <= budget) {
+            sections.push(candidates);
+            budget -= candidates.length;
+          } else {
+            sections.push(`_(role candidates omitted to fit the prompt budget)_`);
+          }
+        }
         for (const rule of rules) {
           if (budget <= 0) {
             sections.push(`_(remaining rules files omitted to fit the prompt budget)_`);
@@ -296,6 +576,7 @@ export const makeAgentTunnelInheritedContext = (contextDir: string) =>
 
     const appendEntries = (
       learnings: ReadonlyArray<AgentTunnelContextLearning>,
+      dispatches: ReadonlyArray<AgentTunnelDispatchOutcome>,
       attribution: AgentTunnelContextAttribution,
     ) =>
       Effect.gen(function* () {
@@ -317,16 +598,30 @@ export const makeAgentTunnelInheritedContext = (contextDir: string) =>
           yield* writeAtomically(target, `${prefix}${block}`);
         }
 
+        // The candidate ledger is machine-owned: read, fold this workflow's
+        // outcomes in, and write the whole file back. It never depends on the
+        // rules files, so a workflow that taught nothing still updates it.
+        if (dispatches.length > 0) {
+          const stats = mergeDispatchOutcomes(
+            parseRoleStats(yield* readIfExists(roleStatsPath), updatedAt),
+            dispatches,
+            updatedAt,
+          );
+          yield* writeAtomically(roleStatsPath, `${encodeRoleStats(stats)}\n`);
+        }
+
         const summary = [...groups].map(([category, entries]) => `${category} ×${entries.length}`);
-        const logEntry = `- ${updatedAt} · ${attribution.status} · project \`${project}\` · thread \`${attribution.threadId}\` · workflow \`${attribution.workflowId}\` · ${learnings.length} ${learnings.length === 1 ? "entry" : "entries"} (${summary.join(", ")})`;
+        const logEntry = `- ${updatedAt} · ${attribution.status} · project \`${project}\` · thread \`${attribution.threadId}\` · workflow \`${attribution.workflowId}\` · ${learnings.length} ${learnings.length === 1 ? "entry" : "entries"} (${summary.join(", ")}) · ${dispatches.length} ${dispatches.length === 1 ? "agent outcome" : "agent outcomes"}`;
         const existingLog = yield* readIfExists(logPath);
         const logPrefix =
           existingLog.trim().length > 0 ? existingLog.trimEnd() : renderLogHeader().trimEnd();
         yield* writeAtomically(logPath, `${logPrefix}\n\n${logEntry}\n`);
 
-        yield* writeAtomically(guidePath, renderGuide(yield* listRulesFiles, updatedAt));
+        if (learnings.length > 0) {
+          yield* writeAtomically(guidePath, renderGuide(yield* listRulesFiles, updatedAt));
+        }
 
-        return learnings.length;
+        return { learnings: learnings.length, candidates: dispatches.length };
       });
 
     const record = (input: AgentTunnelInheritedContextRecord) => {
@@ -340,7 +635,12 @@ export const makeAgentTunnelInheritedContext = (contextDir: string) =>
         seen.add(key);
         learnings.push(normalized);
       }
-      if (learnings.length === 0) return Effect.succeed(0);
+      const dispatches = (input.dispatches ?? []).filter(
+        (dispatch) => dispatch.role.trim().length > 0,
+      );
+      if (learnings.length === 0 && dispatches.length === 0) {
+        return Effect.succeed({ learnings: 0, candidates: 0 });
+      }
 
       return Effect.gen(function* () {
         yield* ensureSeeded;
@@ -351,15 +651,15 @@ export const makeAgentTunnelInheritedContext = (contextDir: string) =>
               yield* trace("Another orchestrator held the context lock too long; skipping flush.", {
                 contextDir,
               });
-              return 0;
+              return { learnings: 0, candidates: 0 };
             }
-            return yield* appendEntries(learnings, input.attribution).pipe(
+            return yield* appendEntries(learnings, dispatches, input.attribution).pipe(
               Effect.ensuring(releaseLock),
               Effect.catch((error) =>
                 trace("Failed to append inherited context entries.", {
                   contextDir,
                   error: String(error),
-                }).pipe(Effect.as(0)),
+                }).pipe(Effect.as({ learnings: 0, candidates: 0 })),
               ),
             );
           }),

@@ -48,6 +48,7 @@ import {
   AgentTunnelProcessError,
   type AgentTunnelProcessHandle,
   type AgentTunnelProcessRunner,
+  type AgentTunnelProcessSpec,
   runAgentTunnel,
 } from "../agentTunnel/Orchestrator.ts";
 import {
@@ -473,7 +474,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
    */
   const trackHarnessUsage = Effect.fn("AgentTunnelAdapter.trackHarnessUsage")(function* (
     threadId: ThreadId,
-    processId: string,
+    spec: AgentTunnelProcessSpec,
     line: string,
     harnessKind: Exclude<AgentTunnelHarnessKind, "other">,
   ) {
@@ -481,6 +482,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     if (!context) return;
     const step = harnessKind === "pi" ? parsePiStepUsage(line) : parseOpenCodeStepUsage(line);
     if (!step) return;
+    const processId = spec.id;
+    // The workflow loop owns this accumulator: it reads what a pass or task
+    // cost after the process ends, since the handle never leaves the spawn scope.
+    if (spec.usage) addHarnessUsageTotals(spec.usage, step);
     const turnId = context.activeTurnId;
     const eventBase = (itemId?: string) =>
       buildEventBase({
@@ -622,7 +627,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             ? observedLines
             : observedLines.pipe(
                 Stream.tap((line) =>
-                  trackHarnessUsage(threadId, spec.id, line, harnessKind).pipe(Effect.orDie),
+                  trackHarnessUsage(threadId, spec, line, harnessKind).pipe(Effect.orDie),
                 ),
               );
         const lines =
@@ -831,6 +836,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
 
     const run = Effect.gen(function* () {
       const inheritedContextPrompt = yield* inheritedContext.renderForPrompt();
+      // Snapshot before the run: the session accumulator mutates in place as
+      // the passes stream, so the planner needs a copy of the prior total.
+      const sessionUsage = { ...context.orchestratorUsage };
       const result = yield* Effect.exit(
         runAgentTunnel({
           threadId: input.threadId,
@@ -843,6 +851,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           process: processRunner,
           emit: (event) => emitEvent(input.threadId, turnId, event).pipe(Effect.orDie),
           isCancelled: Ref.get(context.cancelled),
+          sessionUsage,
           ...(context.threadHistory.length > 0
             ? { threadHistory: [...context.threadHistory] }
             : {}),
@@ -850,7 +859,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             ? { priorSharedContext: context.lastSharedContextDump }
             : {}),
           ...(inheritedContextPrompt.trim().length > 0
-            ? { inheritedContext: inheritedContextPrompt }
+            ? {
+                inheritedContext: inheritedContextPrompt,
+                inheritedContextChars: inheritedContextPrompt.length,
+              }
             : {}),
           takeSteeringMessages: () =>
             Effect.gen(function* () {
@@ -898,6 +910,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       }
       yield* inheritedContext.record({
         learnings: workflowResult.learnings ?? [],
+        dispatches: workflowResult.dispatches,
         attribution: {
           threadId: input.threadId,
           workflowId,

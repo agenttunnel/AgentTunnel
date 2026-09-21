@@ -78,11 +78,14 @@ shows a warning and uses the fallback instead.
 
 AgentTunnel orchestrators also learn across projects. Each environment keeps a hidden
 `.orchestrator-context/` folder in its data directory (`~/.agenttunnel/userdata`, or `~/.agenttunnel/dev` for dev
-installs). It holds a `GUIDE.md`, one rules file per category under `rules/`, and a `LOG.md` ledger.
-Before planning, the orchestrator reads the rules; when a workflow ends, it records what it learned —
-design decisions you liked or disliked, which harness and model combinations fit which tasks, and how
-models performed overall — and AgentTunnel appends those entries with the date, project, and thread.
-You can edit any of these files at any time and the next orchestrator inherits your edits. Only one
+installs). It holds a `GUIDE.md`, one rules file per category under `rules/`, a `role-stats.json`
+ledger of what each role's harness and model candidates have cost in tokens and money, and a `LOG.md`
+ledger. Before planning, the orchestrator reads the rules and the recorded candidates; when a workflow
+ends, it records what it learned — design decisions you liked or disliked, which harness and model
+combinations fit which tasks, and how models performed overall — and AgentTunnel folds in what every
+agent actually cost. Each workflow also reports its own spend: the summary pass the orchestrator sees
+lists tokens and cost per agent, and the final report carries the workflow total and per-agent tokens.
+You can edit any of the rules files at any time and the next orchestrator inherits your edits. Only one
 workflow updates the folder at a time.
 
 | Provider   | CLI                                                      | Default binary | Log in with           |
