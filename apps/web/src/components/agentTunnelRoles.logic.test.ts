@@ -17,11 +17,16 @@ describe("agentTunnelRoles", () => {
   it("maps role ids to the AgentTunnelSettings keys", () => {
     expect(agentTunnelRoleModelKey("orchestrator")).toBe("orchestratorModel");
     expect(agentTunnelRoleModelKey("executor")).toBe("executorModel");
+    expect(agentTunnelRoleModelKey("tester")).toBe("testerModel");
+    expect(agentTunnelRoleModelKey("planner")).toBe("plannerModel");
     expect(agentTunnelRoleModelKey("reviewer")).toBe("reviewerModel");
     expect(agentTunnelRoleModelKey("unknown")).toBeNull();
     expect(agentTunnelRoleHarnessKey("executor")).toBe("executorHarness");
+    expect(agentTunnelRoleHarnessKey("tester")).toBe("testerHarness");
+    expect(agentTunnelRoleHarnessKey("planner")).toBe("plannerHarness");
     expect(agentTunnelRoleHarnessKey("unknown")).toBeNull();
     expect(agentTunnelRoleVariantKey("reviewer")).toBe("reviewerVariant");
+    expect(agentTunnelRoleVariantKey("planner")).toBe("plannerVariant");
     expect(agentTunnelRoleVariantKey("unknown")).toBeNull();
   });
 
@@ -36,8 +41,24 @@ describe("agentTunnelRoles", () => {
         auto: false,
       },
       {
+        id: "planner",
+        label: "Planner",
+        model: null,
+        harness: "opencode",
+        variant: null,
+        auto: false,
+      },
+      {
         id: "executor",
         label: "Executor",
+        model: null,
+        harness: "opencode",
+        variant: null,
+        auto: false,
+      },
+      {
+        id: "tester",
+        label: "Tester",
         model: null,
         harness: "opencode",
         variant: null,
@@ -55,11 +76,13 @@ describe("agentTunnelRoles", () => {
     expect(readAgentTunnelRoles(undefined).every((role) => role.model === null)).toBe(true);
   });
 
-  it("marks executor and reviewer as auto when auto mode is on", () => {
+  it("marks every dispatched role as auto when auto mode is on", () => {
     const roles = readAgentTunnelRoles({ autoMode: true, executorModel: "p/m" });
-    expect(roles.map((role) => role.auto)).toEqual([false, true, true]);
-    expect(roles[1]?.model).toBe("p/m");
+    expect(roles.map((role) => role.auto)).toEqual([false, true, true, true, true]);
+    expect(roles[2]?.model).toBe("p/m");
     expect(readAgentTunnelRoles({ autoMode: false }).map((role) => role.auto)).toEqual([
+      false,
+      false,
       false,
       false,
       false,
@@ -71,7 +94,7 @@ describe("agentTunnelRoles", () => {
       readAgentTunnelRoles({ orchestratorHarness: "codex", reviewerHarness: " claude " }).map(
         (role) => role.harness,
       ),
-    ).toEqual(["codex", "opencode", "claude"]);
+    ).toEqual(["codex", "opencode", "opencode", "opencode", "claude"]);
   });
 
   it("sets a role model without disturbing the rest of the config", () => {
@@ -97,7 +120,9 @@ describe("agentTunnelRoles", () => {
   it("reads and applies per-role reasoning variants", () => {
     expect(readAgentTunnelRoles({ executorVariant: "high" }).map((role) => role.variant)).toEqual([
       null,
+      null,
       "high",
+      null,
       null,
     ]);
     expect(applyAgentTunnelRoleVariant({ enabled: true }, "reviewer", " max ")).toEqual({

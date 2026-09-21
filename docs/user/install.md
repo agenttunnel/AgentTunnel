@@ -64,14 +64,14 @@ application files under `/mnt/c` instead and reinstalls the runtime on the next 
 AgentTunnel drives provider CLIs; it does not ship them. Install the CLI for each provider you want
 to use, then authenticate it.
 
-AgentTunnel is the default workflow provider. It uses the configured orchestrator, executor, and
-reviewer harnesses; all three default to OpenCode. The other providers remain available as optional
-single-agent runtimes.
+AgentTunnel is the default workflow provider. It drives one orchestrator plus four kinds of
+sub-agent — planner, executor, tester, and reviewer — each with its own harness, and all defaulting
+to OpenCode. The other providers remain available as optional single-agent runtimes.
 
 Each role can have its own model in the AgentTunnel provider settings; when a role has no model set,
 it falls back to the orchestrator model, and then to the model selected in the composer. Turn on
-**Auto mode** in those settings to let the orchestrator pick a model for each executor and reviewer
-task from the models the provider lists in that environment.
+**Auto mode** in those settings to let the orchestrator pick a model for each dispatched task from
+the models the provider lists in that environment.
 The per-role models remain as fallbacks when the orchestrator does not pick one, and harnesses stay
 configured per role. If the orchestrator picks a model the environment does not offer, AgentTunnel
 shows a warning and uses the fallback instead.

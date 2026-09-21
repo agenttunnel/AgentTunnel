@@ -15,7 +15,70 @@ import {
 } from "./InheritedContextStore.ts";
 import { AgentTunnelSharedContext } from "./SharedContext.ts";
 import { parseAgentTunnelToolCall, type AgentTunnelToolCall } from "./protocol.ts";
-import { EXECUTOR_PROMPT, ORCHESTRATOR_PROMPT, REVIEWER_PROMPT } from "./prompts.ts";
+import {
+  EXECUTOR_PROMPT,
+  ORCHESTRATOR_PROMPT,
+  PLANNER_PROMPT,
+  REVIEWER_PROMPT,
+  TESTER_PROMPT,
+} from "./prompts.ts";
+
+/** Sub-agent kinds an orchestrator can dispatch. */
+export type AgentTunnelRole = "planner" | "executor" | "tester" | "reviewer";
+
+const AGENT_TUNNEL_ROLES: ReadonlyArray<AgentTunnelRole> = [
+  "planner",
+  "executor",
+  "tester",
+  "reviewer",
+];
+
+const isAgentTunnelRole = (value: string): value is AgentTunnelRole =>
+  (AGENT_TUNNEL_ROLES as ReadonlyArray<string>).includes(value);
+
+interface AgentTunnelRoleSettings {
+  readonly harness: string;
+  readonly model: string;
+  readonly variant: string;
+  readonly prompt: string;
+}
+
+/** Every per-role knob the provider settings expose, in one lookup. */
+function roleSettings(
+  settings: AgentTunnelSettings,
+  role: AgentTunnelRole,
+): AgentTunnelRoleSettings {
+  switch (role) {
+    case "planner":
+      return {
+        harness: settings.plannerHarness,
+        model: settings.plannerModel,
+        variant: settings.plannerVariant,
+        prompt: PLANNER_PROMPT,
+      };
+    case "tester":
+      return {
+        harness: settings.testerHarness,
+        model: settings.testerModel,
+        variant: settings.testerVariant,
+        prompt: TESTER_PROMPT,
+      };
+    case "reviewer":
+      return {
+        harness: settings.reviewerHarness,
+        model: settings.reviewerModel,
+        variant: settings.reviewerVariant,
+        prompt: REVIEWER_PROMPT,
+      };
+    case "executor":
+      return {
+        harness: settings.executorHarness,
+        model: settings.executorModel,
+        variant: settings.executorVariant,
+        prompt: EXECUTOR_PROMPT,
+      };
+  }
+}
 
 export interface AgentTunnelProcessSpec {
   readonly id: string;
@@ -88,7 +151,7 @@ export type AgentTunnelEvent =
       readonly type: "agent.started";
       readonly workflowId: string;
       readonly agentId: string;
-      readonly role: "executor" | "reviewer";
+      readonly role: AgentTunnelRole;
       readonly task: string;
       readonly pipelineId: string;
       readonly agentIndex: number;
@@ -107,7 +170,7 @@ export type AgentTunnelEvent =
       readonly type: "agent.completed";
       readonly workflowId: string;
       readonly agentId: string;
-      readonly role: "executor" | "reviewer";
+      readonly role: AgentTunnelRole;
       readonly status: AgentTunnelAgentStatus;
       readonly summary?: string;
     };
@@ -141,7 +204,7 @@ export interface AgentTunnelRunOptions {
 
 interface DispatchedTask {
   readonly id: string;
-  readonly role: "executor" | "reviewer";
+  readonly role: AgentTunnelRole;
   readonly task: string;
   readonly context: ReadonlyArray<string>;
   readonly pipelineId: string;
@@ -164,7 +227,7 @@ interface ProcessResult {
 
 interface TaskRecord {
   readonly id: string;
-  readonly role: "executor" | "reviewer";
+  readonly role: AgentTunnelRole;
   readonly label: string;
   readonly pipelineId: string;
   readonly agentIndex: number;
@@ -198,7 +261,8 @@ const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
 const TASK_LABEL_MAX_CHARS = 72;
 
-const roleIcon = (role: "executor" | "reviewer"): string => (role === "executor" ? "🛠️" : "🔍");
+const roleIcon = (role: AgentTunnelRole): string =>
+  role === "planner" ? "🗺️" : role === "tester" ? "🧪" : role === "executor" ? "🛠️" : "🔍";
 
 const statusIcon = (status: AgentTunnelAgentStatus): string =>
   status === "completed" ? "✅" : status === "failed" ? "❌" : "⏹️";
@@ -520,7 +584,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       if (call.name === "dispatch_task") {
         const role = stringValue(call.arguments.role);
         const task = stringValue(call.arguments.task).trim();
-        if ((role !== "executor" && role !== "reviewer") || task.length === 0) {
+        if (!isAgentTunnelRole(role) || task.length === 0) {
           yield* emit({
             type: "orchestrator.output",
             text: `> ⚠️ Invalid dispatch_task arguments.\n`,
@@ -820,18 +884,15 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     startedTaskCount += 1;
     const pipelineIndex = Math.max(0, pipelineOrder.indexOf(task.pipelineId));
     const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
-    const roleModel =
-      task.role === "executor" ? options.settings.executorModel : options.settings.reviewerModel;
+    const roleConfig = roleSettings(options.settings, task.role);
     const model =
-      task.model || roleModel || options.settings.orchestratorModel || options.model || undefined;
-    const harness =
-      task.role === "executor"
-        ? options.settings.executorHarness
-        : options.settings.reviewerHarness;
-    const variant =
-      task.role === "executor"
-        ? options.settings.executorVariant
-        : options.settings.reviewerVariant;
+      task.model ||
+      roleConfig.model ||
+      options.settings.orchestratorModel ||
+      options.model ||
+      undefined;
+    const harness = roleConfig.harness;
+    const variant = roleConfig.variant;
     const output: string[] = [];
 
     yield* emit({
@@ -879,7 +940,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       task.context.length > 0
         ? `\n\n## Shared context\n${context.renderForPrompt(task.context)}`
         : "";
-    const systemPrompt = task.role === "executor" ? EXECUTOR_PROMPT : REVIEWER_PROMPT;
+    const systemPrompt = roleConfig.prompt;
     const prompt = `${systemPrompt}\n\n## Task\n${task.task}${contextBlock}\n\nCall done when finished.`;
     let progressLineCount = 0;
     let firstOutputLine = true;

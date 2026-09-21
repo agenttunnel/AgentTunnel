@@ -117,15 +117,16 @@ driver kinds absent from the manifest have no legacy concept.
 ## AgentTunnel workflow driver
 
 `agenttunnel` presents one AgentTunnel thread as a workflow coordinator. Its server-side adapter launches an
-orchestrator CLI process, parses `__AGENTTUNNEL_TOOL__` actions, and schedules executor/reviewer CLI
-processes in named pipelines. Pipelines can run in parallel, run sequentially, or wait on other
-pipelines. The adapter maps the workflow coordinator to a `local_workflow` task and each child to a
-`local_agent` task with `parentAgentId`, phase metadata, progress, and terminal status. The existing
-chat timeline and Agents panel therefore render the workflow without a client-specific transport.
+orchestrator CLI process, parses `__AGENTTUNNEL_TOOL__` actions, and schedules planner, executor,
+tester, and reviewer CLI processes in named pipelines. Pipelines can run in parallel, run
+sequentially, or wait on other pipelines. The adapter maps the workflow coordinator to a
+`local_workflow` task and each child to a `local_agent` task with `parentAgentId`, phase metadata,
+progress, and terminal status. The existing chat timeline and Agents panel therefore render the
+workflow without a client-specific transport.
 
 AgentTunnel is enabled by default and is the primary provider for fresh installations; the other
-built-in providers are opt-in. Configure the orchestrator, executor, and reviewer harness paths in
-provider settings. The default harness is `opencode` for all three roles. AgentTunnel child sessions
+built-in providers are opt-in. Configure each role's harness path in provider settings — orchestrator,
+planner, executor, tester, and reviewer all default to `opencode`. AgentTunnel child sessions
 are currently non-interactive and use the configured permission-bypass setting; approval and user-input
 requests are not yet routed through the AgentTunnel request surface.
 
@@ -155,8 +156,8 @@ plain-text condensation of that result, and the report is stored in shared conte
 
 Each role has a harness, model, and reasoning variant in provider settings. Harness and variant are
 always settings-driven. By default (`AgentTunnelSettings.autoMode` off), a child's model follows the
-existing precedence: `executorModel`/`reviewerModel` when set, then `orchestratorModel`, then the
-session model. Task-level models are ignored entirely in this mode.
+existing precedence: the role's model (`executorModel`, `testerModel`, and so on) when set, then
+`orchestratorModel`, then the session model. Task-level models are ignored entirely in this mode.
 
 Auto mode lets the orchestrator choose a model per dispatched task. The driver builds
 `availableModels` from the AgentTunnel provider's model snapshot (`modelsFromInventory`, which merges

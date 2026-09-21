@@ -44,6 +44,7 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
   type AgentTunnelEvent,
+  type AgentTunnelRole,
   AgentTunnelProcessError,
   type AgentTunnelProcessHandle,
   type AgentTunnelProcessRunner,
@@ -75,7 +76,7 @@ const MAX_AGENT_LOG_BYTES = 1024 * 1024;
 const encodeLogEntry = Schema.encodeSync(Schema.fromJsonString(OrchestrationAgentLogEntry));
 
 interface AgentTunnelAgentMetadata {
-  readonly role: "executor" | "reviewer";
+  readonly role: AgentTunnelRole;
   readonly task: string;
   readonly pipelineId: string;
   readonly agentIndex: number;

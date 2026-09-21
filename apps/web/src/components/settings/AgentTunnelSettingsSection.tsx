@@ -11,13 +11,11 @@ import { Switch } from "../ui/switch";
 import {
   AGENT_TUNNEL_HARNESS_OPTIONS as SUPPORTED_HARNESSES,
   AGENT_TUNNEL_REASONING_OPTIONS,
+  AGENT_TUNNEL_ROLES,
 } from "../agentTunnelRoles.logic";
 
-const ROLES = [
-  { key: "orchestrator", label: "Orchestrator" },
-  { key: "executor", label: "Executor" },
-  { key: "reviewer", label: "Reviewer" },
-] as const;
+// One row per role, driven by the same list the composer and context panel read.
+const ROLES = AGENT_TUNNEL_ROLES.map((role) => ({ key: role.id, label: role.label }));
 
 const ROLE_GRID_COLUMNS = "sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)_10rem]";
 
