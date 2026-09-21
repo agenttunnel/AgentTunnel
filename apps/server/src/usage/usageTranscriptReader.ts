@@ -19,10 +19,12 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import {
   initialCodexScanState,
+  initialPiScanState,
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -119,6 +121,7 @@ export async function readTranscriptRecords(
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  const piState = initialPiScanState();
 
   try {
     const lines = NodeReadline.createInterface({
@@ -143,6 +146,20 @@ export async function readTranscriptRecords(
       if (provider === "grok") {
         if (!mightCarryUsage(line, provider)) continue;
         for (const grokRecord of parseGrokLine(line)) records.push(grokRecord);
+        continue;
+      }
+
+      if (provider === "pi") {
+        // Session headers and model changes carry no usage of their own but
+        // seed the session id and model attribution for later lines.
+        if (
+          !mightCarryUsage(line, provider) &&
+          !line.includes('"model_change"') &&
+          !line.includes('"session"')
+        ) {
+          continue;
+        }
+        for (const piRecord of parsePiLine(line, piState)) records.push(piRecord);
         continue;
       }
 

@@ -59,6 +59,30 @@ describe("scan cache round trip", () => {
     expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
   });
 
+  it("preserves a pi entry through the provider whitelist", () => {
+    const cache: ScanCache = new Map([
+      [
+        "/pi/sessions/a.jsonl",
+        {
+          size: 20,
+          mtimeMs: 400,
+          provider: "pi",
+          records: [
+            record({
+              provider: "pi",
+              model: "opencode-go/deepseek-v4-flash",
+              reportedCostUsd: 0.0036,
+              dedupeKey: "a1:2026-09-01T22:40:00.000Z",
+            }),
+          ],
+        },
+      ],
+    ]);
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(cache))));
+    expect(restored.get("/pi/sessions/a.jsonl")).toEqual(cache.get("/pi/sessions/a.jsonl"));
+  });
+
   it("interns repeated model and session strings", () => {
     const encoded = encodeScanCache(
       cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" }), record()]]]),

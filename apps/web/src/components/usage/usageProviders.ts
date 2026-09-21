@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, GrokIcon, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, GrokIcon, type Icon, OpenAI, PiIcon } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -29,6 +29,12 @@ export const PROVIDER_PRESENTATION = {
     // Contrast-aware neutral between the Codex series and muted chart chrome.
     color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
     mark: GrokIcon,
+  },
+  pi: {
+    label: "Pi",
+    // A lighter neutral than Grok so the two series stay distinguishable.
+    color: "color-mix(in oklab, var(--contrast-foreground) 48%, var(--background))",
+    mark: PiIcon,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
