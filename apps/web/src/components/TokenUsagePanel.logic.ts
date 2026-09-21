@@ -121,6 +121,9 @@ export interface TokenUsageModel {
 /** One subagent model step ("turn"), decomposed from a usage log entry. */
 export interface SubagentUsageTurn {
   readonly ordinal: number;
+  /** Log persistence time, or null for steps logged before it was recorded. */
+  readonly at: string | null;
+  readonly timeLabel: string;
   /** Input fed to the model this step; includes the cached subset. */
   readonly inputTokens: number;
   readonly cachedInputTokens: number;
@@ -167,9 +170,11 @@ export interface SubagentUsageStats {
   readonly hasUsage: boolean;
 }
 
-export function deriveSubagentUsageStats(
-  entries: ReadonlyArray<OrchestrationAgentLogEntry>,
-): SubagentUsageStats {
+export function deriveSubagentUsageStats(input: {
+  readonly entries: ReadonlyArray<OrchestrationAgentLogEntry>;
+  readonly timestampFormat: TimestampFormat;
+}): SubagentUsageStats {
+  const { entries, timestampFormat } = input;
   const turns: SubagentUsageTurn[] = [];
   let inputTokens = 0;
   let cachedInputTokens = 0;
@@ -191,8 +196,11 @@ export function deriveSubagentUsageStats(
     const output = (entry.outputTokens ?? 0) + reasoning;
     const context = input;
     const turnCostUsd = entry.costUsd ?? null;
+    const at = entry.at ?? null;
     turns.push({
       ordinal: turns.length + 1,
+      at,
+      timeLabel: at === null ? "—" : formatDayAwareTimestamp(at, timestampFormat) || "—",
       inputTokens: input,
       cachedInputTokens: cached,
       outputTokens: output,

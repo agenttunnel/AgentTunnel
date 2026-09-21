@@ -75,6 +75,14 @@ const RESUME_VERSION = 1;
 const MAX_AGENT_LOG_BYTES = 1024 * 1024;
 const encodeLogEntry = Schema.encodeSync(Schema.fromJsonString(OrchestrationAgentLogEntry));
 
+/**
+ * One JSONL agent-log line. Usage entries are stamped with the moment the
+ * adapter persisted them, so the drill-in can show when each model step ran;
+ * the other kinds carry no clock of their own.
+ */
+export const encodeAgentLogEntry = (entry: OrchestrationAgentLogEntry, at: string): string =>
+  `${encodeLogEntry(entry.kind === "usage" ? { ...entry, at } : entry)}\n`;
+
 interface AgentTunnelAgentMetadata {
   readonly role: AgentTunnelRole;
   readonly task: string;
@@ -193,8 +201,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           : harnessKind === "pi"
             ? parsePiLogLine(rawLine)
             : [{ kind: "raw" as const, text: rawLine }];
+      // One clock read per line, so every entry it carries shares its stamp.
+      const at = yield* nowIso;
       for (const entry of entries) {
-        const line = `${encodeLogEntry(entry)}\n`;
+        const line = encodeAgentLogEntry(entry, at);
         const written = context?.agentLogBytes.get(agentId) ?? 0;
         const bytes = Buffer.byteLength(line, "utf8");
         if (written + bytes > MAX_AGENT_LOG_BYTES) {
