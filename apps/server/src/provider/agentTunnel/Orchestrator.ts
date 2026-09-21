@@ -64,6 +64,8 @@ export type AgentTunnelEvent =
       readonly type: "workflow.started";
       readonly workflowId: string;
       readonly title: string;
+      /** Harness CLI running the orchestrator passes (settings.orchestratorHarness). */
+      readonly harness: string;
       readonly model?: string;
     }
   | {
@@ -91,6 +93,8 @@ export type AgentTunnelEvent =
       readonly pipelineId: string;
       readonly agentIndex: number;
       readonly phaseIndex: number;
+      /** Harness CLI that will run this agent (role's configured harness). */
+      readonly harness: string;
       readonly model?: string;
     }
   | {
@@ -839,6 +843,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       pipelineId: task.pipelineId,
       agentIndex: task.agentIndex,
       phaseIndex: pipelineIndex,
+      harness,
       ...(model ? { model } : {}),
     });
     const label = humanTaskLabel(task.task);
@@ -1091,6 +1096,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     type: "workflow.started",
     workflowId: options.workflowId,
     title: options.userTask,
+    harness: options.settings.orchestratorHarness,
     ...(options.model ? { model: options.model } : {}),
   });
   yield* emit({

@@ -655,6 +655,52 @@ describe("model and effort attribution", () => {
     expect(completedAgent.effort).toBe("high");
   });
 
+  it("carries harness from start rows and never downgrades it", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-h",
+        title: "Recon",
+        role: "executor",
+        harness: "opencode",
+      }),
+      // A later row without the field (usage-only ticks) must keep the known
+      // harness instead of blanking the row's identity.
+      activity("task.progress", { taskId: "task-h", typedUsage: { totalTokens: 10 } }),
+    ]);
+
+    expect(agents[0]!.role).toBe("executor");
+    expect(agents[0]!.harness).toBe("opencode");
+  });
+
+  it("max-merges harness-priced cost and drops unpriced zeroes", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "task-c", title: "Collateral detection" }),
+      activity("task.progress", {
+        taskId: "task-c",
+        typedUsage: { totalTokens: 10, costUsd: 0.25 },
+      }),
+      // Cumulative frames: a later, larger figure wins; duplicate/older frames
+      // can never shrink it.
+      activity("task.progress", {
+        taskId: "task-c",
+        typedUsage: { totalTokens: 20, costUsd: 0.5 },
+      }),
+      activity("task.progress", {
+        taskId: "task-c",
+        typedUsage: { totalTokens: 20, costUsd: 0.5 },
+      }),
+      activity("task.completed", { taskId: "task-c", status: "completed" }),
+    ]);
+
+    expect(agents[0]!.usage?.costUsd).toBe(0.5);
+
+    const unpriced = fold([
+      activity("task.started", { taskId: "task-u", title: "Unpriced" }),
+      activity("task.progress", { taskId: "task-u", typedUsage: { totalTokens: 10, costUsd: 0 } }),
+    ]);
+    expect(unpriced[0]!.usage?.costUsd).toBeUndefined();
+  });
+
   it("formatSubagentModelLabel compacts ids and appends effort", () => {
     expect(formatSubagentModelLabel("claude-sonnet-5[1m]", "high")).toBe("sonnet-5[1m] · high");
     expect(formatSubagentModelLabel("claude-opus-4-20250514", null)).toBe("opus-4");

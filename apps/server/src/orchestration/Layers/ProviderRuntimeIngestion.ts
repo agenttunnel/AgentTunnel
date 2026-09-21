@@ -353,6 +353,7 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "title",
     "role",
     "model",
+    "harness",
     "effort",
     "toolUseId",
     "parentAgentId",

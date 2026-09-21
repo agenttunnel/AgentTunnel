@@ -322,6 +322,12 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   lastCachedInputTokens: Schema.optional(NonNegativeInt),
   lastOutputTokens: Schema.optional(NonNegativeInt),
   lastReasoningOutputTokens: Schema.optional(NonNegativeInt),
+  /**
+   * Session-cumulative harness-reported cost, beside the cumulative
+   * `totalProcessedTokens`. Absent when the harness priced nothing (no rate
+   * for the model), which reads as "not reported", never as free.
+   */
+  totalCostUsd: Schema.optional(Schema.Number),
   toolUses: Schema.optional(NonNegativeInt),
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
@@ -488,6 +494,13 @@ export const RuntimeTaskUsage = Schema.Struct({
   reasoningOutputTokens: Schema.optional(NonNegativeInt),
   toolUses: Schema.optional(NonNegativeInt),
   durationMs: Schema.optional(NonNegativeInt),
+  /**
+   * Cumulative API-equivalent cost the harness itself computed. Absent when
+   * the harness reports no cost; never estimated here (a harness that has no
+   * rate for a model reports 0, which stays 0 — the client reads a missing
+   * field as "not reported", not as free).
+   */
+  costUsd: Schema.optional(Schema.Number),
 });
 export type RuntimeTaskUsage = typeof RuntimeTaskUsage.Type;
 
@@ -568,6 +581,12 @@ const taskAgentLinkageFields = {
   title: Schema.optional(TrimmedNonEmptyStringSchema),
   role: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * CLI that actually ran the task. Only multi-harness providers have a
+   * choice (AgentTunnel picks per role: `pi` orchestrator, `opencode`
+   * executors). Providers that ARE the harness leave it absent.
+   */
+  harness: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Reasoning effort when known (e.g. "high"). Open string: provider vocabularies differ. */
   effort: Schema.optional(TrimmedNonEmptyStringSchema),
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),

@@ -41,6 +41,12 @@ export interface TokenUsageTotals {
   readonly totalTokens: number;
   /** Provider-reported cumulative processed tokens, when the provider sends it. */
   readonly processedTokens: number | null;
+  /**
+   * Sum of the harness-reported costs of every row the AGENTS table shows, or
+   * null when nothing in the thread was priced. Harnesses price what they have
+   * rates for; an unpriced agent is left out rather than counted as free.
+   */
+  readonly costUsd: number | null;
   readonly agentCount: number;
 }
 
@@ -67,6 +73,8 @@ export interface TokenUsageAgentRow {
   readonly id: string;
   readonly title: string;
   readonly role: string | null;
+  /** Harness CLI that ran the agent, when the provider picked one per task. */
+  readonly harness: string | null;
   readonly modelLabel: string | null;
   readonly status: RuntimeSubagentStatus;
   readonly totalTokens: number | null;
@@ -74,16 +82,20 @@ export interface TokenUsageAgentRow {
   readonly inputLabel: string;
   readonly outputLabel: string;
   readonly toolUses: number | null;
+  readonly costUsd: number | null;
+  readonly costLabel: string;
 }
 
 /**
  * The thread's orchestrator (main-thread provider snapshots), surfaced as an
- * AGENTS row in workflow threads. `modelLabel`/`status` come from the newest
- * workflow's coordinator when the roster carries one.
+ * AGENTS row in workflow threads. `role`/`modelLabel`/`harness`/`status` come
+ * from the newest workflow's coordinator when the roster carries one.
  */
 export interface TokenUsageOrchestratorRow {
   readonly id: string;
   readonly title: string;
+  readonly role: string;
+  readonly harness: string | null;
   readonly modelLabel: string | null;
   readonly status: RuntimeSubagentStatus | null;
   readonly inputTokens: number;
@@ -93,6 +105,8 @@ export interface TokenUsageOrchestratorRow {
   readonly outputLabel: string;
   readonly totalLabel: string;
   readonly processedTokens: number | null;
+  readonly costUsd: number | null;
+  readonly costLabel: string;
 }
 
 export interface TokenUsageModel {
@@ -116,11 +130,13 @@ export interface SubagentUsageTurn {
   readonly totalTokens: number;
   /** Context size this step: input + cached tokens. */
   readonly contextTokens: number;
+  readonly costUsd: number | null;
   readonly inputLabel: string;
   readonly cachedLabel: string;
   readonly outputLabel: string;
   readonly reasoningLabel: string;
   readonly totalLabel: string;
+  readonly costLabel: string;
 }
 
 /**
@@ -139,12 +155,15 @@ export interface SubagentUsageStats {
   readonly reasoningOutputTokens: number;
   /** Latest step's context size, or null when no step was reported. */
   readonly contextTokens: number | null;
+  /** Sum of the steps the harness priced; null when none were priced. */
+  readonly costUsd: number | null;
   readonly totalLabel: string;
   readonly inputLabel: string;
   readonly cachedLabel: string;
   readonly outputLabel: string;
   readonly reasoningLabel: string;
   readonly contextLabel: string | null;
+  readonly costLabel: string;
   readonly hasUsage: boolean;
 }
 
@@ -157,6 +176,8 @@ export function deriveSubagentUsageStats(
   let outputTokens = 0;
   let reasoningOutputTokens = 0;
   let totalTokens = 0;
+  let costUsd = 0;
+  let pricedTurns = 0;
 
   for (const entry of entries) {
     if (entry.kind !== "usage") {
@@ -169,6 +190,7 @@ export function deriveSubagentUsageStats(
     const input = (entry.inputTokens ?? 0) + cached;
     const output = (entry.outputTokens ?? 0) + reasoning;
     const context = input;
+    const turnCostUsd = entry.costUsd ?? null;
     turns.push({
       ordinal: turns.length + 1,
       inputTokens: input,
@@ -177,20 +199,27 @@ export function deriveSubagentUsageStats(
       reasoningOutputTokens: reasoning,
       totalTokens: entry.totalTokens,
       contextTokens: context,
+      costUsd: turnCostUsd,
       inputLabel: formatSubagentTokenCount(input),
       cachedLabel: formatSubagentTokenCount(cached),
       outputLabel: formatSubagentTokenCount(output),
       reasoningLabel: formatSubagentTokenCount(reasoning),
       totalLabel: formatSubagentTokenCount(entry.totalTokens),
+      costLabel: formatCostLabel(turnCostUsd),
     });
     inputTokens += input;
     cachedInputTokens += cached;
     outputTokens += output;
     reasoningOutputTokens += reasoning;
     totalTokens += entry.totalTokens;
+    if (turnCostUsd !== null) {
+      costUsd += turnCostUsd;
+      pricedTurns += 1;
+    }
   }
 
   const contextTokens = turns.length > 0 ? turns[turns.length - 1]!.contextTokens : null;
+  const reportedCostUsd = pricedTurns > 0 ? costUsd : null;
   return {
     turns,
     turnCount: turns.length,
@@ -200,12 +229,14 @@ export function deriveSubagentUsageStats(
     outputTokens,
     reasoningOutputTokens,
     contextTokens,
+    costUsd: reportedCostUsd,
     totalLabel: formatSubagentTokenCount(totalTokens),
     inputLabel: formatSubagentTokenCount(inputTokens),
     cachedLabel: formatSubagentTokenCount(cachedInputTokens),
     outputLabel: formatSubagentTokenCount(outputTokens),
     reasoningLabel: formatSubagentTokenCount(reasoningOutputTokens),
     contextLabel: contextTokens === null ? null : formatSubagentTokenCount(contextTokens),
+    costLabel: formatCostLabel(reportedCostUsd),
     hasUsage: turns.length > 0,
   };
 }
@@ -219,6 +250,8 @@ interface MutableTurn {
   cachedInputTokens: number;
   reasoningOutputTokens: number;
   processedTokens: number | null;
+  /** Cumulative harness-reported cost; latest snapshot per turn wins. */
+  totalCostUsd: number | null;
   hasMainUsage: boolean;
   subagentTokens: number;
   agentCount: number;
@@ -241,11 +274,24 @@ function countLabel(value: number | null): string {
   return value === null ? "—" : formatSubagentTokenCount(value);
 }
 
+const COST = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
+/** `$0.0016` for a single step, `$1.23` for a full run; `—` when unpriced. */
+export function formatCostLabel(value: number | null): string {
+  return value === null ? "—" : COST.format(value);
+}
+
 /**
  * The latest snapshot within a turn wins; earlier frames are superseded by the
  * read model (server projection and client reducer keep one per turn), so
  * there is nothing to accumulate here. The provider's cumulative session total
- * arrives on each snapshot as `totalProcessedTokens`.
+ * arrives on each snapshot as `totalProcessedTokens`, and its cumulative cost
+ * as `totalCostUsd`.
  */
 function applyMainUsage(turn: MutableTurn, activity: OrchestrationThreadActivity): void {
   if (activity.kind !== "context-window.updated") {
@@ -261,12 +307,14 @@ function applyMainUsage(turn: MutableTurn, activity: OrchestrationThreadActivity
   const reasoning =
     asCount(payload.lastReasoningOutputTokens) ?? asCount(payload.reasoningOutputTokens);
   const processed = asCount(payload.totalProcessedTokens);
+  const cost = asCount(payload.totalCostUsd);
   if (
     input === null &&
     output === null &&
     cached === null &&
     reasoning === null &&
-    processed === null
+    processed === null &&
+    cost === null
   ) {
     return;
   }
@@ -276,6 +324,9 @@ function applyMainUsage(turn: MutableTurn, activity: OrchestrationThreadActivity
   turn.reasoningOutputTokens = reasoning ?? 0;
   if (processed !== null) {
     turn.processedTokens = Math.max(turn.processedTokens ?? 0, processed);
+  }
+  if (cost !== null) {
+    turn.totalCostUsd = Math.max(turn.totalCostUsd ?? 0, cost);
   }
   turn.hasMainUsage = true;
 }
@@ -298,6 +349,7 @@ export function deriveTokenUsage(input: {
   let detachedCachedInputTokens = 0;
   let detachedReasoningOutputTokens = 0;
   let detachedProcessedTokens: number | null = null;
+  let detachedTotalCostUsd: number | null = null;
 
   for (const activity of input.activities) {
     const turnId = activity.turnId;
@@ -312,6 +364,7 @@ export function deriveTokenUsage(input: {
           cachedInputTokens: 0,
           reasoningOutputTokens: 0,
           processedTokens: null,
+          totalCostUsd: null,
           hasMainUsage: false,
           subagentTokens: 0,
           agentCount: 0,
@@ -326,6 +379,9 @@ export function deriveTokenUsage(input: {
             detachedProcessedTokens ?? 0,
             detached.processedTokens,
           );
+        }
+        if (detached.totalCostUsd !== null) {
+          detachedTotalCostUsd = Math.max(detachedTotalCostUsd ?? 0, detached.totalCostUsd);
         }
       }
       continue;
@@ -342,6 +398,7 @@ export function deriveTokenUsage(input: {
         cachedInputTokens: 0,
         reasoningOutputTokens: 0,
         processedTokens: null,
+        totalCostUsd: null,
         hasMainUsage: false,
         subagentTokens: 0,
         agentCount: 0,
@@ -359,6 +416,7 @@ export function deriveTokenUsage(input: {
   let cachedInputTokens = detachedCachedInputTokens;
   let reasoningOutputTokens = detachedReasoningOutputTokens;
   let processedTokens = detachedProcessedTokens;
+  let mainCostUsd = detachedTotalCostUsd;
   for (const turn of turnList) {
     inputTokens += turn.inputTokens;
     outputTokens += turn.outputTokens;
@@ -366,6 +424,9 @@ export function deriveTokenUsage(input: {
     reasoningOutputTokens += turn.reasoningOutputTokens;
     if (turn.processedTokens !== null) {
       processedTokens = Math.max(processedTokens ?? 0, turn.processedTokens);
+    }
+    if (turn.totalCostUsd !== null) {
+      mainCostUsd = Math.max(mainCostUsd ?? 0, turn.totalCostUsd);
     }
   }
   // Snapshot input/output already include the cached and reasoning subsets
@@ -381,10 +442,13 @@ export function deriveTokenUsage(input: {
     agents.some((agent) => agent.workflowName === "AgentTunnel");
   const coordinator = input.model.workflows.at(-1)?.workflow ?? null;
   const orchestrator: TokenUsageOrchestratorRow | null =
-    isWorkflowThread && (inputTokens > 0 || outputTokens > 0 || processedTokens !== null)
+    isWorkflowThread &&
+    (inputTokens > 0 || outputTokens > 0 || processedTokens !== null || mainCostUsd !== null)
       ? {
           id: coordinator?.id ?? "orchestrator",
           title: "Orchestrator",
+          role: coordinator?.role ?? "orchestrator",
+          harness: coordinator?.harness ?? null,
           modelLabel:
             coordinator === null
               ? null
@@ -397,6 +461,8 @@ export function deriveTokenUsage(input: {
           outputLabel: formatSubagentTokenCount(outputTokens),
           totalLabel: formatSubagentTokenCount(mainTokens),
           processedTokens,
+          costUsd: mainCostUsd,
+          costLabel: formatCostLabel(mainCostUsd),
         }
       : null;
 
@@ -463,10 +529,12 @@ export function deriveTokenUsage(input: {
 
   const agentRows = visibleAgents.map((agent): TokenUsageAgentRow => {
     const usage = agent.usage;
+    const agentCostUsd = usage?.costUsd ?? null;
     return {
       id: agent.id,
       title: agent.title,
       role: agent.role,
+      harness: agent.harness,
       modelLabel: formatSubagentModelLabel(agent.model, agent.effort),
       status: agent.status,
       totalTokens: agentTotalTokens(agent),
@@ -474,8 +542,21 @@ export function deriveTokenUsage(input: {
       inputLabel: countLabel(usage?.inputTokens ?? null),
       outputLabel: countLabel(usage?.outputTokens ?? null),
       toolUses: usage?.toolUses ?? null,
+      costUsd: agentCostUsd,
+      costLabel: formatCostLabel(agentCostUsd),
     };
   });
+
+  // The thread's cost is what the harnesses priced: the orchestrator's own
+  // cumulative frames plus each row's cumulative figure. Unpriced pieces
+  // contribute nothing; a thread where nothing was priced reports null.
+  const pricedAgentCosts = agentRows
+    .map((row) => row.costUsd)
+    .filter((value): value is number => value !== null);
+  const costUsd =
+    mainCostUsd === null && pricedAgentCosts.length === 0
+      ? null
+      : (mainCostUsd ?? 0) + pricedAgentCosts.reduce((sum, value) => sum + value, 0);
 
   return {
     totals: {
@@ -487,6 +568,7 @@ export function deriveTokenUsage(input: {
       subagentTokens,
       totalTokens: mainTokens + subagentTokens,
       processedTokens,
+      costUsd,
       // Counts every row the AGENTS table renders, orchestrator included.
       agentCount: agentRows.length + (orchestrator === null ? 0 : 1),
     },

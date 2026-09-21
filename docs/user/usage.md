@@ -24,18 +24,23 @@ While a thread is open, open the **Usage** surface from the right panel's surfac
 The pane is cumulative for the thread and shows:
 
 - **Totals**: input, output, cached input, reasoning output, orchestrator, subagent, and total
-  tokens, plus the provider's processed-token count when it reports one. In workflow threads the
-  orchestrator figures are the thread's own model usage and reconcile with the total: total equals
-  orchestrator plus subagent tokens.
+  tokens, plus the provider's processed-token count and a cost figure when a harness priced the
+  run. In workflow threads the orchestrator figures are the thread's own model usage and reconcile
+  with the total: total equals orchestrator plus subagent tokens.
 - **By turn**: each turn's input, output, and subagent tokens, and the turn's total.
-- **Agents**: up to 100 subagents' input, output, tool-call count, and total (the roster keeps the
-  live and most recent agents). In workflow threads an Orchestrator row comes first, showing the
-  thread's own usage; it has no per-step drill-in. Select a subagent row to drill into its own
-  stats: how many turns (model steps) it ran, the input, cached, output, reasoning, and total tokens
-  for each turn, and the context size fed into each step. A running agent's turns appear as they
-  complete.
+- **Agents**: up to 100 subagents' role, harness, input, output, tool-call count, cost, and total
+  (the roster keeps the live and most recent agents). In workflow threads an Orchestrator row comes
+  first, showing the thread's own usage, the role and harness that ran it; it has no per-step
+  drill-in. Select a subagent row to drill into its own stats: how many turns (model steps) it ran,
+  the input, cached, output, reasoning, cost, and total tokens for each turn, and the context size
+  fed into each step. A running agent's turns appear as they complete.
+
+Cost is what each harness reported for its own run — the same API-equivalent figure the Usage page
+shows, not money spent on a subscription. A harness with no rates for a model prices nothing, so
+those rows show a dash instead of an estimate.
 
 Subagent tokens count toward the turn that spawned the agent. Figures are exactly what the provider
 reported; providers that report no usage leave the pane empty instead of estimating. AgentTunnel
-threads count tokens streamed by OpenCode harness runs; a run on a harness that reports no token
-frames contributes nothing.
+threads count tokens streamed by their harness runs — the OpenCode and Pi harnesses both report
+per-step frames — so the orchestrator, executor, and reviewer rows each carry the tokens their own
+CLI reported.

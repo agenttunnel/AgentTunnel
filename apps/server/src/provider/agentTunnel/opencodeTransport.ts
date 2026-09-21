@@ -1,5 +1,6 @@
 import type { OrchestrationAgentLogEntry } from "@t3tools/contracts";
 
+import type { HarnessStepUsage } from "./harnessUsage.ts";
 import type { AgentTunnelProcessSpec } from "./Orchestrator.ts";
 
 /**
@@ -92,14 +93,6 @@ function formatToolInput(input: unknown): string | undefined {
 
 export type AgentLogEntry = OrchestrationAgentLogEntry;
 
-export interface OpenCodeStepUsage {
-  readonly totalTokens: number;
-  readonly inputTokens: number;
-  readonly cachedInputTokens: number;
-  readonly outputTokens: number;
-  readonly reasoningOutputTokens: number;
-}
-
 function nonNegativeTokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.round(value)
@@ -107,53 +100,91 @@ function nonNegativeTokenCount(value: unknown): number | undefined {
 }
 
 /**
+ * Positive dollar amount, or undefined: a harness that has no rate for the
+ * model reports 0, which must read as "not reported" instead of "free".
+ */
+function reportedCostUsd(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
  * Token frame from an OpenCode `step_finish` event. Each frame reports the
  * step's own usage (they are deltas, not session totals); `part.tokens.total`
- * includes input, output, reasoning, and cache reads and writes.
+ * includes input, output, reasoning, and cache reads and writes, and
+ * `part.cost` is the step's API-equivalent cost when OpenCode priced it.
  */
-export function parseOpenCodeStepUsage(raw: string): OpenCodeStepUsage | undefined {
+export function parseOpenCodeStepUsage(raw: string): HarnessStepUsage | undefined {
   // The adapter runs this over every harness line; skip the JSON parse for the
   // overwhelming majority that cannot be a step frame.
   if (!raw.includes("step_finish")) {
     return undefined;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
+  const event = parseJsonRecord(raw);
+  if (event?.type !== "step_finish") {
     return undefined;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  const part = asRecord(event.part);
+  if (part === undefined) {
     return undefined;
   }
-  const event = parsed as { type?: unknown; part?: unknown };
-  if (event.type !== "step_finish") {
+  const tokens = asRecord(part.tokens);
+  if (tokens === undefined) {
     return undefined;
   }
-  const part = event.part;
-  if (!part || typeof part !== "object" || Array.isArray(part)) {
-    return undefined;
-  }
-  const tokens = (part as { tokens?: unknown }).tokens;
-  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) {
-    return undefined;
-  }
-  const record = tokens as Record<string, unknown>;
-  const totalTokens = nonNegativeTokenCount(record.total);
+  const totalTokens = nonNegativeTokenCount(tokens.total);
   if (totalTokens === undefined || totalTokens <= 0) {
     return undefined;
   }
-  const cache =
-    record.cache && typeof record.cache === "object" && !Array.isArray(record.cache)
-      ? (record.cache as Record<string, unknown>)
-      : {};
+  const cache = asRecord(tokens.cache) ?? {};
+  const costUsd = reportedCostUsd(part.cost);
   return {
     totalTokens,
-    inputTokens: nonNegativeTokenCount(record.input) ?? 0,
+    inputTokens: nonNegativeTokenCount(tokens.input) ?? 0,
     cachedInputTokens:
       (nonNegativeTokenCount(cache.read) ?? 0) + (nonNegativeTokenCount(cache.write) ?? 0),
-    outputTokens: nonNegativeTokenCount(record.output) ?? 0,
-    reasoningOutputTokens: nonNegativeTokenCount(record.reasoning) ?? 0,
+    outputTokens: nonNegativeTokenCount(tokens.output) ?? 0,
+    reasoningOutputTokens: nonNegativeTokenCount(tokens.reasoning) ?? 0,
+    ...(costUsd === undefined ? {} : { costUsd }),
+  };
+}
+
+/**
+ * Token frame from a pi `message_end` event, normalized to the same shape as
+ * OpenCode's: pi's `input` is the uncached input, `cacheRead`/`cacheWrite` the
+ * cached subset, and `reasoning` is folded INTO `output` (totalTokens covers
+ * input + cache + output), so the plain output is the remainder.
+ */
+export function parsePiStepUsage(raw: string): HarnessStepUsage | undefined {
+  if (!raw.includes("message_end")) {
+    return undefined;
+  }
+  const event = parseJsonRecord(raw);
+  if (event?.type !== "message_end") return undefined;
+  const message = asRecord(event.message);
+  if (message?.role !== "assistant") return undefined;
+  const usage = asRecord(message.usage);
+  if (usage === undefined) return undefined;
+
+  const cachedInputTokens =
+    (nonNegativeTokenCount(usage.cacheRead) ?? 0) + (nonNegativeTokenCount(usage.cacheWrite) ?? 0);
+  const reasoningOutputTokens = nonNegativeTokenCount(usage.reasoning) ?? 0;
+  const inputTokens = nonNegativeTokenCount(usage.input) ?? 0;
+  const outputTokens = Math.max(
+    0,
+    (nonNegativeTokenCount(usage.output) ?? 0) - reasoningOutputTokens,
+  );
+  const totalTokens =
+    nonNegativeTokenCount(usage.totalTokens) ?? inputTokens + cachedInputTokens + outputTokens;
+  if (totalTokens <= 0) return undefined;
+
+  const costUsd = reportedCostUsd(asRecord(usage.cost)?.total);
+  return {
+    totalTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    ...(costUsd === undefined ? {} : { costUsd }),
   };
 }
 
@@ -271,6 +302,7 @@ export function parseOpenCodeLogLine(raw: string): ReadonlyArray<AgentLogEntry> 
             cachedInputTokens: usage.cachedInputTokens,
             outputTokens: usage.outputTokens,
             reasoningOutputTokens: usage.reasoningOutputTokens,
+            ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
           },
         ];
   }
@@ -374,12 +406,27 @@ export function parsePiLogLine(raw: string): ReadonlyArray<AgentLogEntry> {
   if (event.type === "message_end") {
     const message = asRecord(event.message);
     if (message?.role !== "assistant") return [];
-    return piAssistantTextParts(message).map(
+    const entries: AgentLogEntry[] = piAssistantTextParts(message).map(
       (part): AgentLogEntry =>
         part.kind === "text"
           ? { kind: "text", text: part.text }
           : { kind: "reasoning", text: part.text },
     );
+    // The message's final usage is the step's own total, so it feeds the
+    // per-subagent turns table exactly like OpenCode's step_finish.
+    const usage = parsePiStepUsage(raw);
+    if (usage !== undefined) {
+      entries.push({
+        kind: "usage",
+        totalTokens: usage.totalTokens,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        outputTokens: usage.outputTokens,
+        reasoningOutputTokens: usage.reasoningOutputTokens,
+        ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
+      });
+    }
+    return entries;
   }
   if (event.type === "error") {
     const message = errorMessage(event.error);
@@ -412,6 +459,9 @@ export function parsePiJsonLine(
         if (options.includeReasoning === true) {
           lines.push(...splitTextLines(entry.text));
         }
+        break;
+      // Usage entries feed the stats view, not the chat transcript.
+      case "usage":
         break;
     }
   }

@@ -16,6 +16,7 @@ function agent(overrides: Partial<RuntimeSubagent> & Pick<RuntimeSubagent, "id">
     title: overrides.id,
     role: null,
     model: null,
+    harness: null,
     effort: null,
     status: "running",
     activationCount: 1,

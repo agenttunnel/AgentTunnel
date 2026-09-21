@@ -1815,6 +1815,8 @@ export const OrchestrationAgentLogEntry = Schema.Union([
     cachedInputTokens: Schema.optional(NonNegativeInt),
     outputTokens: Schema.optional(NonNegativeInt),
     reasoningOutputTokens: Schema.optional(NonNegativeInt),
+    /** Harness-computed step cost; absent when the harness reported none. */
+    costUsd: Schema.optional(Schema.Number),
   }),
 ]);
 export type OrchestrationAgentLogEntry = typeof OrchestrationAgentLogEntry.Type;
