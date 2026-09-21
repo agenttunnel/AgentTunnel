@@ -7,16 +7,19 @@ import type {
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
-import { resolveAgentTunnelHomeDir } from "@t3tools/shared/devHome";
 import * as DesktopConfig from "./DesktopConfig.ts";
-import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
+import {
+  adoptLegacyDesktopBaseDir,
+  resolveDesktopBaseDir,
+  resolveDesktopStateDir,
+  type DesktopBaseDirAdoption,
+} from "./DesktopStatePaths.ts";
 
 export interface MakeDesktopEnvironmentInput {
   readonly dirname: string;
@@ -144,11 +147,7 @@ function resolveDesktopRuntimeInfo(input: {
 
 const make = Effect.fn("desktop.environment.make")(function* (
   input: MakeDesktopEnvironmentInput,
-): Effect.fn.Return<
-  DesktopEnvironment["Service"],
-  Config.ConfigError,
-  Path.Path | FileSystem.FileSystem
-> {
+): Effect.fn.Return<DesktopEnvironment["Service"], Config.ConfigError, Path.Path> {
   const path = yield* Path.Path;
   const config = yield* DesktopConfig.DesktopConfig;
   const homeDirectory = input.homeDirectory;
@@ -162,17 +161,30 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  // Implicit default home only: migrate the legacy `~/.t3` once so the app's
-  // own state (desktop settings, saved environments) and the server the desktop
-  // boots both land on `.agenttunnel`. An explicit T3CODE_HOME is user-pinned
-  // and used exactly as given.
-  const baseDir = Option.isNone(config.t3Home)
-    ? yield* resolveAgentTunnelHomeDir(homeDirectory)
-    : resolveDesktopBaseDir({
+  // Implicit default home only: adopt a pre-rename `.t3` home once, so the app's
+  // own state (desktop settings, saved environments) and the server it boots land
+  // on `.agenttunnel`. An explicit T3CODE_HOME is user-pinned and used exactly as
+  // given. Synchronous by contract — see `adoptLegacyDesktopBaseDir`: an await on
+  // this path lets Electron emit `ready` before Clerk's bridge registers its
+  // privileged schemes, and startup then aborts with no window.
+  const adoption = Option.isNone(config.t3Home)
+    ? Option.some(adoptLegacyDesktopBaseDir({ homeDirectory, joinPath: path.join }))
+    : Option.none<DesktopBaseDirAdoption>();
+  const baseDir = Option.match(adoption, {
+    onNone: () =>
+      resolveDesktopBaseDir({
         homeDirectory,
         joinPath: path.join,
         t3Home: config.t3Home,
-      });
+      }),
+    onSome: (adopted) => adopted.baseDir,
+  });
+  if (Option.exists(adoption, (adopted) => adopted.legacyHomeLeftBehind)) {
+    yield* Effect.logWarning(
+      "Both the .agenttunnel and the legacy .t3 home exist; using .agenttunnel and leaving .t3 untouched.",
+      { baseDir, homeDirectory },
+    );
+  }
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const serverRoot =
