@@ -54,13 +54,13 @@ import {
 import {
   buildAgentTunnelSpawnArgs,
   agentTunnelHarnessKind,
+  harnessUsageLogEntry,
+  parseHarnessJsonLines,
+  parseHarnessLogLine,
+  parseHarnessUsageStep,
+  type AgentLogEntry,
   type AgentTunnelHarnessKind,
-  parseOpenCodeJsonLine,
-  parseOpenCodeLogLine,
-  parseOpenCodeStepUsage,
-  parsePiJsonLine,
-  parsePiLogLine,
-  parsePiStepUsage,
+  type AgentTunnelHarnessTransportKind,
 } from "../agentTunnel/opencodeTransport.ts";
 import {
   addHarnessUsageTotals,
@@ -195,22 +195,16 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         }),
       ),
     );
-  const appendAgentLogEntries = (
+  /** Appends parsed entries to an agent's log, honoring its byte budget. */
+  const appendParsedEntries = (
     threadId: ThreadId,
     agentId: string,
-    rawLine: string,
-    harnessKind: AgentTunnelHarnessKind,
+    entries: ReadonlyArray<AgentLogEntry>,
   ) =>
     Effect.gen(function* () {
       const context = sessions.get(threadId);
       const outputPath = agentOutputPath(threadId, agentId);
-      const entries =
-        harnessKind === "opencode"
-          ? parseOpenCodeLogLine(rawLine)
-          : harnessKind === "pi"
-            ? parsePiLogLine(rawLine)
-            : [{ kind: "raw" as const, text: rawLine }];
-      // One clock read per line, so every entry it carries shares its stamp.
+      // One clock read per call, so every entry it carries shares its stamp.
       const at = yield* nowIso;
       for (const entry of entries) {
         const line = encodeAgentLogEntry(entry, at);
@@ -222,6 +216,16 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         context?.agentLogBytes.set(agentId, written + bytes);
         yield* appendLogFile(threadId, agentId, outputPath, line);
       }
+    });
+  const appendAgentLogEntries = (
+    threadId: ThreadId,
+    agentId: string,
+    rawLine: string,
+    harnessKind: AgentTunnelHarnessKind,
+  ) =>
+    Effect.gen(function* () {
+      const context = sessions.get(threadId);
+      yield* appendParsedEntries(threadId, agentId, parseHarnessLogLine(rawLine, harnessKind));
       if (harnessKind === "other") {
         return;
       }
@@ -526,22 +530,28 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
   });
 
   /**
-   * Token frames from the harness stream. Both transports report per-step
-   * usage — OpenCode on `step_finish`, pi on `message_end` — so whichever CLI
-   * a role runs gives the same numbers here: orchestrator steps feed the
-   * thread usage snapshot, agent steps feed that agent's cumulative
-   * typed-usage rollup (tokens and any harness-computed cost). Harnesses that
-   * stream no comparable frames contribute nothing rather than a guess.
+   * Token frames from the harness stream. Every transport reports per-step
+   * usage — OpenCode on `step_finish`, pi on `message_end`, Claude Code per
+   * assistant message with the run's cost on `result`, Codex on `turn.completed`
+   * — so whichever CLI a role runs gives the same numbers here: orchestrator
+   * steps feed the thread usage snapshot, agent steps feed that agent's
+   * cumulative typed-usage rollup (tokens and any harness-computed cost).
+   * Harnesses that stream no comparable frames contribute nothing rather than a
+   * guess.
+   *
+   * This fold is also the only place a step's usage reaches the agent log, so a
+   * step a harness repeats across frames (Claude's per-content-block events)
+   * counts once in the rollup and in the drill-in's per-turn table alike.
    */
   const trackHarnessUsage = Effect.fn("AgentTunnelAdapter.trackHarnessUsage")(function* (
     threadId: ThreadId,
     processId: string,
     line: string,
-    harnessKind: Exclude<AgentTunnelHarnessKind, "other">,
+    harnessKind: AgentTunnelHarnessTransportKind,
   ) {
     const context = sessions.get(threadId);
     if (!context) return;
-    const step = harnessKind === "pi" ? parsePiStepUsage(line) : parseOpenCodeStepUsage(line);
+    const step = parseHarnessUsageStep(line, harnessKind);
     if (!step) return;
     const turnId = context.activeTurnId;
     const eventBase = (itemId?: string) =>
@@ -553,6 +563,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
 
     if (processId.startsWith("orchestrator")) {
       const cumulative = addHarnessUsageTotals(context.orchestratorUsage, step);
+      if (cumulative === undefined) return;
+      if (step.totalTokens > 0) {
+        yield* appendParsedEntries(threadId, processId, [harnessUsageLogEntry(step)]);
+      }
       yield* emit({
         ...(yield* eventBase()),
         type: "thread.token-usage.updated",
@@ -568,7 +582,10 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       cumulative = emptyHarnessUsageTotals();
       context.agentUsage.set(processId, cumulative);
     }
-    addHarnessUsageTotals(cumulative, step);
+    if (addHarnessUsageTotals(cumulative, step) === undefined) return;
+    if (step.totalTokens > 0) {
+      yield* appendParsedEntries(threadId, processId, [harnessUsageLogEntry(step)]);
+    }
     const metadata = context.agents.get(processId);
     yield* emit({
       ...(yield* eventBase(processId)),
@@ -689,21 +706,16 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
                 ),
               );
         const lines =
-          harnessKind === "opencode"
-            ? usageLines.pipe(
+          harnessKind === "other"
+            ? usageLines.pipe(Stream.mapError(processError))
+            : usageLines.pipe(
                 Stream.flatMap((line) =>
-                  Stream.fromIterable(parseOpenCodeJsonLine(line, { includeReasoning })),
+                  Stream.fromIterable(
+                    parseHarnessJsonLines(line, harnessKind, { includeReasoning }),
+                  ),
                 ),
                 Stream.mapError(processError),
-              )
-            : harnessKind === "pi"
-              ? usageLines.pipe(
-                  Stream.flatMap((line) =>
-                    Stream.fromIterable(parsePiJsonLine(line, { includeReasoning })),
-                  ),
-                  Stream.mapError(processError),
-                )
-              : usageLines.pipe(Stream.mapError(processError));
+              );
         return {
           pid: Number(child.pid),
           lines,

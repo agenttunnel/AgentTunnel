@@ -4,11 +4,12 @@ import type { HarnessStepUsage } from "./harnessUsage.ts";
 import type { AgentTunnelProcessSpec } from "./Orchestrator.ts";
 
 /**
- * AgentTunnel shells out to a harness CLI per role. The default harness is
- * `opencode`, whose `run` subcommand streams events over stdout/stderr. Other
- * harnesses (claude, codex, cursor, grok) have their own flag sets; this module
- * keeps the harness-specific argument and output translation at the adapter
- * boundary so the orchestrator stays transport-agnostic.
+ * AgentTunnel shells out to a harness CLI per role. Four CLI protocols are
+ * translated here — OpenCode's `run --format json`, pi's `--mode json`, Claude
+ * Code's `-p --output-format stream-json`, and Codex's `exec --json` — so a
+ * role's harness only decides how a process is spawned and how its stream is
+ * read. Any other basename keeps the generic `run` invocation and contributes
+ * no usage rather than a guess.
  */
 
 function baseName(harness: string): string {
@@ -16,25 +17,40 @@ function baseName(harness: string): string {
   return parts[parts.length - 1] ?? harness;
 }
 
+/** Basename without a Windows extension, lowercased for matching. */
+function harnessName(harness: string): string {
+  return baseName(harness)
+    .replace(/\.exe$/, "")
+    .toLowerCase();
+}
+
 export function isOpenCodeHarness(harness: string): boolean {
-  return baseName(harness).replace(/\.exe$/, "") === "opencode";
+  return harnessName(harness) === "opencode";
 }
 
-/** Pi's CLI (`pi --mode json -p <prompt>`) is its own transport. */
 export function isPiHarness(harness: string): boolean {
-  return (
-    baseName(harness)
-      .replace(/\.exe$/, "")
-      .toLowerCase() === "pi"
-  );
+  return harnessName(harness) === "pi";
 }
 
-export type AgentTunnelHarnessKind = "opencode" | "pi" | "other";
+export function isClaudeHarness(harness: string): boolean {
+  return harnessName(harness) === "claude";
+}
+
+export function isCodexHarness(harness: string): boolean {
+  return harnessName(harness) === "codex";
+}
+
+export type AgentTunnelHarnessKind = "opencode" | "pi" | "claude" | "codex" | "other";
+
+/** Kinds with a transport that reads usage frames. */
+export type AgentTunnelHarnessTransportKind = Exclude<AgentTunnelHarnessKind, "other">;
 
 /** Which CLI protocol a harness speaks, so spawn args and parsing branch once. */
 export function agentTunnelHarnessKind(harness: string): AgentTunnelHarnessKind {
   if (isOpenCodeHarness(harness)) return "opencode";
   if (isPiHarness(harness)) return "pi";
+  if (isClaudeHarness(harness)) return "claude";
+  if (isCodexHarness(harness)) return "codex";
   return "other";
 }
 
@@ -46,6 +62,38 @@ export function buildAgentTunnelSpawnArgs(spec: AgentTunnelProcessSpec): string[
     const args = ["--mode", "json", "-p", spec.prompt, "--no-session"];
     if (spec.model) args.push("--model", spec.model);
     if (spec.variant) args.push("--thinking", spec.variant);
+    return args;
+  }
+  if (isClaudeHarness(spec.harness)) {
+    // `--print` drives Claude headless, and stream-json (which requires
+    // --verbose) is the mode that carries per-message usage and the run's cost.
+    const args = ["--print", "--output-format", "stream-json", "--verbose"];
+    if (spec.model) args.push("--model", spec.model);
+    // Claude accepts low|medium|high|xhigh|max. The workflow's `minimal` sits
+    // below `low`, so the nearest accepted level stands in instead of letting
+    // Claude warn and silently fall back to its default.
+    if (spec.variant) args.push("--effort", spec.variant === "minimal" ? "low" : spec.variant);
+    if (spec.dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+    args.push(spec.prompt);
+    return args;
+  }
+  if (isCodexHarness(spec.harness)) {
+    // `exec --json` is Codex's JSONL mode: per-item events plus the turn's
+    // usage. `--ephemeral` mirrors pi's `--no-session` (role runs stay out of
+    // the session store) and `--skip-git-repo-check` keeps plain directories
+    // usable, which no other harness rejects.
+    const args = ["exec", "--json", "--ephemeral", "--skip-git-repo-check"];
+    if (spec.model) args.push("--model", spec.model);
+    // A role still has to edit its workspace to be useful; the bypass setting
+    // escalates to Codex's full-access sandbox, which is what the other
+    // harnesses' skip-permission flags mean.
+    args.push(
+      ...(spec.dangerouslySkipPermissions
+        ? ["--dangerously-bypass-approvals-and-sandbox"]
+        : ["--sandbox", "workspace-write"]),
+    );
+    if (spec.variant) args.push("-c", `model_reasoning_effort="${spec.variant}"`);
+    args.push(spec.prompt);
     return args;
   }
   const args = ["run"];
@@ -196,6 +244,120 @@ interface OpenCodeToolUseState {
   readonly status?: unknown;
 }
 
+/**
+ * Token frame from Claude Code's `--output-format stream-json` stream. Claude
+ * emits one `assistant` event per content block and each repeats that message's
+ * usage — uncached `input_tokens` beside the cache-creation and cache-read
+ * columns, `output_tokens` with thinking folded in as
+ * `output_tokens_details.thinking_tokens` — so the step carries the message id
+ * and the caller folds a message once.
+ *
+ * Claude prices the whole run instead of the message, and reports it on the
+ * closing `result` event — after the tokens it covers — so that frame comes
+ * back as a cost-only step (zero tokens, no step id) and the caller keeps the
+ * last token-bearing step for it.
+ */
+export function parseClaudeStepUsage(raw: string): HarnessStepUsage | undefined {
+  if (!raw.includes("usage") && !raw.includes("total_cost_usd")) {
+    return undefined;
+  }
+  const event = parseJsonRecord(raw);
+  if (event === undefined) return undefined;
+
+  if (event.type === "result") {
+    const costUsd = reportedCostUsd(event.total_cost_usd);
+    if (costUsd === undefined) return undefined;
+    return {
+      totalTokens: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      costUsd,
+    };
+  }
+  if (event.type !== "assistant") return undefined;
+
+  const message = asRecord(event.message);
+  const usage = asRecord(message?.usage);
+  if (usage === undefined) return undefined;
+
+  const inputTokens = nonNegativeTokenCount(usage.input_tokens) ?? 0;
+  const cachedInputTokens =
+    (nonNegativeTokenCount(usage.cache_creation_input_tokens) ?? 0) +
+    (nonNegativeTokenCount(usage.cache_read_input_tokens) ?? 0);
+  const reasoningOutputTokens =
+    nonNegativeTokenCount(asRecord(usage.output_tokens_details)?.thinking_tokens) ?? 0;
+  const outputTokens = Math.max(
+    0,
+    (nonNegativeTokenCount(usage.output_tokens) ?? 0) - reasoningOutputTokens,
+  );
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens;
+  if (totalTokens <= 0) return undefined;
+
+  const messageId = message?.id;
+  return {
+    totalTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    ...(typeof messageId === "string" && messageId.length > 0 ? { stepId: messageId } : {}),
+  };
+}
+
+/**
+ * Token frame from Codex's `exec --json` stream. Codex reports the turn's usage
+ * on `turn.completed`, where `cached_input_tokens` and `reasoning_output_tokens`
+ * are subsets of the input/output totals — the same convention the Codex
+ * adapter's snapshots use — so both are subtracted out here.
+ */
+export function parseCodexStepUsage(raw: string): HarnessStepUsage | undefined {
+  if (!raw.includes("turn.completed")) {
+    return undefined;
+  }
+  const event = parseJsonRecord(raw);
+  if (event?.type !== "turn.completed") return undefined;
+  const usage = asRecord(event.usage);
+  if (usage === undefined) return undefined;
+
+  const cachedInputTokens = nonNegativeTokenCount(usage.cached_input_tokens) ?? 0;
+  const reasoningOutputTokens = nonNegativeTokenCount(usage.reasoning_output_tokens) ?? 0;
+  const inputTokens = Math.max(
+    0,
+    (nonNegativeTokenCount(usage.input_tokens) ?? 0) - cachedInputTokens,
+  );
+  const outputTokens = Math.max(
+    0,
+    (nonNegativeTokenCount(usage.output_tokens) ?? 0) - reasoningOutputTokens,
+  );
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens;
+  if (totalTokens <= 0) return undefined;
+
+  return { totalTokens, inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens };
+}
+
+type AgentUsageLogEntry = Extract<AgentLogEntry, { readonly kind: "usage" }>;
+
+/**
+ * One model step's usage, as persisted inline in the agent log so the
+ * per-subagent stats view can rebuild tokens per turn. Cost rides along when
+ * the harness priced the step. The adapter writes this only for steps its
+ * rollup accepted, so a harness repeating a step's frames cannot double-count
+ * the same tokens in the drill-in.
+ */
+export function harnessUsageLogEntry(usage: HarnessStepUsage): AgentUsageLogEntry {
+  return {
+    kind: "usage",
+    totalTokens: usage.totalTokens,
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputTokens: usage.outputTokens,
+    reasoningOutputTokens: usage.reasoningOutputTokens,
+    ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
+  };
+}
+
 interface OpenCodeToolUsePart {
   readonly tool?: unknown;
   readonly callID?: unknown;
@@ -290,22 +452,6 @@ export function parseOpenCodeLogLine(raw: string): ReadonlyArray<AgentLogEntry> 
     const message = errorMessage(event.error);
     return message === undefined ? [] : [{ kind: "error", text: truncate(message, TOOL_BODY_MAX) }];
   }
-  if (event.type === "step_finish") {
-    const usage = parseOpenCodeStepUsage(raw);
-    return usage === undefined
-      ? []
-      : [
-          {
-            kind: "usage",
-            totalTokens: usage.totalTokens,
-            inputTokens: usage.inputTokens,
-            cachedInputTokens: usage.cachedInputTokens,
-            outputTokens: usage.outputTokens,
-            reasoningOutputTokens: usage.reasoningOutputTokens,
-            ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
-          },
-        ];
-  }
   return [];
 }
 
@@ -313,13 +459,17 @@ function splitTextLines(text: string): ReadonlyArray<string> {
   return text.split("\n").filter((line) => line.length > 0);
 }
 
-/** Display lines for the orchestrator chat message, derived from log entries. */
-export function parseOpenCodeJsonLine(
-  raw: string,
-  options: { readonly includeReasoning?: boolean } = {},
+/**
+ * Display lines for the orchestrator chat message, derived from a harness's log
+ * entries. Shared by every transport so a new harness only has to say how its
+ * stream becomes entries.
+ */
+function displayEntries(
+  entries: ReadonlyArray<AgentLogEntry>,
+  options: { readonly includeReasoning?: boolean },
 ): ReadonlyArray<string> {
   const lines: string[] = [];
-  for (const entry of parseOpenCodeLogLine(raw)) {
+  for (const entry of entries) {
     switch (entry.kind) {
       case "text":
         lines.push(...splitTextLines(entry.text));
@@ -344,6 +494,14 @@ export function parseOpenCodeJsonLine(
     }
   }
   return lines;
+}
+
+/** Display lines for the orchestrator chat message, derived from a log record. */
+export function parseOpenCodeJsonLine(
+  raw: string,
+  options: { readonly includeReasoning?: boolean } = {},
+): ReadonlyArray<string> {
+  return displayEntries(parseOpenCodeLogLine(raw), options);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -412,20 +570,8 @@ export function parsePiLogLine(raw: string): ReadonlyArray<AgentLogEntry> {
           ? { kind: "text", text: part.text }
           : { kind: "reasoning", text: part.text },
     );
-    // The message's final usage is the step's own total, so it feeds the
-    // per-subagent turns table exactly like OpenCode's step_finish.
-    const usage = parsePiStepUsage(raw);
-    if (usage !== undefined) {
-      entries.push({
-        kind: "usage",
-        totalTokens: usage.totalTokens,
-        inputTokens: usage.inputTokens,
-        cachedInputTokens: usage.cachedInputTokens,
-        outputTokens: usage.outputTokens,
-        reasoningOutputTokens: usage.reasoningOutputTokens,
-        ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
-      });
-    }
+    // Usage rides on the same frame but is persisted by the adapter's usage
+    // tap, so the log only carries the message's prose here.
     return entries;
   }
   if (event.type === "error") {
@@ -440,30 +586,188 @@ export function parsePiJsonLine(
   raw: string,
   options: { readonly includeReasoning?: boolean } = {},
 ): ReadonlyArray<string> {
-  const lines: string[] = [];
-  for (const entry of parsePiLogLine(raw)) {
-    switch (entry.kind) {
-      case "text":
-        lines.push(...splitTextLines(entry.text));
-        break;
-      case "tool":
-        lines.push(entry.title.length > 0 ? `→ ${entry.tool}: ${entry.title}` : `→ ${entry.tool}`);
-        break;
-      case "error":
-        lines.push(`✗ ${truncateSummary(entry.text)}`);
-        break;
-      case "raw":
-        lines.push(entry.text);
-        break;
-      case "reasoning":
-        if (options.includeReasoning === true) {
-          lines.push(...splitTextLines(entry.text));
-        }
-        break;
-      // Usage entries feed the stats view, not the chat transcript.
-      case "usage":
-        break;
+  return displayEntries(parsePiLogLine(raw), options);
+}
+
+/**
+ * Structured log entries for one raw Claude Code JSONL record. The stream
+ * carries the assistant's own narration; tool calls and their results arrive in
+ * separate frames (`tool_use` on the assistant record, `tool_result` on the
+ * following user record), and this transport holds no cross-frame state, so it
+ * logs prose and usage rather than a tool row that can never leave "running".
+ * A failed run still reports its error.
+ */
+export function parseClaudeLogLine(raw: string): ReadonlyArray<AgentLogEntry> {
+  const event = parseJsonRecord(raw);
+  if (event === undefined) return [];
+
+  if (event.type === "assistant") {
+    const message = asRecord(event.message);
+    const content = message?.content;
+    if (!Array.isArray(content)) return [];
+    const entries: AgentLogEntry[] = [];
+    for (const candidate of content) {
+      const part = asRecord(candidate);
+      if (part === undefined) continue;
+      if (part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
+        entries.push({ kind: "text", text: part.text });
+      } else if (
+        part.type === "thinking" &&
+        typeof part.thinking === "string" &&
+        part.thinking.length > 0
+      ) {
+        entries.push({ kind: "reasoning", text: part.thinking });
+      }
     }
+    // Usage and cost ride on the same frames but are persisted by the adapter's
+    // usage tap, which folds each message once no matter how many content-block
+    // events repeat it.
+    return entries;
   }
-  return lines;
+  if (event.type === "result" && event.is_error === true) {
+    const text =
+      typeof event.result === "string" && event.result.length > 0
+        ? event.result
+        : "Claude Code reported an error.";
+    return [{ kind: "error", text: truncate(text, TOOL_BODY_MAX) }];
+  }
+  return [];
+}
+
+/** Display lines for the orchestrator chat message, derived from a Claude record. */
+export function parseClaudeJsonLine(
+  raw: string,
+  options: { readonly includeReasoning?: boolean } = {},
+): ReadonlyArray<string> {
+  return displayEntries(parseClaudeLogLine(raw), options);
+}
+
+/**
+ * Structured log entries for one raw Codex `exec --json` record. Codex reports
+ * items with stable ids and a status, so tool rows fold (start → completion)
+ * the same way OpenCode's do. Item bodies that carry prose — the agent message,
+ * its reasoning, and a failed command's output — reach the log; the rest of
+ * Codex's event vocabulary is bookkeeping.
+ */
+export function parseCodexLogLine(raw: string): ReadonlyArray<AgentLogEntry> {
+  const event = parseJsonRecord(raw);
+  if (event === undefined) return [];
+
+  if (event.type === "error" || event.type === "turn.failed") {
+    const failure = asRecord(event.error)?.message ?? event.message;
+    return typeof failure === "string" && failure.length > 0
+      ? [{ kind: "error", text: truncate(failure, TOOL_BODY_MAX) }]
+      : [];
+  }
+
+  const item = asRecord(event.item);
+  if (item === undefined) return [];
+  const callId = typeof item.id === "string" && item.id.length > 0 ? item.id : undefined;
+  const running = item.status === "in_progress";
+
+  if (item.type === "agent_message" || item.type === "reasoning") {
+    if (typeof item.text !== "string" || item.text.length === 0) return [];
+    return [{ kind: item.type === "agent_message" ? "text" : "reasoning", text: item.text }];
+  }
+  if (item.type === "command_execution") {
+    if (typeof item.command !== "string" || item.command.length === 0) return [];
+    const output = typeof item.aggregated_output === "string" ? item.aggregated_output : undefined;
+    const exitCode = typeof item.exit_code === "number" ? item.exit_code : undefined;
+    return [
+      {
+        kind: "tool",
+        tool: "shell",
+        title: truncateSummary(item.command),
+        status: running
+          ? "running"
+          : exitCode === 0 || exitCode === undefined
+            ? "completed"
+            : "error",
+        ...(callId === undefined ? {} : { callId }),
+        input: truncate(item.command, TOOL_BODY_MAX),
+        ...(output === undefined || output.length === 0
+          ? {}
+          : { output: truncate(output, TOOL_BODY_MAX) }),
+      },
+    ];
+  }
+  if (item.type === "file_change") {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const paths = changes
+      .map((change) => asRecord(change)?.path)
+      .filter((path): path is string => typeof path === "string");
+    if (paths.length === 0) return [];
+    const input = formatToolInput(changes);
+    return [
+      {
+        kind: "tool",
+        tool: "edit",
+        title: truncateSummary(paths.join(", ")),
+        status: running ? "running" : "completed",
+        ...(callId === undefined ? {} : { callId }),
+        ...(input === undefined ? {} : { input }),
+      },
+    ];
+  }
+  return [];
+}
+
+/** Display lines for the orchestrator chat message, derived from a Codex record. */
+export function parseCodexJsonLine(
+  raw: string,
+  options: { readonly includeReasoning?: boolean } = {},
+): ReadonlyArray<string> {
+  return displayEntries(parseCodexLogLine(raw), options);
+}
+
+/**
+ * Harness stream → log entries. A harness without a transport keeps its raw
+ * line, which is everything this side can honestly say about an unknown CLI.
+ */
+export function parseHarnessLogLine(
+  raw: string,
+  kind: AgentTunnelHarnessKind,
+): ReadonlyArray<AgentLogEntry> {
+  switch (kind) {
+    case "opencode":
+      return parseOpenCodeLogLine(raw);
+    case "pi":
+      return parsePiLogLine(raw);
+    case "claude":
+      return parseClaudeLogLine(raw);
+    case "codex":
+      return parseCodexLogLine(raw);
+    case "other":
+      return [{ kind: "raw", text: raw }];
+  }
+}
+
+/** Harness stream → display lines for the orchestrator's chat message. */
+export function parseHarnessJsonLines(
+  raw: string,
+  kind: AgentTunnelHarnessTransportKind,
+  options: { readonly includeReasoning?: boolean } = {},
+): ReadonlyArray<string> {
+  return displayEntries(parseHarnessLogLine(raw, kind), options);
+}
+
+/**
+ * Harness stream → that step's usage, when the harness reports one. Every
+ * transport normalizes to `HarnessStepUsage`, so the adapter's accumulation and
+ * the thread snapshot stay identical whichever CLI a role runs.
+ */
+export function parseHarnessUsageStep(
+  raw: string,
+  kind: AgentTunnelHarnessTransportKind,
+): HarnessStepUsage | undefined {
+  switch (kind) {
+    case "opencode":
+      return parseOpenCodeStepUsage(raw);
+    case "pi":
+      return parsePiStepUsage(raw);
+    case "claude":
+      return parseClaudeStepUsage(raw);
+    case "codex":
+      return parseCodexStepUsage(raw);
+  }
 }

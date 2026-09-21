@@ -7,6 +7,14 @@ import {
   buildAgentTunnelSpawnArgs,
   isOpenCodeHarness,
   isPiHarness,
+  harnessUsageLogEntry,
+  parseClaudeLogLine,
+  parseClaudeStepUsage,
+  parseCodexLogLine,
+  parseCodexStepUsage,
+  parseHarnessJsonLines,
+  parseHarnessLogLine,
+  parseHarnessUsageStep,
   parseOpenCodeJsonLine,
   parseOpenCodeLogLine,
   parseOpenCodeStepUsage,
@@ -82,21 +90,75 @@ it("buildAgentTunnelSpawnArgs passes the reasoning variant to opencode", () => {
   );
 });
 
-it("buildAgentTunnelSpawnArgs uses --dangerously-skip-permissions and no json for claude harness", () => {
+it("buildAgentTunnelSpawnArgs streams claude headless with effort and its model", () => {
   NodeAssert.deepEqual(
-    buildAgentTunnelSpawnArgs(spec({ harness: "claude", model: "claude-sonnet-4-5" })),
-    ["run", "-m", "claude-sonnet-4-5", "--dangerously-skip-permissions", "do the thing"],
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "claude", model: "claude-sonnet-4-5", variant: "high" }),
+    ),
+    [
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--model",
+      "claude-sonnet-4-5",
+      "--effort",
+      "high",
+      "--dangerously-skip-permissions",
+      "do the thing",
+    ],
   );
 });
 
-it("buildAgentTunnelSpawnArgs preserves --dangerously-skip-permissions for unknown harnesses", () => {
-  NodeAssert.deepEqual(buildAgentTunnelSpawnArgs(spec({ harness: "codex", model: "gpt-5" })), [
-    "run",
-    "-m",
-    "gpt-5",
-    "--dangerously-skip-permissions",
-    "do the thing",
-  ]);
+it("buildAgentTunnelSpawnArgs maps claude's unsupported minimal effort to low", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(spec({ harness: "claude", variant: "minimal" })).slice(0, 6),
+    ["--print", "--output-format", "stream-json", "--verbose", "--effort", "low"],
+  );
+});
+
+it("buildAgentTunnelSpawnArgs runs codex exec in json mode with bypass sandbox", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(spec({ harness: "codex", model: "gpt-5", variant: "high" })),
+    [
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-c",
+      'model_reasoning_effort="high"',
+      "do the thing",
+    ],
+  );
+});
+
+it("buildAgentTunnelSpawnArgs keeps codex inside a workspace sandbox without the bypass setting", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "codex", dangerouslySkipPermissions: false, model: "gpt-5" }),
+    ),
+    [
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5",
+      "--sandbox",
+      "workspace-write",
+      "do the thing",
+    ],
+  );
+});
+
+it("buildAgentTunnelSpawnArgs keeps the generic run invocation for harnesses without a transport", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(spec({ harness: "cursor-agent", model: "gpt-5" })),
+    ["run", "-m", "gpt-5", "--dangerously-skip-permissions", "do the thing"],
+  );
 });
 
 it("parseOpenCodeJsonLine passes non-JSON lines through (stderr banners)", () => {
@@ -249,7 +311,7 @@ it("parseOpenCodeLogLine passes non-JSON through and drops step events", () => {
   NodeAssert.deepEqual(parseOpenCodeLogLine(JSON.stringify({ type: "step_finish", part: {} })), []);
 });
 
-it("parseOpenCodeLogLine persists step_finish token frames as usage entries", () => {
+it("parseOpenCodeLogLine leaves token frames to the usage tap", () => {
   const line = JSON.stringify({
     type: "step_finish",
     part: {
@@ -263,16 +325,7 @@ it("parseOpenCodeLogLine persists step_finish token frames as usage entries", ()
       },
     },
   });
-  NodeAssert.deepEqual(parseOpenCodeLogLine(line), [
-    {
-      kind: "usage",
-      totalTokens: 24_622,
-      inputTokens: 10_871,
-      cachedInputTokens: 13_056,
-      outputTokens: 213,
-      reasoningOutputTokens: 482,
-    },
-  ]);
+  NodeAssert.deepEqual(parseOpenCodeLogLine(line), []);
   // Usage entries never surface in the orchestrator chat transcript.
   NodeAssert.deepEqual(parseOpenCodeJsonLine(line), []);
 });
@@ -355,7 +408,7 @@ it("parsePiStepUsage drops unpriced cost and non-usage frames", () => {
   NodeAssert.equal(parsePiStepUsage("not json"), undefined);
 });
 
-it("parsePiLogLine persists message_end usage for the stats view", () => {
+it("parsePiLogLine keeps the prose while usage rides the usage tap", () => {
   const line = JSON.stringify({
     type: "message_end",
     message: {
@@ -364,18 +417,219 @@ it("parsePiLogLine persists message_end usage for the stats view", () => {
       usage: { input: 10, output: 5, reasoning: 2, totalTokens: 15, cost: { total: 0.01 } },
     },
   });
-  NodeAssert.deepEqual(parsePiLogLine(line), [
-    { kind: "text", text: "done" },
-    {
-      kind: "usage",
-      totalTokens: 15,
-      inputTokens: 10,
-      cachedInputTokens: 0,
-      outputTokens: 3,
-      reasoningOutputTokens: 2,
-      costUsd: 0.01,
+  NodeAssert.deepEqual(parsePiLogLine(line), [{ kind: "text", text: "done" }]);
+  NodeAssert.deepEqual(harnessUsageLogEntry(parsePiStepUsage(line)!), {
+    kind: "usage",
+    totalTokens: 15,
+    inputTokens: 10,
+    cachedInputTokens: 0,
+    outputTokens: 3,
+    reasoningOutputTokens: 2,
+    costUsd: 0.01,
+  });
+});
+
+it("parseClaudeStepUsage reads assistant-message usage with cache and thinking split out", () => {
+  const line = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      id: "msg_011CfH2Y9w",
+      content: [{ type: "text", text: "ok" }],
+      usage: {
+        input_tokens: 2,
+        cache_creation_input_tokens: 10_954,
+        cache_read_input_tokens: 19_001,
+        output_tokens: 4,
+        output_tokens_details: { thinking_tokens: 3 },
+      },
     },
+  });
+  NodeAssert.deepEqual(parseClaudeStepUsage(line), {
+    totalTokens: 2 + 10_954 + 19_001 + 1 + 3,
+    inputTokens: 2,
+    cachedInputTokens: 10_954 + 19_001,
+    // Claude folds thinking into output_tokens; the plain remainder sits
+    // beside it like every other transport.
+    outputTokens: 1,
+    reasoningOutputTokens: 3,
+    stepId: "msg_011CfH2Y9w",
+  });
+});
+
+it("parseClaudeStepUsage turns the closing result frame into a cost-only step", () => {
+  NodeAssert.deepEqual(
+    parseClaudeStepUsage(JSON.stringify({ type: "result", total_cost_usd: 0.0486172 })),
+    {
+      totalTokens: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      costUsd: 0.0486172,
+    },
+  );
+  // Unpriced runs report 0, which is "not priced", not "free".
+  NodeAssert.equal(
+    parseClaudeStepUsage(JSON.stringify({ type: "result", total_cost_usd: 0 })),
+    undefined,
+  );
+  NodeAssert.equal(
+    parseClaudeStepUsage(JSON.stringify({ type: "system", subtype: "init" })),
+    undefined,
+  );
+  NodeAssert.equal(parseClaudeStepUsage("not json"), undefined);
+});
+
+it("parseClaudeLogLine logs prose and reasoning, leaving usage to the usage tap", () => {
+  const line = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      id: "msg_011CfH2Y9w",
+      content: [
+        { type: "thinking", thinking: "Weighing options.", signature: "sig" },
+        { type: "text", text: "done" },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+  });
+  NodeAssert.deepEqual(parseClaudeLogLine(line), [
+    { kind: "reasoning", text: "Weighing options." },
+    { kind: "text", text: "done" },
   ]);
+  NodeAssert.deepEqual(
+    parseClaudeLogLine(JSON.stringify({ type: "result", total_cost_usd: 0.02 })),
+    [],
+  );
+  NodeAssert.deepEqual(
+    parseClaudeLogLine(JSON.stringify({ type: "result", is_error: true, result: "rate limited" })),
+    [{ kind: "error", text: "rate limited" }],
+  );
+});
+
+it("parseCodexStepUsage subtracts the cached and reasoning subsets of a turn", () => {
+  const line = JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 24_763,
+      cached_input_tokens: 24_448,
+      output_tokens: 122,
+      reasoning_output_tokens: 20,
+    },
+  });
+  NodeAssert.deepEqual(parseCodexStepUsage(line), {
+    totalTokens: 24_763 + 122,
+    inputTokens: 24_763 - 24_448,
+    cachedInputTokens: 24_448,
+    outputTokens: 102,
+    reasoningOutputTokens: 20,
+  });
+  NodeAssert.equal(parseCodexStepUsage(JSON.stringify({ type: "turn.started" })), undefined);
+  NodeAssert.equal(
+    parseCodexStepUsage(JSON.stringify({ type: "turn.completed", usage: {} })),
+    undefined,
+  );
+});
+
+it("parseCodexLogLine maps Codex items to text, tool rows, and usage", () => {
+  NodeAssert.deepEqual(
+    parseCodexLogLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: { id: "item_3", type: "agent_message", text: "Repo contains docs." },
+      }),
+    ),
+    [{ kind: "text", text: "Repo contains docs." }],
+  );
+  NodeAssert.deepEqual(
+    parseCodexLogLine(
+      JSON.stringify({
+        type: "item.started",
+        item: {
+          id: "item_1",
+          type: "command_execution",
+          command: "bash -lc ls",
+          status: "in_progress",
+        },
+      }),
+    ),
+    [
+      {
+        kind: "tool",
+        tool: "shell",
+        title: "bash -lc ls",
+        status: "running",
+        callId: "item_1",
+        input: "bash -lc ls",
+      },
+    ],
+  );
+  NodeAssert.deepEqual(
+    parseCodexLogLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "item_1",
+          type: "command_execution",
+          command: "bash -lc ls",
+          aggregated_output: "README.md",
+          exit_code: 0,
+          status: "completed",
+        },
+      }),
+    ),
+    [
+      {
+        kind: "tool",
+        tool: "shell",
+        title: "bash -lc ls",
+        status: "completed",
+        callId: "item_1",
+        input: "bash -lc ls",
+        output: "README.md",
+      },
+    ],
+  );
+  // Codex reports the turn's tokens on its own frame; the usage tap folds it
+  // once, so the log itself carries only prose and tool rows.
+  NodeAssert.deepEqual(
+    parseCodexLogLine(
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 },
+      }),
+    ),
+    [],
+  );
+  NodeAssert.deepEqual(
+    parseCodexLogLine(JSON.stringify({ type: "turn.failed", error: { message: "boom" } })),
+    [{ kind: "error", text: "boom" }],
+  );
+});
+
+it("parseHarnessUsageStep and parseHarnessLogLine route by harness kind", () => {
+  const claudeUsage = JSON.stringify({
+    type: "assistant",
+    message: { role: "assistant", usage: { input_tokens: 7, output_tokens: 3 } },
+  });
+  NodeAssert.deepEqual(parseHarnessUsageStep(claudeUsage, "claude"), {
+    totalTokens: 10,
+    inputTokens: 7,
+    cachedInputTokens: 0,
+    outputTokens: 3,
+    reasoningOutputTokens: 0,
+  });
+  NodeAssert.deepEqual(parseHarnessLogLine("plain text", "other"), [
+    { kind: "raw", text: "plain text" },
+  ]);
+  NodeAssert.deepEqual(
+    parseHarnessJsonLines(
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hi" } }),
+      "codex",
+    ),
+    ["hi"],
+  );
 });
 
 it("parseOpenCodeStepUsage defaults missing breakdown fields to zero", () => {
@@ -417,7 +671,9 @@ it("detects harness kind by basename including pi", () => {
   NodeAssert.equal(isPiHarness("opencode"), false);
   NodeAssert.equal(agentTunnelHarnessKind("opencode"), "opencode");
   NodeAssert.equal(agentTunnelHarnessKind("/opt/bin/pi"), "pi");
-  NodeAssert.equal(agentTunnelHarnessKind("codex"), "other");
+  NodeAssert.equal(agentTunnelHarnessKind("/usr/local/bin/claude"), "claude");
+  NodeAssert.equal(agentTunnelHarnessKind("codex.exe"), "codex");
+  NodeAssert.equal(agentTunnelHarnessKind("cursor-agent"), "other");
 });
 
 it("buildAgentTunnelSpawnArgs uses pi's json one-shot flags", () => {
