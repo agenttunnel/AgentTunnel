@@ -76,6 +76,8 @@ export interface AppModelOption {
   name: string;
   shortName?: string;
   subProvider?: string;
+  /** Harness CLIs that reported this model (AgentTunnel's merged catalog). */
+  harnesses?: string[];
   isCustom: boolean;
   isDefault?: boolean;
   isLegacy?: boolean;
@@ -110,6 +112,7 @@ function toAppModelOption(model: ServerProvider["models"][number]): AppModelOpti
   };
   if (model.shortName) option.shortName = model.shortName;
   if (model.subProvider) option.subProvider = model.subProvider;
+  if (model.harnesses) option.harnesses = [...model.harnesses];
   if (model.isDefault) option.isDefault = true;
   if (model.isLegacy) option.isLegacy = true;
   return option;

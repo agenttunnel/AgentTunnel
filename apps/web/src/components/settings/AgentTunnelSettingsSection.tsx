@@ -87,6 +87,13 @@ function RoleRow({
     SUPPORTED_HARNESSES.find((entry) => entry.value === harness) === undefined
       ? [...SUPPORTED_HARNESSES, { value: harness, label: `${harness} (custom)` }]
       : SUPPORTED_HARNESSES;
+  // The workflow's catalog is tagged per harness, so this role only offers the
+  // models its own CLI reported. A model left over from another harness stays
+  // listed, so switching harness does not silently blank a configured value.
+  const harnessModels = models.filter(
+    (entry) =>
+      entry.harnesses === undefined || entry.harnesses.includes(harness) || entry.slug === model,
+  );
 
   return (
     <div className={cn("grid gap-2 px-3 py-2.5 sm:items-center", ROLE_GRID_COLUMNS)}>
@@ -115,7 +122,7 @@ function RoleRow({
         </SelectTrigger>
         <SelectPopup className={selectPopupClassName}>
           <SelectItem value="">Workflow default</SelectItem>
-          {models.map((entry) => (
+          {harnessModels.map((entry) => (
             <SelectItem key={entry.slug} value={entry.slug}>
               {entry.name}
             </SelectItem>

@@ -66,6 +66,12 @@ export const ServerProviderModel = Schema.Struct({
   name: TrimmedNonEmptyString,
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Harness CLIs that reported this model, for providers whose catalog is the
+   * union of several harnesses (AgentTunnel). Absent when a model is not tied
+   * to a harness — other drivers' catalogs, and AgentTunnel custom models.
+   */
+  harnesses: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   isCustom: Schema.Boolean,
   isDefault: Schema.optional(Schema.Boolean),
   isLegacy: Schema.optional(Schema.Boolean),

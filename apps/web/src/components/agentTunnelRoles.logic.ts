@@ -1,4 +1,4 @@
-import type { ThreadModelConfig } from "@t3tools/contracts";
+import { ProviderDriverKind, type ThreadModelConfig } from "@t3tools/contracts";
 
 export const AGENT_TUNNEL_ROLES = [
   {
@@ -76,6 +76,22 @@ const HARNESS_PROVIDER_KINDS: Record<string, string> = {
 /** Driver kind backing a harness preset, for enablement checks. */
 export function agentTunnelHarnessProviderKind(harness: string): string | null {
   return HARNESS_PROVIDER_KINDS[harness] ?? null;
+}
+
+/** Harness CLI basename, so a configured path maps to the same preset. */
+function agentTunnelHarnessBasename(harness: string): string {
+  const base = harness.split(/[\\/]/).pop() ?? harness;
+  return base.replace(/\.exe$/iu, "");
+}
+
+/**
+ * Driver kind whose models a harness runs, resolving CLI paths by basename —
+ * `/opt/homebrew/bin/pi` and `pi` both run the Pi catalog.
+ */
+export function agentTunnelHarnessDriverKind(harness: string): ProviderDriverKind | null {
+  const kind =
+    HARNESS_PROVIDER_KINDS[harness] ?? HARNESS_PROVIDER_KINDS[agentTunnelHarnessBasename(harness)];
+  return kind === undefined ? null : ProviderDriverKind.make(kind);
 }
 
 export interface AgentTunnelRoleOption {

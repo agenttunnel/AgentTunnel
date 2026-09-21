@@ -29,6 +29,8 @@ export type ModelEsque = {
   name: string;
   shortName?: string | undefined;
   subProvider?: string | undefined;
+  /** Harness CLIs that reported this model (AgentTunnel's merged catalog). */
+  harnesses?: ReadonlyArray<string> | undefined;
   isLegacy?: boolean | undefined;
   isUnavailable?: boolean | undefined;
 };

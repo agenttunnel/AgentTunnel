@@ -141,8 +141,9 @@ The driver branches on the harness CLI basename: `opencode` uses the OpenCode in
 (`<harness> models --verbose`) and `run --format json`, while `pi` uses `pi --list-models` for the
 model list and one-shot `pi --mode json -p <prompt> --no-session` per role, translating pi's JSONL
 `message_end` text into the same `__AGENTTUNNEL_TOOL__` protocol. Any other basename keeps the generic
-`run` invocation. Model probes never read stdin and are wrapped in a timeout, so a wedged or
-interactive harness degrades to a readable provider warning instead of blocking the registry.
+`run` invocation and exposes no model list. Model probes never read stdin and are wrapped in a
+timeout, so a wedged or interactive harness degrades to a readable provider warning instead of
+blocking the registry.
 
 A completed workflow ends with a real final report rather than just the machinery tables. The
 orchestrator's closing `done` action may carry `summary` (what happened) and `next_steps`, and only a
@@ -165,6 +166,25 @@ so the orchestrator routes affected work to a follow-up dispatch — naming the 
 `depends_on` when the change must land after it finishes — rather than assuming a running one-shot
 agent will adjust. A round that ran pipelines still earns its summary pass once that work settles.
 
+### Harness model catalogs
+
+The provider snapshot is the union of one catalog per harness the workflow can run: every role
+harness in the instance config, plus the enumerable presets (`opencode`, `pi`) so switching a role —
+or a thread's own model config — to a preset still finds a catalog when the environment's harnesses
+all point at one CLI. Harnesses with no listing command are skipped; their models stay available
+through their own provider instance instead.
+
+Each model carries `harnesses`, the CLIs that reported it, and a slug two harnesses both report stays
+one row tagged with both, so the model config can narrow a role to its harness without rendering
+duplicates. Custom models carry no harness: the user typed them for the workflow, not for one CLI.
+Probes run concurrently; only the orchestrator harness gates the snapshot state, so a role harness
+that cannot answer is a missing catalog rather than a warning on the provider.
+
+The model config narrows the list to the harness of the row it is editing. A harness the driver
+cannot enumerate (`codex`, `claude`, `cursor-agent`, `grok`, or an unmapped path) shows that
+harness's own provider instance models; selecting one of those for the thread model switches the
+thread to that provider, since the workflow catalog has no matching slug.
+
 ### Model selection and auto mode
 
 Each role has a harness, model, and reasoning variant. Those live in provider settings as the
@@ -184,8 +204,9 @@ Harness and variant otherwise come straight from the effective config. By defaul
 models are ignored entirely in this mode.
 
 Auto mode lets the orchestrator choose a model per dispatched task. The driver builds
-`availableModels` from the AgentTunnel provider's model snapshot (`modelsFromInventory`, which merges
-the connected OpenCode catalog with `customModels`) and the adapter forwards it to `runAgentTunnel`.
+`availableModels` from the models the orchestrator harness reported, plus the workflow's custom
+models, and the adapter forwards it to `runAgentTunnel`. Models that only another role's harness
+reported stay out: the orchestrator cannot dispatch them to the coordinator.
 In auto mode the orchestrator prompt for pass 0 and summary passes gains an `## Available models`
 block listing those slugs (only when the list is non-empty), appended after the base prompt and before
 the `## Shared context` and `## Summary pass` sections. `dispatch_task` accepts an optional `model`
