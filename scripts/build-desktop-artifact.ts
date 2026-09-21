@@ -1095,6 +1095,29 @@ export function resolveMacPasskeySigningConfiguration(
   };
 }
 
+/**
+ * Passkey entitlements are the only part of a signed macOS build that needs an
+ * Associated Domains provisioning profile. A plain Developer ID signature plus
+ * App Store Connect notarization needs neither, so passkey support is opt-in:
+ * configure the profile and the entitlements are applied, otherwise the app is
+ * signed with the packager's default Electron entitlements and notarized
+ * normally. A team ID or RP domains without a profile is an incomplete passkey
+ * setup and still fails loudly.
+ */
+export function isMacPasskeySigningConfigured(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  const configured = (value: string | undefined): boolean => (value?.trim() ?? "").length > 0;
+
+  if (configured(env.T3CODE_MACOS_PROVISIONING_PROFILE)) {
+    return true;
+  }
+  if (configured(env.T3CODE_APPLE_TEAM_ID) || configured(env.T3CODE_CLERK_PASSKEY_RP_DOMAINS)) {
+    throw new MissingMacPasskeyProvisioningProfileError();
+  }
+  return false;
+}
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -3117,7 +3140,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => {
+            const env = loadRepoEnv({ repoRoot });
+            return isMacPasskeySigningConfigured(env)
+              ? resolveMacPasskeySigningConfiguration(env)
+              : undefined;
+          },
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;

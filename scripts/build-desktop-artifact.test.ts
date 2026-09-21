@@ -30,6 +30,7 @@ import {
   InvalidMacPasskeyPublishableKeyError,
   InvalidMockUpdateServerPortError,
   UnsupportedDesktopBuildArchitectureError,
+  isMacPasskeySigningConfigured,
   isMacPasskeySigningConfigurationError,
   LinuxIconResizeError,
   MacPasskeySigningConfigurationResolutionError,
@@ -1383,6 +1384,51 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(error.message, "Failed to resolve macOS passkey signing configuration.");
     assert.notInclude(error.message, secret);
   });
+
+  it("treats passkey entitlements as opt-in for signed macOS builds", () => {
+    assert.isFalse(
+      isMacPasskeySigningConfigured({
+        T3CODE_APPLE_TEAM_ID: "",
+        T3CODE_CLERK_PASSKEY_RP_DOMAINS: "",
+        T3CODE_CLERK_PUBLISHABLE_KEY: `pk_test_${btoa("example.clerk.accounts.dev$")}`,
+      }),
+    );
+    assert.isTrue(
+      isMacPasskeySigningConfigured({
+        T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
+      }),
+    );
+    assert.throws(
+      () => isMacPasskeySigningConfigured({ T3CODE_APPLE_TEAM_ID: "ABC1234567" }),
+      MissingMacPasskeyProvisioningProfileError,
+    );
+    assert.throws(
+      () =>
+        isMacPasskeySigningConfigured({
+          T3CODE_CLERK_PASSKEY_RP_DOMAINS: "example.clerk.accounts.dev",
+        }),
+      MissingMacPasskeyProvisioningProfileError,
+    );
+  });
+
+  it.effect("signs macOS builds without passkey entitlements when no profile is configured", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        true,
+        false,
+        undefined,
+        undefined,
+      );
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.match(String(mac.sign), /\/scripts\/sign-macos\.ts$/);
+      assert.notProperty(mac, "entitlements");
+      assert.notProperty(mac, "provisioningProfile");
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
 
   it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
     Effect.gen(function* () {
