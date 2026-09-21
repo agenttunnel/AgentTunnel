@@ -1,5 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off - builds real home directories on disk.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -33,6 +37,12 @@ const makeEnvironment = (
   env: Record<string, string | undefined> = {},
 ) =>
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
+
+const makeHome = () =>
+  Effect.acquireRelease(
+    Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-home-"))),
+    (home) => Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+  );
 
 describe("DesktopEnvironment", () => {
   it.effect("derives state paths and development identity inside Effect", () =>
@@ -162,5 +172,37 @@ describe("DesktopEnvironment", () => {
         Option.some("/Users/alice/project"),
       );
     }),
+  );
+
+  it.effect("adopts a pre-rename .t3 home before the app reads its state", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome();
+      const legacy = NodePath.join(home, ".t3");
+      NodeFS.mkdirSync(NodePath.join(legacy, "userdata"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(legacy, "userdata", "desktop-settings.json"), "{}");
+
+      const environment = yield* makeEnvironment({ homeDirectory: home });
+
+      assert.equal(environment.baseDir, NodePath.join(home, ".agenttunnel"));
+      assert.equal(environment.stateDir, NodePath.join(home, ".agenttunnel", "userdata"));
+      assert.isFalse(NodeFS.existsSync(legacy));
+      assert.isTrue(
+        NodeFS.existsSync(NodePath.join(home, ".agenttunnel", "userdata", "desktop-settings.json")),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps .agenttunnel and leaves a .t3 home behind when both exist", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome();
+      const legacy = NodePath.join(home, ".t3");
+      NodeFS.mkdirSync(legacy);
+      NodeFS.mkdirSync(NodePath.join(home, ".agenttunnel"));
+
+      const environment = yield* makeEnvironment({ homeDirectory: home });
+
+      assert.equal(environment.baseDir, NodePath.join(home, ".agenttunnel"));
+      assert.isTrue(NodeFS.existsSync(legacy));
+    }).pipe(Effect.scoped),
   );
 });
