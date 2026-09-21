@@ -452,11 +452,26 @@ printf 'Remote host is missing the t3 CLI and could not install @@T3_PACKAGE_SPE
 exit 1
 `;
 
+// Pre-rename remote hosts keep their state in `$HOME/.t3`. Adopt it once, before
+// any state dir is read: otherwise a launch starts a second server against an
+// empty home while the first keeps running, and the stop script cannot see its
+// PID file. A failed move leaves the legacy directory in use rather than
+// stranding the data.
+const REMOTE_HOME_ADOPT_SCRIPT = `T3_HOME="$HOME/.agenttunnel"
+if [ ! -e "$T3_HOME" ] && [ -e "$HOME/.t3" ]; then
+  if mv "$HOME/.t3" "$T3_HOME" 2>/dev/null; then
+    printf 'Adopted the pre-rename .t3 directory as %s.\\n' "$T3_HOME" >&2
+  else
+    T3_HOME="$HOME/.t3"
+  fi
+fi`;
+
 export const REMOTE_LAUNCH_SCRIPT = `set -eu
 @@T3_NODE_ENV_SCRIPT@@
+@@T3_HOME_ADOPT_SCRIPT@@
 STATE_KEY="$1"
-STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
-DEFAULT_SERVER_HOME="$HOME/.t3"
+STATE_DIR="$T3_HOME/ssh-launch/$STATE_KEY"
+DEFAULT_SERVER_HOME="$T3_HOME"
 DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"
 PORT_FILE="$STATE_DIR/port"
 PID_FILE="$STATE_DIR/pid"
@@ -612,8 +627,9 @@ printf '{"remotePort":%s,"serverKind":"%s"}\\n' "$REMOTE_PORT" "\${REMOTE_MANAGE
 `;
 
 export const REMOTE_PAIRING_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
-DEFAULT_SERVER_HOME="$HOME/.t3"
+@@T3_HOME_ADOPT_SCRIPT@@
+STATE_DIR="$T3_HOME/ssh-launch/@@T3_STATE_KEY@@"
+DEFAULT_SERVER_HOME="$T3_HOME"
 RUNNER_FILE="$STATE_DIR/run-t3.sh"
 mkdir -p "$STATE_DIR"
 cat >"$RUNNER_FILE" <<'SH'
@@ -625,7 +641,8 @@ PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"
 `;
 
 export const REMOTE_STOP_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
+@@T3_HOME_ADOPT_SCRIPT@@
+STATE_DIR="$T3_HOME/ssh-launch/@@T3_STATE_KEY@@"
 PID_FILE="$STATE_DIR/pid"
 PORT_FILE="$STATE_DIR/port"
 MANAGED_FILE="$STATE_DIR/managed"
@@ -644,7 +661,8 @@ printf '{"stopped":true}\\n'
 `;
 
 const REMOTE_LOG_TAIL_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
+@@T3_HOME_ADOPT_SCRIPT@@
+STATE_DIR="$T3_HOME/ssh-launch/@@T3_STATE_KEY@@"
 LOG_FILE="$STATE_DIR/server.log"
 if [ -f "$LOG_FILE" ]; then
   tail -n 80 "$LOG_FILE" 2>/dev/null || true
@@ -675,6 +693,7 @@ export function buildRemoteNodeEnvScript(input?: RemoteT3RunnerOptions): string 
 export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
     T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
+    T3_HOME_ADOPT_SCRIPT: stripTrailingNewlines(REMOTE_HOME_ADOPT_SCRIPT),
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
     T3_PICK_PORT_SCRIPT: stripTrailingNewlines(REMOTE_PICK_PORT_SCRIPT),
     T3_WAIT_READY_SCRIPT: stripTrailingNewlines(REMOTE_WAIT_READY_SCRIPT),
@@ -691,6 +710,7 @@ export function buildRemotePairingScript(
   input?: RemoteT3RunnerOptions,
 ): string {
   return applyScriptPlaceholders(REMOTE_PAIRING_SCRIPT, {
+    T3_HOME_ADOPT_SCRIPT: stripTrailingNewlines(REMOTE_HOME_ADOPT_SCRIPT),
     T3_STATE_KEY: remoteStateKey(target),
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
   });
@@ -698,12 +718,14 @@ export function buildRemotePairingScript(
 
 export function buildRemoteStopScript(target: DesktopSshEnvironmentTarget): string {
   return applyScriptPlaceholders(REMOTE_STOP_SCRIPT, {
+    T3_HOME_ADOPT_SCRIPT: stripTrailingNewlines(REMOTE_HOME_ADOPT_SCRIPT),
     T3_STATE_KEY: remoteStateKey(target),
   });
 }
 
 function buildRemoteLogTailScript(target: DesktopSshEnvironmentTarget): string {
   return applyScriptPlaceholders(REMOTE_LOG_TAIL_SCRIPT, {
+    T3_HOME_ADOPT_SCRIPT: stripTrailingNewlines(REMOTE_HOME_ADOPT_SCRIPT),
     T3_STATE_KEY: remoteStateKey(target),
   });
 }

@@ -6,7 +6,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 
-import { resolveGitWorktreePath, resolveWorktreeT3Home } from "./devHome.ts";
+import {
+  resolveAgentTunnelHomeDir,
+  resolveGitWorktreePath,
+  resolveOrMigrateWorktreeT3Home,
+  resolveWorktreeT3Home,
+} from "./devHome.ts";
 
 const makeRepo = (
   kind:
@@ -95,12 +100,87 @@ describe("resolveGitWorktreePath", () => {
 });
 
 describe("resolveWorktreeT3Home", () => {
-  it.effect("answers with .t3 before the dev runner creates it", () =>
+  it.effect("answers with .agenttunnel before the dev runner creates it", () =>
     Effect.gen(function* () {
       const { root, nested } = yield* makeRepo("worktree");
       const home = yield* resolveWorktreeT3Home(nested);
-      assert.equal(home, NodePath.join(NodePath.resolve(root), ".t3"));
+      assert.equal(home, NodePath.join(NodePath.resolve(root), ".agenttunnel"));
       assert.isFalse(NodeFS.existsSync(home ?? ""));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("answers with an unmigrated .t3 without moving it", () =>
+    Effect.gen(function* () {
+      const { root, nested } = yield* makeRepo("worktree");
+      const legacy = NodePath.join(root, ".t3");
+      NodeFS.mkdirSync(legacy);
+      const home = yield* resolveWorktreeT3Home(nested);
+      assert.equal(home, legacy);
+      assert.isTrue(NodeFS.existsSync(legacy));
+      assert.isFalse(NodeFS.existsSync(NodePath.join(root, ".agenttunnel")));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("resolveOrMigrateWorktreeT3Home", () => {
+  it.effect("adopts a pre-rename .t3 in the worktree", () =>
+    Effect.gen(function* () {
+      const { root, nested } = yield* makeRepo("worktree");
+      const legacy = NodePath.join(root, ".t3");
+      NodeFS.mkdirSync(legacy);
+      NodeFS.writeFileSync(NodePath.join(legacy, "state.sqlite"), "data");
+      const home = yield* resolveOrMigrateWorktreeT3Home(nested);
+      assert.equal(home, NodePath.join(NodePath.resolve(root), ".agenttunnel"));
+      assert.isFalse(NodeFS.existsSync(legacy));
+      assert.equal(NodeFS.readFileSync(NodePath.join(home ?? "", "state.sqlite"), "utf8"), "data");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("resolveAgentTunnelHomeDir", () => {
+  const makeHome = () =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-home-"));
+        return root;
+      }),
+      (root) => Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
+    );
+
+  it.effect("migrates a legacy .t3 home to .agenttunnel once", () =>
+    Effect.gen(function* () {
+      const root = yield* makeHome();
+      const legacy = NodePath.join(root, ".t3");
+      NodeFS.mkdirSync(legacy);
+      NodeFS.writeFileSync(NodePath.join(legacy, "state.sqlite"), "data");
+      const home = yield* resolveAgentTunnelHomeDir(root);
+      assert.equal(home, NodePath.join(root, ".agenttunnel"));
+      assert.isFalse(NodeFS.existsSync(legacy));
+      assert.equal(NodeFS.readFileSync(NodePath.join(home, "state.sqlite"), "utf8"), "data");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps an existing .agenttunnel home and leaves .t3 untouched", () =>
+    Effect.gen(function* () {
+      const root = yield* makeHome();
+      const agentTunnel = NodePath.join(root, ".agenttunnel");
+      const legacy = NodePath.join(root, ".t3");
+      NodeFS.mkdirSync(agentTunnel);
+      NodeFS.mkdirSync(legacy);
+      NodeFS.writeFileSync(NodePath.join(agentTunnel, "fresh"), "new");
+      const home = yield* resolveAgentTunnelHomeDir(root);
+      assert.equal(home, agentTunnel);
+      assert.isTrue(NodeFS.existsSync(legacy));
+      assert.equal(NodeFS.readFileSync(NodePath.join(home, "fresh"), "utf8"), "new");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("answers .agenttunnel when no legacy home exists", () =>
+    Effect.gen(function* () {
+      const root = yield* makeHome();
+      const home = yield* resolveAgentTunnelHomeDir(root);
+      assert.equal(home, NodePath.join(root, ".agenttunnel"));
+      assert.isFalse(NodeFS.existsSync(home));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

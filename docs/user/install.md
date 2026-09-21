@@ -52,7 +52,7 @@ yay -S t3code-nightly-bin
 ### Windows Subsystem for Linux
 
 When the desktop app runs a WSL backend, it installs the matching server runtime into
-`~/.t3/wsl-runtime` inside the selected distro. The first launch after installing or updating
+`~/.agenttunnel/wsl-runtime` inside the selected distro. The first launch after installing or updating
 AgentTunnel may take a little longer while that release's runtime is extracted. Later launches reuse the
 Linux-local copy so startup does not depend on reading application files through `/mnt/c`. After a
 successful launch, AgentTunnel keeps the current runtime and one previous runtime for rollback and
@@ -77,7 +77,7 @@ configured per role. If the orchestrator picks a model the environment does not 
 shows a warning and uses the fallback instead.
 
 AgentTunnel orchestrators also learn across projects. Each environment keeps a hidden
-`.orchestrator-context/` folder in its data directory (`~/.t3/userdata`, or `~/.t3/dev` for dev
+`.orchestrator-context/` folder in its data directory (`~/.agenttunnel/userdata`, or `~/.agenttunnel/dev` for dev
 installs). It holds a `GUIDE.md`, one rules file per category under `rules/`, and a `LOG.md` ledger.
 Before planning, the orchestrator reads the rules; when a workflow ends, it records what it learned —
 design decisions you liked or disliked, which harness and model combinations fit which tasks, and how

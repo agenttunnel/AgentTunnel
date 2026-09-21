@@ -4,6 +4,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
+import { AGENTTUNNEL_HOME_DIR, LEGACY_AGENTTUNNEL_HOME_DIR } from "@t3tools/shared/devHome";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
@@ -63,7 +64,7 @@ export class SqliteStateSharedHomeMutationError extends Schema.TaggedErrorClass<
   {},
 ) {
   override get message(): string {
-    return "Refusing to mutate the shared ~/.t3 database. Use an isolated --base-dir.";
+    return "Refusing to mutate the shared AgentTunnel data directory. Use an isolated --base-dir.";
   }
 }
 
@@ -182,7 +183,12 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = path.resolve(input.baseDir);
-  const sharedHome = path.resolve(options.sharedHome ?? path.join(NodeOS.homedir(), ".t3"));
+  const sharedHome = path.resolve(
+    options.sharedHome ?? path.join(NodeOS.homedir(), AGENTTUNNEL_HOME_DIR),
+  );
+  // The pre-rename name stays protected: it is still the live database for
+  // anyone who pinned T3CODE_HOME to it or has not restarted since the rename.
+  const legacySharedHome = path.join(path.dirname(sharedHome), LEGACY_AGENTTUNNEL_HOME_DIR);
   const databasePath = path.join(baseDir, "userdata", "state.sqlite");
   const source = yield* resolveSqlSource(input.sql, input.file);
 
@@ -190,11 +196,12 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
     return yield* new SqliteStateDatabaseMissingError({ databasePath });
   }
   if (input.operation === "exec") {
-    const [canonicalBaseDir, canonicalSharedHome] = yield* Effect.all([
+    const [canonicalBaseDir, ...canonicalSharedHomes] = yield* Effect.all([
       fs.realPath(baseDir),
       fs.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
+      fs.realPath(legacySharedHome).pipe(Effect.orElseSucceed(() => legacySharedHome)),
     ]);
-    if (canonicalBaseDir === canonicalSharedHome) {
+    if (canonicalSharedHomes.includes(canonicalBaseDir)) {
       return yield* new SqliteStateSharedHomeMutationError();
     }
   }

@@ -277,7 +277,21 @@ export const buildWslRuntimeInstallScript = (
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    'runtime_parent="$HOME/.t3/wsl-runtime"',
+    'runtime_parent="$HOME/.agenttunnel/wsl-runtime"',
+    // Runtime generations are content-hash keyed with no absolute path baked
+    // into the payload, so a tree staged under the pre-rename home is identical
+    // to one under the new parent. Adopting it here is what keeps an upgraded
+    // machine from re-staging hundreds of MB: only the new parent is ever
+    // inspected, so the legacy tree would otherwise be invisible — and leak
+    // forever — because only this move brings it under the pruner's retention
+    // rules. `mv` cannot create the destination's parent, and an upgraded distro
+    // has no `.agenttunnel` yet (the `mkdir -p` below only runs after this), so
+    // create it first. A failed move must not fail the script, so it is
+    // swallowed.
+    'if [ ! -e "$runtime_parent" ] && [ -e "$HOME/.t3/wsl-runtime" ]; then',
+    '  mkdir -p "$HOME/.agenttunnel" 2>/dev/null || true',
+    '  mv "$HOME/.t3/wsl-runtime" "$runtime_parent" 2>/dev/null || true',
+    "fi",
     `runtime_root="$runtime_parent/${safeRuntimeId}"`,
     `ready_marker="$runtime_root/${WSL_RUNTIME_READY_MARKER}"`,
     // The native payload is the part of the tree the WSL backend actually
@@ -413,7 +427,16 @@ export const buildWslRuntimePruneScript = (runtimeId: string): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    'runtime_parent="$HOME/.t3/wsl-runtime"',
+    'runtime_parent="$HOME/.agenttunnel/wsl-runtime"',
+    // Same one-time adoption the install performs, and it has to be here too:
+    // a machine whose only runtime lives under the pre-rename home would
+    // otherwise exit at the parent-exists check below and leak every generation
+    // the install then re-stages under the new name. `mv` cannot create the
+    // destination's parent, and its failure must not fail the script either.
+    'if [ ! -e "$runtime_parent" ] && [ -e "$HOME/.t3/wsl-runtime" ]; then',
+    '  mkdir -p "$HOME/.agenttunnel" 2>/dev/null || true',
+    '  mv "$HOME/.t3/wsl-runtime" "$runtime_parent" 2>/dev/null || true',
+    "fi",
     `current_runtime="$runtime_parent/${safeRuntimeId}"`,
     '[ -d "$runtime_parent" ] || exit 0',
     // Serialize the whole retention decision so two backends cannot select
@@ -477,7 +500,7 @@ export const buildWslRuntimeInvalidateScript = (runtimeId: string): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `rm -f "$HOME/.t3/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
+    `rm -f "$HOME/.agenttunnel/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
   ].join("\n");
 };
 

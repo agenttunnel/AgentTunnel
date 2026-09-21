@@ -40,7 +40,7 @@ Close the editor to show the latest selected theme.
 ## Publishing themes
 
 A machine publishes themes by writing files into the `themes` directory of the AgentTunnel state
-directory (`~/.t3/userdata/themes/` by default). The filename is the theme id — `nightfall.json`
+directory (`~/.agenttunnel/userdata/themes/` by default). The filename is the theme id — `nightfall.json`
 appears as `nightfall` — and stays stable while the machine rewrites the colors underneath, so
 selections and defaults keep pointing at it.
 

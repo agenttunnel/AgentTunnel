@@ -116,4 +116,24 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
       assert.equal(aliasError._tag, "SqliteStateSharedHomeMutationError");
     }),
   );
+
+  it.effect("refuses the pre-rename .t3 sibling of the shared home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-state-legacy-" });
+      const baseDir = path.join(parent, ".t3");
+      yield* createFixtureDatabase(baseDir);
+
+      const error = yield* runSqliteState(
+        {
+          operation: "exec",
+          baseDir,
+          sql: "DELETE FROM fixtures",
+        },
+        { sharedHome: path.join(parent, ".agenttunnel") },
+      ).pipe(Effect.flip);
+      assert.equal(error._tag, "SqliteStateSharedHomeMutationError");
+    }),
+  );
 });

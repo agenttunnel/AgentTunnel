@@ -192,4 +192,27 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
       assert.equal(error._tag, "MigrateDevDbSharedHomeError");
     }),
   );
+
+  it.effect("refuses the pre-rename .t3 sibling of the shared home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-legacy-" });
+      const sourceDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "migrate-dev-db-legacy-source-",
+      });
+      const source = yield* createFixtureSource(sourceDir);
+
+      const error = yield* runMigrateDevDb(
+        {
+          baseDir: path.join(parent, ".t3"),
+          source,
+          projects: 5,
+          threadsPerProject: 10,
+        },
+        { sharedHome: path.join(parent, ".agenttunnel") },
+      ).pipe(Effect.flip);
+      assert.equal(error._tag, "MigrateDevDbSharedHomeError");
+    }),
+  );
 });
