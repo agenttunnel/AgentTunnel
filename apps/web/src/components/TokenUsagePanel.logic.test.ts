@@ -354,6 +354,45 @@ describe("deriveTokenUsage", () => {
     expect(model.totals.subagentTokens).toBe(0);
   });
 
+  it("keeps the hidden coordinator's usage out of the subagent totals", () => {
+    const coordinator = agent({
+      id: "wf-1",
+      kind: "workflow",
+      model: "claude-sonnet-5",
+      effort: "high",
+      status: "running",
+      usage: { totalTokens: 9_999, inputTokens: 9_000, outputTokens: 999, toolUses: 5 },
+    });
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          payload: contextPayload({
+            inputTokens: 43_000,
+            outputTokens: 8_900,
+            totalProcessedTokens: 70_100,
+          }),
+        }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 9_999,
+        workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [] }],
+      },
+    });
+
+    // collectDisplayAgents falls back to the coordinator, but the orchestrator
+    // row names it, so it must not render again or leak into the subagent sums.
+    expect(model.orchestrator).toMatchObject({ id: "wf-1", totalTokens: 51_900 });
+    expect(model.agents).toEqual([]);
+    expect(model.totals.subagentTokens).toBe(0);
+    expect(model.totals.mainTokens).toBe(51_900);
+    expect(model.totals.totalTokens).toBe(model.totals.mainTokens + model.totals.subagentTokens);
+    expect(model.totals.agentCount).toBe(1);
+  });
+
   it("names an orchestrator for a workflowName-only thread with no workflow groups", () => {
     const member = agent({
       id: "wf-1:task_1",

@@ -490,8 +490,8 @@ export function TokenUsagePanel({
           <p className="px-0.5 text-[.65rem] leading-relaxed text-muted-foreground/60">
             Provider-reported usage. Each turn shows its latest snapshot, and a subagent counts
             toward the turn that spawned it; Processed is the provider's cumulative session total
-            for the main thread. In AgentTunnel threads the Orchestrator row is the main thread's
-            own snapshots and has no per-step drill-in.
+            for the main thread. In workflow threads the Orchestrator row is the main thread's own
+            snapshots and has no per-step drill-in.
           </p>
         </div>
       </ScrollArea>
