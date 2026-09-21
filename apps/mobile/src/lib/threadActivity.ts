@@ -1290,6 +1290,13 @@ export function deriveThreadFeedPresentation(
     (entry) =>
       entry.type !== "turn-fold" && entry.type !== "work-toggle" && entry.type !== "working",
   );
+  // A steer the planner has not consumed yet is the freshest signal in the
+  // thread; the working timer only restates the interrupted run it will replace.
+  const latestUserMessage = sourceFeed.findLast(
+    (entry) => entry.type === "message" && entry.message.role === "user",
+  );
+  const hasQueuedSteering =
+    latestUserMessage?.type === "message" && latestUserMessage.message.steering === "queued";
   const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn);
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
@@ -1317,7 +1324,7 @@ export function deriveThreadFeedPresentation(
       appendPresentedFeedEntry(result, entry, expandedWorkGroupIds);
     }
   }
-  if (activeWorkStartedAt !== null) {
+  if (activeWorkStartedAt !== null && !hasQueuedSteering) {
     result.push({
       type: "working",
       id: "working-indicator-row",

@@ -889,6 +889,56 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("hides the working indicator while the latest message is a queued steer", () => {
+    const buildRows = (steering: "queued" | "injected") =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          {
+            id: "assistant-thought-entry",
+            kind: "message",
+            createdAt: "2026-01-01T00:00:05Z",
+            message: {
+              id: "assistant-thought" as never,
+              role: "assistant",
+              text: "Working on it.",
+              turnId: "turn-1" as never,
+              createdAt: "2026-01-01T00:00:05Z",
+              updatedAt: "2026-01-01T00:00:06Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "steer-entry",
+            kind: "message",
+            createdAt: "2026-01-01T00:00:10Z",
+            message: {
+              id: "user-steer" as never,
+              role: "user",
+              text: "use a worktree instead",
+              turnId: null,
+              steering,
+              createdAt: "2026-01-01T00:00:10Z",
+              updatedAt: "2026-01-01T00:00:10Z",
+              streaming: false,
+            },
+          },
+        ],
+        latestTurn: {
+          turnId: "turn-1" as never,
+          state: "running",
+          startedAt: "2026-01-01T00:00:00Z",
+          completedAt: null,
+        },
+        isWorking: true,
+        activeTurnStartedAt: "2026-01-01T00:00:00Z",
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    expect(buildRows("queued").some((row) => row.kind === "working")).toBe(false);
+    expect(buildRows("injected").some((row) => row.kind === "working")).toBe(true);
+  });
+
   it("keeps adjacent active tool calls in one replacing row", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

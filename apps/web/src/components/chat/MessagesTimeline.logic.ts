@@ -809,7 +809,16 @@ export function deriveMessagesTimelineRows(input: {
           };
         })()
       : null;
+  // A steer that has not reached the planner yet is the freshest signal in the
+  // thread; the "Working for ... / Thinking" rows above it only restate the
+  // interrupted run, so keep them out of the way until the pass picks it up.
+  const latestUserEntry = input.timelineEntries.findLast(
+    (entry) => entry.kind === "message" && entry.message.role === "user",
+  );
+  const hasQueuedSteering =
+    latestUserEntry?.kind === "message" && latestUserEntry.message.steering === "queued";
   const appendWorkingRow = () => {
+    if (hasQueuedSteering) return;
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
