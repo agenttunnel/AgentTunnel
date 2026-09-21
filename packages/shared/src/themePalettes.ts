@@ -121,6 +121,32 @@ export type ThemeDefinition = Readonly<{
   managed?: boolean;
 }>;
 
+/**
+ * The stock AgentTunnel look, per appearance: what a client renders with no
+ * theme installed. The web app seeds its editor from the full palette
+ * (`getStandardThemeColors`, which reads these roles), and the surfaces that
+ * paint before a theme is known -- the boot splash, the desktop window frame --
+ * read them directly so they never guess a palette of their own.
+ */
+export const STANDARD_APPEARANCE_COLORS: Readonly<
+  Record<ThemeAppearance, Pick<ThemeColors, "canvas" | "chrome" | "text" | "textMuted" | "accent">>
+> = {
+  light: {
+    canvas: "#fcfcfc",
+    chrome: "#fcfcfc",
+    text: "#27272a",
+    textMuted: "#71717b",
+    accent: "#1b4ed8",
+  },
+  dark: {
+    canvas: "#0a0a0a",
+    chrome: "#0a0a0a",
+    text: "#f5f5f5",
+    textMuted: "#818181",
+    accent: "#346bf1",
+  },
+};
+
 export const T3_CHAT_THEME: ThemeDefinition = {
   id: "t3-chat",
   label: "T3 Chat",

@@ -9,6 +9,7 @@ import * as Ref from "effect/Ref";
 import * as Electron from "electron";
 
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import { STANDARD_APPEARANCE_COLORS } from "@t3tools/shared/themePalettes";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -31,8 +32,11 @@ import { makeQuitHoldHandler } from "./QuitHold.ts";
 
 const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
-const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
-const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
+// The frame paints before the renderer reports its appearance, so the titlebar
+// controls wear the stock AgentTunnel palette's text color rather than a gray
+// of their own.
+const TITLEBAR_LIGHT_SYMBOL_COLOR = STANDARD_APPEARANCE_COLORS.light.text;
+const TITLEBAR_DARK_SYMBOL_COLOR = STANDARD_APPEARANCE_COLORS.dark.text;
 const MAIN_WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS = 500;
 const DEVELOPMENT_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 // Renderer crash (usually V8 OOM on long sessions) recovery: reload after a
@@ -125,8 +129,11 @@ function getIconOption(
   });
 }
 
+/** The app's own chrome, so the window behind the renderer never flashes a palette of its own. */
 function getInitialWindowBackgroundColor(shouldUseDarkColors: boolean): string {
-  return shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
+  return shouldUseDarkColors
+    ? STANDARD_APPEARANCE_COLORS.dark.chrome
+    : STANDARD_APPEARANCE_COLORS.light.chrome;
 }
 
 type DisplayBounds = Pick<Electron.Rectangle, "x" | "y" | "width" | "height">;
@@ -173,9 +180,10 @@ export function resolveInitialMainWindowBounds(
 // a data URL so it needs no bundled asset and no backend — pure CSS, no JS.
 function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
   const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
-  const label = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
-  const accent = shouldUseDarkColors ? "#f8fafc" : "#1f2937";
-  const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
+  const stock = STANDARD_APPEARANCE_COLORS[shouldUseDarkColors ? "dark" : "light"];
+  const label = stock.textMuted;
+  const accent = stock.text;
+  const track = `color-mix(in srgb, ${accent} 18%, transparent)`;
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }

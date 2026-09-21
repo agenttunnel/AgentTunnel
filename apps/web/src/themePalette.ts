@@ -8,6 +8,7 @@ import {
   GROVE_THEME,
   IRIS_THEME,
   OCEAN_THEME,
+  STANDARD_APPEARANCE_COLORS,
   T3_CHAT_THEME,
   RESERVED_THEME_IDS,
   THEME_COLOR_ROLES,
@@ -335,10 +336,12 @@ function legacyThemeMode(theme: ThemePreference): ThemeAppearance | null {
  * pixels the user is already seeing. Alpha-bearing tokens are flattened over
  * their real backdrops (canvas, or the sidebar for its rows) because theme
  * colors are stored as opaque OKLCH tokens.
+ *
+ * The roles the native and boot surfaces paint too (canvas, chrome, text, muted
+ * text, accent) come from the shared stock palette so the copies cannot drift.
  */
 const T3_CODE_LIGHT_THEME_COLORS: ThemeColors = {
-  canvas: "#fcfcfc",
-  chrome: "#fcfcfc",
+  ...STANDARD_APPEARANCE_COLORS.light,
   toolbar: "#fcfcfc",
   toolbarForeground: "#27272a",
   toolbarBorder: "#e4e4e7",
@@ -348,12 +351,9 @@ const T3_CODE_LIGHT_THEME_COLORS: ThemeColors = {
   surface: "#ffffff",
   surfaceRaised: "#fcfcfc",
   surfaceOverlay: "#ffffff",
-  text: "#27272a",
-  textMuted: "#71717b",
   border: "#e4e4e7",
   input: "#d4d4d8",
   focus: "#1b4ed8",
-  accent: "#1b4ed8",
   accentForeground: "#ffffff",
   secondary: "#fafafa",
   secondaryForeground: "#27272a",
@@ -397,8 +397,7 @@ const T3_CODE_LIGHT_THEME_COLORS: ThemeColors = {
 };
 
 const T3_CODE_DARK_THEME_COLORS: ThemeColors = {
-  canvas: "#0a0a0a",
-  chrome: "#0a0a0a",
+  ...STANDARD_APPEARANCE_COLORS.dark,
   toolbar: "#0a0a0a",
   toolbarForeground: "#f5f5f5",
   toolbarBorder: "#191919",
@@ -408,12 +407,9 @@ const T3_CODE_DARK_THEME_COLORS: ThemeColors = {
   surface: "#111111",
   surfaceRaised: "#141414",
   surfaceOverlay: "#191919",
-  text: "#f5f5f5",
-  textMuted: "#818181",
   border: "#191919",
   input: "#1e1e1e",
   focus: "#346bf1",
-  accent: "#346bf1",
   accentForeground: "#ffffff",
   secondary: "#141414",
   secondaryForeground: "#f5f5f5",

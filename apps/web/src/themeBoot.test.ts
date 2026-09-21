@@ -4,6 +4,7 @@ import indexHtml from "../index.html?raw";
 import {
   CUSTOM_THEMES_STORAGE_KEY,
   getDefaultThemeColors,
+  getStandardThemeColors,
   getThemeColorsForMode,
   invalidateCustomThemes,
   isKnownThemePreference,
@@ -366,6 +367,28 @@ describe("index.html boot script", () => {
     }
   });
 
+  // The stock palette is what every surface without a theme wears; pinning it
+  // against the real definition keeps the boot splash (and the desktop window
+  // frame, which reads the same colors) from drifting behind it.
+  it("keeps the stock splash and chrome in sync with the standard palette", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const standard = getStandardThemeColors(mode);
+      const boot = runBootScript({
+        storage: { [THEME_STORAGE_KEY]: "system", [THEME_APPEARANCE_MODE_STORAGE_KEY]: mode },
+        prefersDark: mode === "dark",
+      });
+
+      expect(boot.isDark).toBe(mode === "dark");
+      expect(boot.themeId).toBeUndefined();
+      expect(boot.themeSelected).toBe("true");
+      expect(toCanonicalThemeColor(boot.bootVariables["--boot-background"])).toBe(standard.canvas);
+      expect(toCanonicalThemeColor(boot.bootVariables["--boot-foreground"])).toBe(standard.text);
+      expect(toCanonicalThemeColor(boot.bootVariables["--boot-accent"])).toBe(standard.accent);
+      expect(toCanonicalThemeColor(boot.backgroundColor)).toBe(standard.chrome);
+      expect(toCanonicalThemeColor(boot.metaContent)).toBe(standard.chrome);
+    }
+  });
+
   it("applies the matching half of an automatic mix to the splash", () => {
     const storage = {
       [THEME_STORAGE_KEY]: "t3-chat",
@@ -493,8 +516,10 @@ describe("index.html boot script", () => {
 
     expect(boot.themeId).toBeUndefined();
     expect(boot.themeSelected).toBeUndefined();
-    expect(boot.backgroundColor).toBe("#ffffff");
-    expect(boot.metaContent).toBe("#ffffff");
+    expect(toCanonicalThemeColor(boot.backgroundColor)).toBe(
+      getStandardThemeColors("light").chrome,
+    );
+    expect(toCanonicalThemeColor(boot.metaContent)).toBe(getStandardThemeColors("light").chrome);
   });
 
   it("leaves unknown preferences unthemed so the runtime default applies", () => {
@@ -511,8 +536,12 @@ describe("index.html boot script", () => {
     const light = runBootScript({ storageThrows: true, prefersDark: false });
     expect(light.isDark).toBe(false);
     expect(light.themeId).toBeUndefined();
+    expect(toCanonicalThemeColor(light.backgroundColor)).toBe(
+      getStandardThemeColors("light").chrome,
+    );
 
     const dark = runBootScript({ storageThrows: true, prefersDark: true });
     expect(dark.isDark).toBe(true);
+    expect(toCanonicalThemeColor(dark.backgroundColor)).toBe(getStandardThemeColors("dark").chrome);
   });
 });
