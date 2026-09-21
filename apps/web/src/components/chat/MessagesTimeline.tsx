@@ -1041,7 +1041,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {steeringBadge ? (
         <div
           className={cn(
-            "flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-[11px]",
+            "flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-[.6875rem]",
             steeringBadge.tone === "queued"
               ? "text-amber-600 dark:text-amber-300/90"
               : steeringBadge.tone === "injected"
@@ -1086,7 +1086,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                     />
                   </button>
                 ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-secondary-label text-[11px]">
+                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-secondary-label text-[.6875rem]">
                     {image.name}
                   </div>
                 )}
@@ -1345,7 +1345,7 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
     <div className="min-w-0 px-1 py-0.5">
       <button
         type="button"
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-0.5 py-0.5 text-left text-[12px] leading-5 transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-0.5 py-0.5 text-left text-[.75rem] leading-5 transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
@@ -1384,10 +1384,10 @@ const TurnPlanTimelineRow = memo(function TurnPlanTimelineRow({
       {expanded ? (
         <div className="mt-0.5 space-y-px pl-6">
           {steps.map((step) => (
-            <div key={step.step} className="flex items-baseline gap-2 text-[12px] leading-5">
+            <div key={step.step} className="flex items-baseline gap-2 text-[.75rem] leading-5">
               <span
                 className={cn(
-                  "w-3 shrink-0 text-center font-mono text-[10px]",
+                  "w-3 shrink-0 text-center font-mono text-[.625rem]",
                   step.status === "completed"
                     ? "text-success"
                     : step.status === "inProgress"
@@ -1508,7 +1508,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
       aria-label={isExpandedToolGroupEntry ? undefined : groupLabel}
     >
       {!onlyToolEntries && (
-        <p className="px-0.5 pb-0.5 font-medium text-secondary-label text-[11px]">{groupLabel}</p>
+        <p className="px-0.5 pb-0.5 font-medium text-secondary-label text-[.6875rem]">
+          {groupLabel}
+        </p>
       )}
       <div className="space-y-px">
         {nonEmptyEntries.map((workEntry) => (
@@ -1856,7 +1858,7 @@ function UserMessagePreviewAnnotationCard(props: {
         ) : null}
         <div
           className={cn(
-            "flex items-center gap-2 text-secondary-label text-[10px]",
+            "flex items-center gap-2 text-secondary-label text-[.625rem]",
             props.annotation.comment && "mt-1",
           )}
         >
@@ -2143,7 +2145,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
         <div className="text-message-foreground text-xs font-medium">
           {formatWorkspaceRelativePath(comment.filePath, ctx.workspaceRoot)}
         </div>
-        <div className="text-secondary-label text-[11px]">
+        <div className="text-secondary-label text-[.6875rem]">
           {comment.sectionTitle} · {comment.rangeLabel}
         </div>
       </div>
@@ -2666,7 +2668,7 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
       : "✓ completed";
 
   return (
-    <div className="flex w-full flex-col rounded-md border border-border/60 bg-card/50 text-[13px]">
+    <div className="flex w-full flex-col rounded-md border border-border/60 bg-card/50 text-[.8125rem]">
       <button
         type="button"
         onClick={() => onOpenAgents()}

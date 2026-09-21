@@ -97,7 +97,7 @@ function ToolCallBlock({
           )}
         </span>
         <Icon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-[13px]">
+        <span className="min-w-0 flex-1 truncate text-[.8125rem]">
           <span className="font-medium text-foreground/90">{entry.tool}</span>
           {entry.title.length > 0 ? (
             <span className="text-muted-foreground"> · {entry.title}</span>

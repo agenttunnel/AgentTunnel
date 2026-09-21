@@ -406,7 +406,7 @@ export function PullRequestFiltersMenu({
                     />
                     <span className="min-w-0 flex-1 truncate">{project.title}</span>
                     {reason === undefined ? null : (
-                      <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400/90">
+                      <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-px text-[.625rem] font-medium text-amber-600 dark:text-amber-400/90">
                         Unavailable
                       </span>
                     )}

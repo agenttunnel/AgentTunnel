@@ -90,7 +90,7 @@ function RoleRow({
 
   return (
     <div className={cn("grid gap-2 px-3 py-2.5 sm:items-center", ROLE_GRID_COLUMNS)}>
-      <span className="text-[13px] font-medium leading-5 text-foreground">{role.label}</span>
+      <span className="text-[.8125rem] font-medium leading-5 text-foreground">{role.label}</span>
       <Select
         value={harness}
         onValueChange={(next) => writeConfigValue(config, onChange, harnessKey, next ?? "")}
@@ -155,8 +155,8 @@ function ToggleRow({
   return (
     <label className="flex items-center justify-between gap-4 px-3 py-2.5">
       <span className="min-w-0">
-        <span className="block text-[13px] font-medium leading-5 text-foreground">{label}</span>
-        <span className="block text-[13px] leading-5 text-muted-foreground">{description}</span>
+        <span className="block text-[.8125rem] font-medium leading-5 text-foreground">{label}</span>
+        <span className="block text-[.8125rem] leading-5 text-muted-foreground">{description}</span>
       </span>
       <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
     </label>
@@ -181,8 +181,8 @@ function NumberRow({
   return (
     <label className="flex items-center justify-between gap-4 px-3 py-2.5">
       <span className="min-w-0">
-        <span className="block text-[13px] font-medium leading-5 text-foreground">{label}</span>
-        <span className="block text-[13px] leading-5 text-muted-foreground">{description}</span>
+        <span className="block text-[.8125rem] font-medium leading-5 text-foreground">{label}</span>
+        <span className="block text-[.8125rem] leading-5 text-muted-foreground">{description}</span>
       </span>
       <Input
         className="w-20 shrink-0"
@@ -224,7 +224,7 @@ export function AgentTunnelSettingsSection({
       <div className="overflow-hidden rounded-lg border border-border/60">
         <div
           className={cn(
-            "hidden gap-2 border-b border-border/50 bg-muted/15 px-3 py-1.5 text-[11px] font-medium text-muted-foreground sm:grid sm:items-center",
+            "hidden gap-2 border-b border-border/50 bg-muted/15 px-3 py-1.5 text-[.6875rem] font-medium text-muted-foreground sm:grid sm:items-center",
             ROLE_GRID_COLUMNS,
           )}
         >

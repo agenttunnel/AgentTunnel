@@ -595,7 +595,7 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                     >
                       {isComplete ? <CheckIcon className="size-3" /> : null}
                     </span>
-                    <span className="text-[10px] font-medium uppercase text-muted-foreground">
+                    <span className="text-[.625rem] font-medium uppercase text-muted-foreground">
                       Step {index + 1}
                     </span>
                     <span className="truncate text-xs font-semibold text-foreground">
@@ -650,7 +650,7 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                                 <Button
                                   variant="outline"
                                   size="xs"
-                                  className="h-5 rounded-[.25rem] px-1.5 text-[10px] text-warning-foreground"
+                                  className="h-5 rounded-[.25rem] px-1.5 text-[.625rem] text-warning-foreground"
                                   onClick={(event) => {
                                     event.preventDefault();
                                     event.stopPropagation();

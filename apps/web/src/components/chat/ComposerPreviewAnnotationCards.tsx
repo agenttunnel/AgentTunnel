@@ -28,7 +28,7 @@ function TargetStat(props: { icon: ReactNode; count: number; label: string }) {
     <Tooltip>
       <TooltipTrigger
         render={
-          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+          <span className="inline-flex items-center gap-1 text-[.625rem] font-medium text-muted-foreground">
             {props.icon}
             {props.count}
           </span>
@@ -100,13 +100,13 @@ export function ComposerPreviewAnnotationCards({
                     {elementLabels.slice(0, 2).map(({ id, label }) => (
                       <span
                         key={id}
-                        className="max-w-40 truncate font-mono text-secondary-label text-[10px]"
+                        className="max-w-40 truncate font-mono text-secondary-label text-[.625rem]"
                       >
                         {label}
                       </span>
                     ))}
                     {elementLabels.length > 2 ? (
-                      <span className="text-secondary-label text-[10px]">
+                      <span className="text-secondary-label text-[.625rem]">
                         +{elementLabels.length - 2}
                       </span>
                     ) : null}
@@ -142,7 +142,7 @@ export function ComposerPreviewAnnotationCards({
                     />
                   ) : null}
                   {upload?.status === "uploading" ? (
-                    <span className="text-[10px] text-secondary-label">
+                    <span className="text-[.625rem] text-secondary-label">
                       {formatAttachmentUploadProgress(upload.progress)}
                     </span>
                   ) : null}

@@ -250,7 +250,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           indicatorBackground="var(--contrast-input)"
           badgeClassName={cn(
             "right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3",
-            "px-0.5 text-[7px]",
+            "px-0.5 text-[.4375rem]",
           )}
         />
       ) : null}
@@ -360,7 +360,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                     onPointerUp={endPanelDrag}
                   >
                     <span className="text-xs font-medium text-muted-foreground">Model config</span>
-                    <span className="text-[10px] text-muted-foreground/50">drag to move</span>
+                    <span className="text-[.625rem] text-muted-foreground/50">drag to move</span>
                     <button
                       type="button"
                       className="ms-auto inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground"

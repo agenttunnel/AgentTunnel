@@ -235,7 +235,7 @@ function itemSummary({
       return (
         <span>
           {item.label} is not authenticated on this server. Sign in or configure credentials using
-          the <code className="rounded bg-muted px-1 py-px text-[11px]">{item.executable}</code>{" "}
+          the <code className="rounded bg-muted px-1 py-px text-[.6875rem]">{item.executable}</code>{" "}
           tool on the server host to enable change request features.
         </span>
       );
@@ -295,7 +295,7 @@ function DiscoveryItemRow({
                 </Badge>
               ) : null}
             </div>
-            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[13px] leading-[1.45] text-muted-foreground/80">
+            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[.8125rem] leading-[1.45] text-muted-foreground/80">
               {itemSummary({ item, auth, authAccount })}
             </p>
           </div>

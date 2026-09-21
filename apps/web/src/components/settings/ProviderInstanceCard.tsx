@@ -268,7 +268,7 @@ function ProviderEnvironmentSection(props: {
       ) : (
         <div className="overflow-hidden rounded-md border border-border/70">
           <Table>
-            <TableHeader className="bg-muted/25 text-[11px] text-muted-foreground">
+            <TableHeader className="bg-muted/25 text-[.6875rem] text-muted-foreground">
               <TableRow className="hover:bg-transparent">
                 <TableHead>Variable</TableHead>
                 <TableHead>Value</TableHead>
@@ -556,7 +556,7 @@ export function ProviderInstanceCard({
       showBadge={Boolean(accentColor)}
       className="size-5"
       iconClassName="size-4 text-foreground/80"
-      badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-[7px]"
+      badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-[.4375rem]"
     />
   ) : FallbackIconComponent ? (
     <span className="inline-flex size-5 shrink-0 items-center justify-center">
@@ -564,7 +564,7 @@ export function ProviderInstanceCard({
     </span>
   ) : (
     <span
-      className="inline-flex size-5 shrink-0 items-center justify-center text-[10px] font-semibold leading-none text-foreground/80"
+      className="inline-flex size-5 shrink-0 items-center justify-center text-[.625rem] font-semibold leading-none text-foreground/80"
       aria-hidden
     >
       {providerInstanceInitials(displayName)}
@@ -578,7 +578,7 @@ export function ProviderInstanceCard({
         {displayName}
       </h3>
       {String(instanceId) !== String(instance.driver) ? (
-        <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
+        <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[.625rem] text-muted-foreground">
           {instanceId}
         </code>
       ) : null}
@@ -635,7 +635,7 @@ export function ProviderInstanceCard({
   // headline shows so the user can act without opening the editor.
   const needsAttention = statusKey === "warning" || statusKey === "error";
   const statusLineClassName =
-    "flex min-w-0 flex-wrap items-center gap-x-1.5 text-[13px] leading-[1.45] text-muted-foreground/80";
+    "flex min-w-0 flex-wrap items-center gap-x-1.5 text-[.8125rem] leading-[1.45] text-muted-foreground/80";
 
   if (mode === "list") {
     return (
@@ -660,7 +660,7 @@ export function ProviderInstanceCard({
           {titleIconNode}
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-[13px] font-medium leading-5 text-foreground">
+              <span className="truncate text-[.8125rem] font-medium leading-5 text-foreground">
                 {displayName}
               </span>
               {versionCodeNode}
@@ -670,7 +670,7 @@ export function ProviderInstanceCard({
                 </span>
               ) : null}
             </span>
-            <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-5 text-muted-foreground">
+            <span className="flex min-w-0 items-center gap-1.5 text-[.8125rem] leading-5 text-muted-foreground">
               {statusDotNode}
               <span className="min-w-0 truncate">
                 {summary.headline}
@@ -734,7 +734,7 @@ export function ProviderInstanceCard({
                   >
                     <div className="grid min-w-0 gap-3">
                       <div className="grid gap-0.5">
-                        <p className="text-[13px] font-semibold leading-tight text-foreground">
+                        <p className="text-[.8125rem] font-semibold leading-tight text-foreground">
                           Update available
                         </p>
                         <p
@@ -762,7 +762,7 @@ export function ProviderInstanceCard({
                         </Button>
                       ) : null}
                       {onRunUpdate && updateCommand ? (
-                        <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                        <div className="flex items-center gap-2 text-[.625rem] font-medium uppercase tracking-wider text-muted-foreground">
                           <span aria-hidden className="h-px flex-1 bg-border" />
                           or, update manually using
                           <span aria-hidden className="h-px flex-1 bg-border" />
@@ -771,7 +771,7 @@ export function ProviderInstanceCard({
                       {updateCommand ? (
                         <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
                           <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
-                            <code className="flex h-full w-max items-center whitespace-nowrap pr-3 font-mono text-[11px] text-foreground">
+                            <code className="flex h-full w-max items-center whitespace-nowrap pr-3 font-mono text-[.6875rem] text-foreground">
                               {updateCommand}
                             </code>
                           </ScrollArea>
@@ -819,7 +819,7 @@ export function ProviderInstanceCard({
             {summary.detail && !needsAttention ? <span>· {summary.detail}</span> : null}
           </p>
           {summary.detail && needsAttention ? (
-            <p className="line-clamp-2 text-[13px] leading-[1.45] text-muted-foreground/80 [overflow-wrap:anywhere]">
+            <p className="line-clamp-2 text-[.8125rem] leading-[1.45] text-muted-foreground/80 [overflow-wrap:anywhere]">
               {summary.detail}
             </p>
           ) : null}
@@ -860,7 +860,7 @@ export function ProviderInstanceCard({
             className={cn("space-y-4 px-4 py-4", readOnly && "opacity-50 select-none")}
           >
             <Collapsible open={instanceSettingsOpen} onOpenChange={setInstanceSettingsOpen}>
-              <CollapsibleTrigger className="flex items-center gap-1.5 rounded-sm text-[13px] text-muted-foreground hover:text-foreground">
+              <CollapsibleTrigger className="flex items-center gap-1.5 rounded-sm text-[.8125rem] text-muted-foreground hover:text-foreground">
                 <ChevronDownIcon
                   aria-hidden
                   className={cn(

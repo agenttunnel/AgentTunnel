@@ -3634,7 +3634,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <button
                   type="button"
                   className={cn(
-                    "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
+                    "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[.875rem] focus:outline-none",
                     (activePendingProgress ? activePendingProgress.customAnswer : prompt.trim())
                       ? "text-foreground"
                       : "text-placeholder",
@@ -3818,7 +3818,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 />
                               </button>
                             ) : (
-                              <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-secondary-label">
+                              <div className="flex h-full w-full items-center justify-center px-1 text-center text-[.625rem] text-secondary-label">
                                 {image.name}
                               </div>
                             )}
@@ -3845,7 +3845,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               </Tooltip>
                             )}
                             {upload?.status === "uploading" && (
-                              <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 px-1 text-center text-[10px] text-foreground">
+                              <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 px-1 text-center text-[.625rem] text-foreground">
                                 {formatAttachmentUploadProgress(upload.progress)}
                               </span>
                             )}

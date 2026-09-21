@@ -318,7 +318,7 @@ export function PullRequestActorAvatar({
     <span
       aria-hidden
       className={cn(
-        "flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[8px] font-medium text-muted-foreground",
+        "flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[.5rem] font-medium text-muted-foreground",
         className,
       )}
     >

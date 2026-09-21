@@ -339,7 +339,7 @@ function WhenVariableSelect({
           <SelectItem
             key={option}
             value={option}
-            className="min-h-7 w-full py-1 font-mono text-[12px]"
+            className="min-h-7 w-full py-1 font-mono text-[.75rem]"
           >
             <span className="truncate">{option}</span>
           </SelectItem>
@@ -529,10 +529,10 @@ function WhenExpressionNodeEditor({
             popupClassName="w-fit"
             className="w-fit min-w-24"
           >
-            <SelectItem value="and" className="min-h-7 py-1 font-mono text-[12px]">
+            <SelectItem value="and" className="min-h-7 py-1 font-mono text-[.75rem]">
               and
             </SelectItem>
-            <SelectItem value="or" className="min-h-7 py-1 font-mono text-[12px]">
+            <SelectItem value="or" className="min-h-7 py-1 font-mono text-[.75rem]">
               or
             </SelectItem>
           </SelectContent>
@@ -665,7 +665,7 @@ function WhenExpressionBuilder({
             aria-invalid={Boolean(parseError)}
             aria-label="When expression"
             className={cn(
-              "h-7 rounded-md font-mono text-[12px] leading-7 sm:h-7 sm:leading-7",
+              "h-7 rounded-md font-mono text-[.75rem] leading-7 sm:h-7 sm:leading-7",
               unknownIdentifiers.length > 0 && "pr-9",
               parseError && "border-destructive/70 focus-visible:border-destructive",
             )}
@@ -677,7 +677,7 @@ function WhenExpressionBuilder({
           ) : null}
         </div>
         {parseError ? (
-          <div className="flex items-center gap-1.5 text-[11px] text-destructive">
+          <div className="flex items-center gap-1.5 text-[.6875rem] text-destructive">
             <CircleXIcon className="size-3.5" />
             {parseError}
           </div>
@@ -994,7 +994,7 @@ function KeybindingRowWhen({
 }) {
   return (
     <span className="flex h-6 items-center gap-1.5">
-      <span className="text-[12px] leading-none text-muted-foreground/70">When</span>
+      <span className="text-[.75rem] leading-none text-muted-foreground/70">When</span>
       <WhenClauseControl
         label={commandLabel(row.command)}
         expression={editor.whenDraftExpression}
@@ -1148,7 +1148,7 @@ function NewKeybindingCommandSelect({
         className="max-h-72 w-fit min-w-56"
       >
         {commandOptions.map((command) => (
-          <SelectItem key={command} value={command} className="min-h-7 w-full py-1 text-[12px]">
+          <SelectItem key={command} value={command} className="min-h-7 w-full py-1 text-[.75rem]">
             <span className="truncate">{commandLabel(command)}</span>
           </SelectItem>
         ))}
@@ -1242,7 +1242,7 @@ function NewKeybindingSettingsRow(props: NewKeybindingProps) {
       title="New keybinding"
       description={
         <span className="flex h-6 items-center gap-1.5">
-          <span className="text-[12px] leading-none text-muted-foreground/70">When</span>
+          <span className="text-[.75rem] leading-none text-muted-foreground/70">When</span>
           <NewKeybindingWhen draft={draft} variables={variables} />
         </span>
       }
@@ -1308,7 +1308,7 @@ function KeybindingsList(props: KeybindingsListProps) {
 /** Shown in the browser build only; the desktop app receives every shortcut. */
 function BrowserKeybindingNotice() {
   return (
-    <div className="flex items-center gap-1.5 px-3 pb-2 text-[12px] text-muted-foreground sm:px-4">
+    <div className="flex items-center gap-1.5 px-3 pb-2 text-[.75rem] text-muted-foreground sm:px-4">
       <TriangleAlertIcon className="size-3.5 shrink-0 text-warning" aria-hidden />
       <span>
         Some shortcuts may be claimed by the browser before AgentTunnel sees them. Use the desktop
@@ -1460,7 +1460,7 @@ export function KeybindingsSettingsPanel() {
   const cancelAdd = useCallback(() => setIsAddingBinding(false), []);
 
   const bindingsCount = (
-    <span className="text-[11px] text-muted-foreground">
+    <span className="text-[.6875rem] text-muted-foreground">
       {rows.length + (isAddingBinding ? 1 : 0)}{" "}
       {rows.length + (isAddingBinding ? 1 : 0) === 1 ? "binding" : "bindings"}
     </span>

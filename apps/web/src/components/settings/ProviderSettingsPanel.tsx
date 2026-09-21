@@ -139,11 +139,11 @@ function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }
   }
 
   if (lastCheckedRelative.status === "invalid") {
-    return <span className="text-[11px] text-muted-foreground/50">Checked unavailable</span>;
+    return <span className="text-[.6875rem] text-muted-foreground/50">Checked unavailable</span>;
   }
 
   return (
-    <span className="text-[11px] text-muted-foreground/60">
+    <span className="text-[.6875rem] text-muted-foreground/60">
       {lastCheckedRelative.suffix ? (
         <>
           Checked <span className="font-mono tabular-nums">{lastCheckedRelative.value}</span>{" "}
@@ -845,7 +845,7 @@ export function EnvironmentProviderSettings({
           title="Workflow"
           icon={<Workflow className="size-4 text-muted-foreground" />}
         >
-          <p className="px-3 pb-1 text-[13px] leading-[1.45] text-muted-foreground/80 sm:px-4">
+          <p className="px-3 pb-1 text-[.8125rem] leading-[1.45] text-muted-foreground/80 sm:px-4">
             How AgentTunnel orchestrates work: the roles it runs, auto mode, and whether the
             orchestrator may pick each task's model.
           </p>
@@ -878,7 +878,7 @@ export function EnvironmentProviderSettings({
               and an inherited 16px strut hangs the smaller text below the
               vertical center of the row.
             */}
-            <span className="hidden min-w-0 truncate text-[11px] sm:inline">
+            <span className="hidden min-w-0 truncate text-[.6875rem] sm:inline">
               <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
             </span>
             {!readOnly ? (
@@ -930,7 +930,7 @@ export function EnvironmentProviderSettings({
             description={`This session can view ${environmentLabel}'s harnesses, but its credential does not allow changing their configuration.`}
           />
         ) : null}
-        <p className="px-3 pb-1 text-[13px] leading-[1.45] text-muted-foreground/80 sm:px-4">
+        <p className="px-3 pb-1 text-[.8125rem] leading-[1.45] text-muted-foreground/80 sm:px-4">
           Enable a harness to make its models selectable in the model config.
         </p>
         <div className="space-y-1">

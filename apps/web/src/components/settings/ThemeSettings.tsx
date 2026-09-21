@@ -230,12 +230,12 @@ function ThemeLibraryCard({
                           </button>
                         </ThemeVariantTooltip>
                         <span
-                          className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-24 -translate-x-1/2 items-center gap-1 text-[11px] font-medium text-foreground"
+                          className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-24 -translate-x-1/2 items-center gap-1 text-[.6875rem] font-medium text-foreground"
                           style={{ marginLeft: rootOffsetX }}
                         >
                           <span className="truncate">{selected.option.label}</span>
                           {options.length > 1 ? (
-                            <span className="shrink-0 rounded-full bg-muted px-1 text-[9px] text-muted-foreground">
+                            <span className="shrink-0 rounded-full bg-muted px-1 text-[.5625rem] text-muted-foreground">
                               +{options.length - 1}
                             </span>
                           ) : null}
@@ -888,7 +888,7 @@ export function ThemeLibrary({
 
   return (
     <div className="space-y-3">
-      <p className="px-3 text-[13px] leading-[1.45] text-muted-foreground/80 sm:px-4">
+      <p className="px-3 text-[.8125rem] leading-[1.45] text-muted-foreground/80 sm:px-4">
         Choose how AgentTunnel looks. Use a built-in theme or make your own.
       </p>
       <h3 className="px-3 text-sm font-medium tracking-[-0.005em] text-foreground sm:px-4">
