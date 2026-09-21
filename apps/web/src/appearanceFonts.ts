@@ -28,6 +28,12 @@ export const DEFAULT_CODE_FONT_STACK =
 export const TYPOGRAPHY_ADVANCED_STORAGE_KEY = "t3code:typography-advanced";
 
 /**
+ * The shipped interface renders 5% below the configured base, so the Settings
+ * slider keeps its relative range.
+ */
+export const UI_TEXT_SCALE = 0.95;
+
+/**
  * Simple typography treats the terminal as another monospace surface. In
  * Advanced mode an empty terminal preference means the terminal default,
  * keeping later code-font changes isolated to code surfaces.
@@ -109,9 +115,12 @@ export function applyAppearanceFontVariables(
     }
   }
 
-  root.style.fontSize = `${clampInterfaceFontSize(preferences.sizeInterface)}px`;
-  root.style.setProperty("--font-size-prompt", `${clampPromptFontSize(preferences.sizePrompt)}px`);
-  const code = clampCodeFontSize(preferences.sizeCode);
+  root.style.fontSize = `${scaleUiTextSize(clampInterfaceFontSize(preferences.sizeInterface))}px`;
+  root.style.setProperty(
+    "--font-size-prompt",
+    `${scaleUiTextSize(clampPromptFontSize(preferences.sizePrompt))}px`,
+  );
+  const code = scaleUiTextSize(clampCodeFontSize(preferences.sizeCode));
   root.style.setProperty("--font-size-code", `${code}px`);
   // The @pierre/diffs surfaces read their own hook for code text.
   root.style.setProperty("--diffs-font-size", `${code}px`);
@@ -130,6 +139,14 @@ export function applyAppearanceFontVariables(
 function clampFontSize(value: number, minimum: number, maximum: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
+}
+
+/**
+ * Scaled text sizes are emitted as CSS, so keep them at 2 decimals: the raw
+ * product is a float like 13.299999999999999.
+ */
+function scaleUiTextSize(px: number): number {
+  return Math.round(px * UI_TEXT_SCALE * 100) / 100;
 }
 
 export function clampInterfaceFontSize(value: number): number {

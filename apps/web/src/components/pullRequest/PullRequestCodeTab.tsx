@@ -730,7 +730,7 @@ export function PullRequestCodeTab({
         <PullRequestDiffStat
           additions={additions}
           deletions={deletions}
-          className="font-mono text-[11px]"
+          className="font-mono text-[.6875rem]"
         />
       );
     },
@@ -969,7 +969,7 @@ export function PullRequestCodeTab({
             <MessageSquareIcon className="size-3.5" />
             Review
             {pendingComments.length > 0 ? (
-              <span className="flex size-4 items-center justify-center rounded-full bg-accent text-[10px] tabular-nums text-accent-foreground">
+              <span className="flex size-4 items-center justify-center rounded-full bg-accent text-[.625rem] tabular-nums text-accent-foreground">
                 {pendingComments.length}
               </span>
             ) : null}

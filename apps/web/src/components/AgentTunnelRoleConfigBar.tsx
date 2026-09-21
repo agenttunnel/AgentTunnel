@@ -15,7 +15,7 @@ export function AgentTunnelRoleConfigBar({
   return (
     <div
       data-agenttunnel-role-config="true"
-      className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 px-3 pb-1 font-mono text-[10px] leading-4 text-muted-foreground sm:px-4"
+      className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 px-3 pb-1 font-mono text-[.625rem] leading-4 text-muted-foreground sm:px-4"
     >
       <span className="uppercase tracking-wider text-muted-foreground/60">Model config</span>
       {roles.map((role) => (

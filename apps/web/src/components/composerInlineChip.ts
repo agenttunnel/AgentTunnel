@@ -6,7 +6,7 @@ const INLINE_CHIP_GEOMETRY_CLASS_NAME =
 
 const INLINE_CHIP_CLASS_NAME = `${INLINE_CHIP_GEOMETRY_CLASS_NAME} border border-border/70 bg-accent/40 text-foreground`;
 
-export const CHAT_INLINE_CHIP_CLASS_NAME = `${INLINE_CHIP_CLASS_NAME} text-[12px]`;
+export const CHAT_INLINE_CHIP_CLASS_NAME = `${INLINE_CHIP_CLASS_NAME} text-[.75rem]`;
 
 export const COMPOSER_INLINE_CHIP_CLASS_NAME = `${INLINE_CHIP_CLASS_NAME} text-[0.86em] select-none`;
 

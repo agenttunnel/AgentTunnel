@@ -1279,7 +1279,7 @@ export function PullRequestDetailPanel({
                     render={
                       <Badge
                         variant="info"
-                        className="h-5 shrink-0 gap-1 rounded px-1.5 text-[10px]"
+                        className="h-5 shrink-0 gap-1 rounded px-1.5 text-[.625rem]"
                       >
                         <GitMergeIcon aria-hidden className="size-3" />
                         Auto-merge
@@ -1533,7 +1533,7 @@ export function PullRequestDetailPanel({
                     <span className="shrink-0">{formatRelativeTimeLabel(detail.updatedAt)}</span>
                   </span>
                   <span aria-hidden className="h-3 w-px shrink-0 bg-border/70" />
-                  <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[11px] text-muted-foreground/65">
+                  <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[.6875rem] text-muted-foreground/65">
                     <Tooltip>
                       <TooltipTrigger
                         render={
@@ -1576,7 +1576,7 @@ export function PullRequestDetailPanel({
                       <TooltipPopup side="top">{detail.headBranch}</TooltipPopup>
                     </Tooltip>
                   </span>
-                  <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-2 text-[11px]">
+                  <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-2 text-[.6875rem]">
                     <span
                       className="inline-flex items-center gap-1 tabular-nums"
                       aria-label={`${detail.changedFiles.toLocaleString()} changed ${
@@ -1589,7 +1589,7 @@ export function PullRequestDetailPanel({
                     <PullRequestDiffStat
                       additions={detail.additions}
                       deletions={detail.deletions}
-                      className="shrink-0 font-mono text-[11px]"
+                      className="shrink-0 font-mono text-[.6875rem]"
                     />
                   </span>
                 </div>
@@ -1809,7 +1809,7 @@ export function PullRequestDetailPanel({
               <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
                 <PullRequestMetaLine
                   className={cn(
-                    "whitespace-nowrap text-[11px] transition-opacity",
+                    "whitespace-nowrap text-[.6875rem] transition-opacity",
                     (activityPending || activityError) && "opacity-35",
                   )}
                 >
@@ -1865,7 +1865,7 @@ export function PullRequestDetailPanel({
                 <Button
                   size="xs"
                   variant="ghost"
-                  className="h-7 px-2 text-[10px] text-muted-foreground"
+                  className="h-7 px-2 text-[.625rem] text-muted-foreground"
                   aria-label={
                     timelineOrder === "newest"
                       ? "Show oldest activity first"

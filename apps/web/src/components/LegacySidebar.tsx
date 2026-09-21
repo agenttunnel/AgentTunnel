@@ -805,7 +805,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                 data-thread-selection-safe
                 data-testid={`thread-archive-confirm-${thread.id}`}
                 aria-label={`Confirm archive ${thread.title}`}
-                className="absolute top-1/2 right-1 inline-flex h-5 -translate-y-1/2 cursor-pointer items-center rounded-md bg-destructive/12 px-2 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
+                className="absolute top-1/2 right-1 inline-flex h-5 -translate-y-1/2 cursor-pointer items-center rounded-md bg-destructive/12 px-2 text-[.625rem] font-medium text-destructive transition-colors hover:bg-destructive/18 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
                 onPointerDown={stopPropagationOnPointerDown}
                 onClick={handleConfirmArchiveClick}
               >
@@ -872,7 +872,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                       render={
                         <span
                           aria-label={jumpLabel}
-                          className="inline-flex h-5 items-center rounded-full border border-border/80 bg-background/90 px-1.5 font-mono text-[10px] font-medium tracking-tight text-foreground shadow-sm"
+                          className="inline-flex h-5 items-center rounded-full border border-border/80 bg-background/90 px-1.5 font-mono text-[.625rem] font-medium tracking-tight text-foreground shadow-sm"
                         />
                       }
                     >
@@ -882,7 +882,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                   </Tooltip>
                 ) : (
                   <span
-                    className={`text-[10px] tabular-nums ${
+                    className={`text-[.625rem] tabular-nums ${
                       isHighlighted ? "text-foreground" : "text-secondary-label"
                     }`}
                   >
@@ -2312,7 +2312,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               {project.displayName}
             </span>
             {project.groupedProjectCount > 1 ? (
-              <span className="shrink-0 text-secondary-label text-[10px]">
+              <span className="shrink-0 text-secondary-label text-[.625rem]">
                 {project.groupedProjectCount} projects
               </span>
             ) : null}
@@ -2895,7 +2895,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 <SearchIcon />
                 <span className="flex-1 truncate">Search</span>
                 {commandPaletteShortcutLabel ? (
-                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
+                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[.625rem]">
                     {commandPaletteShortcutLabel}
                   </Kbd>
                 ) : null}

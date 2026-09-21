@@ -20,7 +20,7 @@ function OutputCard({ label, text }: { label: string; text: string }) {
         className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-info/[0.08]"
       >
         <Bot aria-hidden className="size-3.5 shrink-0 text-info-foreground" />
-        <span className="min-w-0 flex-1 truncate text-[13px]">
+        <span className="min-w-0 flex-1 truncate text-[.8125rem]">
           <span className="font-medium text-info-foreground">Output</span>
           <span className="text-muted-foreground"> · {label}</span>
         </span>

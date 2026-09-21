@@ -18,7 +18,7 @@ describe("ComposerPendingApprovalActions", () => {
     expect(markup).toContain("Always allow this session");
     expect(markup).not.toContain(">Always allow<");
     expect(markup).toContain("h-5");
-    expect(markup).toContain("sm:text-[11px]");
+    expect(markup).toContain("sm:text-[.6875rem]");
     expect(markup).not.toContain("sm:h-6");
   });
 

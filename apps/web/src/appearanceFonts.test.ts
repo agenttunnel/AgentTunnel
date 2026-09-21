@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  applyAppearanceFontVariables,
   areFontAdvancesMonospace,
   clampCodeFontSize,
   clampInterfaceFontSize,
@@ -9,6 +10,7 @@ import {
   resolveDefaultFamilyLabel,
   resolveTerminalFontPreference,
   resolveTerminalFontSizePreference,
+  UI_TEXT_SCALE,
 } from "./appearanceFonts";
 
 describe("areFontAdvancesMonospace", () => {
@@ -90,6 +92,45 @@ describe("resolveTerminalFontSizePreference", () => {
 
   it("keeps code and terminal font sizes independent in advanced mode", () => {
     expect(resolveTerminalFontSizePreference({ advanced: true, code: 15, terminal: 12 })).toBe(12);
+  });
+
+  // The terminal is a cell grid the user sizes separately, so the interface
+  // text scale must not reach it.
+  it("keeps the configured terminal size out of the interface text scale", () => {
+    expect(resolveTerminalFontSizePreference({ advanced: true, code: 13, terminal: 15 })).toBe(15);
+  });
+});
+
+describe("applyAppearanceFontVariables", () => {
+  it("renders the interface, prompt, and code sizes below the configured base", () => {
+    const declared = new Map<string, string>();
+    const root = {
+      style: {
+        fontSize: "",
+        setProperty: (property: string, value: string) => {
+          declared.set(property, value);
+        },
+        removeProperty: (property: string) => {
+          declared.delete(property);
+        },
+      },
+    } as unknown as HTMLElement;
+
+    applyAppearanceFontVariables(root, {
+      sans: "",
+      code: "",
+      composer: "",
+      sizeInterface: 16,
+      sizePrompt: 14,
+      sizeCode: 13,
+      smoothing: false,
+    });
+
+    expect(UI_TEXT_SCALE).toBe(0.95);
+    expect(root.style.fontSize).toBe("15.2px");
+    expect(declared.get("--font-size-prompt")).toBe("13.3px");
+    expect(declared.get("--font-size-code")).toBe("12.35px");
+    expect(declared.get("--diffs-font-size")).toBe("12.35px");
   });
 });
 

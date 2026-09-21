@@ -434,7 +434,7 @@ function RightPanelEmptyState(props: {
         {action.badgeCount > 0 ? (
           <span
             aria-hidden
-            className="absolute -top-1.5 -right-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-1 text-[9px] font-semibold tabular-nums text-white"
+            className="absolute -top-1.5 -right-2 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-1 text-[.5625rem] font-semibold tabular-nums text-white"
           >
             {action.badgeCount}
           </span>
