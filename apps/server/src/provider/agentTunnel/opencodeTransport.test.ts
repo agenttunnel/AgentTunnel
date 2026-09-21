@@ -12,6 +12,7 @@ import {
   parseOpenCodeStepUsage,
   parsePiJsonLine,
   parsePiLogLine,
+  parsePiStepUsage,
 } from "./opencodeTransport.ts";
 
 function spec(overrides: Partial<AgentTunnelProcessSpec> = {}): AgentTunnelProcessSpec {
@@ -297,7 +298,84 @@ it("parseOpenCodeStepUsage reads step token frames, counting cache as cached inp
     cachedInputTokens: 13_056,
     outputTokens: 213,
     reasoningOutputTokens: 482,
+    costUsd: 0.002,
   });
+});
+
+it("parsePiStepUsage normalizes message_end usage, folding reasoning into output", () => {
+  const line = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      usage: {
+        input: 51_165,
+        output: 5_560,
+        cacheRead: 1_000,
+        cacheWrite: 500,
+        reasoning: 2_924,
+        totalTokens: 58_225,
+        cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+      },
+    },
+  });
+  NodeAssert.deepEqual(parsePiStepUsage(line), {
+    totalTokens: 58_225,
+    inputTokens: 51_165,
+    cachedInputTokens: 1_500,
+    // pi counts reasoning inside output; the plain remainder is what the
+    // shared step shape keeps beside it.
+    outputTokens: 5_560 - 2_924,
+    reasoningOutputTokens: 2_924,
+    costUsd: 0.3,
+  });
+});
+
+it("parsePiStepUsage drops unpriced cost and non-usage frames", () => {
+  const unpriced = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      usage: { input: 10, output: 5, totalTokens: 15, cost: { total: 0 } },
+    },
+  });
+  NodeAssert.deepEqual(parsePiStepUsage(unpriced), {
+    totalTokens: 15,
+    inputTokens: 10,
+    cachedInputTokens: 0,
+    outputTokens: 5,
+    reasoningOutputTokens: 0,
+  });
+  NodeAssert.equal(parsePiStepUsage(JSON.stringify({ type: "message_update" })), undefined);
+  NodeAssert.equal(
+    parsePiStepUsage(
+      JSON.stringify({ type: "message_end", message: { role: "user", usage: { totalTokens: 5 } } }),
+    ),
+    undefined,
+  );
+  NodeAssert.equal(parsePiStepUsage("not json"), undefined);
+});
+
+it("parsePiLogLine persists message_end usage for the stats view", () => {
+  const line = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      usage: { input: 10, output: 5, reasoning: 2, totalTokens: 15, cost: { total: 0.01 } },
+    },
+  });
+  NodeAssert.deepEqual(parsePiLogLine(line), [
+    { kind: "text", text: "done" },
+    {
+      kind: "usage",
+      totalTokens: 15,
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 3,
+      reasoningOutputTokens: 2,
+      costUsd: 0.01,
+    },
+  ]);
 });
 
 it("parseOpenCodeStepUsage defaults missing breakdown fields to zero", () => {

@@ -37,6 +37,8 @@ export interface SubagentUsage {
   readonly reasoningOutputTokens?: number;
   readonly toolUses?: number;
   readonly durationMs?: number;
+  /** Harness-computed cumulative cost; absent when nothing was priced. */
+  readonly costUsd?: number;
 }
 
 export interface SubagentActivityEntry {
@@ -62,6 +64,8 @@ export interface RuntimeSubagent {
   readonly title: string;
   readonly role: string | null;
   readonly model: string | null;
+  /** CLI that ran the agent, when the provider picked one per task. */
+  readonly harness: string | null;
   readonly effort: string | null;
   readonly status: RuntimeSubagentStatus;
   readonly activationCount: number;
@@ -163,6 +167,7 @@ function asUsage(value: unknown): SubagentUsage | undefined {
     reasoningOutputTokens?: number;
     toolUses?: number;
     durationMs?: number;
+    costUsd?: number;
   } = { totalTokens };
   const inputTokens = asCount(record.inputTokens);
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
@@ -176,6 +181,11 @@ function asUsage(value: unknown): SubagentUsage | undefined {
   if (toolUses !== undefined) usage.toolUses = toolUses;
   const durationMs = asCount(record.durationMs);
   if (durationMs !== undefined) usage.durationMs = durationMs;
+  // Emitters drop unpriced zeroes, so a positive figure is the only signal
+  // that the harness actually priced the run (a zero would read as "free").
+  const costUsd =
+    typeof record.costUsd === "number" && record.costUsd > 0 ? record.costUsd : undefined;
+  if (costUsd !== undefined) usage.costUsd = costUsd;
   return usage;
 }
 
@@ -209,6 +219,7 @@ function mergeUsageMax(
     reasoningOutputTokens?: number;
     toolUses?: number;
     durationMs?: number;
+    costUsd?: number;
   } = { totalTokens: Math.max(current.totalTokens, incoming.totalTokens) };
   const inputTokens = pick(current.inputTokens, incoming.inputTokens);
   if (inputTokens !== undefined) merged.inputTokens = inputTokens;
@@ -222,6 +233,10 @@ function mergeUsageMax(
   if (toolUses !== undefined) merged.toolUses = toolUses;
   const durationMs = pick(current.durationMs, incoming.durationMs);
   if (durationMs !== undefined) merged.durationMs = durationMs;
+  // Cost frames are cumulative per process, so the maximum is the latest
+  // figure — same rule as the token totals they ride with.
+  const costUsd = pick(current.costUsd, incoming.costUsd);
+  if (costUsd !== undefined) merged.costUsd = costUsd;
   return merged;
 }
 
@@ -231,6 +246,7 @@ interface MutableAgent {
   title: string;
   role: string | null;
   model: string | null;
+  harness: string | null;
   effort: string | null;
   status: RuntimeSubagentStatus;
   activationCount: number;
@@ -285,6 +301,7 @@ function getOrCreate(
     title: asString(payload.title) ?? asString(payload.detail) ?? id,
     role: asString(payload.role) ?? null,
     model: asString(payload.model) ?? null,
+    harness: asString(payload.harness) ?? null,
     effort: asString(payload.effort) ?? null,
     status: "pending",
     activationCount: 0,
@@ -320,6 +337,8 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (role) agent.role = role;
   const model = asString(payload.model);
   if (model) agent.model = model;
+  const harness = asString(payload.harness);
+  if (harness) agent.harness = harness;
   const effort = asString(payload.effort);
   if (effort) agent.effort = effort;
   const parentAgentId = asString(payload.parentAgentId);

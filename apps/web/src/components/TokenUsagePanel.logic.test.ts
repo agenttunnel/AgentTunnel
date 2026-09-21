@@ -65,6 +65,7 @@ function agent(overrides: Partial<RuntimeSubagent> & Pick<RuntimeSubagent, "id">
     title: overrides.id,
     role: null,
     model: null,
+    harness: null,
     effort: null,
     status: "completed",
     activationCount: 1,
@@ -146,6 +147,7 @@ describe("deriveTokenUsage", () => {
       subagentTokens: 0,
       totalTokens: 0,
       processedTokens: null,
+      costUsd: null,
       agentCount: 0,
     });
   });
@@ -320,6 +322,87 @@ describe("deriveTokenUsage", () => {
     expect(model.totals.mainTokens).toBe(51_900);
     expect(model.totals.totalTokens).toBe(model.totals.mainTokens + model.totals.subagentTokens);
     expect(model.agents.map((row) => row.id)).toEqual(["wf-1:task_1"]);
+  });
+
+  it("renders each row's role, harness, and harness-priced cost", () => {
+    const member = agent({
+      id: "wf-1:task_1",
+      role: "executor",
+      harness: "opencode",
+      parentAgentId: "wf-1",
+      workflowName: "AgentTunnel",
+      firstSeenAt: "2026-01-01T09:11:00.000Z",
+      usage: { totalTokens: 500, inputTokens: 400, outputTokens: 100, costUsd: 0.5 },
+    });
+    const unpriced = agent({
+      id: "wf-1:task_2",
+      role: "reviewer",
+      harness: "pi",
+      parentAgentId: "wf-1",
+      workflowName: "AgentTunnel",
+      firstSeenAt: "2026-01-01T09:12:00.000Z",
+      usage: { totalTokens: 700, inputTokens: 600, outputTokens: 100 },
+    });
+    const coordinator = agent({
+      id: "wf-1",
+      kind: "workflow",
+      role: "orchestrator",
+      harness: "pi",
+      model: "opencode-go/deepseek-v4.1-flash",
+      status: "running",
+    });
+    const model = derive({
+      activities: [
+        activity({
+          id: "a-1",
+          turnId: "turn-1",
+          payload: {
+            ...contextPayload({
+              inputTokens: 43_000,
+              outputTokens: 8_900,
+              totalProcessedTokens: 70_100,
+            }),
+            totalCostUsd: 1.25,
+          },
+        }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 1_200,
+        workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [member, unpriced] }],
+      },
+    });
+
+    expect(model.orchestrator).toMatchObject({
+      role: "orchestrator",
+      harness: "pi",
+      costUsd: 1.25,
+      costLabel: "$1.25",
+    });
+    expect(model.agents.map((row) => [row.role, row.harness, row.costLabel])).toEqual([
+      ["executor", "opencode", "$0.50"],
+      ["reviewer", "pi", "—"],
+    ]);
+    // Only priced rows contribute; the unpriced reviewer is not counted as free.
+    expect(model.totals.costUsd).toBeCloseTo(1.75, 6);
+  });
+
+  it("leaves the thread cost unset when no harness priced anything", () => {
+    const model = derive({
+      activities: [
+        activity({ id: "a-1", turnId: "turn-1", payload: contextPayload({ inputTokens: 1_000 }) }),
+      ],
+      model: {
+        ...emptyAgentPanelModel(),
+        hasAgents: true,
+        totalTokens: 500,
+        directAgents: [agent({ id: "a-1", usage: { totalTokens: 500 } })],
+      },
+    });
+
+    expect(model.totals.costUsd).toBeNull();
+    expect(model.agents[0]?.costLabel).toBe("—");
   });
 
   it("renders a member-less workflow coordinator once, as the orchestrator row", () => {
@@ -548,6 +631,7 @@ function usageEntry(input: {
   cachedInputTokens?: number;
   outputTokens?: number;
   reasoningOutputTokens?: number;
+  costUsd?: number;
 }): OrchestrationAgentLogEntry {
   return { kind: "usage", ...input };
 }
@@ -608,5 +692,24 @@ describe("deriveSubagentUsageStats", () => {
       contextTokens: 0,
     });
     expect(stats.totalLabel).toBe("120");
+  });
+
+  it("sums the steps the harness priced and leaves unpriced steps blank", () => {
+    const stats = deriveSubagentUsageStats([
+      usageEntry({ totalTokens: 120, costUsd: 0.0016 }),
+      usageEntry({ totalTokens: 80, costUsd: 0.25 }),
+      usageEntry({ totalTokens: 10 }),
+    ]);
+
+    expect(stats.turns.map((turn) => turn.costLabel)).toEqual(["$0.0016", "$0.25", "—"]);
+    expect(stats.costUsd).toBeCloseTo(0.2516, 6);
+    expect(stats.costLabel).toBe("$0.2516");
+  });
+
+  it("reports no cost at all when the harness priced nothing", () => {
+    const stats = deriveSubagentUsageStats([usageEntry({ totalTokens: 120 })]);
+
+    expect(stats.costUsd).toBeNull();
+    expect(stats.costLabel).toBe("—");
   });
 });

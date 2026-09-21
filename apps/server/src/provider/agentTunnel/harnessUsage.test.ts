@@ -34,6 +34,60 @@ it("addHarnessUsageTotals accumulates step deltas field-wise", () => {
     cachedInputTokens: 13_056,
     outputTokens: 228,
     reasoningOutputTokens: 487,
+    costUsd: 0,
+  });
+});
+
+it("addHarnessUsageTotals accumulates only the costs a harness reported", () => {
+  const totals = emptyHarnessUsageTotals();
+  addHarnessUsageTotals(totals, { ...step, costUsd: 0.25 });
+  // Absent cost means the harness priced nothing for that step; it must not
+  // reset or invent a figure.
+  addHarnessUsageTotals(totals, { ...step, totalTokens: 10 });
+  addHarnessUsageTotals(totals, { ...step, totalTokens: 10, costUsd: 0.75 });
+
+  NodeAssert.equal(totals.costUsd, 1);
+});
+
+it("carries the session-cumulative cost on the thread snapshot", () => {
+  const cumulative = {
+    ...emptyHarnessUsageTotals(),
+    totalTokens: 100_000,
+    costUsd: 1.75,
+  };
+
+  const snapshot = threadUsageSnapshotFromStep({ ...step, costUsd: 0.25 }, cumulative);
+
+  NodeAssert.equal(snapshot.totalCostUsd, 1.75);
+  NodeAssert.equal(snapshot.usedTokens, 24_622);
+});
+
+it("omits cost entirely when nothing was priced", () => {
+  const snapshot = threadUsageSnapshotFromStep(step, emptyHarnessUsageTotals());
+  const usage = runtimeTaskUsageFromTotals({ ...emptyHarnessUsageTotals(), totalTokens: 5 });
+
+  NodeAssert.equal("totalCostUsd" in snapshot, false);
+  NodeAssert.equal("costUsd" in usage, false);
+});
+
+it("reports per-agent cumulative cost on the typed usage", () => {
+  const cumulative = {
+    ...emptyHarnessUsageTotals(),
+    totalTokens: 24_722,
+    inputTokens: 10_951,
+    cachedInputTokens: 13_056,
+    outputTokens: 228,
+    reasoningOutputTokens: 487,
+    costUsd: 0.42,
+  };
+
+  NodeAssert.deepEqual(runtimeTaskUsageFromTotals(cumulative), {
+    totalTokens: 24_722,
+    inputTokens: 10_951,
+    cachedInputTokens: 13_056,
+    outputTokens: 715,
+    reasoningOutputTokens: 487,
+    costUsd: 0.42,
   });
 });
 
@@ -62,6 +116,7 @@ it("runtimeTaskUsageFromTotals folds reasoning into the reported output", () => 
     cachedInputTokens: 13_056,
     outputTokens: 228,
     reasoningOutputTokens: 487,
+    costUsd: 0,
   };
 
   NodeAssert.deepEqual(runtimeTaskUsageFromTotals(cumulative), {

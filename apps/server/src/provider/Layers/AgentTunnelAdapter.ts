@@ -58,6 +58,7 @@ import {
   parseOpenCodeStepUsage,
   parsePiJsonLine,
   parsePiLogLine,
+  parsePiStepUsage,
 } from "../agentTunnel/opencodeTransport.ts";
 import {
   addHarnessUsageTotals,
@@ -80,6 +81,8 @@ interface AgentTunnelAgentMetadata {
   readonly agentIndex: number;
   readonly phaseIndex: number;
   readonly model?: string;
+  /** CLI that ran this agent (executor/reviewer harness). */
+  readonly harness?: string;
 }
 
 interface AgentTunnelSteeringEntry {
@@ -310,6 +313,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             title: event.title,
             role: "orchestrator",
             workflowName: "AgentTunnel",
+            harness: event.harness,
             ...(event.model ? { model: event.model } : {}),
           },
         });
@@ -376,6 +380,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           pipelineId: event.pipelineId,
           agentIndex: event.agentIndex,
           phaseIndex: event.phaseIndex,
+          harness: event.harness,
           ...(event.model ? { model: event.model } : {}),
         });
         yield* emit({
@@ -389,6 +394,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             role: event.role,
             parentAgentId: event.workflowId,
             workflowName: "AgentTunnel",
+            harness: event.harness,
             agentIndex: event.agentIndex,
             phaseIndex: event.phaseIndex,
             phaseTitle: event.pipelineId,
@@ -417,6 +423,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             role: metadata.role,
             parentAgentId: event.workflowId,
             workflowName: "AgentTunnel",
+            ...(metadata.harness ? { harness: metadata.harness } : {}),
             agentIndex: metadata.agentIndex,
             phaseIndex: metadata.phaseIndex,
             phaseTitle: metadata.pipelineId,
@@ -442,6 +449,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             role: metadata.role,
             parentAgentId: event.workflowId,
             workflowName: "AgentTunnel",
+            ...(metadata.harness ? { harness: metadata.harness } : {}),
             agentIndex: metadata.agentIndex,
             phaseIndex: metadata.phaseIndex,
             phaseTitle: metadata.pipelineId,
@@ -455,19 +463,22 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
   });
 
   /**
-   * Token frames from the harness stream. OpenCode reports per-step deltas on
-   * `step_finish`; orchestrator steps feed the thread usage snapshot, agent
-   * steps feed that agent's cumulative typed-usage rollup. Harnesses that
+   * Token frames from the harness stream. Both transports report per-step
+   * usage — OpenCode on `step_finish`, pi on `message_end` — so whichever CLI
+   * a role runs gives the same numbers here: orchestrator steps feed the
+   * thread usage snapshot, agent steps feed that agent's cumulative
+   * typed-usage rollup (tokens and any harness-computed cost). Harnesses that
    * stream no comparable frames contribute nothing rather than a guess.
    */
   const trackHarnessUsage = Effect.fn("AgentTunnelAdapter.trackHarnessUsage")(function* (
     threadId: ThreadId,
     processId: string,
     line: string,
+    harnessKind: Exclude<AgentTunnelHarnessKind, "other">,
   ) {
     const context = sessions.get(threadId);
     if (!context) return;
-    const step = parseOpenCodeStepUsage(line);
+    const step = harnessKind === "pi" ? parsePiStepUsage(line) : parseOpenCodeStepUsage(line);
     if (!step) return;
     const turnId = context.activeTurnId;
     const eventBase = (itemId?: string) =>
@@ -505,6 +516,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         typedUsage: runtimeTaskUsageFromTotals(cumulative),
         taskType: "local_agent",
         ...(metadata?.role ? { role: metadata.role } : {}),
+        ...(metadata?.harness ? { harness: metadata.harness } : {}),
         timelineBypass: true,
       },
     });
@@ -605,11 +617,13 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         );
         const includeReasoning = spec.id.startsWith("orchestrator");
         const usageLines =
-          harnessKind === "opencode"
-            ? observedLines.pipe(
-                Stream.tap((line) => trackHarnessUsage(threadId, spec.id, line).pipe(Effect.orDie)),
-              )
-            : observedLines;
+          harnessKind === "other"
+            ? observedLines
+            : observedLines.pipe(
+                Stream.tap((line) =>
+                  trackHarnessUsage(threadId, spec.id, line, harnessKind).pipe(Effect.orDie),
+                ),
+              );
         const lines =
           harnessKind === "opencode"
             ? usageLines.pipe(

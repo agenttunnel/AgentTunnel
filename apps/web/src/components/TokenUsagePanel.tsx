@@ -25,7 +25,11 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { StatusDot, subagentStatusLabel } from "./AgentsPanel";
 import { findAgentById } from "./AgentsPanel.logic";
 import { ContextUsageBar } from "./ContextUsageBar";
-import { deriveSubagentUsageStats, deriveTokenUsage } from "./TokenUsagePanel.logic";
+import {
+  deriveSubagentUsageStats,
+  deriveTokenUsage,
+  formatCostLabel,
+} from "./TokenUsagePanel.logic";
 
 function SectionHeader({ children }: { children: ReactNode }) {
   return (
@@ -65,6 +69,25 @@ function EmptyNote({ children }: { children: ReactNode }) {
   return (
     <div className="rounded-md border border-border/50 bg-card/30 px-2.5 py-2 text-xs text-muted-foreground">
       {children}
+    </div>
+  );
+}
+
+/**
+ * `role · harness` under a row's task name: which part the agent played, and
+ * which CLI ran it. Multi-harness providers (AgentTunnel picks per role) fill
+ * both; providers that ARE their harness leave the second one out.
+ */
+function AgentIdentity({ role, harness }: { role: string | null; harness: string | null }) {
+  const identity = [role, harness].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
+  if (identity.length === 0) {
+    return null;
+  }
+  return (
+    <div className="truncate pl-3 text-[.6rem] leading-4 text-muted-foreground/70">
+      {identity.join(" · ")}
     </div>
   );
 }
@@ -124,6 +147,7 @@ function AgentUsageStatsLoaded({
         {stats.reasoningOutputTokens > 0 ? (
           <StatTile label="Reasoning output" value={stats.reasoningLabel} />
         ) : null}
+        {stats.costUsd !== null ? <StatTile label="Cost" value={stats.costLabel} /> : null}
       </div>
       <div className="overflow-x-auto rounded-md border border-border/50">
         <table className="w-full min-w-[26rem] border-collapse text-left font-mono text-[.68rem]">
@@ -134,6 +158,7 @@ function AgentUsageStatsLoaded({
               <th className="py-1 pr-2 text-right font-medium">Cached</th>
               <th className="py-1 pr-2 text-right font-medium">Out</th>
               <th className="py-1 pr-2 text-right font-medium">Reasoning</th>
+              <th className="py-1 pr-2 text-right font-medium">Cost</th>
               <th className="py-1 pr-2 text-right font-medium">Total</th>
             </tr>
           </thead>
@@ -153,6 +178,9 @@ function AgentUsageStatsLoaded({
                 <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
                   {turn.reasoningLabel}
                 </td>
+                <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                  {turn.costLabel}
+                </td>
                 <td className="py-1 pr-2 text-right font-medium tabular-nums text-foreground">
                   {turn.totalLabel}
                 </td>
@@ -163,7 +191,8 @@ function AgentUsageStatsLoaded({
       </div>
       <p className="px-0.5 text-[.65rem] leading-relaxed text-muted-foreground/60">
         One row per model step. Input and output include their cached and reasoning subsets; context
-        size is the tokens fed into the latest step.
+        size is the tokens fed into the latest step, and cost is what the harness priced that step
+        at.
       </p>
     </div>
   );
@@ -182,6 +211,7 @@ function AgentStatsDetail({
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const metadata = [
     agent.role,
+    agent.harness,
     agent.phaseTitle,
     agent.workflowName,
     modelLabel,
@@ -326,6 +356,9 @@ export function TokenUsagePanel({
                   value={formatSubagentTokenCount(totals.processedTokens)}
                 />
               ) : null}
+              {totals.costUsd !== null ? (
+                <StatTile label="Cost" value={formatCostLabel(totals.costUsd)} />
+              ) : null}
               <StatTile label="Agents" value={`${totals.agentCount}`} />
             </div>
           </section>
@@ -395,6 +428,7 @@ export function TokenUsagePanel({
                       <th className="py-1 pr-2 text-right font-medium">In</th>
                       <th className="py-1 pr-2 text-right font-medium">Out</th>
                       <th className="py-1 pr-2 text-right font-medium">Tools</th>
+                      <th className="py-1 pr-2 text-right font-medium">Cost</th>
                       <th className="py-1 pr-2 text-right font-medium">Total</th>
                     </tr>
                   </thead>
@@ -418,6 +452,10 @@ export function TokenUsagePanel({
                               </span>
                             ) : null}
                           </div>
+                          <AgentIdentity
+                            role={usage.orchestrator.role}
+                            harness={usage.orchestrator.harness}
+                          />
                         </td>
                         <td className="py-1 pr-2 text-muted-foreground">
                           {usage.orchestrator.modelLabel ?? "—"}
@@ -430,6 +468,9 @@ export function TokenUsagePanel({
                         </td>
                         <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
                           —
+                        </td>
+                        <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                          {usage.orchestrator.costLabel}
                         </td>
                         <td className="py-1 pr-2 text-right font-medium tabular-nums text-foreground">
                           {usage.orchestrator.totalLabel}
@@ -461,6 +502,7 @@ export function TokenUsagePanel({
                               className="size-3 shrink-0 text-muted-foreground/40"
                             />
                           </div>
+                          <AgentIdentity role={agent.role} harness={agent.harness} />
                         </td>
                         <td className="py-1 pr-2 text-muted-foreground">
                           {agent.modelLabel ?? "—"}
@@ -473,6 +515,9 @@ export function TokenUsagePanel({
                         </td>
                         <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">
                           {agent.toolUses ?? "—"}
+                        </td>
+                        <td className="py-1 pr-2 text-right tabular-nums text-foreground/90">
+                          {agent.costLabel}
                         </td>
                         <td className="py-1 pr-2 text-right font-medium tabular-nums text-foreground">
                           {agent.totalLabel}
@@ -490,8 +535,9 @@ export function TokenUsagePanel({
           <p className="px-0.5 text-[.65rem] leading-relaxed text-muted-foreground/60">
             Provider-reported usage. Each turn shows its latest snapshot, and a subagent counts
             toward the turn that spawned it; Processed is the provider's cumulative session total
-            for the main thread. In workflow threads the Orchestrator row is the main thread's own
-            snapshots and has no per-step drill-in.
+            for the main thread. Cost is what each harness priced for its own run, so an unpriced
+            agent shows — instead of an estimate. In workflow threads the Orchestrator row is the
+            main thread's own snapshots and has no per-step drill-in.
           </p>
         </div>
       </ScrollArea>

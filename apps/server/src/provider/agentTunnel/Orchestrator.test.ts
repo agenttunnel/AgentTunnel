@@ -744,6 +744,13 @@ it.effect("auto mode uses the dispatched model for executor and reviewer tasks",
     );
     NodeAssert.equal(started.find((event) => event.role === "executor")?.model, "auto/executor");
     NodeAssert.equal(started.find((event) => event.role === "reviewer")?.model, "auto/reviewer");
+    // The panel shows which CLI ran each task, so the started event names it.
+    NodeAssert.equal(started.find((event) => event.role === "executor")?.harness, "fake-executor");
+    NodeAssert.equal(started.find((event) => event.role === "reviewer")?.harness, "fake-reviewer");
+    NodeAssert.equal(
+      events.find((event) => event.type === "workflow.started")?.harness,
+      "fake-orchestrator",
+    );
 
     const orchestratorPrompts = specs
       .filter((spec) => spec.id.startsWith("orchestrator"))
