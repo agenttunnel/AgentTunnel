@@ -78,7 +78,8 @@ export interface UserMessageSteeringBadge {
 /**
  * Copy for the steering label on a user message that was sent mid-run.
  * `queued` is the state the user needs to understand: the message is not a new
- * turn, it will be folded into the next planning pass.
+ * turn, the orchestrator takes it at its next pass — which starts immediately
+ * when no pass is running, even while subagents keep working.
  */
 export function deriveUserMessageSteeringBadge(
   steering: ChatMessage["steering"],
@@ -87,13 +88,13 @@ export function deriveUserMessageSteeringBadge(
     case "queued":
       return {
         label: "Steering",
-        detail: "queued — will be injected at the next planning pass",
+        detail: "queued — the orchestrator takes it in its next pass",
         tone: "queued",
       };
     case "injected":
       return {
         label: "Steering",
-        detail: "injected into the running pass",
+        detail: "injected — the orchestrator is weighing it now",
         tone: "injected",
       };
     case "cancelled":

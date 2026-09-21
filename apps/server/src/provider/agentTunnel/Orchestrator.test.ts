@@ -1,7 +1,9 @@
 import { AgentTunnelSettings } from "@t3tools/contracts";
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -13,6 +15,7 @@ import {
   type AgentTunnelProcessHandle,
   type AgentTunnelProcessRunner,
   type AgentTunnelProcessSpec,
+  type AgentTunnelSteeringChannel,
   runAgentTunnel,
 } from "./Orchestrator.ts";
 
@@ -240,7 +243,151 @@ it.effect("turns the recap heartbeat off when the interval is 0", () =>
   ),
 );
 
-it.effect("hands steering messages to the next planning pass", () =>
+/**
+ * Queue-backed steering source, mirroring the adapter: `pending` never blocks,
+ * `takeWhenAvailable` parks until a message lands. `Queue.takeAll` blocks for at
+ * least one message, hence the size check in both drains.
+ */
+const steeringChannel = (queue: Queue.Queue<string>): AgentTunnelSteeringChannel => {
+  const drainQueued = () =>
+    Queue.size(queue).pipe(
+      Effect.flatMap((size) =>
+        size === 0
+          ? Effect.succeed<ReadonlyArray<string>>([])
+          : Queue.takeAll(queue).pipe(Effect.map((entries) => Array.from(entries))),
+      ),
+    );
+  return {
+    pending: drainQueued,
+    takeWhenAvailable: () =>
+      Effect.gen(function* () {
+        const first = yield* Queue.take(queue);
+        return [first, ...(yield* drainQueued())];
+      }),
+  };
+};
+
+it.effect("runs a steering pass while subagents keep working", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const prompts: string[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 4,
+      });
+      const steeringQueue = yield* Queue.unbounded<string>();
+      const executorStarted = yield* Deferred.make<void>();
+      const steeringPassStarted = yield* Deferred.make<void>();
+      const followUpCompleted = yield* Deferred.make<void>();
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) =>
+          Effect.gen(function* () {
+            prompts.push(spec.prompt);
+            if (spec.id.startsWith("orchestrator")) {
+              if (spec.prompt.includes("## Steering pass")) {
+                yield* Deferred.succeed(steeringPassStarted, undefined);
+              }
+              return {
+                pid: 1,
+                lines: Stream.fromIterable(
+                  spec.prompt.includes("## Current user task")
+                    ? [
+                        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Long running work","pipeline":"implementation"}}',
+                        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                      ]
+                    : spec.prompt.includes("## Steering pass")
+                      ? [
+                          '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Format the fix","pipeline":"follow_up"}}',
+                          '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"follow-up dispatched"}}',
+                        ]
+                      : ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}'],
+                ),
+                exitCode: Effect.succeed(0),
+                kill: Effect.void,
+              } satisfies AgentTunnelProcessHandle;
+            }
+            // The planned work never finishes: the workflow is still running
+            // when the steering pass has to react to the message.
+            return spec.prompt.includes("Long running work")
+              ? {
+                  pid: 2,
+                  lines: Stream.never,
+                  exitCode: Effect.never,
+                  kill: Effect.void,
+                }
+              : {
+                  pid: 3,
+                  lines: Stream.fromIterable([
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"formatting fixed"}}',
+                  ]),
+                  exitCode: Effect.succeed(0),
+                  kill: Effect.void,
+                };
+          }),
+      };
+
+      const fiber = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "long task",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }).pipe(
+            Effect.andThen(
+              event.type === "agent.started"
+                ? Deferred.succeed(executorStarted, undefined)
+                : event.type === "agent.completed"
+                  ? Deferred.succeed(followUpCompleted, undefined)
+                  : Effect.void,
+            ),
+          ),
+        isCancelled: Effect.succeed(false),
+        steering: steeringChannel(steeringQueue),
+      }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(executorStarted);
+      yield* Queue.offer(steeringQueue, "the 712 MR pipeline fails on formatting");
+      yield* Deferred.await(steeringPassStarted);
+
+      // The pass saw the running agent, not a settled team.
+      const steeringPrompt = prompts.find((prompt) => prompt.includes("## Steering pass"));
+      NodeAssert.ok(steeringPrompt, "expected an orchestrator pass carrying the steering");
+      NodeAssert.match(steeringPrompt, /the 712 MR pipeline fails on formatting/);
+      NodeAssert.match(steeringPrompt, /## Agents working right now/);
+      NodeAssert.match(steeringPrompt, /Long running work/);
+
+      const markdown = collectMarkdown(events);
+      NodeAssert.match(markdown, /## Steering pass 2/);
+      NodeAssert.match(markdown, /while the team keeps working/);
+      NodeAssert.match(markdown, /Steering received/);
+
+      // Work dispatched by the steering pass runs without waiting for the
+      // long-running agent, which was left alone.
+      yield* Deferred.await(followUpCompleted);
+      const completed = events.filter(
+        (event): event is Extract<AgentTunnelEvent, { type: "agent.completed" }> =>
+          event.type === "agent.completed",
+      );
+      NodeAssert.equal(completed.length, 1);
+      NodeAssert.match(completed[0]?.summary ?? "", /Format the fix — completed/);
+      NodeAssert.ok(
+        events.every((event) => event.type !== "workflow.completed"),
+        "workflow must still be running while the planned agent works",
+      );
+
+      yield* Fiber.interrupt(fiber);
+    }),
+  ),
+);
+
+it.effect("hands steering that arrives during a pass to the next pass", () =>
   Effect.gen(function* () {
     const events: AgentTunnelEvent[] = [];
     const prompts: string[] = [];
@@ -248,32 +395,28 @@ it.effect("hands steering messages to the next planning pass", () =>
       orchestratorHarness: "fake-orchestrator",
       executorHarness: "fake-executor",
       reviewerHarness: "fake-reviewer",
-      maxOrchestratorPasses: 2,
+      maxOrchestratorPasses: 3,
     });
+    const steeringQueue = yield* Queue.unbounded<string>();
     const process: AgentTunnelProcessRunner = {
-      spawn: (spec) => {
-        prompts.push(spec.prompt);
-        return Effect.succeed({
-          pid: 1,
-          lines: Stream.fromIterable(
-            spec.prompt.includes("Summary pass")
-              ? ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}']
-              : spec.id.startsWith("orchestrator")
-                ? [
-                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Work","pipeline":"implementation"}}',
-                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
-                  ]
-                : [
-                    '__AGENTTUNNEL_TOOL__ {"name":"note_finding","arguments":{"key":"findings","value":"done"}}',
-                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"complete"}}',
-                  ],
-          ),
-          exitCode: Effect.succeed(0),
-          kill: Effect.void,
-        } satisfies AgentTunnelProcessHandle);
-      },
+      spawn: (spec) =>
+        Effect.gen(function* () {
+          prompts.push(spec.prompt);
+          // A harness pass cannot be told mid-run, so the message lands while
+          // the planning pass is running and has to be picked up afterwards.
+          if (spec.id === "orchestrator_1") {
+            yield* Queue.offer(steeringQueue, "also update the docs");
+          }
+          return {
+            pid: 1,
+            lines: Stream.fromIterable([
+              '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"nothing to do"}}',
+            ]),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle;
+        }),
     };
-    let delivered = false;
 
     const result = yield* runAgentTunnel({
       threadId: "thread-1",
@@ -284,80 +427,16 @@ it.effect("hands steering messages to the next planning pass", () =>
       process,
       emit: (event) => Effect.sync(() => events.push(event)),
       isCancelled: Effect.succeed(false),
-      takeSteeringMessages: () =>
-        Effect.sync(() => {
-          if (delivered) return [];
-          delivered = true;
-          return ["also update the docs"];
-        }),
+      steering: steeringChannel(steeringQueue),
     });
 
     NodeAssert.equal(result.status, "completed");
-    const markdown = events
-      .filter(
-        (event): event is Extract<AgentTunnelEvent, { type: "orchestrator.output" }> =>
-          event.type === "orchestrator.output",
-      )
-      .map((event) => event.text)
-      .join("");
-    NodeAssert.match(markdown, /Steering received/);
-    NodeAssert.ok(
-      prompts.some(
-        (prompt) => prompt.includes("Summary pass") && prompt.includes("also update the docs"),
-      ),
-      "expected steering in the summary pass prompt",
-    );
-  }),
-);
-
-it.effect("takes another pass when steering arrives during the final pass", () =>
-  Effect.gen(function* () {
-    const events: AgentTunnelEvent[] = [];
-    const prompts: string[] = [];
-    const settings = decodeSettings({
-      orchestratorHarness: "fake-orchestrator",
-      executorHarness: "fake-executor",
-      reviewerHarness: "fake-reviewer",
-      maxOrchestratorPasses: 3,
-    });
-    const process: AgentTunnelProcessRunner = {
-      spawn: (spec) => {
-        prompts.push(spec.prompt);
-        return Effect.succeed({
-          pid: 1,
-          lines: Stream.fromIterable([
-            '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"nothing to do"}}',
-          ]),
-          exitCode: Effect.succeed(0),
-          kill: Effect.void,
-        } satisfies AgentTunnelProcessHandle);
-      },
-    };
-    let drains = 0;
-
-    const result = yield* runAgentTunnel({
-      threadId: "thread-1",
-      workflowId: "workflow-1",
-      userTask: "steer late",
-      cwd: "/tmp",
-      settings,
-      process,
-      emit: (event) => Effect.sync(() => events.push(event)),
-      isCancelled: Effect.succeed(false),
-      takeSteeringMessages: () =>
-        Effect.sync(() => {
-          drains += 1;
-          return drains === 1 ? ["also update the docs"] : [];
-        }),
-    });
-
-    NodeAssert.equal(result.status, "completed");
-    NodeAssert.ok(
-      prompts.some(
-        (prompt) => prompt.includes("Summary pass") && prompt.includes("also update the docs"),
-      ),
-      "expected a follow-up pass carrying the late steering",
-    );
+    const steeringPrompts = prompts.filter((prompt) => prompt.includes("## Steering pass"));
+    NodeAssert.equal(steeringPrompts.length, 1);
+    NodeAssert.match(steeringPrompts[0]!, /also update the docs/);
+    // No agents were in flight by then, so the pass is not told about a team.
+    NodeAssert.doesNotMatch(steeringPrompts[0]!, /## Agents working right now/);
+    NodeAssert.match(collectMarkdown(events), /Steering received/);
   }),
 );
 
