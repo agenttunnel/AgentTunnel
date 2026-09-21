@@ -76,10 +76,30 @@ export interface TokenUsageAgentRow {
   readonly toolUses: number | null;
 }
 
+/**
+ * The thread's orchestrator (main-thread provider snapshots), surfaced as an
+ * AGENTS row in workflow threads. `modelLabel`/`status` come from the newest
+ * workflow's coordinator when the roster carries one.
+ */
+export interface TokenUsageOrchestratorRow {
+  readonly id: string;
+  readonly title: string;
+  readonly modelLabel: string | null;
+  readonly status: RuntimeSubagentStatus | null;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly inputLabel: string;
+  readonly outputLabel: string;
+  readonly totalLabel: string;
+  readonly processedTokens: number | null;
+}
+
 export interface TokenUsageModel {
   readonly totals: TokenUsageTotals;
   readonly turns: ReadonlyArray<TokenUsageTurnRow>;
   readonly agents: ReadonlyArray<TokenUsageAgentRow>;
+  readonly orchestrator: TokenUsageOrchestratorRow | null;
   readonly context: ContextUsageSummary | null;
   readonly hasUsage: boolean;
 }
@@ -334,6 +354,59 @@ export function deriveTokenUsage(input: {
   const turnList = Array.from(turns.values());
   const agents = collectDisplayAgents(input.model);
 
+  let inputTokens = detachedInputTokens;
+  let outputTokens = detachedOutputTokens;
+  let cachedInputTokens = detachedCachedInputTokens;
+  let reasoningOutputTokens = detachedReasoningOutputTokens;
+  let processedTokens = detachedProcessedTokens;
+  for (const turn of turnList) {
+    inputTokens += turn.inputTokens;
+    outputTokens += turn.outputTokens;
+    cachedInputTokens += turn.cachedInputTokens;
+    reasoningOutputTokens += turn.reasoningOutputTokens;
+    if (turn.processedTokens !== null) {
+      processedTokens = Math.max(processedTokens ?? 0, turn.processedTokens);
+    }
+  }
+  // Snapshot input/output already include the cached and reasoning subsets
+  // (UsageTokenTotals contract), so those categories are displayed beside the
+  // sums, never added on top.
+  const mainTokens = inputTokens + outputTokens;
+
+  // Workflow threads run an orchestrator whose provider frames land as this
+  // thread's own snapshots, so the main-thread sums ARE the orchestrator's.
+  // Only name it for workflow threads, and only once it reported something.
+  const isWorkflowThread =
+    input.model.workflows.length > 0 ||
+    agents.some((agent) => agent.workflowName === "AgentTunnel");
+  const coordinator = input.model.workflows.at(-1)?.workflow ?? null;
+  const orchestrator: TokenUsageOrchestratorRow | null =
+    isWorkflowThread && (inputTokens > 0 || outputTokens > 0 || processedTokens !== null)
+      ? {
+          id: coordinator?.id ?? "orchestrator",
+          title: "Orchestrator",
+          modelLabel:
+            coordinator === null
+              ? null
+              : formatSubagentModelLabel(coordinator.model, coordinator.effort),
+          status: coordinator?.status ?? null,
+          inputTokens,
+          outputTokens,
+          totalTokens: mainTokens,
+          inputLabel: formatSubagentTokenCount(inputTokens),
+          outputLabel: formatSubagentTokenCount(outputTokens),
+          totalLabel: formatSubagentTokenCount(mainTokens),
+          processedTokens,
+        }
+      : null;
+
+  // A member-less workflow's coordinator stands in as its roster row
+  // (collectDisplayAgents), but the orchestrator row already names it, so drop
+  // the duplicate and render that entity once. Subagent sums come from these
+  // same rows, so a hidden coordinator can never inflate the Subagent tile.
+  const visibleAgents =
+    orchestrator === null ? agents : agents.filter((agent) => agent.id !== orchestrator.id);
+
   // Subagents are attributed to the turn that first observed them: the turn
   // "bought" that agent's work, even when the agent outlives the pass.
   const turnForTime = (at: string): MutableTurn | null => {
@@ -347,7 +420,7 @@ export function deriveTokenUsage(input: {
     }
     return match ?? turnList[0] ?? null;
   };
-  for (const agent of agents) {
+  for (const agent of visibleAgents) {
     const total = agentTotalTokens(agent);
     if (total === null || total <= 0) {
       continue;
@@ -383,27 +456,12 @@ export function deriveTokenUsage(input: {
       };
     });
 
-  let inputTokens = detachedInputTokens;
-  let outputTokens = detachedOutputTokens;
-  let cachedInputTokens = detachedCachedInputTokens;
-  let reasoningOutputTokens = detachedReasoningOutputTokens;
-  let processedTokens = detachedProcessedTokens;
-  for (const turn of turnList) {
-    inputTokens += turn.inputTokens;
-    outputTokens += turn.outputTokens;
-    cachedInputTokens += turn.cachedInputTokens;
-    reasoningOutputTokens += turn.reasoningOutputTokens;
-    if (turn.processedTokens !== null) {
-      processedTokens = Math.max(processedTokens ?? 0, turn.processedTokens);
-    }
-  }
-  const subagentTokens = agents.reduce((sum, agent) => sum + (agentTotalTokens(agent) ?? 0), 0);
-  // Snapshot input/output already include the cached and reasoning subsets
-  // (UsageTokenTotals contract), so those categories are displayed beside the
-  // sums, never added on top.
-  const mainTokens = inputTokens + outputTokens;
+  const subagentTokens = visibleAgents.reduce(
+    (sum, agent) => sum + (agentTotalTokens(agent) ?? 0),
+    0,
+  );
 
-  const agentRows = agents.map((agent): TokenUsageAgentRow => {
+  const agentRows = visibleAgents.map((agent): TokenUsageAgentRow => {
     const usage = agent.usage;
     return {
       id: agent.id,
@@ -429,10 +487,12 @@ export function deriveTokenUsage(input: {
       subagentTokens,
       totalTokens: mainTokens + subagentTokens,
       processedTokens,
-      agentCount: agents.length,
+      // Counts every row the AGENTS table renders, orchestrator included.
+      agentCount: agentRows.length + (orchestrator === null ? 0 : 1),
     },
     turns: rows,
     agents: agentRows,
+    orchestrator,
     context: deriveContextUsage(input.contextWindow),
     hasUsage:
       rows.length > 0 ||
