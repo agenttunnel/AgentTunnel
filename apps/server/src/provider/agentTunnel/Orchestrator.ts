@@ -160,6 +160,8 @@ export type AgentTunnelEvent =
       /** Harness CLI that will run this agent (role's configured harness). */
       readonly harness: string;
       readonly model?: string;
+      /** Run number for this agent id; omitted means the first attempt. */
+      readonly attempt?: number;
     }
   | {
       readonly type: "agent.progress";
@@ -206,6 +208,13 @@ export interface AgentTunnelRunOptions {
    * waiting for the running pipelines to finish.
    */
   readonly steering?: AgentTunnelSteeringChannel;
+  /**
+   * Per-agent control the user sent while this workflow runs: interrupting one
+   * agent's process, or re-running a failed task in place. Absent when no
+   * control surface is wired up, in which case nothing can be interrupted or
+   * retried mid-run.
+   */
+  readonly agentControl?: AgentTunnelAgentControlChannel;
 }
 
 /**
@@ -218,12 +227,40 @@ export interface AgentTunnelSteeringChannel {
   readonly takeWhenAvailable: () => Effect.Effect<ReadonlyArray<string>>;
 }
 
+/** One control command aimed at a single sub-agent. */
+export type AgentTunnelAgentCommand =
+  | { readonly kind: "interrupt"; readonly agentId: string }
+  | { readonly kind: "retry"; readonly agentId: string };
+
+/**
+ * Per-agent control queue. `pending` reports what is queued without blocking;
+ * `takeWhenAvailable` waits for the next command and drains the rest with it.
+ *
+ * An interrupt is recorded as soon as the loop drains it: the adapter already
+ * killed that agent's process, and a killed agent is stopped, not failed. A
+ * retry is held until the round settles, so it can never re-run a task whose
+ * process is still in flight.
+ */
+export interface AgentTunnelAgentControlChannel {
+  readonly pending: () => Effect.Effect<ReadonlyArray<AgentTunnelAgentCommand>>;
+  readonly takeWhenAvailable: () => Effect.Effect<ReadonlyArray<AgentTunnelAgentCommand>>;
+}
+
 /** A sub-agent run in flight, as a steering pass needs to see it. */
 interface RunningTask {
   readonly role: AgentTunnelRole;
   readonly label: string;
   readonly pipelineId: string;
 }
+
+/**
+ * What woke the loop while it held the turn open for a retry: the deadline, a
+ * retry command that was applied, or steering the user sent instead.
+ */
+type RetryWaitOutcome =
+  | { readonly kind: "timeout" }
+  | { readonly kind: "retry" }
+  | { readonly kind: "steering"; readonly messages: ReadonlyArray<string> };
 
 interface DispatchedTask {
   readonly id: string;
@@ -260,6 +297,8 @@ interface TaskRecord {
   readonly harness: string;
   readonly model?: string;
   readonly error?: string;
+  /** Attempt number when this agent ran more than once; omitted means one run. */
+  readonly attempt?: number;
 }
 
 /**
@@ -420,6 +459,16 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   // Sub-agent runs still in flight, keyed by agent id. A steering pass reads
   // this roster before dispatching, since a running agent cannot be re-told.
   const activeTasks = new Map<string, RunningTask>();
+  // Agents the user interrupted. A killed process must read as stopped, not
+  // failed, even though the thread-level cancel flag stays false for a
+  // per-agent interrupt; a task whose agent is already here must not spawn.
+  const stoppedAgentIds = new Set<string>();
+  // Retry commands, held until the round settles: only the settle handler can
+  // re-run a task and then recompute the pipeline that task belongs to.
+  const retryRequests = new Set<string>();
+  // Attempt number per agent id, so every run of an agent shares one id, one
+  // record row and one log file.
+  const attempts = new Map<string, number>();
 
   const emit = options.emit;
   const isCancelled = options.isCancelled;
@@ -926,21 +975,238 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     }
   });
 
+  const agentIdOf = (task: DispatchedTask): string =>
+    `agenttunnel_${options.workflowId}_${task.id}`;
+
+  /**
+   * Applies whatever the user queued for individual agents. Interrupts are
+   * recorded at once — the adapter already killed that agent's process, and a
+   * killed agent is stopped, not failed, even though the thread-level cancel
+   * flag stays false. Retries are only collected here; re-running a task and
+   * recomputing its pipeline is the settle handler's job.
+   */
+  const drainAgentCommands = Effect.fn("runAgentTunnel.drainAgentCommands")(function* () {
+    const channel = options.agentControl;
+    if (!channel) return;
+    for (const command of yield* channel.pending()) {
+      if (command.kind === "retry") {
+        retryRequests.add(command.agentId);
+        continue;
+      }
+      if (stoppedAgentIds.has(command.agentId)) continue;
+      stoppedAgentIds.add(command.agentId);
+      yield* trace("agent interrupt received", {
+        workflowId: options.workflowId,
+        agentId: command.agentId,
+      });
+      const interrupted = tasks.find((task) => agentIdOf(task) === command.agentId);
+      const interruptedLabel = interrupted ? humanTaskLabel(interrupted.task) : command.agentId;
+      yield* emit({
+        type: "orchestrator.output",
+        text: `\n> ⏹️ **Interrupt requested** — ${interruptedLabel} is being stopped.\n\n`,
+      });
+    }
+  });
+
+  /** One record per task id: a retried task replaces its earlier attempt. */
+  const recordTask = (record: TaskRecord) => {
+    const index = taskRecords.findIndex((entry) => entry.id === record.id);
+    if (index >= 0) {
+      taskRecords[index] = record;
+      return;
+    }
+    taskRecords.push(record);
+  };
+
+  /**
+   * Recomputes a pipeline from its records. A retry that succeeded turns the
+   * pipeline back to completed, which is what unblocks its dependents.
+   */
+  const recomputePipelineStatus = (pipelineId: string): void => {
+    const pipeline = pipelines.get(pipelineId);
+    if (!pipeline) return;
+    pipeline.status = tasks
+      .filter((task) => task.pipelineId === pipelineId)
+      .every((task) => taskRecords.find((record) => record.id === task.id)?.status === "completed")
+      ? "completed"
+      : "failed";
+  };
+
+  /**
+   * Records how one attempt ended: the closing narration, this agent's task
+   * record (replaced, never stacked) and the shared-context block it wrote,
+   * which the next orchestrator pass reads. Both carry only the newest attempt.
+   */
+  const recordTaskOutcome = Effect.fn("runAgentTunnel.recordTaskOutcome")(function* (input: {
+    readonly task: DispatchedTask;
+    readonly agentId: string;
+    readonly label: string;
+    readonly status: AgentTunnelAgentStatus;
+    readonly attempt: number;
+    readonly durationMs: number;
+    readonly outputLines: number;
+    readonly harness: string;
+    readonly model?: string;
+    readonly exitCode?: number;
+    readonly errorExcerpt?: string;
+    readonly resultText: string;
+  }) {
+    const { task, agentId, label, status, attempt } = input;
+    const duration = formatDuration(input.durationMs);
+    context.replaceAuthor(`result_${safeKey(task.pipelineId)}`, input.resultText, agentId);
+    const outcomeDetail = input.errorExcerpt
+      ? ` — ${input.errorExcerpt}`
+      : ` · ${input.outputLines} line${input.outputLines === 1 ? "" : "s"} of output`;
+    const attemptDetail = attempt > 1 ? ` · attempt ${attempt}` : "";
+    yield* emit({
+      type: "orchestrator.output",
+      text: `${statusIcon(status)} **${task.role} · ${label}** ${statusLabel(status)} in ${duration}${outcomeDetail}${attemptDetail}\n\n`,
+    });
+    recordTask({
+      id: task.id,
+      role: task.role,
+      label,
+      pipelineId: task.pipelineId,
+      agentIndex: task.agentIndex,
+      status,
+      durationMs: input.durationMs,
+      outputLines: input.outputLines,
+      harness: input.harness,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.errorExcerpt ? { error: input.errorExcerpt } : {}),
+      ...(attempt > 1 ? { attempt } : {}),
+    });
+    yield* emit({
+      type: "agent.completed",
+      workflowId: options.workflowId,
+      agentId,
+      role: task.role,
+      status,
+      summary: `${label} — ${statusLabel(status)} in ${duration}${outcomeDetail}`,
+    });
+    yield* trace("agent completed", {
+      workflowId: options.workflowId,
+      agentId,
+      role: task.role,
+      status,
+      pipeline: task.pipelineId,
+      attempt,
+      ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
+    });
+  });
+
+  /**
+   * Runs one task, re-running it in place while it ends failed and the
+   * auto-retry budget allows. Every attempt reuses the agent id, so the client
+   * keeps one agent row and one log file. A stopped task is never auto-retried:
+   * the user interrupted it on purpose.
+   */
+  const runTaskWithRetries = Effect.fn("runAgentTunnel.runTaskWithRetries")(function* (
+    task: DispatchedTask,
+    agentId: string,
+    label: string,
+  ) {
+    const maxRetries = Math.max(0, options.settings.maxAgentRetries ?? 0);
+    let attempt = attempts.get(agentId) ?? 1;
+    attempts.set(agentId, attempt);
+    let status = yield* runTaskBody(task, agentId, label, attempt);
+    while (status === "failed" && attempt <= maxRetries) {
+      attempt += 1;
+      attempts.set(agentId, attempt);
+      yield* trace("agent auto-retrying", {
+        workflowId: options.workflowId,
+        agentId,
+        role: task.role,
+        pipeline: task.pipelineId,
+        attempt,
+        maxRetries,
+      });
+      yield* emit({
+        type: "orchestrator.output",
+        text: `\n↻ **${task.role} · ${label}** retrying (attempt ${attempt})\n\n`,
+      });
+      status = yield* runTaskBody(task, agentId, label, attempt);
+    }
+    return status;
+  });
+
   const runTask = Effect.fn("runAgentTunnel.runTask")(function* (task: DispatchedTask) {
-    const agentId = `agenttunnel_${options.workflowId}_${task.id}`;
+    const agentId = agentIdOf(task);
     const label = humanTaskLabel(task.task);
     // Registered before the process spawns: a steering pass that lands while
     // this agent runs must see it in the roster and route around it.
     activeTasks.set(agentId, { role: task.role, label, pipelineId: task.pipelineId });
-    return yield* runTaskBody(task, agentId, label).pipe(
+    return yield* runTaskWithRetries(task, agentId, label).pipe(
       Effect.ensuring(Effect.sync(() => activeTasks.delete(agentId))),
     );
+  });
+
+  /**
+   * Re-runs a task the user asked for, ignoring the auto-retry budget, and
+   * recomputes its pipeline from the new record so a repaired pipeline can
+   * unblock its dependents.
+   */
+  const retryTask = Effect.fn("runAgentTunnel.retryTask")(function* (task: DispatchedTask) {
+    const agentId = agentIdOf(task);
+    const label = humanTaskLabel(task.task);
+    const attempt = (attempts.get(agentId) ?? 1) + 1;
+    attempts.set(agentId, attempt);
+    // The user asked for this run explicitly, so the interrupt that stopped the
+    // previous attempt does not apply to it.
+    stoppedAgentIds.delete(agentId);
+    yield* trace("agent retried on request", {
+      workflowId: options.workflowId,
+      agentId,
+      role: task.role,
+      pipeline: task.pipelineId,
+      attempt,
+    });
+    yield* emit({
+      type: "orchestrator.output",
+      text: `\n↻ **${task.role} · ${label}** retrying (attempt ${attempt}) — retried from the Agents panel\n\n`,
+    });
+    activeTasks.set(agentId, { role: task.role, label, pipelineId: task.pipelineId });
+    const status = yield* runTaskWithRetries(task, agentId, label).pipe(
+      Effect.ensuring(Effect.sync(() => activeTasks.delete(agentId))),
+    );
+    recomputePipelineStatus(task.pipelineId);
+    return status;
+  });
+
+  /**
+   * Applies queued retry commands, one task at a time. A retry aimed at an
+   * agent that is still running stays queued until the round settles; one aimed
+   * at an agent that already completed, or at an id this workflow never ran, is
+   * dropped.
+   */
+  const applyPendingRetries = Effect.fn("runAgentTunnel.applyPendingRetries")(function* () {
+    yield* drainAgentCommands();
+    if (retryRequests.size === 0) return 0;
+    let applied = 0;
+    for (const agentId of [...retryRequests]) {
+      if (yield* isCancelled) break;
+      if (activeTasks.has(agentId)) continue;
+      const task = tasks.find((entry) => agentIdOf(entry) === agentId);
+      if (!task) {
+        retryRequests.delete(agentId);
+        continue;
+      }
+      if (taskRecords.find((record) => record.id === task.id)?.status === "completed") {
+        retryRequests.delete(agentId);
+        continue;
+      }
+      retryRequests.delete(agentId);
+      yield* retryTask(task);
+      applied += 1;
+    }
+    return applied;
   });
 
   const runTaskBody = Effect.fn("runAgentTunnel.runTaskBody")(function* (
     task: DispatchedTask,
     agentId: string,
     label: string,
+    attempt: number,
   ) {
     startedTaskCount += 1;
     const pipelineIndex = Math.max(0, pipelineOrder.indexOf(task.pipelineId));
@@ -966,6 +1232,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       phaseIndex: pipelineIndex,
       harness,
       ...(model ? { model } : {}),
+      ...(attempt > 1 ? { attempt } : {}),
     });
     const startedAt = yield* Clock.currentTimeMillis;
     // Use a bullet + quoted task line so the previous blockquote is closed
@@ -978,7 +1245,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       .join("\n");
     yield* emit({
       type: "orchestrator.output",
-      text: `\n- ${roleIcon(task.role)} **${task.role} · ${label}** started in \`${task.pipelineId}\`${model ? ` · ${model}` : ""}\n\n${taskQuote}\n\n`,
+      text: `\n- ${roleIcon(task.role)} **${task.role} · ${label}** started in \`${task.pipelineId}\`${model ? ` · ${model}` : ""}${attempt > 1 ? ` · attempt ${attempt}` : ""}\n\n${taskQuote}\n\n`,
     });
     yield* emit({
       type: "agent.progress",
@@ -1001,6 +1268,25 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         : "";
     const systemPrompt = roleConfig.prompt;
     const prompt = `${systemPrompt}\n\n## Task\n${task.task}${contextBlock}\n\nCall done when finished.`;
+    // An interrupt that arrived before this attempt spawned must leave no
+    // process behind: report the same stopped outcome a killed process gives,
+    // with no output of its own.
+    yield* drainAgentCommands();
+    if (stoppedAgentIds.has(agentId)) {
+      yield* recordTaskOutcome({
+        task,
+        agentId,
+        label,
+        status: "stopped",
+        attempt,
+        durationMs: (yield* Clock.currentTimeMillis) - startedAt,
+        outputLines: 0,
+        harness,
+        ...(model ? { model } : {}),
+        resultText: `## ${task.role} ${agentId} (stopped)\n\nTask: ${task.task}\n\nStopped by the user before it ran.`,
+      });
+      return "stopped" satisfies AgentTunnelAgentStatus;
+    }
     let progressLineCount = 0;
     let firstOutputLine = true;
     const result = yield* runProcess(
@@ -1048,59 +1334,31 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       yield* emit({ type: "orchestrator.output", text: "```\n\n</details>\n\n" });
     }
 
+    // The adapter kills the process on an interrupt, so drain the command
+    // before reading the outcome: a killed agent is stopped, not failed.
+    yield* drainAgentCommands();
     const cancelled = yield* isCancelled;
-    const status: AgentTunnelAgentStatus = cancelled
-      ? "stopped"
-      : result.code === 0
-        ? "completed"
-        : "failed";
+    const status: AgentTunnelAgentStatus =
+      cancelled || stoppedAgentIds.has(agentId)
+        ? "stopped"
+        : result.code === 0
+          ? "completed"
+          : "failed";
     const durationMs = (yield* Clock.currentTimeMillis) - startedAt;
-    const duration = formatDuration(durationMs);
     const errorExcerpt = result.error ? plainTextPreview(result.error, 160) : undefined;
-    const resultKey = `result_${safeKey(task.pipelineId)}`;
-    appendContext(
-      context,
-      resultKey,
-      `## ${task.role} ${agentId} (${status})\n\nTask: ${task.task}\n\n${output.join("\n")}`,
+    yield* recordTaskOutcome({
+      task,
       agentId,
-    );
-    const outcomeDetail = errorExcerpt
-      ? ` — ${errorExcerpt}`
-      : ` · ${progressLineCount} line${progressLineCount === 1 ? "" : "s"} of output`;
-    const completionMarkdown = `${statusIcon(status)} **${task.role} · ${label}** ${statusLabel(status)} in ${duration}${outcomeDetail}`;
-    const completionSummary = `${label} — ${statusLabel(status)} in ${duration}${outcomeDetail}`;
-    yield* emit({
-      type: "orchestrator.output",
-      text: `${completionMarkdown}\n\n`,
-    });
-    taskRecords.push({
-      id: task.id,
-      role: task.role,
       label,
-      pipelineId: task.pipelineId,
-      agentIndex: task.agentIndex,
       status,
+      attempt,
       durationMs,
       outputLines: progressLineCount,
       harness,
       ...(model ? { model } : {}),
-      ...(errorExcerpt ? { error: errorExcerpt } : {}),
-    });
-    yield* emit({
-      type: "agent.completed",
-      workflowId: options.workflowId,
-      agentId,
-      role: task.role,
-      status,
-      summary: completionSummary,
-    });
-    yield* trace("agent completed", {
-      workflowId: options.workflowId,
-      agentId,
-      role: task.role,
-      status,
-      pipeline: task.pipelineId,
-      exitCode: result.code ?? -1,
+      ...(result.code === null ? {} : { exitCode: result.code }),
+      ...(errorExcerpt ? { errorExcerpt } : {}),
+      resultText: `## ${task.role} ${agentId} (${status})\n\nTask: ${task.task}\n\n${output.join("\n")}`,
     });
     return status;
   });
@@ -1149,12 +1407,15 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       stoppedCount > 0 ? `${stoppedCount} stopped` : null,
     ].filter((value): value is string => value !== null);
     const breakdown = statusParts.join(" · ");
-    const pipelineIcon = ok ? "✅" : "❌";
+    // A pipeline whose only losses were user interrupts has not failed: label
+    // it stopped so the summary matches the agent rows inside it.
+    const pipelineLabel = ok ? "completed" : failedCount > 0 ? "failed" : "stopped";
+    const pipelineIcon = ok ? "✅" : failedCount > 0 ? "❌" : "⏹️";
     yield* emit({
       type: "orchestrator.output",
-      text: `\n${pipelineIcon} **Pipeline \`${pipeline.id}\` ${pipeline.status}** · ${breakdown} · ${formatDuration(pipeline.durationMs)}\n\n`,
+      text: `\n${pipelineIcon} **Pipeline \`${pipeline.id}\` ${pipelineLabel}** · ${breakdown} · ${formatDuration(pipeline.durationMs)}\n\n`,
     });
-    yield* emitProgress(`Pipeline "${pipeline.id}" ${pipeline.status} · ${breakdown}`);
+    yield* emitProgress(`Pipeline "${pipeline.id}" ${pipelineLabel} · ${breakdown}`);
     return ok;
   });
 
@@ -1280,11 +1541,75 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     ).pipe(Effect.forkIn(scope));
   }
 
+  /**
+   * Ends a workflow that still has unresolved work. A round whose only losses
+   * were agents the user interrupted reports "stopped": nothing failed.
+   */
+  const finishOutstanding = Effect.fn("runAgentTunnel.finishOutstanding")(function* (
+    failureSummary: string,
+  ) {
+    const wasStopped =
+      (yield* isCancelled) ||
+      (taskRecords.length > 0 && taskRecords.every((record) => record.status !== "failed"));
+    return yield* finish(
+      wasStopped ? "stopped" : "failed",
+      wasStopped ? "The workflow was stopped before all planned work finished." : failureSummary,
+    );
+  });
+
+  /**
+   * Last chance before unresolved work ends the turn: hold the loop open for a
+   * retry from the Agents panel, or for steering, whichever lands first. A
+   * retry is applied here; steering is handed back so the caller can run a pass
+   * with it instead of giving up.
+   */
+  const awaitRetryOrSteering = Effect.fn("runAgentTunnel.awaitRetryOrSteering")(
+    function* (): Effect.fn.Return<RetryWaitOutcome> {
+      const channel = options.agentControl;
+      const waitMinutes = Math.max(0, options.settings.agentRetryWaitMinutes ?? 0);
+      // Without a control surface there is nothing to wait for.
+      if (!channel || waitMinutes === 0) return { kind: "timeout" };
+      yield* emit({
+        type: "orchestrator.output",
+        text: `\n> ⏸️ **Waiting for a retry** — retry a failed agent from the Agents panel, or stop the turn. Giving up in ${waitMinutes} minute${waitMinutes === 1 ? "" : "s"}.\n\n`,
+      });
+      yield* emitRecap();
+      const outcome = yield* Effect.raceAll([
+        channel
+          .takeWhenAvailable()
+          .pipe(Effect.map((commands) => ({ kind: "command" as const, commands }))),
+        // Steering still wakes the loop: the user may prefer to steer around the
+        // failure rather than retry it.
+        (options.steering ? options.steering.takeWhenAvailable() : Effect.never).pipe(
+          Effect.map((messages) => ({ kind: "message" as const, messages })),
+        ),
+        Effect.sleep(Duration.minutes(waitMinutes)).pipe(Effect.as({ kind: "deadline" as const })),
+      ]);
+      if (outcome.kind === "deadline") return { kind: "timeout" };
+      if (outcome.kind === "message") return { kind: "steering", messages: outcome.messages };
+      for (const command of outcome.commands) {
+        if (command.kind === "retry") {
+          retryRequests.add(command.agentId);
+          continue;
+        }
+        stoppedAgentIds.add(command.agentId);
+      }
+      // An interrupt alone changes nothing here — nothing is running — so only a
+      // retry that actually re-ran a task resumes the workflow.
+      const applied = yield* applyPendingRetries();
+      return applied > 0 ? { kind: "retry" } : { kind: "timeout" };
+    },
+  );
+
   const runWorkflow = Effect.gen(function* () {
     // Pipelines have run since the last summary pass: the orchestrator owes the
     // round a check-in once that work settles.
     let roundRanPipelines = false;
     let planningPassOwed = true;
+    // Set once the orchestrator has been handed the current round's failures, so
+    // the same failure is not re-litigated forever; cleared as soon as it
+    // dispatches work of its own.
+    let failurePassTaken = false;
     while (orchestratorPasses < options.settings.maxOrchestratorPasses) {
       if (yield* isCancelled) {
         yield* waitForPipelinesToSettle();
@@ -1311,29 +1636,50 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
               )
             : yield* options.steering?.pending() ?? Effect.succeed([]);
         if (steering.length === 0) {
-          if (pipelineOrder.some((id) => pipelines.get(id)?.status === "failed")) {
-            const wasStopped = yield* isCancelled;
-            return yield* finish(
-              wasStopped ? "stopped" : "failed",
-              wasStopped ? "The workflow was stopped." : "One or more pipelines failed.",
-            );
-          }
-          const start = yield* startReadyPipelines();
-          if (start.deadlocked) {
-            return yield* finish("failed", "One or more pipelines failed.");
-          }
-          // A dependency chain just advanced: keep the round going instead of
-          // checking in between chain links.
-          if (start.started > 0) {
+          // A retry re-runs its task in place and can repair the round, so it is
+          // applied before anything else is concluded from the failures.
+          const retried = yield* applyPendingRetries();
+          if (retried > 0) {
             roundRanPipelines = true;
+            failurePassTaken = false;
             continue;
           }
-          if (!roundRanPipelines) {
-            return yield* finish(
-              "completed",
-              "All planned work finished — the orchestrator found no follow-up tasks.",
-              finalReport,
-            );
+          if (pipelineOrder.some((id) => pipelines.get(id)?.status === "failed")) {
+            if (!failurePassTaken) {
+              // Hand the failures to the orchestrator before giving up: the
+              // summary pass carries the dispatch outcomes, so it can dispatch a
+              // fix-up pipeline instead of the run ending here.
+              failurePassTaken = true;
+            } else {
+              const wait = yield* awaitRetryOrSteering();
+              if (wait.kind === "retry") {
+                roundRanPipelines = true;
+                failurePassTaken = false;
+                continue;
+              }
+              if (wait.kind === "timeout") {
+                return yield* finishOutstanding("One or more pipelines failed.");
+              }
+              steering = wait.messages;
+            }
+          } else {
+            const start = yield* startReadyPipelines();
+            if (start.deadlocked) {
+              return yield* finish("failed", "One or more pipelines failed.");
+            }
+            // A dependency chain just advanced: keep the round going instead of
+            // checking in between chain links.
+            if (start.started > 0) {
+              roundRanPipelines = true;
+              continue;
+            }
+            if (!roundRanPipelines) {
+              return yield* finish(
+                "completed",
+                "All planned work finished — the orchestrator found no follow-up tasks.",
+                finalReport,
+              );
+            }
           }
         }
       }
@@ -1360,6 +1706,10 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         // This pass dispatched no new pipelines, so its done payload — if any —
         // is the workflow's final report.
         finalReport = passDoneReport;
+      }
+      if (pipelineOrder.length > pipelineCountBefore) {
+        // Fresh work is on the way, so the next failure deserves its own pass.
+        failurePassTaken = false;
       }
       if (steering.length === 0) {
         roundRanPipelines = false;
@@ -1493,11 +1843,15 @@ function formatWorkflowFinishMarkdown(input: {
       const records = orderedRecords.filter((record) => record.pipelineId === id);
       const completed = records.filter((record) => record.status === "completed").length;
       const pipelineStatus = pipeline?.status ?? "pending";
+      // A failed pipeline whose only losses were user interrupts is reported as
+      // stopped, matching its agent rows.
       const pipelineCell =
         pipelineStatus === "completed"
           ? "✅ completed"
           : pipelineStatus === "failed"
-            ? "❌ failed"
+            ? records.some((record) => record.status === "failed")
+              ? "❌ failed"
+              : "⏹️ stopped"
             : "⏳ pending";
       const agentsCell = records.length === 0 ? "none" : `${completed}/${records.length}`;
       const timeCell =
@@ -1512,19 +1866,28 @@ function formatWorkflowFinishMarkdown(input: {
     lines.push("| Agent | Pipeline | Status | Time | Output |");
     lines.push("| --- | --- | --- | --- | --- |");
     for (const record of orderedRecords) {
+      const lineCount = `${record.outputLines} ${record.outputLines === 1 ? "line" : "lines"}`;
+      const attemptCount =
+        record.attempt && record.attempt > 1 ? ` · ${record.attempt} attempts` : "";
       lines.push(
-        `| ${roleIcon(record.role)} ${record.role} · ${record.label} | \`${record.pipelineId}\` | ${statusIcon(record.status)} ${statusLabel(record.status)} | ${formatDuration(record.durationMs)} | ${record.outputLines} ${record.outputLines === 1 ? "line" : "lines"} |`,
+        `| ${roleIcon(record.role)} ${record.role} · ${record.label} | \`${record.pipelineId}\` | ${statusIcon(record.status)} ${statusLabel(record.status)} | ${formatDuration(record.durationMs)} | ${lineCount}${attemptCount} |`,
       );
     }
     lines.push("");
   }
 
-  const failures = orderedRecords.filter((record) => record.status === "failed");
+  // Failed first, then stopped: an interrupted agent is listed too, so the
+  // report never hides work the workflow did not finish.
+  const failures = orderedRecords
+    .filter((record) => record.status !== "completed")
+    .sort((left, right) => (left.status === right.status ? 0 : left.status === "failed" ? -1 : 1));
   if (failures.length > 0) {
     lines.push("\n### Failures\n");
     for (const record of failures) {
       lines.push(
-        `- ❌ **${record.role} · ${record.label}** — ${record.error ?? "no error detail"}`,
+        record.status === "failed"
+          ? `- ❌ **${record.role} · ${record.label}** — ${record.error ?? "no error detail"}`
+          : `- ⏹️ **${record.role} · ${record.label}** — stopped before it finished`,
       );
     }
     lines.push("");

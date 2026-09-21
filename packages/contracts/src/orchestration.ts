@@ -951,6 +951,28 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Per-agent control for providers that run subagents as child processes
+ * (AgentTunnel): stop one running agent, or re-run one that failed or was
+ * stopped. Both address the agent by the task id the run already reports, which
+ * stays stable across attempts.
+ */
+const ThreadAgentInterruptCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent.interrupt"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+const ThreadAgentRetryCommand = Schema.Struct({
+  type: Schema.Literal("thread.agent.retry"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
   commandId: CommandId,
@@ -1010,6 +1032,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadAgentInterruptCommand,
+  ThreadAgentRetryCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -1038,6 +1062,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadAgentInterruptCommand,
+  ThreadAgentRetryCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -1168,6 +1194,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-steering-updated",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.agent-interrupt-requested",
+  "thread.agent-retry-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1360,6 +1388,18 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadAgentInterruptRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadAgentRetryRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
 
@@ -1558,6 +1598,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-interrupt-requested"),
+    payload: ThreadAgentInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.agent-retry-requested"),
+    payload: ThreadAgentRetryRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

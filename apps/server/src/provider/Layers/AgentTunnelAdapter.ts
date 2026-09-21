@@ -43,6 +43,7 @@ import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
+  type AgentTunnelAgentCommand,
   type AgentTunnelEvent,
   type AgentTunnelRole,
   AgentTunnelProcessError,
@@ -92,6 +93,8 @@ interface AgentTunnelAgentMetadata {
   readonly model?: string;
   /** CLI that ran this agent (executor/reviewer harness). */
   readonly harness?: string;
+  /** Run number this agent is on; omitted means its first attempt. */
+  readonly attempt?: number;
 }
 
 interface AgentTunnelSteeringEntry {
@@ -125,6 +128,12 @@ interface AgentTunnelSessionContext {
    * landing while no pass is in flight starts one immediately.
    */
   readonly steering: Queue.Queue<AgentTunnelSteeringEntry>;
+  /**
+   * Per-agent control the user sent while the turn runs: interrupts and retries
+   * aimed at one sub-agent. The orchestrator drains it, so an interrupt marks
+   * that agent stopped and a retry re-runs its task in place.
+   */
+  readonly agentControl: Queue.Queue<AgentTunnelAgentCommand>;
 }
 
 export interface AgentTunnelAdapterOptions {
@@ -326,6 +335,20 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     yield* resolveSteering(context, threadId, yield* drainQueuedSteering(context), "cancelled");
   });
 
+  /**
+   * Drains queued agent controls without waiting, mirroring the steering drain:
+   * `Queue.takeAll` blocks for at least one entry, so the size check is what
+   * makes this non-blocking.
+   */
+  const drainQueuedAgentCommands = (context: AgentTunnelSessionContext) =>
+    Queue.size(context.agentControl).pipe(
+      Effect.flatMap((size) =>
+        size === 0
+          ? Effect.succeed<ReadonlyArray<AgentTunnelAgentCommand>>([])
+          : Queue.takeAll(context.agentControl).pipe(Effect.map((entries) => Array.from(entries))),
+      ),
+    );
+
   const emitEvent = Effect.fn("AgentTunnelAdapter.emitEvent")(function* (
     threadId: ThreadId,
     turnId: TurnId | undefined,
@@ -416,6 +439,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           phaseIndex: event.phaseIndex,
           harness: event.harness,
           ...(event.model ? { model: event.model } : {}),
+          // A retried agent keeps its id; the attempt is what tells the client
+          // this is the same row running again, not a second agent.
+          ...(event.attempt ? { attempt: event.attempt } : {}),
         });
         yield* emit({
           ...(yield* buildEventBase({ threadId, turnId, itemId: event.agentId })),
@@ -437,6 +463,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             // progress tail until completion.
             outputFile: agentOutputPath(threadId, event.agentId),
             ...(event.model ? { model: event.model } : {}),
+            ...(event.attempt ? { attempt: event.attempt } : {}),
             timelineBypass: true,
           },
         });
@@ -462,6 +489,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             phaseIndex: metadata.phaseIndex,
             phaseTitle: metadata.pipelineId,
             ...(metadata.model ? { model: metadata.model } : {}),
+            ...(metadata.attempt ? { attempt: metadata.attempt } : {}),
             timelineBypass: true,
           },
         });
@@ -488,6 +516,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
             phaseIndex: metadata.phaseIndex,
             phaseTitle: metadata.pipelineId,
             ...(metadata.model ? { model: metadata.model } : {}),
+            ...(metadata.attempt ? { attempt: metadata.attempt } : {}),
             timelineBypass: true,
           },
         });
@@ -551,6 +580,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         taskType: "local_agent",
         ...(metadata?.role ? { role: metadata.role } : {}),
         ...(metadata?.harness ? { harness: metadata.harness } : {}),
+        ...(metadata?.attempt ? { attempt: metadata.attempt } : {}),
         timelineBypass: true,
       },
     });
@@ -773,6 +803,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       threadHistory: [],
       lastSharedContextDump: undefined,
       steering: yield* Queue.unbounded<AgentTunnelSteeringEntry>(),
+      agentControl: yield* Queue.unbounded<AgentTunnelAgentCommand>(),
     };
     sessions.set(input.threadId, context);
     yield* emit({
@@ -846,6 +877,9 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     context.agentRawLogBytes.clear();
     // Steering is per-turn: a prior turn's queue must never leak into this one.
     yield* cancelPendingSteering(context, input.threadId);
+    // Same for agent controls: a retry aimed at a finished turn must not re-run
+    // anything in this one.
+    yield* drainQueuedAgentCommands(context);
     yield* clearAgentOutput(input.threadId);
     context.session = {
       ...context.session,
@@ -907,6 +941,18 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
                 );
               }),
           },
+          agentControl: {
+            // Non-blocking: the settle handler asks whether a retry is queued.
+            pending: () => drainQueuedAgentCommands(context),
+            // Blocks until a command lands, so a retry sent while the turn waits
+            // for one resumes the workflow instead of the wait timing out.
+            takeWhenAvailable: () =>
+              Effect.gen(function* () {
+                const first = yield* Queue.take(context.agentControl);
+                const rest = yield* drainQueuedAgentCommands(context);
+                return [first, ...rest];
+              }),
+          },
         }),
       );
       if (result._tag === "Failure") {
@@ -961,6 +1007,61 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     const context = yield* ensureSession(threadId);
     yield* Ref.set(context.cancelled, true);
     yield* killThreadProcesses(threadId);
+  });
+
+  /**
+   * Per-agent control only means something while a workflow run is in flight:
+   * the task table that can be stopped or re-run lives inside the run, so a
+   * command with no run to receive it would be dropped silently. The panel is
+   * allowed to be a turn behind, so this is the only rejection an unknown agent
+   * id gets — an id the run does not know is a no-op inside the orchestrator.
+   */
+  const requireActiveRun = (
+    context: AgentTunnelSessionContext,
+    threadId: ThreadId,
+    agentId: string,
+    operation: "interruptAgent" | "retryAgent",
+  ) =>
+    context.activeTurnId === undefined
+      ? Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: operation,
+            detail: `No AgentTunnel workflow is running on thread '${threadId}', so agent '${agentId}' cannot be ${operation === "retryAgent" ? "retried" : "stopped"}. Send a message to start one.`,
+          }),
+        )
+      : Effect.void;
+
+  /**
+   * Interrupt one sub-agent: kill only its process and tell the orchestrator, so
+   * the workflow records that agent stopped and keeps going. The turn-level
+   * cancel flag stays false — the rest of the round is not being stopped.
+   */
+  const interruptAgent: ProviderAdapterShape<ProviderAdapterError>["interruptAgent"] = Effect.fn(
+    "AgentTunnelAdapter.interruptAgent",
+  )(function* (threadId, agentId) {
+    const context = yield* ensureSession(threadId);
+    yield* requireActiveRun(context, threadId, agentId, "interruptAgent");
+    // Queued before the kill: even if the process exits from the signal, the
+    // orchestrator has already been told this agent was stopped on purpose.
+    yield* Queue.offer(context.agentControl, { kind: "interrupt", agentId });
+    const kill = activeProcesses.get(threadId)?.get(agentId);
+    // An unknown agent id is not an error — the panel may be a turn behind.
+    if (!kill) return;
+    yield* kill.pipe(Effect.ignore);
+  });
+
+  /**
+   * Re-run one sub-agent's task in place. The orchestrator owns the re-run: the
+   * command is queued and applied once the round settles or while it waits for
+   * a retry.
+   */
+  const retryAgent: ProviderAdapterShape<ProviderAdapterError>["retryAgent"] = Effect.fn(
+    "AgentTunnelAdapter.retryAgent",
+  )(function* (threadId, agentId) {
+    const context = yield* ensureSession(threadId);
+    yield* requireActiveRun(context, threadId, agentId, "retryAgent");
+    yield* Queue.offer(context.agentControl, { kind: "retry", agentId });
   });
 
   const stopSession: ProviderAdapterShape<ProviderAdapterError>["stopSession"] = Effect.fn(
@@ -1036,6 +1137,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     startSession,
     sendTurn,
     interruptTurn,
+    interruptAgent,
+    retryAgent,
     respondToRequest,
     respondToUserInput,
     stopSession,

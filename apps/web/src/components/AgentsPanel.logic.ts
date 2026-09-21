@@ -40,6 +40,31 @@ export function findAgentById(model: AgentPanelModel, agentId: string): RuntimeS
   return model.directAgents.find((entry) => entry.id === agentId) ?? null;
 }
 
+/**
+ * Which control an agent row offers:
+ * - `stop` while the row is in flight (the same states the panel paints as
+ *   Working) — interrupting is only meaningful before the agent settles;
+ * - `retry` once it settled as Failed or Stopped (`interrupted` is what the
+ *   client fold makes of a provider "stopped" row);
+ * - `null` for rows with nothing to control (completed, idle, still unknown).
+ */
+export type AgentControlAction = "stop" | "retry";
+
+export function agentControlAction(agent: RuntimeSubagent): AgentControlAction | null {
+  if (agent.status === "running" || agent.status === "pending" || agent.status === "waiting") {
+    return "stop";
+  }
+  return agent.status === "failed" || agent.status === "interrupted" ? "retry" : null;
+}
+
+/**
+ * Chip text for a reactivated slot: the same agentId comes back on a higher
+ * attempt, and the row must say so instead of looking like a fresh spawn.
+ */
+export function agentAttemptLabel(agent: RuntimeSubagent): string | null {
+  return agent.attempt !== null && agent.attempt > 1 ? `attempt ${agent.attempt}` : null;
+}
+
 /** Active roster rows, most recently updated first — the "Running now" list. */
 export function liveAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
   const members = [

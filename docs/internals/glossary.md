@@ -47,6 +47,10 @@ A user-visible log item attached to a thread. In [the contracts][1], activities 
 
 A user message sent while a turn is already running. Providers fold it into the running turn instead of starting a new one. The AgentTunnel workflow provider queues it and hands it to the orchestrator at its next pass — that pass starts as soon as a message is queued and no other pass is in flight, so steering is weighed while the running subagents keep working rather than after they finish. Running subagent runs are one-shot harness processes with no input channel, so a steering pass routes affected work to a follow-up dispatch instead of re-instructing a running agent. Delivery is tracked on the projected message as `queued`, `injected`, or `cancelled` in [the contracts][1]. See [AgentTunnelAdapter.ts][27] and [Orchestrator.ts][29].
 
+#### Agent control
+
+Stopping or re-running one subagent of a running AgentTunnel workflow, from the Agents panel. `thread.agent.interrupt` kills just that agent's harness process and the workflow records it `stopped` and keeps going; `thread.agent.retry` re-runs that agent's task in place, keeping its agent id so the client keeps one row and one log, and recomputes its pipeline so dependents can start. A task that fails on its own is re-run automatically up to `maxAgentRetries` times; a stopped task never is. When a round settles with failures the orchestrator gets a pass with the outcomes before anything gives up, and if it dispatches nothing the run waits `agentRetryWaitMinutes` for a retry or steering before finishing failed. See [Orchestrator.ts][29] and [AgentTunnelAdapter.ts][27].
+
 ### Orchestration
 
 Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].

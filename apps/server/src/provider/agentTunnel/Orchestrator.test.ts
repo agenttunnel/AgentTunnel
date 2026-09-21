@@ -11,6 +11,8 @@ import * as NodeAssert from "node:assert/strict";
 
 import {
   AgentTunnelProcessError,
+  type AgentTunnelAgentCommand,
+  type AgentTunnelAgentControlChannel,
   type AgentTunnelEvent,
   type AgentTunnelProcessHandle,
   type AgentTunnelProcessRunner,
@@ -1188,5 +1190,470 @@ it.effect("runs planner and tester tasks on their role harnesses and prompts", (
       ["planner", "tester"],
     );
     NodeAssert.match(collectMarkdown(events), /Invalid dispatch_task arguments/);
+  }),
+);
+
+/**
+ * Queue-backed agent-control source, mirroring the adapter: `pending` never
+ * blocks, `takeWhenAvailable` parks until a command lands.
+ */
+const agentControlChannel = (
+  queue: Queue.Queue<AgentTunnelAgentCommand>,
+): AgentTunnelAgentControlChannel => {
+  const drainQueued = () =>
+    Queue.size(queue).pipe(
+      Effect.flatMap((size) =>
+        size === 0
+          ? Effect.succeed<ReadonlyArray<AgentTunnelAgentCommand>>([])
+          : Queue.takeAll(queue).pipe(Effect.map((entries) => Array.from(entries))),
+      ),
+    );
+  return {
+    pending: drainQueued,
+    takeWhenAvailable: () =>
+      Effect.gen(function* () {
+        const first = yield* Queue.take(queue);
+        return [first, ...(yield* drainQueued())];
+      }),
+  };
+};
+
+/** Planning lines for the control tests: one executor on one pipeline. */
+const flakyPlanningLines: ReadonlyArray<string> = [
+  '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Flaky work","pipeline":"work"}}',
+  '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+];
+
+const summaryDoneLine = '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"reviewed"}}';
+
+it.effect("auto-retries a failed agent and completes when the retry succeeds", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const attemptsByAgentId = new Map<string, number>();
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+      maxAgentRetries: 1,
+      agentRetryWaitMinutes: 0,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        const summary = spec.prompt.includes("Summary pass");
+        const orchestrator = spec.id.startsWith("orchestrator");
+        const attempt = orchestrator ? 0 : (attemptsByAgentId.get(spec.id) ?? 0) + 1;
+        if (!orchestrator) attemptsByAgentId.set(spec.id, attempt);
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(
+            summary
+              ? [summaryDoneLine]
+              : orchestrator
+                ? flakyPlanningLines
+                : [`attempt-${attempt}-output`],
+          ),
+          exitCode: Effect.succeed(!orchestrator && attempt === 1 ? 1 : 0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "retry the flaky work",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(attemptsByAgentId.get("agenttunnel_workflow-1_task_1"), 2);
+    const started = events.filter(
+      (event): event is Extract<AgentTunnelEvent, { type: "agent.started" }> =>
+        event.type === "agent.started",
+    );
+    // Same agent id on both attempts; the attempt number marks the second run.
+    NodeAssert.deepEqual(
+      started.map((event) => [event.agentId, event.attempt]),
+      [
+        ["agenttunnel_workflow-1_task_1", undefined],
+        ["agenttunnel_workflow-1_task_1", 2],
+      ],
+    );
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(markdown, /↻ \*\*executor · Flaky work\*\* retrying \(attempt 2\)/);
+    // One row for the retried agent, carrying the attempt count.
+    NodeAssert.equal(markdown.match(/\| 🛠️ executor · Flaky work \|/g)?.length, 1);
+    NodeAssert.match(
+      markdown,
+      /\| 🛠️ executor · Flaky work \| `work` \| ✅ completed \| \d+s \| 1 line · 2 attempts \|/,
+    );
+    NodeAssert.doesNotMatch(markdown, /### Failures/);
+    // The re-run replaces the failed attempt in the notebook: only the newest
+    // output survives into the next pass.
+    NodeAssert.match(result.contextDump ?? "", /attempt-2-output/);
+    NodeAssert.doesNotMatch(result.contextDump ?? "", /attempt-1-output/);
+  }),
+);
+
+it.effect("re-runs a failed task on a retry command and starts its dependent pipeline", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const attemptsByAgentId = new Map<string, number>();
+    const controlQueue = yield* Queue.unbounded<AgentTunnelAgentCommand>();
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 4,
+      // Only the manual retry is exercised here.
+      maxAgentRetries: 0,
+      agentRetryWaitMinutes: 0,
+    });
+    let retryRequested = false;
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        const summary = spec.prompt.includes("Summary pass");
+        const orchestrator = spec.id.startsWith("orchestrator");
+        if (orchestrator) {
+          return Effect.succeed({
+            pid: 1,
+            lines: Stream.fromIterable(
+              summary
+                ? [summaryDoneLine]
+                : [
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Flaky work","pipeline":"work"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the flaky work","pipeline":"review","depends_on":["work"]}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ],
+            ),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle);
+        }
+        const attempt = (attemptsByAgentId.get(spec.id) ?? 0) + 1;
+        attemptsByAgentId.set(spec.id, attempt);
+        const executor = spec.id.endsWith("task_1");
+        return Effect.succeed({
+          pid: 2,
+          lines: Stream.fromIterable([executor ? `executor-attempt-${attempt}` : "review output"]),
+          exitCode: Effect.succeed(executor && attempt === 1 ? 1 : 0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "retry the flaky work",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          if (retryRequested) return;
+          if (event.type !== "agent.completed" || event.status !== "failed") return;
+          retryRequested = true;
+          yield* Queue.offer(controlQueue, {
+            kind: "retry",
+            agentId: "agenttunnel_workflow-1_task_1",
+          });
+        }),
+      isCancelled: Effect.succeed(false),
+      agentControl: agentControlChannel(controlQueue),
+    });
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(attemptsByAgentId.get("agenttunnel_workflow-1_task_1"), 2);
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(
+      markdown,
+      /↻ \*\*executor · Flaky work\*\* retrying \(attempt 2\) — retried from the Agents panel/,
+    );
+    // The dependent pipeline was blocked on the failed one and runs after it.
+    NodeAssert.match(markdown, /✅ \*\*reviewer · Review the flaky work\*\* completed in/);
+    NodeAssert.match(markdown, /## ✅ Workflow completed/);
+    NodeAssert.doesNotMatch(markdown, /### Failures/);
+    NodeAssert.doesNotMatch(markdown, /Workflow failed/);
+  }),
+);
+
+it.effect("records an interrupted agent as stopped and does not fail the workflow", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const controlQueue = yield* Queue.unbounded<AgentTunnelAgentCommand>();
+    const spawned = yield* Deferred.make<void>();
+    const agentId = "agenttunnel_workflow-1_task_1";
+    let executorHandle: AgentTunnelProcessHandle | undefined;
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+      maxAgentRetries: 0,
+      agentRetryWaitMinutes: 0,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) =>
+        Effect.gen(function* () {
+          if (spec.id.startsWith("orchestrator")) {
+            return {
+              pid: 1,
+              lines: Stream.fromIterable(
+                spec.prompt.includes("Summary pass") ? [summaryDoneLine] : flakyPlanningLines,
+              ),
+              exitCode: Effect.succeed(0),
+              kill: Effect.void,
+            } satisfies AgentTunnelProcessHandle;
+          }
+          const killed = yield* Deferred.make<void>();
+          const handle: AgentTunnelProcessHandle = {
+            pid: 2,
+            lines: Stream.fromIterable(["working on the slow task"]),
+            // A real harness only ends when the adapter signals it.
+            exitCode: Deferred.await(killed).pipe(Effect.as(143)),
+            kill: Deferred.succeed(killed, undefined).pipe(Effect.asVoid),
+          };
+          executorHandle = handle;
+          yield* Deferred.succeed(spawned, undefined);
+          return handle;
+        }),
+    };
+
+    const fiber = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "interrupt the slow work",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) => Effect.sync(() => events.push(event)),
+      isCancelled: Effect.succeed(false),
+      agentControl: agentControlChannel(controlQueue),
+    }).pipe(Effect.forkChild);
+
+    // The adapter queues the command and then kills that agent's process.
+    yield* Deferred.await(spawned);
+    yield* Queue.offer(controlQueue, { kind: "interrupt", agentId });
+    yield* executorHandle!.kill.pipe(Effect.orDie);
+
+    const result = yield* Fiber.join(fiber);
+
+    NodeAssert.equal(result.status, "stopped");
+    const completion = events.find(
+      (event): event is Extract<AgentTunnelEvent, { type: "agent.completed" }> =>
+        event.type === "agent.completed",
+    );
+    NodeAssert.equal(completion?.status, "stopped");
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(markdown, /⏹️ \*\*executor · Flaky work\*\* stopped in \d+s/);
+    NodeAssert.doesNotMatch(markdown, /❌ \*\*executor · Flaky work\*\* failed/);
+    NodeAssert.match(
+      markdown,
+      /### Failures\n\n- ⏹️ \*\*executor · Flaky work\*\* — stopped before it finished/,
+    );
+    NodeAssert.match(markdown, /## ⏹️ Workflow stopped/);
+    NodeAssert.doesNotMatch(markdown, /## ❌ Workflow failed/);
+  }),
+);
+
+it.effect("does not spawn an agent whose interrupt was queued before it started", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const controlQueue = yield* Queue.unbounded<AgentTunnelAgentCommand>();
+    const agentSpecs: Array<AgentTunnelProcessSpec> = [];
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+      maxAgentRetries: 0,
+      agentRetryWaitMinutes: 0,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        agentSpecs.push(spec);
+        const orchestrator = spec.id.startsWith("orchestrator");
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(
+            !orchestrator
+              ? [`attempt-output`]
+              : spec.prompt.includes("Summary pass")
+                ? [summaryDoneLine]
+                : flakyPlanningLines,
+          ),
+          exitCode: Effect.succeed(0),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const result = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "interrupt the queued work",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          // Queued the moment the agent is announced, before its process spawns.
+          if (event.type === "agent.started") {
+            yield* Queue.offer(controlQueue, {
+              kind: "interrupt",
+              agentId: "agenttunnel_workflow-1_task_1",
+            });
+          }
+        }),
+      isCancelled: Effect.succeed(false),
+      agentControl: agentControlChannel(controlQueue),
+    });
+
+    NodeAssert.equal(result.status, "stopped");
+    NodeAssert.equal(
+      agentSpecs.filter((spec) => spec.id.endsWith("task_1")).length,
+      0,
+      "an interrupted agent must not spawn",
+    );
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(
+      markdown,
+      /⏹️ \*\*executor · Flaky work\*\* stopped in \d+s · 0 lines of output/,
+    );
+  }),
+);
+
+it.effect("waits for a retry after an unresolved failure and gives up on the deadline", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const controlQueue = yield* Queue.unbounded<AgentTunnelAgentCommand>();
+    const waiting = yield* Deferred.make<void>();
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+      maxAgentRetries: 0,
+      agentRetryWaitMinutes: 2,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        const orchestrator = spec.id.startsWith("orchestrator");
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(
+            !orchestrator
+              ? ["the flaky work failed"]
+              : spec.prompt.includes("Summary pass")
+                ? [summaryDoneLine]
+                : flakyPlanningLines,
+          ),
+          exitCode: Effect.succeed(orchestrator ? 0 : 1),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const fiber = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "let the flaky work fail",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          if (event.type === "orchestrator.output" && event.text.includes("Waiting for a retry")) {
+            yield* Deferred.succeed(waiting, undefined);
+          }
+        }),
+      isCancelled: Effect.succeed(false),
+      agentControl: agentControlChannel(controlQueue),
+    }).pipe(Effect.forkChild);
+
+    yield* Deferred.await(waiting);
+    yield* TestClock.adjust("2 minutes");
+    const result = yield* Fiber.join(fiber);
+
+    NodeAssert.equal(result.status, "failed");
+    const markdown = collectMarkdown(events);
+    NodeAssert.match(
+      markdown,
+      /> ⏸️ \*\*Waiting for a retry\*\* — retry a failed agent from the Agents panel, or stop the turn\. Giving up in 2 minutes\./,
+    );
+    NodeAssert.match(markdown, /### Failures\n\n- ❌ \*\*executor · Flaky work\*\*/);
+  }),
+);
+
+it.effect("resumes the workflow when a retry arrives while it waits for one", () =>
+  Effect.gen(function* () {
+    const events: AgentTunnelEvent[] = [];
+    const attemptsByAgentId = new Map<string, number>();
+    const controlQueue = yield* Queue.unbounded<AgentTunnelAgentCommand>();
+    const waiting = yield* Deferred.make<void>();
+    const settings = decodeSettings({
+      orchestratorHarness: "fake-orchestrator",
+      executorHarness: "fake-executor",
+      reviewerHarness: "fake-reviewer",
+      maxOrchestratorPasses: 3,
+      maxAgentRetries: 0,
+      agentRetryWaitMinutes: 5,
+    });
+    const process: AgentTunnelProcessRunner = {
+      spawn: (spec) => {
+        const orchestrator = spec.id.startsWith("orchestrator");
+        const attempt = orchestrator ? 0 : (attemptsByAgentId.get(spec.id) ?? 0) + 1;
+        if (!orchestrator) attemptsByAgentId.set(spec.id, attempt);
+        return Effect.succeed({
+          pid: 1,
+          lines: Stream.fromIterable(
+            !orchestrator
+              ? [`attempt-${attempt}-output`]
+              : spec.prompt.includes("Summary pass")
+                ? [summaryDoneLine]
+                : flakyPlanningLines,
+          ),
+          exitCode: Effect.succeed(orchestrator || attempt > 1 ? 0 : 1),
+          kill: Effect.void,
+        } satisfies AgentTunnelProcessHandle);
+      },
+    };
+
+    const fiber = yield* runAgentTunnel({
+      threadId: "thread-1",
+      workflowId: "workflow-1",
+      userTask: "retry the failed work while it waits",
+      cwd: "/tmp",
+      settings,
+      process,
+      emit: (event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          if (event.type === "orchestrator.output" && event.text.includes("Waiting for a retry")) {
+            yield* Deferred.succeed(waiting, undefined);
+          }
+        }),
+      isCancelled: Effect.succeed(false),
+      agentControl: agentControlChannel(controlQueue),
+    }).pipe(Effect.forkChild);
+
+    yield* Deferred.await(waiting);
+    // The wait is still parked: a retry arriving now has to resume the run
+    // instead of the deadline ending it.
+    yield* Queue.offer(controlQueue, { kind: "retry", agentId: "agenttunnel_workflow-1_task_1" });
+    const result = yield* Fiber.join(fiber);
+
+    NodeAssert.equal(result.status, "completed");
+    NodeAssert.equal(attemptsByAgentId.get("agenttunnel_workflow-1_task_1"), 2);
+    NodeAssert.match(collectMarkdown(events), /## ✅ Workflow completed/);
   }),
 );

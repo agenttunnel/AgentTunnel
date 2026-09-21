@@ -60,6 +60,8 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.agent-interrupt-requested"
+      | "thread.agent-retry-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested";
@@ -337,6 +339,8 @@ const make = Effect.gen(function* () {
     readonly kind:
       | "provider.turn.start.failed"
       | "provider.turn.interrupt.failed"
+      | "provider.agent.interrupt.failed"
+      | "provider.agent.retry.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed";
@@ -1451,6 +1455,59 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Per-agent stop/retry. The provider owns what "the addressed agent" means
+   * (AgentTunnel resolves it against the run in flight), so the reactor only
+   * reports the failures the provider raises — an agent that already finished
+   * is not an error.
+   */
+  const processAgentControlRequested = Effect.fn("processAgentControlRequested")(function* (
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.agent-interrupt-requested" | "thread.agent-retry-requested" }
+    >,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+    const session = thread.session;
+    const interrupt = event.type === "thread.agent-interrupt-requested";
+    if (!session || session.status === "stopped") {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: interrupt ? "provider.agent.interrupt.failed" : "provider.agent.retry.failed",
+        summary: interrupt ? "Agent stop failed" : "Agent retry failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: session?.activeTurnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    const call = interrupt
+      ? providerService.interruptAgent({
+          threadId: thread.id,
+          agentId: event.payload.agentId,
+        })
+      : providerService.retryAgent({ threadId: thread.id, agentId: event.payload.agentId });
+
+    yield* call.pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.interrupt;
+        }
+        return appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: interrupt ? "provider.agent.interrupt.failed" : "provider.agent.retry.failed",
+          summary: interrupt ? "Agent stop failed" : "Agent retry failed",
+          detail: formatFailureDetail(cause),
+          turnId: session.activeTurnId,
+          createdAt: event.payload.createdAt,
+        });
+      }),
+    );
+  });
+
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
   ) {
@@ -1484,6 +1541,10 @@ const make = Effect.gen(function* () {
         return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
+        return;
+      case "thread.agent-interrupt-requested":
+      case "thread.agent-retry-requested":
+        yield* processAgentControlRequested(event);
         return;
       case "thread.approval-response-requested":
         yield* processApprovalResponseRequested(event);
@@ -1530,6 +1591,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.agent-interrupt-requested" ||
+        event.type === "thread.agent-retry-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested"

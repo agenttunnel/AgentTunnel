@@ -22,15 +22,35 @@ import {
   formatSubagentTokenCount,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  Bot,
+  Braces,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  RotateCcw,
+  Square,
+  X,
+} from "lucide-react";
+import { createContext, use, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
+import { threadEnvironment } from "~/state/threads";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { AgentLogView } from "./AgentLogView";
-import { findAgentById, liveAgents, workflowMembers } from "./AgentsPanel.logic";
+import {
+  type AgentControlAction,
+  agentAttemptLabel,
+  agentControlAction,
+  findAgentById,
+  liveAgents,
+  workflowMembers,
+} from "./AgentsPanel.logic";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -64,6 +84,80 @@ export function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
 export function subagentStatusLabel(status: RuntimeSubagent["status"]): string {
   return STATUS_VISUALS[status].label;
 }
+
+/**
+ * Command target shared by every per-agent control. Roster rows sit four
+ * components deep (panel → workflow → phase → row), and the drill-in and the
+ * running-now list live outside that tree, so the target travels as context
+ * instead of through four signatures. Null when the panel has no thread to
+ * act on — the controls then render nothing rather than a dead button.
+ */
+const AgentControlTargetCtx = createContext<{
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+} | null>(null);
+
+/**
+ * The one control a row offers, decided by agentControlAction: Stop while the
+ * agent is in flight, Retry once it settled as failed or stopped. Disabled
+ * while its own command is in flight; the command layer reports failures, so
+ * a rejected stop cannot pass silently. Deliberately a sibling of the row
+ * button (never nested: a button inside a button is not valid markup), so
+ * clicking the control can never also open the agent.
+ */
+function AgentControls({ agent, className }: { agent: RuntimeSubagent; className?: string }) {
+  const target = use(AgentControlTargetCtx);
+  const action: AgentControlAction | null = agentControlAction(agent);
+  const [pending, setPending] = useState(false);
+  const interruptAgent = useAtomCommand(threadEnvironment.interruptAgent, "agent interrupt");
+  const retryAgent = useAtomCommand(threadEnvironment.retryAgent, "agent retry");
+
+  if (action === null || target === null) {
+    return null;
+  }
+  const label = action === "stop" ? "Stop this agent" : "Retry this agent";
+  return (
+    <span className={cn("flex shrink-0 items-center", className)}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="icon-micro"
+              variant="ghost-muted"
+              disabled={pending}
+              aria-label={label}
+              onClick={() => {
+                setPending(true);
+                const input = {
+                  environmentId: target.environmentId,
+                  input: { threadId: target.threadId, agentId: agent.id },
+                };
+                void (action === "stop" ? interruptAgent(input) : retryAgent(input)).finally(() =>
+                  setPending(false),
+                );
+              }}
+            />
+          }
+        >
+          {action === "stop" ? (
+            <Square aria-hidden className="size-3" />
+          ) : (
+            <RotateCcw aria-hidden className={cn("size-3", pending && "animate-spin")} />
+          )}
+        </TooltipTrigger>
+        <TooltipPopup side="top">{label}</TooltipPopup>
+      </Tooltip>
+    </span>
+  );
+}
+
+/**
+ * Retry visibility: a slot that came back on a higher attempt says so, so a
+ * second attempt never reads as the first one still running. The chip styling
+ * is the panel's existing muted chip (see the role chip in AgentRow).
+ */
+const ATTEMPT_CHIP_CLASS =
+  "shrink-0 rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground";
 
 function formatElapsedSeconds(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
@@ -297,6 +391,7 @@ function AgentDetail({
 }) {
   const visuals = STATUS_VISUALS[agent.status];
   const [logOpen, setLogOpen] = useState(false);
+  const attemptLabel = agentAttemptLabel(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const metadata = [
     agent.role,
@@ -322,6 +417,7 @@ function AgentDetail({
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {agent.title || visuals.label}
         </span>
+        {attemptLabel ? <span className={ATTEMPT_CHIP_CLASS}>{attemptLabel}</span> : null}
         <span className="shrink-0 font-mono text-[.7rem] text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <AgentElapsed agent={agent} />
@@ -330,6 +426,7 @@ function AgentDetail({
             ) : null}
           </span>
         </span>
+        <AgentControls agent={agent} />
       </header>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-border/40 px-3 py-1 font-mono text-[.7rem] text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
@@ -397,7 +494,10 @@ function AgentDetail({
   );
 }
 
-/** Flat agent row. Clicking drills into the agent's log. */
+/**
+ * Flat agent row. Clicking drills into the agent's log; the row's control
+ * (stop/retry) fades in beside it on hover or keyboard focus.
+ */
 function AgentRow({
   agent,
   onSelect,
@@ -407,6 +507,7 @@ function AgentRow({
 }) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
+  const attemptLabel = agentAttemptLabel(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const role =
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
@@ -420,44 +521,51 @@ function AgentRow({
   ].filter((value): value is string => value !== null);
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(agent.id)}
-      className="grid h-[3.875rem] w-full cursor-pointer grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
-    >
-      <span className="col-start-1 row-start-1 flex items-center">
-        <StatusDot status={agent.status} />
-      </span>
-      <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
-        <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
-        {role ? (
-          <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-            {role}
-          </span>
-        ) : null}
-        <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground/50" />
-      </span>
-      <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
-        <span className="inline-flex items-center gap-1">
-          <AgentElapsed agent={agent} />
-          {agent.status === "completed" ? (
-            <Check aria-hidden className="size-3 text-success" />
-          ) : null}
-        </span>
-      </span>
-      <span
-        className={cn(
-          "col-start-2 col-end-4 row-start-2 block truncate text-xs",
-          agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
-        )}
+    <div className="group/agent flex items-center rounded-md hover:bg-accent/40">
+      <button
+        type="button"
+        onClick={() => onSelect(agent.id)}
+        className="grid h-[3.875rem] min-w-0 flex-1 cursor-pointer grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left"
       >
-        {activity ?? visuals.label}
-      </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
-        {metadata.join(" · ")}
-      </span>
-      <span className="sr-only">{visuals.label}</span>
-    </button>
+        <span className="col-start-1 row-start-1 flex items-center">
+          <StatusDot status={agent.status} />
+        </span>
+        <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
+          {role ? (
+            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+              {role}
+            </span>
+          ) : null}
+          {attemptLabel ? <span className={ATTEMPT_CHIP_CLASS}>{attemptLabel}</span> : null}
+          <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground/50" />
+        </span>
+        <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
+          <span className="inline-flex items-center gap-1">
+            <AgentElapsed agent={agent} />
+            {agent.status === "completed" ? (
+              <Check aria-hidden className="size-3 text-success" />
+            ) : null}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "col-start-2 col-end-4 row-start-2 block truncate text-xs",
+            agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+        >
+          {activity ?? visuals.label}
+        </span>
+        <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+          {metadata.join(" · ")}
+        </span>
+        <span className="sr-only">{visuals.label}</span>
+      </button>
+      <AgentControls
+        agent={agent}
+        className="pr-1.5 opacity-0 transition-opacity group-focus-within/agent:opacity-100 group-hover/agent:opacity-100 pointer-coarse:opacity-100"
+      />
+    </div>
   );
 }
 
@@ -812,14 +920,22 @@ export function AgentsPanel({
   }, [focusRequest]);
   const selectedAgent = selectedAgentId ? findAgentById(model, selectedAgentId) : null;
   const running = liveAgents(model);
+  // Controls need a concrete thread to act on: a panel rendered without one
+  // has no target, and the controls then simply do not render.
+  const controlTarget = useMemo(
+    () => (environmentId !== null && threadId !== null ? { environmentId, threadId } : null),
+    [environmentId, threadId],
+  );
 
   if (selectedAgent) {
     return (
-      <AgentDetail
-        agent={selectedAgent}
-        environmentId={environmentId}
-        onBack={() => setSelectedAgentId(null)}
-      />
+      <AgentControlTargetCtx value={controlTarget}>
+        <AgentDetail
+          agent={selectedAgent}
+          environmentId={environmentId}
+          onBack={() => setSelectedAgentId(null)}
+        />
+      </AgentControlTargetCtx>
     );
   }
 
@@ -837,64 +953,77 @@ export function AgentsPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 p-2">
-          {running.length > 0 ? (
-            <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                Running now
-              </div>
-              {running.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  onClick={() => setSelectedAgentId(agent.id)}
-                  className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
-                >
-                  <StatusDot status={agent.status} />
-                  <span className="min-w-0 flex-1 truncate text-xs">{agent.title}</span>
-                  <span className="shrink-0 truncate font-mono text-[.65rem] text-muted-foreground/70">
-                    {agent.phaseTitle ?? agent.role ?? ""}
-                  </span>
-                  <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground/50" />
-                </button>
-              ))}
-            </section>
-          ) : null}
-          {model.workflows.map((group) => (
-            <WorkflowSection
-              key={group.workflow.id}
-              group={group}
-              environmentId={environmentId}
-              threadId={threadId}
-              onSelect={setSelectedAgentId}
-            />
-          ))}
-          {model.directAgents.length > 0 ? (
-            <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                Direct spawns
-              </div>
-              {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} onSelect={setSelectedAgentId} />
-              ))}
-            </section>
-          ) : null}
-        </div>
-      </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span className="flex items-center gap-2">
-          {model.runningCount + model.waitingCount > 0 ? (
-            <span className="text-info-foreground">
-              ● {model.runningCount + model.waitingCount} working
-            </span>
-          ) : null}
-          {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
-          {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
-        </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-      </footer>
-    </div>
+    <AgentControlTargetCtx value={controlTarget}>
+      <div className="flex h-full min-h-0 flex-col">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-2 p-2">
+            {running.length > 0 ? (
+              <section>
+                <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+                  Running now
+                </div>
+                {running.map((agent) => (
+                  <div
+                    key={agent.id}
+                    className="group/agent flex items-center rounded-md hover:bg-accent/40"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAgentId(agent.id)}
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left"
+                    >
+                      <StatusDot status={agent.status} />
+                      <span className="min-w-0 flex-1 truncate text-xs">{agent.title}</span>
+                      <span className="shrink-0 truncate font-mono text-[.65rem] text-muted-foreground/70">
+                        {agent.phaseTitle ?? agent.role ?? ""}
+                      </span>
+                      <ChevronRight
+                        aria-hidden
+                        className="size-3 shrink-0 text-muted-foreground/50"
+                      />
+                    </button>
+                    <AgentControls
+                      agent={agent}
+                      className="pr-1.5 opacity-0 transition-opacity group-focus-within/agent:opacity-100 group-hover/agent:opacity-100 pointer-coarse:opacity-100"
+                    />
+                  </div>
+                ))}
+              </section>
+            ) : null}
+            {model.workflows.map((group) => (
+              <WorkflowSection
+                key={group.workflow.id}
+                group={group}
+                environmentId={environmentId}
+                threadId={threadId}
+                onSelect={setSelectedAgentId}
+              />
+            ))}
+            {model.directAgents.length > 0 ? (
+              <section>
+                <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+                  Direct spawns
+                </div>
+                {model.directAgents.map((agent) => (
+                  <AgentRow key={agent.id} agent={agent} onSelect={setSelectedAgentId} />
+                ))}
+              </section>
+            ) : null}
+          </div>
+        </ScrollArea>
+        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+          <span className="flex items-center gap-2">
+            {model.runningCount + model.waitingCount > 0 ? (
+              <span className="text-info-foreground">
+                ● {model.runningCount + model.waitingCount} working
+              </span>
+            ) : null}
+            {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
+            {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
+          </span>
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        </footer>
+      </div>
+    </AgentControlTargetCtx>
   );
 }

@@ -100,6 +100,16 @@ export const ProviderStopSessionInput = Schema.Struct({
 });
 export type ProviderStopSessionInput = typeof ProviderStopSessionInput.Type;
 
+/**
+ * Addresses one agent a provider runs on behalf of a thread, by the task id the
+ * provider reports for it.
+ */
+export const ProviderAgentControlInput = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+});
+export type ProviderAgentControlInput = typeof ProviderAgentControlInput.Type;
+
 export const ProviderRespondToRequestInput = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,

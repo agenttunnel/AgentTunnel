@@ -4,7 +4,13 @@ import type {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { findAgentById, liveAgents, workflowMembers } from "./AgentsPanel.logic";
+import {
+  agentAttemptLabel,
+  agentControlAction,
+  findAgentById,
+  liveAgents,
+  workflowMembers,
+} from "./AgentsPanel.logic";
 
 function agent(overrides: Partial<RuntimeSubagent> & Pick<RuntimeSubagent, "id">): RuntimeSubagent {
   return {
@@ -118,5 +124,41 @@ describe("workflowMembers", () => {
       "wf-1:task_1",
       "wf-1:task_2",
     ]);
+  });
+});
+
+describe("agentControlAction", () => {
+  it("offers stop while the row can still be interrupted", () => {
+    for (const status of ["running", "pending", "waiting"] as const) {
+      expect(agentControlAction(agent({ id: `a-${status}`, status }))).toBe("stop");
+    }
+  });
+
+  it("offers retry once the row settled as failed or stopped", () => {
+    expect(agentControlAction(agent({ id: "a-failed", status: "failed" }))).toBe("retry");
+    // `interrupted` is what the client fold makes of a provider "stopped" row,
+    // and what a user-stopped agent renders as ("Stopped").
+    expect(agentControlAction(agent({ id: "a-stopped", status: "interrupted" }))).toBe("retry");
+  });
+
+  it("offers nothing on rows with no control", () => {
+    for (const status of ["completed", "idle", "cancelled"] as const) {
+      expect(agentControlAction(agent({ id: `a-${status}`, status }))).toBeNull();
+    }
+  });
+});
+
+describe("agentAttemptLabel", () => {
+  it("names only attempts a user would call a retry", () => {
+    expect(agentAttemptLabel(agent({ id: "a-unknown", attempt: null }))).toBeNull();
+    expect(agentAttemptLabel(agent({ id: "a-first", attempt: 1 }))).toBeNull();
+    expect(agentAttemptLabel(agent({ id: "a-second", attempt: 2 }))).toBe("attempt 2");
+    expect(agentAttemptLabel(agent({ id: "a-fourth", attempt: 4 }))).toBe("attempt 4");
+  });
+
+  it("labels a retried agent that is running again", () => {
+    const retried = agent({ id: "wf-1:task_1", status: "running", attempt: 2 });
+    expect(agentControlAction(retried)).toBe("stop");
+    expect(agentAttemptLabel(retried)).toBe("attempt 2");
   });
 });

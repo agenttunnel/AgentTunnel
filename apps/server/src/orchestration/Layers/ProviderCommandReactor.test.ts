@@ -151,6 +151,7 @@ describe("ProviderCommandReactor", () => {
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
     readonly interruptTurnEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
+    readonly agentControlEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly startSessionEffect?: (
       session: ProviderSession,
@@ -238,6 +239,8 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => input?.interruptTurnEffect?.() ?? Effect.void);
+    const interruptAgent = vi.fn((_: unknown) => input?.agentControlEffect?.() ?? Effect.void);
+    const retryAgent = vi.fn((_: unknown) => input?.agentControlEffect?.() ?? Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((stopInput: unknown) =>
@@ -323,6 +326,8 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      interruptAgent: interruptAgent as ProviderServiceShape["interruptAgent"],
+      retryAgent: retryAgent as ProviderServiceShape["retryAgent"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
@@ -509,6 +514,8 @@ describe("ProviderCommandReactor", () => {
       startSession,
       sendTurn,
       interruptTurn,
+      interruptAgent,
+      retryAgent,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -2635,6 +2642,147 @@ describe("ProviderCommandReactor", () => {
         });
         expect(harness.stopSession).toHaveBeenCalledWith({ threadId: ThreadId.make("thread-1") });
       }),
+  );
+
+  it("reacts to thread.agent.retry-requested by retrying the addressed agent", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-agent-retry"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "agenttunnel",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.agent.retry",
+        commandId: CommandId.make("cmd-agent-retry"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "agenttunnel_wf_task_2",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.retryAgent.mock.calls.length === 1);
+    expect(harness.retryAgent.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      agentId: "agenttunnel_wf_task_2",
+    });
+    expect(harness.interruptAgent).not.toHaveBeenCalled();
+  });
+
+  it("reacts to thread.agent.interrupt-requested by stopping the addressed agent", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-agent-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "agenttunnel",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.agent.interrupt",
+        commandId: CommandId.make("cmd-agent-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "agenttunnel_wf_task_3",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptAgent.mock.calls.length === 1);
+    expect(harness.interruptAgent.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      agentId: "agenttunnel_wf_task_3",
+    });
+  });
+
+  effectIt.effect("records a failed agent control activity when the provider refuses", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          agentControlEffect: () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "agenttunnel",
+                method: "retryAgent",
+                detail: "no workflow run is active for this thread",
+              }),
+            ),
+        }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-agent-retry-failure"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "agenttunnel",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+
+      yield* harness.engine.dispatch({
+        type: "thread.agent.retry",
+        commandId: CommandId.make("cmd-agent-retry-failure"),
+        threadId: ThreadId.make("thread-1"),
+        agentId: "agenttunnel_wf_task_4",
+        createdAt: now,
+      });
+
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const activities =
+            (await harness.readModel()).threads.find(
+              (entry) => entry.id === ThreadId.make("thread-1"),
+            )?.activities ?? [];
+          return activities.some((activity) => activity.kind === "provider.agent.retry.failed");
+        }),
+      );
+
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      expect(
+        thread?.activities.find((activity) => activity.kind === "provider.agent.retry.failed"),
+      ).toMatchObject({
+        summary: "Agent retry failed",
+        payload: { detail: "no workflow run is active for this thread" },
+      });
+    }),
   );
 
   effectIt.effect("stops a starting session without a bound turn when interrupt fails", () =>

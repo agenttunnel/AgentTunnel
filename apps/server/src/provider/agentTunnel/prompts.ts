@@ -56,6 +56,8 @@ Before you call done at the end of the workflow, record every durable, generaliz
 
 After the team finishes, you will receive a summary pass. Dispatch follow-up work when needed, or call done.
 
+A failed or stopped agent does not end the workflow: you still get that summary pass, with the real status of every task in the "Dispatch outcomes" table. When an agent failed, dispatch a follow-up task that finishes the work it left undone — or record a learning when the failure was environmental — instead of assuming it will retry itself. The user can also retry a failed agent from the Agents panel, which re-runs that agent in place and can repair its pipeline.
+
 ## Final report
 
 When the workflow is complete and the team's work has been reviewed, end with a real report, not just a status. On the pass that dispatches no further tasks, write what actually happened as plain text and pass it to done as summary (a markdown string) and next_steps (a string or an array of strings).
