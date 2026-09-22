@@ -4,42 +4,57 @@
  *
  * The UI follows opencode's terminal client: OpenTUI + Solid rendered through
  * `@opentui/solid`'s JSX runtime (registered in `bunfig.toml`), composed as a
- * header row, a scrolling body, an optional recap line, the composer, and a
- * footer of key hints. The data layer is the one the web clients already use —
- * the shell and thread subscriptions from client-runtime — folded into app
- * state by `state.ts` / `format.ts`, which stay pure and tested.
+ * header row, a scrolling body, the composer, and a footer of key hints. The
+ * data layer is the one the web clients already use — the shell and thread
+ * subscriptions, `server.getConfig` for providers and settings, and the same
+ * `thread.turn.start` command with `bootstrap.createThread` for a new thread.
  *
- *   bun src/index.tsx --url http://localhost:13773 [--token <wsTicket>]
+ *   bun src/index.tsx --url http://localhost:13773 [--token <session token>]
  *   bun src/index.tsx --demo
  */
-import {
-  CommandId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
-  MessageId,
-  ThreadId,
-} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { render, useKeyboard } from "@opentui/solid";
-import { Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 
-import { threadRows, threadView, type TuiThreadRow } from "./format.ts";
+import {
+  projectRows,
+  providerRows,
+  serverSettingRows,
+  threadRows,
+  threadView,
+  type TuiLine,
+  type TuiProjectRow,
+  type TuiThreadRow,
+} from "./format.ts";
+import { loadPreferences, savePreferences, type TuiPreferences } from "./preferences.ts";
 import {
   connect,
+  interruptTurn,
+  loadServerConfig,
   loadShell,
   loadThread,
   resolveConnection,
   resolveSocketTicket,
+  sendTurn,
+  startThread,
+  updateServerSettings,
   type TuiSession,
 } from "./session.ts";
 import {
+  activeProvider,
+  commandSuggestions,
+  highlightedSuggestion,
   initialTuiState,
   reduceKey,
+  resolveModelSelection,
   selectedThread,
+  settingsRows,
+  withCatalogs,
+  withPreferences,
   withStatus,
   withThread,
   withThreads,
@@ -54,17 +69,22 @@ const theme = {
   textMuted: "#8b8b9e",
   textFaint: "#5a5a6b",
   primary: "#7aa2f7",
+  surface: "#14141c",
+  border: "#2a2a38",
 } as const;
 
 const USAGE = `t3-tui — AgentTunnel in a terminal
 
-Usage: bun src/index.tsx --url <http://host:port> [--token <wsTicket>]
+Usage: bun src/index.tsx --url <http://host:port> [--token <session token>]
        bun src/index.tsx --demo
 
   --url    AgentTunnel server origin (default: $T3CODE_URL)
-  --token  session credential, sent as the WebSocket ticket (default: $T3CODE_TOKEN)
-  --demo   render a canned thread without connecting
+  --token  session credential, exchanged for the WebSocket ticket (default: $T3CODE_TOKEN)
+  --demo   render canned data without connecting
   --help   this message
+
+Keys:  ↑/↓ move · enter open or send · / commands · ctrl-p palette
+       ctrl-i interrupt · ctrl-r reload · esc back · ctrl-c quit
 `;
 
 export function parseArgs(argv: ReadonlyArray<string>): {
@@ -111,6 +131,15 @@ const DEMO_THREADS: ReadonlyArray<TuiThreadRow> = [
   },
 ];
 
+const DEMO_PROJECTS: ReadonlyArray<TuiProjectRow> = [
+  {
+    id: "demo-project",
+    title: "AgentTunnel",
+    workspaceRoot: "~/projects/agenttunnel",
+    defaultModelSelection: null,
+  },
+];
+
 const DEMO_THREAD = {
   id: "demo-1",
   title: "Router state design doc",
@@ -123,19 +152,26 @@ const DEMO_THREAD = {
   ],
 };
 
+/** Thread ids are opaque to the server and unique per process. */
+const newThreadId = (): Promise<string> =>
+  Effect.runPromise(
+    Effect.all([Random.nextInt, Random.nextInt]).pipe(
+      Effect.map(([seed, salt]) => `tui-${seed.toString(36)}-${salt.toString(36)}`),
+    ),
+  );
+
 const lineColor = (kind: string): string =>
   kind === "user" ? theme.primary : kind === "agent" ? theme.textFaint : theme.text;
-
-/** Client-side ids: opaque to the server, unique per process. */
-const newId = (seed: number, salt: number): string =>
-  `tui-${seed.toString(36)}-${salt.toString(36)}`;
 
 function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
   const [state, setState] = createSignal<TuiState>(
     props.args.demo
-      ? withStatus(
-          withThread(withThreads(initialTuiState, DEMO_THREADS), DEMO_THREAD),
-          "demo — not connected",
+      ? withCatalogs(
+          withThread(
+            withThreads(withStatus(initialTuiState, "demo — not connected"), DEMO_THREADS),
+            DEMO_THREAD,
+          ),
+          { projects: DEMO_PROJECTS },
         )
       : withStatus(initialTuiState, `connecting to ${props.args.url ?? ""}…`),
   );
@@ -155,14 +191,26 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     }
   };
 
+  /** The thread list plus the catalogs the palette and settings read from. */
   const refreshThreads = (): Promise<void> =>
     guard("refresh", async () => {
       if (session === null) return;
-      const snapshot = await Effect.runPromise(loadShell(session));
+      const active = session;
+      const [snapshot, config] = await Promise.all([
+        Effect.runPromise(loadShell(active)),
+        Effect.runPromise(loadServerConfig(active)),
+      ]);
       apply(
-        withThreads(
-          withStatus(state(), `${snapshot.threads.length} threads`),
-          threadRows(snapshot),
+        withCatalogs(
+          withThreads(
+            withStatus(state(), `${snapshot.threads.length} threads`),
+            threadRows(snapshot),
+          ),
+          {
+            projects: projectRows(snapshot),
+            providers: providerRows(config),
+            serverSettings: serverSettingRows(config.settings),
+          },
         ),
       );
     });
@@ -172,52 +220,74 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       if (session === null) return;
       apply(withStatus(state(), "loading thread…"));
       const snapshot = await Effect.runPromise(loadThread(session, threadId));
-      const view = threadView(snapshot);
+      const view = threadView(snapshot, {
+        includeActivities: state().preferences.showAgentDetails,
+      });
       apply(withThread(state(), { id: threadId, ...view }));
     });
 
-  const sendMessage = async (threadId: string, text: string): Promise<void> => {
+  const send = async (threadId: string, text: string): Promise<void> => {
     if (session === null) return;
-    const active = session;
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const at = DateTime.formatIso(yield* DateTime.now);
-        yield* active.client["orchestration.dispatchCommand"]({
-          type: "thread.turn.start",
-          commandId: CommandId.make(newId(yield* Random.nextInt, yield* Random.nextInt)),
-          threadId: ThreadId.make(threadId),
-          message: {
-            messageId: MessageId.make(newId(yield* Random.nextInt, yield* Random.nextInt)),
-            role: "user",
-            text,
-            attachments: [],
-          },
-          runtimeMode: DEFAULT_RUNTIME_MODE,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          createdAt: at,
-        });
-      }),
-    );
-    apply(withStatus(state(), "sent — refreshing"));
-    await openThread(threadId);
+    const selection = state().modelSelection;
+    await guard("send", async () => {
+      await Effect.runPromise(
+        sendTurn(session as TuiSession, {
+          threadId,
+          text,
+          ...(selection === null ? {} : { modelSelection: selection }),
+        }),
+      );
+      apply(withStatus(state(), "sent — refreshing"));
+      await openThread(threadId);
+    });
   };
 
-  const interrupt = async (threadId: string): Promise<void> => {
+  /** A new thread is created by the first turn: one command, thread included. */
+  const createThread = async (
+    previous: TuiState,
+    projectId: string,
+    title: string,
+    text: string,
+  ): Promise<void> =>
+    guard("create", async () => {
+      if (session === null) return;
+      const project = previous.projects.find((row) => row.id === projectId) ?? null;
+      const modelSelection = resolveModelSelection(previous, project);
+      if (modelSelection === null) {
+        apply(withStatus(state(), "no provider configured — run /provider"));
+        return;
+      }
+      const threadId = await newThreadId();
+      await Effect.runPromise(
+        startThread(session, { threadId, projectId, title, text, modelSelection }),
+      );
+      apply(withStatus(state(), "created — loading"));
+      await openThread(threadId);
+    });
+
+  const stopTurn = async (threadId: string): Promise<void> => {
     if (session === null) return;
-    const active = session;
-    await Effect.runPromise(
-      Effect.all([Random.nextInt, Random.nextInt, DateTime.now]).pipe(
-        Effect.flatMap(([seed, salt, at]) =>
-          active.client["orchestration.dispatchCommand"]({
-            type: "thread.turn.interrupt",
-            commandId: CommandId.make(newId(seed, salt)),
-            threadId: ThreadId.make(threadId),
-            createdAt: DateTime.formatIso(at),
-          }),
-        ),
-      ),
-    );
-    apply(withStatus(state(), "interrupt requested"));
+    await guard("interrupt", async () => {
+      await Effect.runPromise(interruptTurn(session as TuiSession, threadId));
+      apply(withStatus(state(), "interrupt requested"));
+    });
+  };
+
+  const persistPreferences = async (patch: Partial<TuiPreferences>): Promise<void> => {
+    const next = { ...state().preferences, ...patch };
+    await guard("settings", async () => {
+      await savePreferences(next);
+      apply(withStatus(state(), "settings saved"));
+    });
+  };
+
+  const persistServerSetting = async (key: string, value: boolean | string): Promise<void> => {
+    if (session === null) return;
+    await guard("settings", async () => {
+      await Effect.runPromise(updateServerSettings(session as TuiSession, { [key]: value }));
+      apply(withStatus(state(), "server setting saved"));
+      await refreshThreads();
+    });
   };
 
   const perform = (effect: TuiEffect, previous: TuiState): void => {
@@ -227,7 +297,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         process.exit(0);
         return;
       case "refresh":
-        void (previous.view === "threads"
+        void (previous.view === "threads" || previous.view === "settings"
           ? refreshThreads()
           : threadId === null
             ? Promise.resolve()
@@ -240,11 +310,23 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       }
       case "send":
         if (threadId === null || props.args.demo) return;
-        void sendMessage(threadId, effect.text);
+        void send(threadId, effect.text);
+        return;
+      case "createThread":
+        if (props.args.demo) return;
+        void createThread(previous, effect.projectId, effect.title, effect.text);
         return;
       case "interrupt":
         if (threadId === null || props.args.demo) return;
-        void interrupt(threadId);
+        void stopTurn(threadId);
+        return;
+      case "savePreferences":
+        if (props.args.demo) return;
+        void persistPreferences(effect.patch);
+        return;
+      case "saveServerSetting":
+        if (props.args.demo) return;
+        void persistServerSetting(effect.key, effect.value);
         return;
       default:
         return;
@@ -271,6 +353,12 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     }
     void (async () => {
       try {
+        const preferences = await loadPreferences();
+        apply(withPreferences(state(), preferences));
+      } catch (error) {
+        apply(withStatus(state(), `settings not loaded: ${String(error)}`));
+      }
+      try {
         // The upgrade wants a ticket minted for it, not the session credential.
         const httpBaseUrl = url.replace(/\/+$/u, "");
         apply(withStatus(state(), "authenticating…"));
@@ -293,16 +381,34 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     })();
   });
 
-  const header = createMemo(() =>
-    state().view === "threads"
-      ? `AgentTunnel · threads (${state().threads.length})`
-      : `AgentTunnel · ${state().title}`,
-  );
-  const hints = createMemo(() =>
-    state().view === "threads"
-      ? "↑/↓ move · enter open · ctrl-r refresh · ctrl-c quit"
-      : "enter send · ctrl-i interrupt · esc back · ctrl-r refresh · ctrl-c quit",
-  );
+  const header = createMemo(() => {
+    const current = state();
+    if (current.view === "threads") return `AgentTunnel · threads (${current.threads.length})`;
+    if (current.view === "settings") return "AgentTunnel · settings";
+    return `AgentTunnel · ${current.title}`;
+  });
+
+  const hints = createMemo(() => {
+    const current = state();
+    if (current.view === "settings") return "↑/↓ move · enter change · esc back · ctrl-c quit";
+    if (current.view === "threads") {
+      return "↑/↓ move · enter open · / new thread · ctrl-p commands · ctrl-r reload · ctrl-c quit";
+    }
+    return "enter send · / commands · ctrl-i interrupt · esc back · ctrl-r reload · ctrl-c quit";
+  });
+
+  const suggestions = createMemo(() => commandSuggestions(state()).slice(0, 6));
+  const picker = createMemo(() => state().picker);
+  const pickerRows = createMemo(() => {
+    const current = picker();
+    if (current === null) return [];
+    const query = current.query.trim().toLowerCase();
+    return (
+      query.length === 0
+        ? current.items
+        : current.items.filter((item) => item.label.toLowerCase().includes(query))
+    ).slice(0, 12);
+  });
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={theme.background}>
@@ -317,36 +423,92 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         <text fg={theme.textMuted}>{state().status}</text>
       </box>
       <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} flexDirection="column">
-        <Show
-          when={state().view === "threads"}
-          fallback={
-            <scrollbox flexGrow={1} minHeight={0}>
-              {state().lines.map((line) => (
-                <text fg={lineColor(line.kind)}>{line.text}</text>
-              ))}
-            </scrollbox>
-          }
-        >
+        <Show when={state().view === "threads"}>
           <Show
             when={state().threads.length > 0}
-            fallback={<text fg={theme.textMuted}>no threads yet — ctrl-r to refresh</text>}
+            fallback={<text fg={theme.textMuted}>no threads yet — type /new to start one</text>}
           >
-            {state().threads.map((row, index) => (
-              <text fg={index === state().selectedIndex ? theme.primary : theme.text}>
-                {`${index === state().selectedIndex ? "▸ " : "  "}${row.title}${
-                  row.branch === null ? "" : ` · ${row.branch}`
-                }  (${row.projectTitle})`}
-              </text>
-            ))}
+            <For each={state().threads}>
+              {(row, index) => (
+                <text fg={index() === state().selectedIndex ? theme.primary : theme.text}>
+                  {`${index() === state().selectedIndex ? "▸ " : "  "}${row.title}${
+                    row.branch === null ? "" : ` · ${row.branch}`
+                  }  (${row.projectTitle})`}
+                </text>
+              )}
+            </For>
           </Show>
         </Show>
+        <Show when={state().view === "thread"}>
+          <scrollbox flexGrow={1} minHeight={0}>
+            <For each={state().lines}>
+              {(line: TuiLine) => <text fg={lineColor(line.kind)}>{line.text}</text>}
+            </For>
+          </scrollbox>
+        </Show>
+        <Show when={state().view === "settings"}>
+          <box flexDirection="column">
+            <For each={settingsRows(state())}>
+              {(row, index) => (
+                <text fg={index() === state().settingsIndex ? theme.primary : theme.text}>
+                  {`${index() === state().settingsIndex ? "▸ " : "  "}${row.label}  ${row.value}`}
+                </text>
+              )}
+            </For>
+          </box>
+        </Show>
       </box>
+      <Show when={state().draft !== null}>
+        <box paddingLeft={2} paddingRight={2}>
+          <text fg={theme.textMuted}>
+            {`new thread in ${state().draft?.projectTitle ?? ""} — type the first message`}
+          </text>
+        </box>
+      </Show>
       <Show when={state().recap !== null}>
         <box paddingLeft={2} paddingRight={2}>
           <text fg={theme.textMuted}>{`※ recap: ${state().recap ?? ""}`}</text>
         </box>
       </Show>
-      <Show when={state().view === "thread"}>
+      <Show when={picker() !== null}>
+        <box
+          flexDirection="column"
+          borderStyle="rounded"
+          borderColor={theme.border}
+          backgroundColor={theme.surface}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <text
+            fg={theme.textMuted}
+          >{`${picker()?.title ?? ""}${picker()?.query === "" ? "" : ` · ${picker()?.query ?? ""}`}`}</text>
+          <For each={pickerRows()}>
+            {(item, index) => (
+              <text fg={index() === (picker()?.index ?? 0) ? theme.primary : theme.text}>
+                {`${index() === (picker()?.index ?? 0) ? "▸ " : "  "}${item.label}${
+                  item.detail === null ? "" : `  ${item.detail}`
+                }`}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+      <Show when={state().picker === null && suggestions().length > 0}>
+        <box flexDirection="column" paddingLeft={2} paddingRight={2}>
+          <For each={suggestions()}>
+            {(item, index) => (
+              <text
+                fg={
+                  item.id === highlightedSuggestion(state())?.id ? theme.primary : theme.textFaint
+                }
+              >
+                {`${item.label}  ${item.detail ?? ""}`}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+      <Show when={state().view === "thread" || state().input.length > 0}>
         <box paddingLeft={2} paddingRight={2}>
           <text fg={theme.text}>{`❯ ${state().input}`}</text>
         </box>

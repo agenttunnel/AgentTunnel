@@ -4,7 +4,7 @@
   "private": true,
   "description": "Terminal client for AgentTunnel: threads, live agent activity, and the thread recap in a TUI.",
   "bin": {
-    "t3-tui": "./src/main.ts"
+    "t3-tui": "./src/index.tsx"
   },
   "type": "module",
   "scripts": {

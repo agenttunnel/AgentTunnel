@@ -1,11 +1,45 @@
 import type {
+  ModelSelection,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  ServerConfig,
+  ServerSettings,
 } from "@t3tools/contracts";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+
+/** A project the palette can start a thread in. */
+export interface TuiProjectRow {
+  readonly id: string;
+  readonly title: string;
+  readonly workspaceRoot: string;
+  readonly defaultModelSelection: ModelSelection | null;
+}
+
+/** A configured provider instance and the models it offers. */
+export interface TuiProviderRow {
+  readonly instanceId: string;
+  readonly label: string;
+  readonly driver: string;
+  readonly models: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
+}
+
+/** A server setting the settings screen can flip, with its current value. */
+export interface TuiServerSettingRow {
+  readonly key: string;
+  readonly label: string;
+  readonly value: boolean | string;
+}
+
+/** The settings a terminal client can act on, in the order the screen lists them. */
+const SERVER_SETTING_KEYS = [
+  "enableLegacyTokenStreaming",
+  "enableProviderUpdateChecks",
+  "enableAgentBrowserAccess",
+  "newWorktreesStartFromOrigin",
+] as const satisfies ReadonlyArray<keyof ServerSettings>;
 
 /**
  * Turning the server's snapshots into the lines the TUI shows. Pure on purpose:
@@ -108,4 +142,47 @@ export function threadView(
     recap,
     lines,
   };
+}
+
+/** The projects a new thread can be started in, oldest first as the server sends them. */
+export function projectRows(snapshot: OrchestrationShellSnapshot): ReadonlyArray<TuiProjectRow> {
+  return snapshot.projects.map((project) => ({
+    id: project.id,
+    title: project.title,
+    workspaceRoot: project.workspaceRoot,
+    defaultModelSelection: project.defaultModelSelection,
+  }));
+}
+
+/** Installed, enabled provider instances and the models each one offers. */
+export function providerRows(config: ServerConfig): ReadonlyArray<TuiProviderRow> {
+  return config.providers
+    .filter(
+      (provider) =>
+        provider.installed && provider.enabled && provider.availability !== "unavailable",
+    )
+    .map((provider) => ({
+      instanceId: provider.instanceId,
+      label: provider.displayName ?? provider.instanceId,
+      driver: provider.driver,
+      models: provider.models.map((model) => ({ slug: model.slug, name: model.name })),
+    }));
+}
+
+const SERVER_SETTING_LABELS: Readonly<Record<string, string>> = {
+  enableLegacyTokenStreaming: "stream tokens as they arrive",
+  enableProviderUpdateChecks: "check for provider updates",
+  enableAgentBrowserAccess: "let agents drive the preview browser",
+  newWorktreesStartFromOrigin: "new worktrees start from origin",
+};
+
+/** The server settings a terminal client can flip, with their current values. */
+export function serverSettingRows(settings: ServerSettings): ReadonlyArray<TuiServerSettingRow> {
+  const rows: Array<TuiServerSettingRow> = [];
+  for (const key of SERVER_SETTING_KEYS) {
+    const value = settings[key];
+    if (typeof value !== "boolean") continue;
+    rows.push({ key, label: SERVER_SETTING_LABELS[key] ?? key, value });
+  }
+  return rows;
 }

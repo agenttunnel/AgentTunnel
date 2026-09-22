@@ -1,12 +1,24 @@
 import {
+  CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
+  ProjectId,
   ThreadId,
+  WS_METHODS,
+  type ModelSelection,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
+  type ServerConfig,
+  type ServerSettings,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Random from "effect/Random";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as Layer from "effect/Layer";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
@@ -152,3 +164,124 @@ export const loadThread = (
     (item): item is Extract<OrchestrationThreadStreamItem, { kind: "snapshot" }> =>
       item.kind === "snapshot",
   ).pipe(Effect.map((frame) => frame.snapshot));
+
+/** Every failure a client method can report, as the one error the TUI renders. */
+const toSessionError = (cause: unknown): TuiSessionError =>
+  new TuiSessionError({ message: String(cause) });
+
+/** Client-side ids: opaque to the server, unique per process. */
+const newId = (seed: number, salt: number): string =>
+  `tui-${seed.toString(36)}-${salt.toString(36)}`;
+
+/** The ids and timestamp one command carries, drawn together. */
+const newCommandIdentity = (): Effect.Effect<{
+  readonly commandId: CommandId;
+  readonly messageId: MessageId;
+  readonly createdAt: string;
+}> =>
+  Effect.all([Random.nextInt, Random.nextInt, DateTime.now]).pipe(
+    Effect.map(([seed, salt, at]) => ({
+      commandId: CommandId.make(newId(seed, salt)),
+      messageId: MessageId.make(newId(salt, seed)),
+      createdAt: DateTime.formatIso(at),
+    })),
+  );
+
+/** Everything a client needs about the server: providers, models, settings. */
+export const loadServerConfig = (
+  session: TuiSession,
+): Effect.Effect<ServerConfig, TuiSessionError> =>
+  session.client[WS_METHODS.serverGetConfig]({}).pipe(Effect.mapError(toSessionError));
+
+/** Read and patch server settings (`server.getSettings` / `server.updateSettings`). */
+export const loadServerSettings = (
+  session: TuiSession,
+): Effect.Effect<ServerSettings, TuiSessionError> =>
+  session.client[WS_METHODS.serverGetSettings]({}).pipe(Effect.mapError(toSessionError));
+
+export const updateServerSettings = (
+  session: TuiSession,
+  patch: ServerSettingsPatch,
+): Effect.Effect<ServerSettings, TuiSessionError> =>
+  session.client[WS_METHODS.serverUpdateSettings]({ patch }).pipe(Effect.mapError(toSessionError));
+
+export interface StartThreadInput {
+  readonly threadId: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly text: string;
+  readonly modelSelection: ModelSelection;
+}
+
+/**
+ * Create a thread and send its first user message in one command, using
+ * `thread.turn.start`'s `bootstrap.createThread`.
+ */
+export const startThread = (
+  session: TuiSession,
+  input: StartThreadInput,
+): Effect.Effect<void, TuiSessionError> =>
+  Effect.gen(function* () {
+    const { commandId, messageId, createdAt } = yield* newCommandIdentity();
+    yield* session.client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      type: "thread.turn.start",
+      commandId,
+      threadId: ThreadId.make(input.threadId),
+      message: { messageId, role: "user", text: input.text, attachments: [] },
+      modelSelection: input.modelSelection,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      bootstrap: {
+        createThread: {
+          projectId: ProjectId.make(input.projectId),
+          title: input.title,
+          modelSelection: input.modelSelection,
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+      },
+      createdAt,
+    }).pipe(Effect.mapError(toSessionError));
+  });
+
+/** A follow-up user message in an existing thread. */
+export const sendTurn = (
+  session: TuiSession,
+  input: {
+    readonly threadId: string;
+    readonly text: string;
+    readonly modelSelection?: ModelSelection;
+  },
+): Effect.Effect<void, TuiSessionError> =>
+  Effect.gen(function* () {
+    const { commandId, messageId, createdAt } = yield* newCommandIdentity();
+    yield* session.client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      type: "thread.turn.start",
+      commandId,
+      threadId: ThreadId.make(input.threadId),
+      message: { messageId, role: "user", text: input.text, attachments: [] },
+      // The thread already has a model: only restate it when the caller moved it.
+      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt,
+    }).pipe(Effect.mapError(toSessionError));
+  });
+
+/** Ask the server to stop the running turn. */
+export const interruptTurn = (
+  session: TuiSession,
+  threadId: string,
+): Effect.Effect<void, TuiSessionError> =>
+  Effect.gen(function* () {
+    const { commandId, createdAt } = yield* newCommandIdentity();
+    yield* session.client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+      type: "thread.turn.interrupt",
+      commandId,
+      threadId: ThreadId.make(threadId),
+      createdAt,
+    }).pipe(Effect.mapError(toSessionError));
+  });
