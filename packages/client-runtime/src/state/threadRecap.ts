@@ -5,7 +5,7 @@
  * the newest user message, and the last assistant report — so the recap is live
  * while sub-agents work and needs no server round-trip.
  */
-import type { AgentPanelModel, RuntimeSubagent } from "./subagentRuntime";
+import type { AgentPanelModel, RuntimeSubagent } from "./subagentRuntime.ts";
 
 export interface ThreadRecap {
   readonly goal: string | null;
