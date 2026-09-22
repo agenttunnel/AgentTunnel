@@ -325,6 +325,12 @@ const MAX_PROGRESS_CHARS = 500;
 /** A recorded decision is one scannable line; the notebook keeps the thread's
     whole history, so each entry stays short. */
 const DECISION_MAX_CHARS = 300;
+/** A live progress report from a sub-agent: one line the orchestrator reads. */
+const AGENT_REPORT_MAX_CHARS = 240;
+/** The compacted context a sub-agent hands back when it finishes. */
+const AGENT_HANDOFF_MAX_CHARS = 600;
+/** The newest output line kept per running agent for the orchestrator's view. */
+const AGENT_ACTIVITY_MAX_CHARS = 160;
 const TASK_LABEL_MAX_CHARS = 72;
 
 const roleIcon = (role: AgentTunnelRole): string =>
@@ -444,6 +450,12 @@ function normalizeDecision(decision: string, rationale: string | undefined): str
   return why.length > 0 ? `${chosen} — ${why}` : chosen;
 }
 
+/** Trims a sub-agent report or hand-off to one line, or null when it is empty. */
+function normalizeAgentText(value: string | undefined, max: number): string | null {
+  const cleaned = plainTextPreview(value ?? "", max);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 /**
  * The notebook's `decisions` value: the thread's decisions so far, then this
  * turn's, oldest first, so a resumed session reads them in the order they were
@@ -492,6 +504,18 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const recordedLearningKeys = new Set<string>();
   const recordedDecisions: RecordedDecision[] = [];
   const recordedDecisionKeys = new Set<string>();
+  /**
+   * What each running sub-agent is doing right now: its newest report (or its
+   * newest output line when it has not reported). The orchestrator reads this
+   * in its passes instead of guessing, and the Agents panel gets the same text
+   * as an `agent.progress` event.
+   */
+  const agentActivity = new Map<string, string>();
+  /**
+   * The compacted context each sub-agent handed back in its terminal call,
+   * keyed by agent id so a retried agent replaces its own entry.
+   */
+  const agentHandoffs = new Map<string, string>();
   const workflowStartedAt = yield* Clock.currentTimeMillis;
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
@@ -958,10 +982,11 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
    */
   const runningAgentsBlock = (): string => {
     if (activeTasks.size === 0) return "";
-    const rows = [...activeTasks.values()].map(
-      (entry) => `| ${entry.role} | \`${entry.pipelineId}\` | ${entry.label} |`,
+    const rows = [...activeTasks.entries()].map(
+      ([agentId, entry]) =>
+        `| ${entry.role} | \`${entry.pipelineId}\` | ${entry.label} | ${agentActivity.get(agentId) ?? "no report yet"} |`,
     );
-    return `\n\n## Agents working right now\n\nThese sub-agents are mid-run and did not see the steering below. If it changes what one of them is doing, dispatch a follow-up task that supersedes their work — name their pipeline in depends_on when the change must land after they finish — instead of assuming they will adjust.\n\n| Role | Pipeline | Task |\n| --- | --- | --- |\n${rows.join("\n")}`;
+    return `\n\n## Agents working right now\n\nThese sub-agents are mid-run and did not see the steering below. The last column is what each one reported (or last printed) most recently, so you can see what it is doing without waiting for it to finish. If the steering changes what one of them is doing, dispatch a follow-up task that supersedes their work — name their pipeline in depends_on when the change must land after they finish — instead of assuming they will adjust.\n\n| Role | Pipeline | Task | Latest activity |\n| --- | --- | --- | --- |\n${rows.join("\n")}`;
   };
 
   const steeringPrompt = (steering: ReadonlyArray<string>, running: boolean): string =>
@@ -1039,6 +1064,35 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
           summary: `Finding failed: ${error}`,
         });
       }
+      return;
+    }
+
+    if (call.name === "report_progress") {
+      const report = normalizeAgentText(stringValue(call.arguments.status), AGENT_REPORT_MAX_CHARS);
+      if (report === null) return;
+      agentActivity.set(agentId, report);
+      yield* emit({
+        type: "agent.progress",
+        workflowId: options.workflowId,
+        agentId,
+        summary: report,
+      });
+      return;
+    }
+
+    if (call.name === "done") {
+      const handoff = normalizeAgentText(
+        stringValue(call.arguments.context),
+        AGENT_HANDOFF_MAX_CHARS,
+      );
+      if (handoff === null) return;
+      agentHandoffs.set(agentId, handoff);
+      yield* emit({
+        type: "agent.progress",
+        workflowId: options.workflowId,
+        agentId,
+        summary: "Context handed back to the orchestrator.",
+      });
       return;
     }
 
@@ -1218,6 +1272,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
     // Registered before the process spawns: a steering pass that lands while
     // this agent runs must see it in the roster and route around it.
     activeTasks.set(agentId, { role: task.role, label, pipelineId: task.pipelineId });
+    agentActivity.delete(agentId);
     return yield* runTaskWithRetries(task, agentId, label).pipe(
       Effect.ensuring(Effect.sync(() => activeTasks.delete(agentId))),
     );
@@ -1248,6 +1303,7 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       text: `\n↻ **${task.role} · ${label}** retrying (attempt ${attempt}) — retried from the Agents panel\n\n`,
     });
     activeTasks.set(agentId, { role: task.role, label, pipelineId: task.pipelineId });
+    agentActivity.delete(agentId);
     const status = yield* runTaskWithRetries(task, agentId, label).pipe(
       Effect.ensuring(Effect.sync(() => activeTasks.delete(agentId))),
     );
@@ -1391,6 +1447,9 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         output.push(clean);
         if (output.length > MAX_AGENT_OUTPUT_LINES) output.shift();
         progressLineCount += 1;
+        // A peek the orchestrator can use: the newest line this agent printed,
+        // superseded by an explicit report_progress when it sends one.
+        agentActivity.set(agentId, plainTextPreview(clean, AGENT_ACTIVITY_MAX_CHARS));
         const prefix = firstOutputLine
           ? `\n<details>\n<summary>📋 Output · ${label}</summary>\n\n\`\`\`\n`
           : "";
@@ -1442,6 +1501,22 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
       ...(errorExcerpt ? { errorExcerpt } : {}),
       resultText: `## ${task.role} ${agentId} (${status})\n\nTask: ${task.task}\n\n${output.join("\n")}`,
     });
+    // The compacted context the agent handed back becomes part of the thread's
+    // notebook: `replaceAuthor` keeps one bullet per agent, so a retry rewrites
+    // its own entry instead of stacking a second copy.
+    const handoff = agentHandoffs.get(agentId);
+    if (handoff !== undefined) {
+      context.replaceAuthor(
+        "subagent_context",
+        `**${task.role} · ${label}** (${status}) — ${handoff}`,
+        agentId,
+      );
+    } else if (status === "completed") {
+      yield* emit({
+        type: "orchestrator.output",
+        text: `\n> ⚠️ **${task.role} · ${label}** finished without handing back its context.\n\n`,
+      });
+    }
     return status;
   });
 
