@@ -5,12 +5,17 @@ It speaks the same WebSocket RPC as the web, desktop, and mobile clients, so a t
 terminal is the same thread everywhere.
 
 ```bash
-node apps/tui/src/main.ts --url http://localhost:13773
+bun apps/tui/src/index.tsx --url http://localhost:13773
 ```
+
+It renders through [OpenTUI](https://github.com/sst/opentui) — the same terminal UI stack opencode's
+client uses — so it runs under Bun (`engines.bun >= 1.3`) rather than Node.
 
 - `--url` — the server origin. Defaults to `$T3CODE_URL`.
 - `--token` — a session credential, sent as the WebSocket ticket the server already accepts.
   Defaults to `$T3CODE_TOKEN`. Omit it for a server that does not require authentication.
+- `--demo` — render a canned thread and transcript without connecting, so the interface can be
+  reviewed (and the keybindings tried) without a server or a credential.
 
 ## Keys
 
