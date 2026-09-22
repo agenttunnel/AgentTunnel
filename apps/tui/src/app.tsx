@@ -23,11 +23,19 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
+import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { render, useKeyboard } from "@opentui/solid";
 import { Show, createMemo, createSignal, onMount } from "solid-js";
 
 import { threadRows, threadView, type TuiThreadRow } from "./format.ts";
-import { connect, loadShell, loadThread, resolveConnection, type TuiSession } from "./session.ts";
+import {
+  connect,
+  loadShell,
+  loadThread,
+  resolveConnection,
+  resolveSocketTicket,
+  type TuiSession,
+} from "./session.ts";
 import {
   initialTuiState,
   reduceKey,
@@ -138,20 +146,35 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     setState(next);
   };
 
-  const refreshThreads = async (): Promise<void> => {
-    if (session === null) return;
-    const snapshot = await Effect.runPromise(loadShell(session));
-    apply(
-      withThreads(withStatus(state(), `${snapshot.threads.length} threads`), threadRows(snapshot)),
-    );
+  /** A load that fails has to say so in the status line, not stall the view. */
+  const guard = async (label: string, run: () => Promise<void>): Promise<void> => {
+    try {
+      await run();
+    } catch (error) {
+      apply(withStatus(state(), `${label} failed: ${String(error)}`));
+    }
   };
 
-  const openThread = async (threadId: string): Promise<void> => {
-    if (session === null) return;
-    const snapshot = await Effect.runPromise(loadThread(session, threadId));
-    const view = threadView(snapshot);
-    apply(withThread(state(), { id: threadId, ...view }));
-  };
+  const refreshThreads = (): Promise<void> =>
+    guard("refresh", async () => {
+      if (session === null) return;
+      const snapshot = await Effect.runPromise(loadShell(session));
+      apply(
+        withThreads(
+          withStatus(state(), `${snapshot.threads.length} threads`),
+          threadRows(snapshot),
+        ),
+      );
+    });
+
+  const openThread = (threadId: string): Promise<void> =>
+    guard("open", async () => {
+      if (session === null) return;
+      apply(withStatus(state(), "loading thread…"));
+      const snapshot = await Effect.runPromise(loadThread(session, threadId));
+      const view = threadView(snapshot);
+      apply(withThread(state(), { id: threadId, ...view }));
+    });
 
   const sendMessage = async (threadId: string, text: string): Promise<void> => {
     if (session === null) return;
@@ -248,10 +271,18 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     }
     void (async () => {
       try {
+        // The upgrade wants a ticket minted for it, not the session credential.
+        const httpBaseUrl = url.replace(/\/+$/u, "");
+        apply(withStatus(state(), "authenticating…"));
+        const ticket = await Effect.runPromise(
+          resolveSocketTicket({ httpBaseUrl, token: props.args.token }).pipe(
+            Effect.provide(remoteHttpClientLayer(fetch)),
+          ),
+        );
         // One session for the process: the socket scope lives until the TUI exits.
         const scope = await Effect.runPromise(Scope.make());
         session = await Effect.runPromise(
-          connect(resolveConnection({ url, token: props.args.token })).pipe(
+          connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
             Effect.provideService(Scope.Scope, scope),
           ),
         );
