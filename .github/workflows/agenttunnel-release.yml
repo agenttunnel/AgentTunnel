@@ -30,7 +30,7 @@ permissions:
 jobs:
   prepare:
     name: Resolve version
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -58,15 +58,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: depot-macos-14
             platform: mac
             target: dmg
             arch: arm64
-          - runner: ubuntu-24.04
+          - runner: depot-ubuntu-24.04
             platform: linux
             target: AppImage
             arch: x64
-          - runner: windows-latest
+          - runner: depot-windows-2025
             platform: win
             target: nsis
             arch: x64
@@ -178,7 +178,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [prepare, build]
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8

@@ -45,7 +45,7 @@ jobs:
   ios:
     name: iPhone 6.9, iPhone 6.5, and iPad 13
     if: inputs.platform == 'all' || inputs.platform == 'ios'
-    runs-on: macos-14
+    runs-on: depot-macos-14
     # Capturing every palette multiplies the device matrix by six, and only the
     # one native build is shared between them.
     timeout-minutes: ${{ inputs.theme == 'all' && 300 || 60 }}
@@ -94,6 +94,9 @@ jobs:
   android:
     name: Android phone, 7-inch tablet, and 10-inch tablet
     if: inputs.platform == 'all' || inputs.platform == 'android'
+    # GitHub-hosted on purpose: the Android emulator needs /dev/kvm, and Depot
+    # GitHub Actions runners don't expose it — only Depot CI sandboxes do.
+    # https://depot.dev/docs/github-actions/troubleshooting
     runs-on: ubuntu-24.04
     # Capturing every palette multiplies the device matrix by six, and only the
     # one native build is shared between them.
