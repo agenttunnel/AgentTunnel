@@ -340,6 +340,139 @@ describe("foldSubagentActivities", () => {
     expect(member.status).toBe("running");
   });
 
+  it("an AgentTunnel retry reopens the row from its start row alone", () => {
+    // AgentTunnel's start/progress rows carry no `status` (the provider only
+    // reports one at completion), so a retry announces itself with the attempt
+    // counter alone. Missing that left the row painted Failed while the new
+    // run was already going.
+    const agents = fold([
+      activity(
+        "task.started",
+        {
+          taskId: "wf-9:task_1",
+          title: "Executor - main body",
+          taskType: "local_agent",
+          parentAgentId: "wf-9",
+        },
+        "2026-08-01T10:00:00.000Z",
+      ),
+      activity("task.completed", {
+        taskId: "wf-9:task_1",
+        status: "failed",
+        summary: "bash: WT=… exited 1",
+        parentAgentId: "wf-9",
+      }),
+      activity(
+        "task.started",
+        {
+          taskId: "wf-9:task_1",
+          title: "Executor - main body",
+          taskType: "local_agent",
+          parentAgentId: "wf-9",
+          attempt: 2,
+        },
+        "2026-08-01T10:05:00.000Z",
+      ),
+      activity("task.progress", {
+        taskId: "wf-9:task_1",
+        summary: "running the test suite",
+        parentAgentId: "wf-9",
+        attempt: 2,
+      }),
+    ]);
+    expect(agents).toHaveLength(1);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("running");
+    expect(agent.activationCount).toBe(2);
+    expect(agent.attempt).toBe(2);
+    expect(agent.error).toBeNull();
+    expect(agent.completedAt).toBeNull();
+    // Elapsed reads from the retry's start, never the dead run's.
+    expect(agent.startedAt).toBe("2026-08-01T10:05:00.000Z");
+  });
+
+  it("a retried attempt owns its own outcome, not the previous run's", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-r1",
+        title: "Verify math",
+        taskType: "local_agent",
+      }),
+      activity(
+        "task.completed",
+        { taskId: "task-r1", status: "failed", summary: "attempt 1 died" },
+        "2026-08-01T10:00:01.000Z",
+      ),
+      activity("task.started", {
+        taskId: "task-r1",
+        title: "Verify math",
+        taskType: "local_agent",
+        attempt: 2,
+      }),
+      activity(
+        "task.completed",
+        { taskId: "task-r1", status: "completed", summary: "attempt 2 verified", attempt: 2 },
+        "2026-08-01T10:06:00.000Z",
+      ),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("completed");
+    expect(agent.result).toBe("attempt 2 verified");
+    expect(agent.error).toBeNull();
+    expect(agent.completedAt).toBe("2026-08-01T10:06:00.000Z");
+  });
+
+  it("a retry that fails again reports the new attempt's failure", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-r2",
+        title: "Verify math",
+        taskType: "local_agent",
+      }),
+      activity(
+        "task.completed",
+        { taskId: "task-r2", status: "failed", summary: "attempt 1 died" },
+        "2026-08-01T10:00:01.000Z",
+      ),
+      activity("task.started", {
+        taskId: "task-r2",
+        title: "Verify math",
+        taskType: "local_agent",
+        attempt: 2,
+      }),
+      activity(
+        "task.completed",
+        { taskId: "task-r2", status: "failed", summary: "attempt 2 died too", attempt: 2 },
+        "2026-08-01T10:06:00.000Z",
+      ),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("failed");
+    expect(agent.error).toBe("attempt 2 died too");
+    expect(agent.result).toBeNull();
+    expect(agent.completedAt).toBe("2026-08-01T10:06:00.000Z");
+  });
+
+  it("a late duplicate start on the same attempt still never reopens the run", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-r3",
+        taskType: "local_agent",
+        attempt: 2,
+      }),
+      activity("task.completed", {
+        taskId: "task-r3",
+        status: "failed",
+        summary: "boom",
+        attempt: 2,
+      }),
+      activity("task.started", { taskId: "task-r3", title: "Late", attempt: 2 }),
+    ]);
+    expect(agents[0]!.status).toBe("failed");
+    expect(agents[0]!.error).toBe("boom");
+    expect(agents[0]!.completedAt).not.toBeNull();
+  });
+
   it("drops non-http(s) session urls at the fold boundary", () => {
     const agents = fold([
       activity("task.started", {

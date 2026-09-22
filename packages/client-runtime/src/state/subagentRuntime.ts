@@ -68,6 +68,7 @@ export interface RuntimeSubagent {
   readonly harness: string | null;
   readonly effort: string | null;
   readonly status: RuntimeSubagentStatus;
+  /** Runs observed for this slot: a retry or a resume counts one more. */
   readonly activationCount: number;
   readonly usage: SubagentUsage | null;
   readonly progress: string | null;
@@ -79,6 +80,8 @@ export interface RuntimeSubagent {
   readonly agentIndex: number | null;
   readonly phaseIndex: number | null;
   readonly phaseTitle: string | null;
+  /** Provider-marked run number for this slot. A higher value than the last
+      one observed is a new run of the same row, not a late frame. */
   readonly attempt: number | null;
   readonly workflowName: string | null;
   readonly phases: ReadonlyArray<SubagentWorkflowPhase>;
@@ -356,17 +359,9 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   const phaseTitle = asString(payload.phaseTitle);
   if (phaseTitle) agent.phaseTitle = phaseTitle;
   const attempt = asCount(payload.attempt);
-  if (attempt !== undefined) {
-    // A new attempt on a workflow slot is a reactivation of the same
-    // identity: clear the previous attempt's terminal detail so the status
-    // transition (terminal → running, in applyStatus) reads as a fresh run.
-    // The activation bump lives ONLY in applyStatus — bumping here too
-    // counted every retry twice (review finding: two attempts read "run 3").
-    if (agent.attempt !== null && attempt > agent.attempt) {
-      agent.result = null;
-      agent.error = null;
-      agent.completedAt = null;
-    }
+  // Attempts only move forward: a stale row must not walk the slot back to an
+  // earlier run, since the run-identity decision reads this value.
+  if (attempt !== undefined && (agent.attempt === null || attempt > agent.attempt)) {
     agent.attempt = attempt;
   }
   const outputFile = asString(payload.outputFile);
@@ -410,24 +405,57 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   }
 }
 
-function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: string): void {
+/**
+ * Attempts are the run identity of one agent slot. Providers keep the agent id
+ * stable across retries and only move the attempt counter — AgentTunnel's
+ * auto-retry and the Agents-panel retry both reuse the slot — so a higher
+ * attempt is a NEW run, never a late frame from the settled one. The first
+ * attempt is usually unmarked, so an absent previous attempt reads as 1.
+ */
+function isNewAttempt(agent: MutableAgent, previousAttempt: number | null): boolean {
+  return agent.attempt !== null && agent.attempt > (previousAttempt ?? 1);
+}
+
+/**
+ * Reactivation: same identity, new run. Clears the previous run's outcome and
+ * its now-stale live line so a live card never shows the prior run's output.
+ */
+function startRun(agent: MutableAgent, at: string): void {
+  agent.activationCount += 1;
+  agent.result = null;
+  agent.error = null;
+  agent.progress = null;
+  agent.lastToolName = null;
+  agent.completedAt = null;
+  agent.startedAt = at;
+}
+
+/**
+ * Applies one row's status to an agent. `newRun` marks a row that belongs to a
+ * new attempt of the same slot: it reopens the row even when the row carries no
+ * status of its own (AgentTunnel's start/progress rows never do) or settles it
+ * immediately.
+ */
+function applyStatus(
+  agent: MutableAgent,
+  status: RuntimeSubagentStatus,
+  at: string,
+  options?: { readonly newRun?: boolean },
+): void {
+  const newRun = options?.newRun === true;
   const wasTerminal = isTerminalSubagentStatus(agent.status);
   const isTerminal = isTerminalSubagentStatus(status);
-  if (wasTerminal && isTerminal) {
+  if (wasTerminal && isTerminal && !newRun) {
     // Duplicate terminal events are idempotent: first write wins, timestamps
-    // don't slide.
+    // don't slide. A new attempt's terminal row is a different run, so it does
+    // replace them.
     return;
   }
-  if ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending")) {
-    // Reactivation: same identity, new run. Clear the previous run's terminal
-    // detail so a live card never shows the prior run's output.
-    agent.activationCount += 1;
-    agent.result = null;
-    agent.error = null;
-    agent.completedAt = null;
-    if (status === "running") {
-      agent.startedAt = at;
-    }
+  if (
+    newRun ||
+    ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending"))
+  ) {
+    startRun(agent, at);
   }
   if (status === "running" && agent.startedAt === null) {
     agent.startedAt = at;
@@ -497,15 +525,20 @@ export function foldSubagentActivities(
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
         if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
+        const previousAttempt = agent.attempt;
         fillMetadata(agent, payload);
+        const newRun = isNewAttempt(agent, previousAttempt);
         // Order-robustness: a start row arriving after a terminal state is a
         // late/out-of-order delivery and only fills metadata — it must not
-        // reopen the run. Reactivation comes exclusively from explicit
-        // status transitions (task.updated / progress status). Guard on the
-        // status itself, not activationCount: a task first seen via a
-        // terminal task.updated has zero activations but is still settled
-        // (review finding: a late start reopened a failed child).
-        if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
+        // reopen the run. Reactivation comes from a new attempt (the provider
+        // kept the slot and bumped the counter) or from an explicit status
+        // transition (task.updated / progress status). Guard on the status
+        // itself, not activationCount: a task first seen via a terminal
+        // task.updated has zero activations but is still settled (review
+        // finding: a late start reopened a failed child).
+        if (newRun) {
+          applyStatus(agent, "running", at, { newRun: true });
+        } else if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
           agent.activationCount = 1;
           agent.startedAt = agent.startedAt ?? at;
           agent.status = "running";
@@ -526,11 +559,17 @@ export function foldSubagentActivities(
         const existed = agents.has(taskId);
         if (!existed && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
+        const previousAttempt = agent.attempt;
         fillMetadata(agent, payload);
+        const newRun = isNewAttempt(agent, previousAttempt);
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
-          applyStatus(agent, explicitStatus, at);
+          applyStatus(agent, explicitStatus, at, { newRun });
+        } else if (newRun) {
+          // A retry's progress row: the new run is alive even though the row
+          // carries no status of its own.
+          applyStatus(agent, "running", at, { newRun: true });
         } else if (
           (payload.usageSnapshot !== true || !existed) &&
           !isTerminalSubagentStatus(agent.status) &&
@@ -564,21 +603,30 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
+        const previousAttempt = agent.attempt;
         fillMetadata(agent, payload);
+        const newRun = isNewAttempt(agent, previousAttempt);
         // A task first seen via task.updated (start row aged out) has run at
         // least once — zero activations would misreport "run 0" and let a
         // later start row treat it as never-started (review finding).
         if (agent.activationCount === 0) agent.activationCount = 1;
         const wasTerminal = isTerminalSubagentStatus(agent.status);
         const status = asRuntimeStatus(payload.status);
-        if (status) applyStatus(agent, status, at);
+        if (status) {
+          applyStatus(agent, status, at, { newRun });
+        } else if (newRun) {
+          applyStatus(agent, "running", at, { newRun: true });
+        }
         const error = asString(payload.error);
         if (error) agent.error = bounded(error);
         // Provider end time beats ingestion time for the transition that
         // actually settled the run (applyStatus fills completedAt with the
-        // activity timestamp first, so check the transition, not null).
+        // activity timestamp first, so check the transition, not null). A new
+        // attempt re-settles a row that was already terminal.
+        const settledHere =
+          status !== undefined && isTerminalSubagentStatus(status) && (!wasTerminal || newRun);
         const endedAt = asString(payload.endedAt);
-        if (endedAt && !wasTerminal && isTerminalSubagentStatus(agent.status)) {
+        if (endedAt && settledHere) {
           agent.completedAt = endedAt;
         }
         agent.updatedAt = at;
@@ -592,17 +640,20 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
+        const previousAttempt = agent.attempt;
         fillMetadata(agent, payload);
+        const newRun = isNewAttempt(agent, previousAttempt);
         if (agent.activationCount === 0) agent.activationCount = 1;
-        // Already-terminal: status and timestamps are frozen (first write
-        // wins, duplicates must not slide them) but the completion still
-        // ENRICHES — Claude commonly emits terminal task.updated before
+        // Already-terminal, same attempt: status and timestamps are frozen
+        // (first write wins, duplicates must not slide them) but the completion
+        // still ENRICHES — Claude commonly emits terminal task.updated before
         // task.completed, and the completion carries the result summary and
         // final usage the update lacked (review finding: the early return
         // dropped both). Fill-if-missing keeps duplicate completions from
-        // replacing the first result.
+        // replacing the first result. A higher attempt is a different run and
+        // takes the normal path instead.
         const summary = asString(payload.summary) ?? asString(payload.detail);
-        if (isTerminalSubagentStatus(agent.status)) {
+        if (isTerminalSubagentStatus(agent.status) && !newRun) {
           if (summary) {
             if (agent.status === "failed") {
               agent.error = agent.error ?? bounded(summary);
@@ -614,7 +665,7 @@ export function foldSubagentActivities(
           break;
         }
         const status = TASK_COMPLETED_STATUS.get(asString(payload.status) ?? "") ?? "completed";
-        applyStatus(agent, status, at);
+        applyStatus(agent, status, at, { newRun });
         if (summary) {
           if (status === "failed") {
             agent.error = agent.error ?? bounded(summary);
