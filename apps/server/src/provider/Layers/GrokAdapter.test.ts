@@ -95,6 +95,21 @@ const grokAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
 const makeTestAdapter = (binaryPath: string, options?: Parameters<typeof makeGrokAdapter>[1]) =>
   makeGrokAdapter(decodeGrokSettings({ binaryPath }), options).pipe(Effect.orDie);
 
+// `_x.ai/session/prompt_complete` can land before the CLI flushes the turn's
+// final assistant chunk. Tests that assert on that trailing output widen the
+// window the adapter holds the turn open afterwards, so a loaded host cannot
+// race it shut.
+const xAiCompletionDrainOptions = {
+  xAiCompletionDrainQuietPeriodMs: 1_000,
+  xAiCompletionDrainMaxWaitMs: 5_000,
+} satisfies NonNullable<Parameters<typeof makeGrokAdapter>[1]>;
+
+// Force the mock's post-completion output into a later read than the completion
+// signal, so the tests below exercise the drain window instead of racing it.
+const xAiCompletionDrainMockEnv = {
+  T3_ACP_NOTIFICATION_WRITE_DELAY_MS: "25",
+} satisfies Record<string, string>;
+
 it("detects enter_plan_mode tool calls from title and rawInput", () => {
   assert.isTrue(
     isGrokEnterPlanModeToolCall({
@@ -422,11 +437,12 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const threadId = ThreadId.make("grok-xai-prompt-complete-fallback");
       const wrapperPath = yield* Effect.promise(() =>
         makeMockGrokWrapper({
+          ...xAiCompletionDrainMockEnv,
           T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
           T3_ACP_EMIT_FOREIGN_SESSION_UPDATES: "1",
         }),
       );
-      const adapter = yield* makeTestAdapter(wrapperPath);
+      const adapter = yield* makeTestAdapter(wrapperPath, xAiCompletionDrainOptions);
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
       const turnCompleted = yield* Deferred.make<void>();
@@ -869,13 +885,29 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const threadId = ThreadId.make("grok-send-turn-interrupt-after-prompt");
       const wrapperPath = yield* Effect.promise(() =>
         makeMockGrokWrapper({
+          ...xAiCompletionDrainMockEnv,
           T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
         }),
       );
-      const adapter = yield* makeTestAdapter(wrapperPath);
-      const contentDelta = yield* Deferred.make<void>();
+      // Widen the window that follows `_x.ai/session/prompt_complete`: this test
+      // needs the turn to still be draining when Stop lands.
+      const adapter = yield* makeTestAdapter(wrapperPath, xAiCompletionDrainOptions);
+      // The mock emits its final chunk after `_x.ai/session/prompt_complete`, so
+      // only a turn held open by the completion drain can render the full text.
+      // Seeing it therefore proves the adapter recorded the prompt result — the
+      // precondition this test names ("after prompt success").
+      let receivedText = "";
+      const promptResponseRecorded = yield* Deferred.make<void>();
       const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        event.type === "content.delta" ? Deferred.succeed(contentDelta, undefined) : Effect.void,
+        Effect.gen(function* () {
+          if (event.type !== "content.delta" || String(event.threadId) !== String(threadId)) {
+            return;
+          }
+          receivedText += event.payload.delta;
+          if (receivedText === "hello from mock") {
+            yield* Deferred.succeed(promptResponseRecorded, undefined).pipe(Effect.ignore);
+          }
+        }),
       ).pipe(Effect.forkChild);
 
       yield* adapter.startSession({
@@ -894,14 +926,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         })
         .pipe(Effect.forkChild);
 
-      yield* Deferred.await(contentDelta);
-      for (let yieldAttempt = 0; yieldAttempt < 6; yieldAttempt += 1) {
-        yield* Effect.yieldNow;
-      }
+      yield* Deferred.await(promptResponseRecorded).pipe(
+        Effect.timeout("10 seconds"),
+        TestClock.withLive,
+      );
       yield* Fiber.interrupt(sendTurnFiber);
-      for (let yieldAttempt = 0; yieldAttempt < 4; yieldAttempt += 1) {
-        yield* Effect.yieldNow;
-      }
 
       const snapshot = yield* adapter.readThread(threadId);
       assert.equal(snapshot.turns.length, 1);
@@ -1210,10 +1239,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const threadId = ThreadId.make("grok-stop-during-completion-drain");
       const wrapperPath = yield* Effect.promise(() =>
         makeMockGrokWrapper({
+          ...xAiCompletionDrainMockEnv,
           T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG: "1",
         }),
       );
-      const adapter = yield* makeTestAdapter(wrapperPath);
+      const adapter = yield* makeTestAdapter(wrapperPath, xAiCompletionDrainOptions);
 
       const runtimeEvents: ProviderRuntimeEvent[] = [];
       const activeTurnIdRef = yield* Ref.make<TurnId | undefined>(undefined);
@@ -1254,9 +1284,16 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         })
         .pipe(Effect.forkChild);
 
-      const turnId = yield* Deferred.await(trailingChunkTurnId).pipe(Effect.timeout("2 seconds"));
-      yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
-      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("2 seconds"));
+      // The drain window is wall-clock, so these waits are too. A stalled window
+      // must fail here instead of burning the suite's test timeout.
+      const turnId = yield* Deferred.await(trailingChunkTurnId).pipe(
+        Effect.timeout("5 seconds"),
+        TestClock.withLive,
+      );
+      yield* adapter
+        .interruptTurn(threadId, turnId)
+        .pipe(Effect.timeout("5 seconds"), TestClock.withLive);
+      yield* Fiber.join(sendTurnFiber).pipe(Effect.timeout("5 seconds"), TestClock.withLive);
 
       const turnCompletedEvents = runtimeEvents.filter(
         (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
