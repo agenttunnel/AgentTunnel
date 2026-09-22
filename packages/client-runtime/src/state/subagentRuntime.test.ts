@@ -473,6 +473,111 @@ describe("foldSubagentActivities", () => {
     expect(agents[0]!.completedAt).not.toBeNull();
   });
 
+  it("an out-of-order frame from an earlier attempt never overwrites the retry", () => {
+    // Real AgentTunnel shape: harness frames are appended as they stream, so a
+    // previous attempt's settled frame can land after the retry already began.
+    // The row belongs to the newest attempt that was actually observed.
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-oo",
+        title: "Executor",
+        taskType: "local_agent",
+      }),
+      activity("task.progress", { taskId: "task-oo", summary: "attempt 2 running", attempt: 2 }),
+      activity("task.completed", {
+        taskId: "task-oo",
+        status: "failed",
+        summary: "attempt 1 died",
+      }),
+      activity("task.started", {
+        taskId: "task-oo",
+        title: "Executor",
+        taskType: "local_agent",
+        attempt: 2,
+      }),
+      activity("task.completed", {
+        taskId: "task-oo",
+        status: "completed",
+        summary: "attempt 2 done",
+        attempt: 2,
+      }),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("completed");
+    expect(agent.result).toBe("attempt 2 done");
+    expect(agent.error).toBeNull();
+    expect(agent.activationCount).toBe(2);
+  });
+
+  it("keeps the newest attempt when the middle one's frames arrive late", () => {
+    // Second real shape: attempt 3's progress frames arrive before attempt 1
+    // settled, and attempt 2's frames trail in afterwards. The row must end on
+    // attempt 3's outcome, not on whichever frame arrived last.
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-late",
+        title: "Executor",
+        taskType: "local_agent",
+      }),
+      activity("task.progress", { taskId: "task-late", summary: "attempt 3 running", attempt: 3 }),
+      activity("task.completed", {
+        taskId: "task-late",
+        status: "failed",
+        summary: "attempt 1 died",
+      }),
+      activity("task.started", {
+        taskId: "task-late",
+        title: "Executor",
+        taskType: "local_agent",
+        attempt: 2,
+      }),
+      activity("task.completed", {
+        taskId: "task-late",
+        status: "failed",
+        summary: "attempt 2 died",
+        attempt: 2,
+      }),
+      activity("task.started", {
+        taskId: "task-late",
+        title: "Executor",
+        taskType: "local_agent",
+        attempt: 3,
+      }),
+      activity("task.completed", {
+        taskId: "task-late",
+        status: "completed",
+        summary: "attempt 3 fixed it",
+        attempt: 3,
+      }),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.attempt).toBe(3);
+    expect(agent.status).toBe("completed");
+    expect(agent.result).toBe("attempt 3 fixed it");
+    expect(agent.error).toBeNull();
+  });
+
+  it("a stale settled frame never settles the live run", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-usage",
+        title: "Executor",
+        taskType: "local_agent",
+      }),
+      activity("task.progress", { taskId: "task-usage", attempt: 2, summary: "attempt 2 running" }),
+      activity("task.progress", {
+        taskId: "task-usage",
+        status: "completed",
+        attempt: 1,
+        summary: "attempt 1 finished",
+      }),
+    ]);
+    const agent = agents[0]!;
+    expect(agent.status).toBe("running");
+    expect(agent.progress).toBe("attempt 2 running");
+    expect(agent.result).toBeNull();
+  });
+
   it("drops non-http(s) session urls at the fold boundary", () => {
     const agents = fold([
       activity("task.started", {

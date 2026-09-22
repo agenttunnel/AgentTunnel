@@ -406,14 +406,20 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
 }
 
 /**
- * Attempts are the run identity of one agent slot. Providers keep the agent id
- * stable across retries and only move the attempt counter — AgentTunnel's
- * auto-retry and the Agents-panel retry both reuse the slot — so a higher
- * attempt is a NEW run, never a late frame from the settled one. The first
- * attempt is usually unmarked, so an absent previous attempt reads as 1.
+ * How one row sits in a slot's run history. Providers keep the agent id stable
+ * across retries and spend `attempt` only on retries, so an absent marker reads
+ * as the slot's first run. Frames are appended in delivery order, not run
+ * order — a settled frame from an earlier attempt can land after the retry has
+ * already started — and an earlier run must never overwrite the live one.
  */
-function isNewAttempt(agent: MutableAgent, previousAttempt: number | null): boolean {
-  return agent.attempt !== null && agent.attempt > (previousAttempt ?? 1);
+function classifyRun(
+  knownAttempt: number | null,
+  payload: Record<string, unknown>,
+): "stale" | "current" | "new" {
+  const known = knownAttempt ?? 1;
+  const incoming = asCount(payload.attempt) ?? 1;
+  if (incoming < known) return "stale";
+  return incoming > known ? "new" : "current";
 }
 
 /**
@@ -525,9 +531,11 @@ export function foldSubagentActivities(
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
         if (isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        const previousAttempt = agent.attempt;
+        const run = classifyRun(agent.attempt, payload);
         fillMetadata(agent, payload);
-        const newRun = isNewAttempt(agent, previousAttempt);
+        // A frame from an earlier attempt only fills metadata: the retry owns
+        // the row now.
+        if (run === "stale") break;
         // Order-robustness: a start row arriving after a terminal state is a
         // late/out-of-order delivery and only fills metadata — it must not
         // reopen the run. Reactivation comes from a new attempt (the provider
@@ -536,7 +544,7 @@ export function foldSubagentActivities(
         // itself, not activationCount: a task first seen via a terminal
         // task.updated has zero activations but is still settled (review
         // finding: a late start reopened a failed child).
-        if (newRun) {
+        if (run === "new") {
           applyStatus(agent, "running", at, { newRun: true });
         } else if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
           agent.activationCount = 1;
@@ -559,9 +567,12 @@ export function foldSubagentActivities(
         const existed = agents.has(taskId);
         if (!existed && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        const previousAttempt = agent.attempt;
+        const run = classifyRun(agent.attempt, payload);
         fillMetadata(agent, payload);
-        const newRun = isNewAttempt(agent, previousAttempt);
+        // A frame from an earlier attempt only fills metadata: the retry owns
+        // the row now.
+        if (run === "stale") break;
+        const newRun = run === "new";
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
@@ -603,9 +614,12 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        const previousAttempt = agent.attempt;
+        const run = classifyRun(agent.attempt, payload);
         fillMetadata(agent, payload);
-        const newRun = isNewAttempt(agent, previousAttempt);
+        // A frame from an earlier attempt only fills metadata: the retry owns
+        // the row now.
+        if (run === "stale") break;
+        const newRun = run === "new";
         // A task first seen via task.updated (start row aged out) has run at
         // least once — zero activations would misreport "run 0" and let a
         // later start row treat it as never-started (review finding).
@@ -640,9 +654,13 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        const previousAttempt = agent.attempt;
+        const run = classifyRun(agent.attempt, payload);
         fillMetadata(agent, payload);
-        const newRun = isNewAttempt(agent, previousAttempt);
+        // A frame from an earlier attempt only fills metadata: the retry owns
+        // the row now. This is the common shape in practice — the previous
+        // attempt's terminal frame can be delivered after the retry's start.
+        if (run === "stale") break;
+        const newRun = run === "new";
         if (agent.activationCount === 0) agent.activationCount = 1;
         // Already-terminal, same attempt: status and timestamps are frozen
         // (first write wins, duplicates must not slide them) but the completion
