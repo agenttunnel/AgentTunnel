@@ -16,6 +16,7 @@ import type { ServerSettings } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
@@ -40,8 +41,8 @@ import {
   connect,
   getAgentOutput,
   interruptTurn,
-  streamShell,
-  streamThread,
+  shellStream,
+  threadStream,
   loadServerConfig,
   loadShell,
   loadThread,
@@ -52,7 +53,6 @@ import {
   updateServerSettings,
   TuiSessionError,
   type TuiSession,
-  type TuiStream,
 } from "./session.ts";
 import {
   activeProvider,
@@ -212,8 +212,8 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
   );
   let session: TuiSession | null = null;
   let scope: Scope.Scope | null = null;
-  let threadStream: TuiStream | null = null;
-  let shellStream: TuiStream | null = null;
+  let threadFiber: Fiber.Fiber<unknown, unknown> | null = null;
+  let shellFiber: Fiber.Fiber<unknown, unknown> | null = null;
   let agentLogFiber: Fiber.Fiber<unknown, unknown> | null = null;
   // The last settings snapshot: patches replace whole maps, so they are built
   // from what the server last told us, not from a guess.
@@ -261,10 +261,9 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     });
 
   const stopThreadStream = async (): Promise<void> => {
-    if (threadStream === null) return;
-    const stopping = threadStream;
-    threadStream = null;
-    await Effect.runPromise(stopping.stop());
+    const fiber = threadFiber;
+    threadFiber = null;
+    if (fiber !== null) await Effect.runPromise(Fiber.interrupt(fiber));
   };
 
   /** Follow one thread: the snapshot arrives first, then every change to it. */
@@ -274,33 +273,38 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       apply(withStatus(state(), "loading thread…"));
       const active = session;
       await stopThreadStream();
-      threadStream = await Effect.runPromise(
-        streamThread(
-          active,
-          { threadId, afterSequence: state().lastThreadSequence },
-          (item) => {
-            if (item.kind === "snapshot") apply(withThreadSnapshot(state(), item.snapshot));
-            else if (item.kind === "event") apply(withThreadEvent(state(), item.event));
-          },
-          (error) => {
-            apply(withStatus(state(), `live updates stopped: ${error.message}`));
-            void reconnect();
-          },
-        ).pipe(Effect.provideService(Scope.Scope, scope)),
+      // Forked, not scoped: the subscription outlives this call and is stopped
+      // by interrupting its fiber.
+      threadFiber = Effect.runFork(
+        threadStream(active, { threadId, afterSequence: state().lastThreadSequence }).pipe(
+          Stream.runForEach((item) =>
+            Effect.sync(() => {
+              if (item.kind === "snapshot") apply(withThreadSnapshot(state(), item.snapshot));
+              else if (item.kind === "event") apply(withThreadEvent(state(), item.event));
+            }),
+          ),
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              apply(withStatus(state(), `live updates stopped: ${error.message}`));
+              void reconnect();
+            }),
+          ),
+        ),
       );
     });
 
   /** Keep the thread list live, and refresh the catalogs whenever it settles. */
   const startShellStream = async (): Promise<void> => {
-    if (session === null || scope === null) return;
+    if (session === null) return;
     const active = session;
-    shellStream = await Effect.runPromise(
-      streamShell(
-        active,
-        { afterSequence: state().lastShellSequence },
-        (item) => apply(withShellItem(state(), item)),
-        (error) => apply(withStatus(state(), `list updates stopped: ${error.message}`)),
-      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    if (shellFiber !== null) await Effect.runPromise(Fiber.interrupt(shellFiber));
+    shellFiber = Effect.runFork(
+      shellStream(active, { afterSequence: state().lastShellSequence }).pipe(
+        Stream.runForEach((item) => Effect.sync(() => apply(withShellItem(state(), item)))),
+        Effect.catch((error) =>
+          Effect.sync(() => apply(withStatus(state(), `list updates stopped: ${error.message}`))),
+        ),
+      ),
     );
   };
 
