@@ -62,14 +62,17 @@ jobs:
             platform: mac
             target: dmg
             arch: arm64
+            rust_target: aarch64-apple-darwin
           - runner: depot-ubuntu-24.04
             platform: linux
             target: AppImage
             arch: x64
+            rust_target: x86_64-unknown-linux-gnu
           - runner: depot-windows-2025
             platform: win
             target: nsis
             arch: x64
+            rust_target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -86,6 +89,14 @@ jobs:
       - name: Install Linux packaging dependencies
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install -y imagemagick
+      # The desktop artifact build compiles native/resource-monitor with cargo.
+      # Install the toolchain explicitly instead of inheriting whatever the
+      # runner image ships: macos-14 images lag, and rustc 1.89 there cannot
+      # build sysinfo 0.39 (needs 1.95).
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
       - name: Build desktop artifact
         shell: bash
         env:
