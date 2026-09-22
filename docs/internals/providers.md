@@ -145,6 +145,13 @@ model list and one-shot `pi --mode json -p <prompt> --no-session` per role, tran
 timeout, so a wedged or interactive harness degrades to a readable provider warning instead of
 blocking the registry.
 
+Sub-agents only ever see their own brief, so the orchestrator prompt treats the brief as the mission
+carrier: it opens with why the task matters to the user's goal, states what winning looks like and how
+it will be checked, names the hard part honestly while saying the team is counted on for it, and keeps
+that framing to a sentence — conviction about specific stakes rather than hype. Failures are owned and
+re-briefed with what the last attempt taught ("the last attempt died on X, so this time Y") instead of
+being quietly dropped, and finished work is credited before the next dispatch.
+
 A completed workflow ends with a real final report rather than just the machinery tables. The
 orchestrator's closing `done` action may carry `summary` (what happened) and `next_steps`, and only a
 `done` from a pass that dispatched no new pipelines counts as the final report, so an earlier
@@ -234,6 +241,25 @@ and the finish markdown lists the recorded entries. Every entry is stamped with 
 project, thread, workflow, and terminal status. Prompt rendering caps the guide and each rules file and trims from the top when the budget is
 exceeded, so a long-lived context cannot blow up the planner prompt. Flushing is best-effort: it never
 fails a turn, and it logs a warning and skips the update if the lock stays held too long.
+
+### Sub-agent reporting
+
+Sub-agents keep the orchestrator informed without being interrupted. Each of them can call
+`report_progress` while it works — one line, what it just finished and what it is doing next — and
+those lines are kept per agent id in the run, emitted as `agent.progress` events (so the Agents panel
+shows the same text as the agent's current activity), and rendered in the next pass prompt under
+`## Agents working right now`, whose table carries a _Latest activity_ column. An agent that never
+reports still shows up: its newest output line stands in for the report, and the map is cleared when
+a new attempt of that slot starts so a retry never inherits the previous attempt's line.
+
+When a sub-agent finishes it hands its compacted context back in its terminal call
+(`done.context`, `approve.context`, or `request_changes.context`): what it did, what it found, what it
+decided, and what is left. The orchestrator folds that into the shared notebook under
+`subagent_context`, one bullet per agent, using `replaceAuthor` so a retried agent rewrites its own
+bullet instead of stacking a second copy. Because the notebook rides into the context dump, the
+hand-off is part of the durable thread context and is read back by the next session. A completed
+agent that hands back nothing is called out in the transcript (`⚠️ … finished without handing back its
+context`) so the orchestrator verifies before building on its work.
 
 ### Thread context
 
