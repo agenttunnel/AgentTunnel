@@ -68,6 +68,50 @@ process.env.T3CODE_CURSOR_ENABLED = "1";
 const encoder = new TextEncoder();
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
+/**
+ * Waits on wall-clock time for the injected process boundary to record a probe
+ * command. The settings → reconcile → rebuild → probe pipeline resolves outside
+ * the scheduler, so a `TestClock`-adjusted yield loop loses this race on a
+ * loaded host.
+ */
+const awaitSpawnedCommand = (
+  spawnedCommands: ReadonlyArray<string>,
+  command: string,
+  description: string,
+) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      if (spawnedCommands.includes(command)) {
+        return;
+      }
+      yield* Effect.sleep("25 millis");
+    }
+    return yield* Effect.die(new Error(`Timed out waiting for ${description}.`));
+  }).pipe(TestClock.withLive);
+
+/**
+ * Reads the codex snapshot the transport layer would serve, waiting for it to
+ * reach `predicate`. Only a guard against reading the aggregate mid-rebuild —
+ * the probe command record is the evidence that a probe ran.
+ */
+const awaitCodexSnapshot = (
+  registry: ProviderRegistry.ProviderRegistryShape,
+  predicate: (provider: ServerProvider) => boolean,
+  description: string,
+) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const codex = (yield* registry.getProviders).find(
+        (provider) => provider.instanceId === "codex",
+      );
+      if (codex !== undefined && predicate(codex)) {
+        return codex;
+      }
+      yield* Effect.sleep("25 millis");
+    }
+    return yield* Effect.die(new Error(`Timed out waiting for ${description}.`));
+  }).pipe(TestClock.withLive);
+
 const TestHttpClientLive = Layer.succeed(
   HttpClient.HttpClient,
   HttpClient.make((request) =>
@@ -1757,7 +1801,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
             Layer.updateService(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
               ChildProcessSpawner.make((command) => {
-                spawnedCommands.push((command as { readonly command: string }).command);
+                spawnedCommands.push(
+                  command._tag === "StandardCommand" ? command.command : command._tag,
+                );
                 return spawner.spawn(command);
               }),
             ),
@@ -1773,20 +1819,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // Boot-time probe: the default codex instance is enabled with
             // `firstMissing`, so the real spawner yields ENOENT and the
             // snapshot should be `status: "error"`.
-            let initialProviders = yield* registry.getProviders;
-            for (
-              let attempts = 0;
-              attempts < 50 &&
-              initialProviders.find((provider) => provider.instanceId === "codex")?.status !==
-                "error";
-              attempts += 1
-            ) {
-              yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
-              initialProviders = yield* registry.getProviders;
-            }
-            const initialCodex = initialProviders.find(
-              (provider) => provider.instanceId === "codex",
+            yield* awaitSpawnedCommand(
+              spawnedCommands,
+              firstMissing,
+              "the boot codex probe to reach the injected process boundary",
+            );
+            const initialCodex = yield* awaitCodexSnapshot(
+              registry,
+              (provider) => provider.status === "error",
+              "the boot codex probe to settle as an error",
             );
             assert.strictEqual(initialCodex?.status, "error");
             assert.strictEqual(initialCodex?.installed, false);
@@ -1809,27 +1850,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               } as unknown as ContractServerSettings["providerInstances"],
             });
 
-            // Poll until the injected process boundary observes the new
-            // executable. This verifies the public settings-to-probe behavior
-            // without depending on timestamps assigned by TestClock.
-            const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
-                const providers = yield* registry.getProviders;
-                const codex = providers.find((provider) => provider.instanceId === "codex");
-                if (
-                  codex !== undefined &&
-                  codex.status === "error" &&
-                  spawnedCommands.includes(secondMissing)
-                ) {
-                  return providers;
-                }
-                yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
-              }
-              return yield* registry.getProviders;
-            });
-
-            const reprobedCodex = refreshed.find((provider) => provider.instanceId === "codex");
+            // Wait for the rebuilt instance's background probe to reach the new
+            // executable. That probe is the only observable evidence the
+            // settings change rebuilt the codex instance, and it is exactly what
+            // the injected process boundary records.
+            yield* awaitSpawnedCommand(
+              spawnedCommands,
+              secondMissing,
+              "the rebuilt codex probe to reach the injected process boundary",
+            );
+            const reprobedCodex = yield* awaitCodexSnapshot(
+              registry,
+              (provider) => provider.status === "error",
+              "the rebuilt codex instance to settle as an error",
+            );
             assert.deepStrictEqual(spawnedCommands, [firstMissing, secondMissing]);
             assert.strictEqual(reprobedCodex?.status, "error");
             assert.strictEqual(reprobedCodex?.installed, false);
