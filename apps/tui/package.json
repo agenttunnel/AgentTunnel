@@ -1,0 +1,21 @@
+{
+  "name": "@t3tools/tui",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Terminal client for AgentTunnel: threads, live agent activity, and the thread recap in a TUI.",
+  "bin": {
+    "t3-tui": "./src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsgo --noEmit",
+    "test": "vp test run"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@t3tools/client-runtime": "workspace:*",
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  }
+}

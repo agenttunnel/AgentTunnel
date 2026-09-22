@@ -529,6 +529,21 @@ importers:
         specifier: 'catalog:'
         version: 0.2.2(@types/node@24.12.4)(bufferutil@4.1.0)(esbuild@0.28.1)(jiti@2.7.0)(msw@2.12.11(@types/node@24.12.4)(typescript@6.0.3))(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
 
+  apps/tui:
+    dependencies:
+      '@effect/platform-node':
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103(bufferutil@4.1.0)(effect@4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6))(ioredis@5.11.0)(utf-8-validate@6.0.6)
+      '@t3tools/client-runtime':
+        specifier: workspace:*
+        version: link:../../packages/client-runtime
+      '@t3tools/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      effect:
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103(patch_hash=af36b7948b6f9c56623074662b51dade5699880c1a7c71245de73e13c3185fb6)
+
   apps/web:
     dependencies:
       '@base-ui/react':
@@ -1854,6 +1869,7 @@ packages:
 
   '@distilled.cloud/cloudflare-rolldown-plugin@0.13.10':
     resolution: {integrity: sha512-UO9wjepZWYupWMf/KYKY7LUueHNawdp0qBGc9z3XYxjodrQaMwFQWtIGG1yWOHjTWl1BUx86A69hyB8kHYRAeA==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
     peerDependencies:
       rolldown: ^1.1.5
       vite: ^7.0.0 || ^8.0.0
@@ -1878,6 +1894,7 @@ packages:
 
   '@distilled.cloud/cloudflare-vite-plugin@0.13.10':
     resolution: {integrity: sha512-O8lvG48OQcRkjwkCPUGdEGTtDuaKBlZWIMy+yTCAUnte/8rvixIxUj/PMX6lx4Prj2tx/ciqjRHl9qjtHL8KWA==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
     peerDependencies:
       '@distilled.cloud/cloudflare': ^0.29.0
       '@distilled.cloud/cloudflare-runtime': 0.13.10
