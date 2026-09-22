@@ -3,7 +3,7 @@
   "compilerOptions": {
     "jsx": "preserve",
     "jsxImportSource": "@opentui/solid",
-    "types": ["node"],
+    "types": ["node", "bun"],
     "lib": ["ESNext", "DOM", "DOM.Iterable", "esnext.disposable"]
   },
   "include": ["src", "vite.config.ts"]

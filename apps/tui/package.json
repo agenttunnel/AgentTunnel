@@ -11,7 +11,8 @@
     "start": "bun src/index.tsx",
     "demo": "bun src/index.tsx --demo",
     "typecheck": "tsgo --noEmit",
-    "test": "vp test run"
+    "test": "vp test run",
+    "dev": "bun src/dev.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.5.12",
@@ -20,6 +21,9 @@
     "@t3tools/contracts": "workspace:*",
     "effect": "catalog:",
     "solid-js": "^1.9.9"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0"
   },
   "engines": {
     "bun": ">=1.3.0"
