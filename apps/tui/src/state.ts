@@ -95,7 +95,8 @@ export function reduceKey(
   state: TuiState,
   key: { readonly name?: string; readonly text?: string },
 ): { readonly state: TuiState; readonly effect: TuiEffect } {
-  const name = key.name ?? "";
+  // Terminals report the Enter key as `return`; the reducer speaks one name.
+  const name = key.name === "return" ? "enter" : (key.name ?? "");
   if (name === "ctrl-c") {
     return { state, effect: { kind: "quit" } };
   }

@@ -25,6 +25,11 @@ describe("reduceKey", () => {
     expect(reduceKey(state, { name: "enter" }).effect).toEqual({ kind: "open" });
   });
 
+  it("opens on the name terminals actually send for Enter", () => {
+    const state = withThreads(initialTuiState, threads);
+    expect(reduceKey(state, { name: "return" }).effect).toEqual({ kind: "open" });
+  });
+
   it("offers nothing to open when the list is empty", () => {
     expect(reduceKey(initialTuiState, { name: "enter" }).effect).toBeNull();
   });
