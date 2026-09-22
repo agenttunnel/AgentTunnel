@@ -235,6 +235,25 @@ project, thread, workflow, and terminal status. Prompt rendering caps the guide 
 exceeded, so a long-lived context cannot blow up the planner prompt. Flushing is best-effort: it never
 fails a turn, and it logs a warning and skips the update if the lock stays held too long.
 
+### Sub-agent reporting
+
+Sub-agents keep the orchestrator informed without being interrupted. Each of them can call
+`report_progress` while it works — one line, what it just finished and what it is doing next — and
+those lines are kept per agent id in the run, emitted as `agent.progress` events (so the Agents panel
+shows the same text as the agent's current activity), and rendered in the next pass prompt under
+`## Agents working right now`, whose table carries a _Latest activity_ column. An agent that never
+reports still shows up: its newest output line stands in for the report, and the map is cleared when
+a new attempt of that slot starts so a retry never inherits the previous attempt's line.
+
+When a sub-agent finishes it hands its compacted context back in its terminal call
+(`done.context`, `approve.context`, or `request_changes.context`): what it did, what it found, what it
+decided, and what is left. The orchestrator folds that into the shared notebook under
+`subagent_context`, one bullet per agent, using `replaceAuthor` so a retried agent rewrites its own
+bullet instead of stacking a second copy. Because the notebook rides into the context dump, the
+hand-off is part of the durable thread context and is read back by the next session. A completed
+agent that hands back nothing is called out in the transcript (`⚠️ … finished without handing back its
+context`) so the orchestrator verifies before building on its work.
+
 ### Thread context
 
 The shared notebook and the thread's turn history are durable, not process-local. `ThreadContextStore.ts`

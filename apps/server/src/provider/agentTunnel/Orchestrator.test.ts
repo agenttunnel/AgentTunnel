@@ -1780,3 +1780,196 @@ it.effect("rehydrates a resumed thread's notebook and appends new decisions afte
     }),
   ),
 );
+
+it.effect("folds each sub-agent's end-of-run context into the thread notebook", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 3,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) =>
+          Effect.succeed({
+            pid: 1,
+            lines: Stream.fromIterable(
+              spec.id.startsWith("orchestrator")
+                ? [
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Audit the parser","pipeline":"audit"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Audit the store","pipeline":"audit"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ]
+                : [
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"finished","context":"Touched one file; left the docs update to a follow-up."}}',
+                  ],
+            ),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle),
+      };
+
+      const result = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "audit everything",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+      });
+
+      const dump = result.contextDump ?? "";
+      NodeAssert.match(dump, /### subagent_context/);
+      // One bullet per agent, each labelled with its role and task.
+      NodeAssert.equal((dump.match(/\*\*executor · /gu) ?? []).length, 2);
+      NodeAssert.match(dump, /Touched one file; left the docs update to a follow-up\./);
+      NodeAssert.ok(
+        events.some(
+          (event) =>
+            event.type === "agent.progress" &&
+            event.summary === "Context handed back to the orchestrator.",
+        ),
+      );
+    }),
+  ),
+);
+
+it.effect("warns when a completed sub-agent hands back no context", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 3,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) =>
+          Effect.succeed({
+            pid: 1,
+            lines: Stream.fromIterable(
+              spec.id.startsWith("orchestrator")
+                ? [
+                    '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Quiet work","pipeline":"quiet"}}',
+                    '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                  ]
+                : ['__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"finished"}}'],
+            ),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle),
+      };
+
+      const result = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "quiet work",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+      });
+
+      NodeAssert.doesNotMatch(result.contextDump ?? "", /### subagent_context/);
+      NodeAssert.match(
+        collectMarkdown(events),
+        /⚠️ \*\*executor · Quiet work\*\* finished without handing back its context\./,
+      );
+    }),
+  ),
+);
+
+it.effect("shows the orchestrator what a running sub-agent reported", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const prompts: string[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 4,
+      });
+      const steeringQueue = yield* Queue.unbounded<string>();
+      const executorStarted = yield* Deferred.make<void>();
+      const steeringPassStarted = yield* Deferred.make<void>();
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) =>
+          Effect.gen(function* () {
+            prompts.push(spec.prompt);
+            if (spec.id.startsWith("orchestrator")) {
+              if (spec.prompt.includes("## Steering pass")) {
+                yield* Deferred.succeed(steeringPassStarted, undefined);
+              }
+              return {
+                pid: 1,
+                lines: Stream.fromIterable(
+                  spec.prompt.includes("## Current user task")
+                    ? [
+                        '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","arguments":{"role":"executor","task":"Crunch the numbers","pipeline":"numbers"}}',
+                        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"dispatched"}}',
+                      ]
+                    : [
+                        '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"steering weighed"}}',
+                      ],
+                ),
+                exitCode: Effect.succeed(0),
+                kill: Effect.void,
+              } satisfies AgentTunnelProcessHandle;
+            }
+            // Reports once, then keeps working: the orchestrator has to see the
+            // report while the agent is still mid-run.
+            return {
+              pid: 2,
+              lines: Stream.concat(
+                Stream.fromIterable([
+                  '__AGENTTUNNEL_TOOL__ {"name":"report_progress","arguments":{"status":"Crunching the numbers, halfway through"}}',
+                ]),
+                Stream.never,
+              ),
+              exitCode: Effect.never,
+              kill: Effect.void,
+            } satisfies AgentTunnelProcessHandle;
+          }),
+      };
+
+      const fiber = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "crunch numbers",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }).pipe(
+            Effect.andThen(
+              event.type === "agent.started"
+                ? Deferred.succeed(executorStarted, undefined)
+                : Effect.void,
+            ),
+          ),
+        isCancelled: Effect.succeed(false),
+        steering: steeringChannel(steeringQueue),
+      }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(executorStarted);
+      yield* Queue.offer(steeringQueue, "how is it going?");
+      yield* Deferred.await(steeringPassStarted);
+
+      const steeringPrompt = prompts.find((prompt) => prompt.includes("## Steering pass")) ?? "";
+      NodeAssert.match(steeringPrompt, /## Agents working right now/);
+      NodeAssert.match(steeringPrompt, /\| Latest activity \|/);
+      NodeAssert.match(steeringPrompt, /Crunching the numbers, halfway through/);
+
+      yield* Fiber.interrupt(fiber);
+    }),
+  ),
+);
