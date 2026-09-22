@@ -1657,3 +1657,126 @@ it.effect("resumes the workflow when a retry arrives while it waits for one", ()
     NodeAssert.match(collectMarkdown(events), /## ✅ Workflow completed/);
   }),
 );
+
+it.effect("records decisions in the shared notebook and reports them in the transcript", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 3,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) => {
+          const lines = spec.id.startsWith("orchestrator")
+            ? [
+                '__AGENTTUNNEL_TOOL__ {"name":"record_decision","arguments":{"decision":"Keep the thread context in one file per thread","rationale":"survives restarts and stays readable"}}',
+                '__AGENTTUNNEL_TOOL__ {"name":"record_decision","arguments":{"decision":"   "}}',
+                '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"nothing to dispatch"}}',
+              ]
+            : [];
+          return Effect.succeed({
+            pid: 1,
+            lines: Stream.fromIterable(lines),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle);
+        },
+      };
+
+      const result = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "record the decisions",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+      });
+
+      const dump = result.contextDump ?? "";
+      NodeAssert.match(dump, /### decisions/);
+      NodeAssert.match(
+        dump,
+        /- Keep the thread context in one file per thread — survives restarts and stays readable _\(\d{4}-\d{2}-\d{2}T[\d:.]+Z\)_/,
+      );
+      // A malformed call is reported, not silently recorded as an empty bullet.
+      NodeAssert.doesNotMatch(dump, /- _\(/);
+      const markdown = collectMarkdown(events);
+      NodeAssert.match(
+        markdown,
+        /🧭 \*\*Decision recorded\*\* — Keep the thread context in one file/,
+      );
+      NodeAssert.match(markdown, /Invalid record_decision arguments/);
+    }),
+  ),
+);
+
+it.effect("rehydrates a resumed thread's notebook and appends new decisions after its own", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentTunnelEvent[] = [];
+      const prompts: string[] = [];
+      const settings = decodeSettings({
+        orchestratorHarness: "fake-orchestrator",
+        executorHarness: "fake-executor",
+        reviewerHarness: "fake-reviewer",
+        maxOrchestratorPasses: 3,
+      });
+      const process: AgentTunnelProcessRunner = {
+        spawn: (spec) => {
+          prompts.push(spec.prompt);
+          const lines = spec.id.startsWith("orchestrator")
+            ? [
+                '__AGENTTUNNEL_TOOL__ {"name":"record_decision","arguments":{"decision":"Recorded on resume"}}',
+                '__AGENTTUNNEL_TOOL__ {"name":"done","arguments":{"reason":"nothing to dispatch"}}',
+              ]
+            : [];
+          return Effect.succeed({
+            pid: 1,
+            lines: Stream.fromIterable(lines),
+            exitCode: Effect.succeed(0),
+            kill: Effect.void,
+          } satisfies AgentTunnelProcessHandle);
+        },
+      };
+      const priorDump = [
+        "### decisions",
+        "",
+        "- Chose the file store _(2026-01-01T00:00:00.000Z)_",
+        "",
+        "### user_goal",
+        "",
+        "Keep the thread's context.",
+      ].join("\n");
+
+      const result = yield* runAgentTunnel({
+        threadId: "thread-1",
+        workflowId: "workflow-1",
+        userTask: "continue",
+        cwd: "/tmp",
+        settings,
+        process,
+        emit: (event) => Effect.sync(() => events.push(event)),
+        isCancelled: Effect.succeed(false),
+        priorSharedContext: priorDump,
+      });
+
+      // The orchestrator reads its own past keys back as notebook sections
+      // rather than as one nested dump.
+      const planning = prompts.find((prompt) => prompt.includes("## Shared context")) ?? "";
+      NodeAssert.match(planning, /### user_goal/);
+      NodeAssert.match(planning, /Keep the thread's context\./);
+      NodeAssert.match(planning, /Chose the file store/);
+      NodeAssert.doesNotMatch(planning, /### prior_thread_context/);
+
+      const dump = result.contextDump ?? "";
+      const priorIndex = dump.indexOf("Chose the file store");
+      const newIndex = dump.indexOf("Recorded on resume");
+      NodeAssert.ok(priorIndex >= 0 && newIndex > priorIndex);
+    }),
+  ),
+);

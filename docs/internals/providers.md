@@ -235,6 +235,31 @@ project, thread, workflow, and terminal status. Prompt rendering caps the guide 
 exceeded, so a long-lived context cannot blow up the planner prompt. Flushing is best-effort: it never
 fails a turn, and it logs a warning and skips the update if the lock stays held too long.
 
+### Thread context
+
+The shared notebook and the thread's turn history are durable, not process-local. `ThreadContextStore.ts`
+writes one JSON file per thread under `.orchestrator-context/threads/<threadId>.json` holding the
+notebook the last turn ended with plus every turn's task, terminal status, and summary (newest 50).
+The adapter loads it when a session starts, so closing the app and resuming a thread continues from
+the context the team built instead of an empty notebook, and it appends a run after every turn —
+including turns that crashed, which keep the previous notebook. Writes are atomic and best-effort:
+losing the durable copy logs a warning and never fails the user's turn.
+
+A resumed turn rehydrates the stored notebook into real keys rather than nesting the dump as one
+opaque blob (`parseSharedContextDump` reads back the `### key` sections `renderForPrompt` writes), so
+the orchestrator reads `workflow_result`, `next_steps`, and `decisions` as its own entries. When a
+thread resumes, the session also prints a short notice — how much context came back, what the last
+turn produced, and that turn's next steps — so the user sees where the thread stands without opening
+the file.
+
+The orchestrator records decisions with the `record_decision` action (`decision`, optional
+`rationale`). Decisions append to the notebook's `decisions` key, oldest first, and therefore ride
+into the context dump, the durable file, and the next session's prompt; each one also prints as a
+`🧭 Decision recorded` line in the transcript. The prompt requires a decision entry for anything a
+later session would otherwise have to re-decide — the approach chosen, what was rejected, a
+model/harness pick, a retry or stop, a change of plan after steering — and tells the orchestrator to
+supersede rather than silently repeat an earlier decision.
+
 ## How provider work is requested
 
 Clients never call a provider directly. They dispatch orchestration commands over the RPC method

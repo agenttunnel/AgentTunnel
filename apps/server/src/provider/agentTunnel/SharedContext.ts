@@ -104,3 +104,43 @@ export class AgentTunnelSharedContext {
     }
   }
 }
+
+const SECTION_PATTERN = /^### (\S+)(?: \(from .+\))?$/u;
+const AUTHOR_SUFFIX = / \(from .+\)$/u;
+
+/**
+ * Reads a rendered notebook back into its keys. A thread that resumes rehydrates
+ * the notebook the previous turn ended with instead of nesting that dump as one
+ * opaque blob, so the orchestrator reads its own past keys directly.
+ *
+ * A section header is a `### key` line followed by a blank line — the shape
+ * `renderForPrompt` writes — so markdown headings inside a value cannot split
+ * it. Sections whose key is not a valid notebook key are skipped rather than
+ * throwing: a notebook written by an older build must not break a new turn.
+ */
+export function parseSharedContextDump(dump: string): ReadonlyMap<string, string> {
+  const sections = new Map<string, string>();
+  const lines = dump.split("\n");
+  let key: string | null = null;
+  let value: string[] = [];
+  const flush = () => {
+    if (key === null) return;
+    const rendered = value.join("\n").trim();
+    if (rendered.length > 0) sections.set(key, rendered);
+    value = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const isHeader = SECTION_PATTERN.test(line) && (lines[index + 1] ?? "").trim().length === 0;
+    if (isHeader) {
+      flush();
+      const candidate = line.slice("### ".length).replace(AUTHOR_SUFFIX, "").trim();
+      key = KEY_PATTERN.test(candidate) ? candidate : null;
+      continue;
+    }
+    if (key !== null) value.push(line);
+  }
+  flush();
+  return sections;
+}
