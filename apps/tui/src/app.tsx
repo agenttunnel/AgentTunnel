@@ -621,10 +621,12 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
 
   const dimensions = useTerminalDimensions();
   /**
-   * Width every list row is clipped and padded to: the terminal minus the
-   * boxes' horizontal padding, so a row never wraps onto the next line.
+   * Row width, in two sizes: a plain list sits inside the body's padding, while
+   * the palette and the picker add their own padding and a border. A row wider
+   * than its box wraps, and a wrapped row paints over the one below it.
    */
   const rowWidth = createMemo(() => Math.max(20, dimensions().width - 5));
+  const insetRowWidth = createMemo(() => Math.max(20, dimensions().width - 9));
   /** The palette's own rows, when it is showing. */
   const paletteRows = createMemo(() => {
     const count = commandSuggestions(state()).length;
@@ -645,7 +647,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     return padRows(
       rows.map((row) => `${row.id === highlighted ? "▸ " : "  "}${row.label}  ${row.detail ?? ""}`),
       MAX_COMMANDS,
-      rowWidth(),
+      insetRowWidth(),
     );
   });
   const picker = createMemo(() => state().picker);
@@ -741,7 +743,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
           }`,
       ),
       PICKER_ROWS,
-      rowWidth(),
+      insetRowWidth(),
     ),
   );
 
@@ -847,6 +849,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       <Show when={picker() !== null}>
         <box
           flexDirection="column"
+          height={pickerLines().length + 1}
           borderStyle="rounded"
           borderColor={theme.border}
           backgroundColor={theme.surface}
