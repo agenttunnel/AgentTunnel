@@ -23,6 +23,14 @@ On mobile, the model picker shows each OpenCode model's upstream provider, such 
 GitHub Copilot, or OpenCode Zen, beneath its name. Search by that provider name to narrow the list
 when starting a thread or changing an existing thread's model.
 
+## Thread recap
+
+Above the composer, AgentTunnel keeps a one-line recap of where the thread stands: its goal, what the
+team is doing right now (including the newest report from a running sub-agent), how much work has
+settled, and the next steps from the last report. It updates as the work moves and disappears when
+there is nothing to say, so it never sits there empty. It is text only — nothing animates — and it
+does not need to be dismissed.
+
 ## Prompt stash
 
 Use the default shortcut, `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux, to stash the current

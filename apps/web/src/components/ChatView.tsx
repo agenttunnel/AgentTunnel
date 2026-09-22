@@ -190,6 +190,7 @@ import {
   deriveAgentPanelModel,
   foldSubagentActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { deriveThreadRecap, formatThreadRecap } from "@t3tools/client-runtime/state/threadRecap";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -334,6 +335,7 @@ import {
   useLinkedThreadPullRequest,
 } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { ThreadRecapBar } from "./chat/ThreadRecapBar";
 import {
   hasAvailableClaudeCompactionProvider,
   hasDismissedResumeCompaction,
@@ -5148,6 +5150,33 @@ function ChatViewContent(props: ChatViewProps) {
     }
     void handleSwitchCheckoutToThread();
   }, [gitStatusQuery.data?.hasWorkingTreeChanges, handleSwitchCheckoutToThread]);
+  // Sticky recap above the composer. Derived from the same activity stream the
+  // Agents panel reads, so it tracks running sub-agents (and their reports)
+  // without extra traffic, and says nothing when the thread has nothing to say.
+  const threadRecapText = useMemo(() => {
+    let newestUser: ChatMessage | null = null;
+    let newestAssistant: ChatMessage | null = null;
+    for (let index = timelineMessages.length - 1; index >= 0; index -= 1) {
+      const message = timelineMessages[index];
+      if (message === undefined) continue;
+      if (newestUser === null && message.role === "user") newestUser = message;
+      if (
+        newestAssistant === null &&
+        message.role === "assistant" &&
+        message.text.trim().length > 0
+      ) {
+        newestAssistant = message;
+      }
+      if (newestUser !== null && newestAssistant !== null) break;
+    }
+    const recap = deriveThreadRecap({
+      goal: newestUser?.text ?? null,
+      model: agentPanelModel,
+      latestAssistantText: newestAssistant?.text ?? null,
+    });
+    return recap === null ? null : formatThreadRecap(recap);
+  }, [agentPanelModel, timelineMessages]);
+
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const isUrgentSystemItem = (item: ComposerBannerStackItem) =>
       item.urgent === true || item.variant === "error" || item.variant === "warning";
@@ -7545,6 +7574,7 @@ function ChatViewContent(props: ChatViewProps) {
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
+                  <ThreadRecapBar text={threadRecapText} />
                   <div
                     className="relative"
                     style={

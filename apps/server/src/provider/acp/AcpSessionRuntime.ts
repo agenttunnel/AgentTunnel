@@ -57,6 +57,8 @@ export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStre
 
 const defaultSessionLoadTimeout = Duration.seconds(90);
 const defaultSessionLoadReplayIdleGap = Duration.seconds(2);
+/** How often a quiet-window wait re-checks for fresh `session/update` notifications. */
+const defaultSessionUpdateQuietPollMillis = 25;
 
 export interface AcpSpawnInput {
   readonly command: string;
@@ -191,6 +193,20 @@ export class AcpSessionRuntime extends Context.Service<
     readonly getEvents: () => Stream.Stream<AcpSessionRuntimeEvent, never>;
     /** Waits until the current event consumer has processed every queued event. */
     readonly drainEvents: Effect.Effect<void>;
+    /**
+     * Waits until no `session/update` notification has been received for `quietPeriod`,
+     * then waits for the event consumer to process everything already queued.
+     *
+     * Providers that report completion out of band (xAI's
+     * `_x.ai/session/prompt_complete`) can still be flushing the turn's final
+     * assistant output, which would otherwise land after the turn settled and be
+     * dropped. Wait progress as "the session stopped talking", capped by `maxWait`
+     * so a chatty provider cannot hold the caller forever.
+     */
+    readonly awaitSessionUpdateQuiet: (options: {
+      readonly quietPeriod: Duration.Input;
+      readonly maxWait: Duration.Input;
+    }) => Effect.Effect<void>;
     /** Latest mode state observed from session setup and `session/update` notifications. */
     readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
     /** Latest configuration options observed from session setup and configuration writes. */
@@ -306,6 +322,11 @@ export const make = (
       Option.Option<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
     >(Option.none());
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
+    // Quiet windows describe when the provider stopped talking, so they measure
+    // wall-clock time: the virtual clock in tests cannot stand in for that, and a
+    // frozen one would either skip the window or hang the settlement it guards.
+    const wallClock = Clock.Clock.defaultValue();
+    const sessionUpdateReceivedAtRef = yield* Ref.make(wallClock.currentTimeMillisUnsafe());
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
@@ -378,6 +399,7 @@ export const make = (
 
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
+        yield* Ref.set(sessionUpdateReceivedAtRef, wallClock.currentTimeMillisUnsafe());
         const gate = yield* Ref.get(sessionLoadGateRef);
         if (Option.isSome(gate) && gate.value.active) {
           const lastActivityAtMillis = yield* Clock.currentTimeMillis;
@@ -697,6 +719,15 @@ export const make = (
       return yield* effect;
     });
 
+    const drainQueuedEvents = Effect.gen(function* () {
+      const acknowledge = yield* Deferred.make<void>();
+      yield* Queue.offer(eventQueue, {
+        _tag: "EventStreamBarrier",
+        acknowledge,
+      });
+      yield* Deferred.await(acknowledge);
+    });
+
     return {
       handleRequestPermission: acp.handleRequestPermission,
       handleElicitation: acp.handleElicitation,
@@ -715,14 +746,36 @@ export const make = (
       handleExtNotification: acp.handleExtNotification,
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
-      drainEvents: Effect.gen(function* () {
-        const acknowledge = yield* Deferred.make<void>();
-        yield* Queue.offer(eventQueue, {
-          _tag: "EventStreamBarrier",
-          acknowledge,
-        });
-        yield* Deferred.await(acknowledge);
-      }),
+      drainEvents: drainQueuedEvents,
+      awaitSessionUpdateQuiet: (quietOptions) => {
+        const quietPeriodMillis = Duration.toMillis(
+          Duration.fromInputUnsafe(quietOptions.quietPeriod),
+        );
+        const maxWaitMillis = Duration.toMillis(Duration.fromInputUnsafe(quietOptions.maxWait));
+        const pollIntervalMillis = Math.max(
+          1,
+          Math.min(defaultSessionUpdateQuietPollMillis, quietPeriodMillis),
+        );
+        return Effect.gen(function* () {
+          const startedAtMillis = wallClock.currentTimeMillisUnsafe();
+          while (true) {
+            const idleMillis =
+              wallClock.currentTimeMillisUnsafe() - (yield* Ref.get(sessionUpdateReceivedAtRef));
+            if (idleMillis >= quietPeriodMillis) {
+              break;
+            }
+            if (wallClock.currentTimeMillisUnsafe() - startedAtMillis >= maxWaitMillis) {
+              break;
+            }
+            yield* Effect.sleep(
+              Duration.millis(Math.min(quietPeriodMillis - idleMillis, pollIntervalMillis)),
+            );
+          }
+          // Anything received while waiting must be projected (and rendered) before
+          // the caller settles on it.
+          yield* drainQueuedEvents;
+        }).pipe(Effect.provideService(Clock.Clock, wallClock));
+      },
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
       prompt: (payload) =>
