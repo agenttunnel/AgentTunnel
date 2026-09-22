@@ -272,6 +272,49 @@ export const sendTurn = (
     }).pipe(Effect.mapError(toSessionError));
   });
 
+/**
+ * Register a directory as a project. The id is derived from the path, so the
+ * same directory always lands on the same project — adding it twice is refused
+ * rather than duplicated.
+ */
+export const addProject = (
+  session: TuiSession,
+  input: { readonly workspaceRoot: string },
+): Effect.Effect<string, TuiSessionError> =>
+  Effect.gen(function* () {
+    const workspaceRoot = input.workspaceRoot.trim().replace(/\/+$/u, "");
+    const name =
+      workspaceRoot
+        .split("/")
+        .filter((part) => part.length > 0)
+        .at(-1) ?? workspaceRoot;
+    const slug = `${name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 32)}-${hash(workspaceRoot)}`;
+    const at = DateTime.formatIso(yield* DateTime.now);
+    yield* session.client["orchestration.dispatchCommand"]({
+      type: "project.create",
+      commandId: CommandId.make(`tui-project-${hash(`${workspaceRoot}${at}`)}`),
+      projectId: ProjectId.make(slug),
+      title: name.length === 0 ? workspaceRoot : name,
+      workspaceRoot,
+      createWorkspaceRootIfMissing: true,
+      createdAt: at,
+    });
+    return slug;
+  }).pipe(Effect.mapError(toSessionError));
+
+/** Stable short id for a path, so re-adding the same directory is idempotent. */
+const hash = (value: string): string => {
+  let accumulator = 0;
+  for (const character of value) {
+    accumulator = (accumulator * 31 + character.codePointAt(0)!) % 0xffffffff;
+  }
+  return accumulator.toString(36);
+};
+
 /** Ask the server to stop the running turn. */
 export const interruptTurn = (
   session: TuiSession,

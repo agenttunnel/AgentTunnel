@@ -40,6 +40,7 @@ import { loadPreferences, savePreferences, type TuiPreferences } from "./prefere
 import {
   connect,
   getAgentOutput,
+  addProject,
   interruptTurn,
   shellStream,
   threadStream,
@@ -429,6 +430,16 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     if (fiber !== null) await Effect.runPromise(Fiber.interrupt(fiber));
   };
 
+  /** Register a directory, then pick up the project list the server sends back. */
+  const registerProject = async (workspaceRoot: string): Promise<void> => {
+    if (session === null) return;
+    await guard("add project", async () => {
+      await Effect.runPromise(addProject(session as TuiSession, { workspaceRoot }));
+      apply(withStatus(state(), `added ${workspaceRoot}`));
+      await refreshThreads();
+    });
+  };
+
   const persistPreferences = async (patch: Partial<TuiPreferences>): Promise<void> => {
     const next = { ...state().preferences, ...patch };
     await guard("settings", async () => {
@@ -531,6 +542,10 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         if (props.args.demo) return;
         void persistAgentTunnelSetting(effect.field, effect.value);
         return;
+      case "addProject":
+        if (props.args.demo) return;
+        void registerProject(effect.workspaceRoot);
+        return;
       case "openAgentLog":
         if (props.args.demo) return;
         pollAgentLog(effect.agentId, effect.label, effect.outputPath);
@@ -614,7 +629,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     if (current.view === "agentLog") return "esc back to agents · ctrl-r refresh · ctrl-c quit";
     if (current.view === "usage") return "esc back · ctrl-c quit";
     if (current.view === "threads") {
-      return "↑/↓ move · enter open · / new thread · ctrl-p commands · ctrl-r reload · ctrl-c quit";
+      return "↑/↓ move · enter open · / commands · ctrl-p palette · ctrl-r reload · ctrl-c quit";
     }
     return "enter send · / commands · ctrl-i interrupt · esc back · ctrl-r reload · ctrl-c quit";
   });
@@ -849,7 +864,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       <Show when={picker() !== null}>
         <box
           flexDirection="column"
-          height={pickerLines().length + 1}
+          height={pickerLines().length + 3}
           borderStyle="rounded"
           borderColor={theme.border}
           backgroundColor={theme.surface}

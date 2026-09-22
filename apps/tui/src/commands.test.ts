@@ -49,6 +49,7 @@ describe("matchCommands", () => {
       "agenttunnel",
       "agents",
       "token-usage",
+      "add-project",
       "help",
       "interrupt",
       "refresh",
@@ -60,6 +61,7 @@ describe("matchCommands", () => {
       "provider",
       "settings",
       "agenttunnel",
+      "add-project",
       "help",
       "refresh",
       "quit",
@@ -100,6 +102,6 @@ describe("commandByName", () => {
     const withArgument = TUI_COMMANDS.filter((command) => command.argument !== undefined).map(
       (command) => command.name,
     );
-    expect(withArgument).toEqual(["model", "provider"]);
+    expect(withArgument).toEqual(["model", "provider", "add-project"]);
   });
 });

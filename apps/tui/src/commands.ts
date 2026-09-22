@@ -15,6 +15,7 @@ export type TuiCommandName =
   | "agenttunnel"
   | "agents"
   | "token-usage"
+  | "add-project"
   | "interrupt"
   | "refresh"
   | "quit";
@@ -42,6 +43,12 @@ export const TUI_COMMANDS: ReadonlyArray<TuiCommand> = [
   },
   { name: "agents", description: "Sub-agents: status, logs, usage", scope: "thread" },
   { name: "token-usage", description: "Token usage per sub-agent", scope: "thread" },
+  {
+    name: "add-project",
+    description: "Register a project directory",
+    argument: "[path]",
+    scope: "any",
+  },
   { name: "help", description: "Key bindings and commands", scope: "any" },
   { name: "interrupt", description: "Stop the current turn", scope: "thread" },
   { name: "refresh", description: "Reload from the server", scope: "any" },

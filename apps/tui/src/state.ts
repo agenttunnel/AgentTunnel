@@ -68,6 +68,7 @@ export type TuiEffect =
       readonly field: string;
       readonly value: string | number | boolean;
     }
+  | { readonly kind: "addProject"; readonly workspaceRoot: string }
   | {
       readonly kind: "openAgentLog";
       readonly agentId: string;
@@ -666,6 +667,19 @@ function runCommand(
         state: { ...state, input: "", view: "agents", agentIndex: 0, agentLog: null, picker: null },
         effect: null,
       };
+    case "add-project": {
+      const path = argument.trim();
+      if (path.length === 0) {
+        return {
+          state: { ...state, input: "", status: "usage: /add-project <path>" },
+          effect: null,
+        };
+      }
+      return {
+        state: { ...state, input: "", status: `adding ${path}…` },
+        effect: { kind: "addProject", workspaceRoot: path },
+      };
+    }
     case "token-usage": {
       const agents = foldSubagentActivities(state.threadSnapshot?.thread.activities ?? [], {
         sessionLive:

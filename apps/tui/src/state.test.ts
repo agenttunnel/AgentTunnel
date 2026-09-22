@@ -150,6 +150,7 @@ describe("reduceKey", () => {
       "provider",
       "settings",
       "agenttunnel",
+      "add-project",
       "help",
       "refresh",
       "quit",
@@ -160,6 +161,15 @@ describe("reduceKey", () => {
     // cursor must not move underneath them.
     expect(moved.state.selectedIndex).toBe(0);
     expect(reduceKey(moved.state, { name: "up" }).state.commandIndex).toBe(0);
+  });
+
+  it("asks for a path before registering a project", () => {
+    const missing = reduceKey(type(threadView(), "/add-project"), { name: "enter" });
+    expect(missing.effect).toBeNull();
+    expect(missing.state.status).toBe("usage: /add-project <path>");
+
+    const given = reduceKey(type(threadView(), "/add-project /tmp/scratch"), { name: "enter" });
+    expect(given.effect).toEqual({ kind: "addProject", workspaceRoot: "/tmp/scratch" });
   });
 
   it("keeps every matching command and wraps the highlight at both ends", () => {
