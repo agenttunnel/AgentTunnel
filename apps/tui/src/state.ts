@@ -583,7 +583,8 @@ function helpItems(): ReadonlyArray<TuiPickerItem> {
   return [
     { id: "keys-1", label: "↑ / ↓", detail: "move · scroll the transcript" },
     { id: "keys-2", label: "enter", detail: "send the message, or run the highlighted command" },
-    { id: "keys-3", label: "ctrl-i", detail: "interrupt the running turn" },
+    { id: "keys-3", label: "ctrl-a", detail: "the agent roster: status, logs, usage" },
+    { id: "keys-9", label: "ctrl-i", detail: "interrupt the running turn" },
     { id: "keys-4", label: "ctrl-r", detail: "reload from the server" },
     { id: "keys-5", label: "ctrl-p", detail: "open the command palette" },
     { id: "keys-6", label: "esc", detail: "close the palette · leave the thread" },
@@ -825,6 +826,13 @@ export function reduceKey(
   }
   if (name === "ctrl-p") {
     return { state: openPickerFor(state, "command"), effect: null };
+  }
+  // The reference TUIs put the agent roster on a dedicated key; so do we.
+  if (name === "ctrl-a" && state.openThreadId !== null) {
+    return {
+      state: { ...state, input: "", view: "agents", agentIndex: 0, agentLog: null, picker: null },
+      effect: null,
+    };
   }
 
   const current = state.picker;

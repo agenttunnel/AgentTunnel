@@ -150,6 +150,26 @@ export function agentRows(
  * What each agent has spent, in row order, closed by the fleet total the panel
  * footer shows. A thread with no agents has nothing to summarize.
  */
+/** What the fleet has spent and how it is doing, for the status line. */
+export function fleetTotals(agents: ReadonlyArray<RuntimeSubagent>): {
+  readonly tokens: number;
+  readonly running: number;
+  readonly settled: number;
+  readonly failed: number;
+} {
+  let tokens = 0;
+  let running = 0;
+  let settled = 0;
+  let failed = 0;
+  for (const agent of agents) {
+    tokens += agent.usage?.totalTokens ?? 0;
+    if (isActiveSubagentStatus(agent.status)) running += 1;
+    else if (agent.status === "failed" || agent.status === "cancelled") failed += 1;
+    else settled += 1;
+  }
+  return { tokens, running, settled, failed };
+}
+
 export function agentUsageLines(agents: ReadonlyArray<RuntimeSubagent>): ReadonlyArray<string> {
   if (agents.length === 0) {
     return [];

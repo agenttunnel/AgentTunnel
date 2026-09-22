@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRuntime";
 
-import { agentRows, agentUsageLines } from "./agents.ts";
+import { agentRows, agentUsageLines, fleetTotals } from "./agents.ts";
 
 let sequence = 0;
 
@@ -245,5 +245,20 @@ describe("agentUsageLines", () => {
       "verifier · 3.4k tok",
       "Σ 4.6k tok",
     ]);
+  });
+});
+
+describe("fleetTotals", () => {
+  it("adds up what the fleet spent and how it is doing", () => {
+    const agents = [
+      { status: "running", usage: { totalTokens: 1_000 } },
+      { status: "completed", usage: { totalTokens: 2_500 } },
+      { status: "failed", usage: { totalTokens: 400 } },
+    ] as unknown as Parameters<typeof fleetTotals>[0];
+    expect(fleetTotals(agents)).toEqual({ tokens: 3_900, running: 1, settled: 1, failed: 1 });
+  });
+
+  it("reports nothing for an empty fleet", () => {
+    expect(fleetTotals([])).toEqual({ tokens: 0, running: 0, settled: 0, failed: 0 });
   });
 });

@@ -62,6 +62,27 @@ export interface TuiThreadView {
   readonly lines: ReadonlyArray<TuiLine>;
 }
 
+/**
+ * One glyph per line kind and per agent status, the way both reference TUIs
+ * mark rows: a filled dot for settled work, a ring for live work, a cross for
+ * what failed. Text keeps the detail; the glyph carries the state.
+ */
+export function lineGlyph(kind: TuiLine["kind"]): string {
+  if (kind === "user") return "›";
+  if (kind === "agent") return "·";
+  if (kind === "system") return "!";
+  return "⏺";
+}
+
+export function statusGlyph(status: string): string {
+  if (status === "running" || status === "pending") return "◍";
+  if (status === "waiting") return "◌";
+  if (status === "completed") return "●";
+  if (status === "failed") return "✗";
+  if (status === "cancelled" || status === "interrupted") return "⊘";
+  return "○";
+}
+
 export interface TuiLine {
   readonly kind: "user" | "assistant" | "agent" | "system";
   readonly text: string;

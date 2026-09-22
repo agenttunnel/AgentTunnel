@@ -21,12 +21,18 @@ import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { foldAgentLogEntries } from "@t3tools/client-runtime/state/agentLog";
+import {
+  foldSubagentActivities,
+  formatSubagentTokenCount,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 
 import {
   agentTunnelCatalog,
+  lineGlyph,
   projectRows,
+  statusGlyph,
   providerRows,
   serverSettingRows,
   threadRows,
@@ -36,6 +42,7 @@ import {
   type TuiThreadRow,
 } from "./format.ts";
 import { buildAgentTunnelPatch, resolveAgentTunnelConfig } from "./agentTunnel.ts";
+import { fleetTotals } from "./agents.ts";
 import { loadPreferences, savePreferences, type TuiPreferences } from "./preferences.ts";
 import {
   connect,
@@ -129,6 +136,9 @@ const theme = {
   primary: "#7aa2f7",
   surface: "#14141c",
   border: "#2a2a38",
+  ok: "#9ece6a",
+  warn: "#e0af68",
+  err: "#f7768e",
 } as const;
 
 const USAGE = `t3-tui — AgentTunnel in a terminal
@@ -240,6 +250,14 @@ const newThreadId = (): Promise<string> =>
 
 const lineColor = (kind: string): string =>
   kind === "user" ? theme.primary : kind === "agent" ? theme.textFaint : theme.text;
+
+/** Status colour, the way the reference TUIs chip a state. */
+const statusColor = (status: string): string => {
+  if (status === "failed" || status === "cancelled" || status === "interrupted") return theme.err;
+  if (status === "running" || status === "pending" || status === "waiting") return theme.warn;
+  if (status === "completed") return theme.ok;
+  return theme.textMuted;
+};
 
 function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
   const [state, setState] = createSignal<TuiState>(
@@ -631,7 +649,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     if (current.view === "threads") {
       return "↑/↓ move · enter open · / commands · ctrl-p palette · ctrl-r reload · ctrl-c quit";
     }
-    return "enter send · / commands · ctrl-i interrupt · esc back · ctrl-r reload · ctrl-c quit";
+    return "enter send · / commands · ctrl-a agents · ctrl-i interrupt · esc back · ctrl-c quit";
   });
 
   const dimensions = useTerminalDimensions();
@@ -693,7 +711,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     );
     return matches.slice(start, start + PICKER_ROWS);
   });
-  /** Agent rows, two lines each, windowed to the terminal. */
+  /** Agent rows with the status each line carries, so colour follows state. */
   const agentLines = createMemo(() => {
     const limit = Math.max(1, Math.floor(listRows() / 2));
     const rows = windowRows(state().agents, state().agentIndex, limit);
@@ -704,7 +722,8 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
             0,
             Math.min(state().agentIndex - Math.floor(limit / 2), state().agents.length - limit),
           );
-    const lines = rows.flatMap((agent, index) => {
+    const entries: Array<{ line: string; status: string | null; selected: boolean }> = [];
+    for (const [index, agent] of rows.entries()) {
       const selected = offset + index === state().agentIndex;
       const meta = [
         agent.model,
@@ -715,14 +734,23 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       ]
         .filter((part): part is string => part !== null && part.length > 0)
         .join(" · ");
-      return [
-        `${selected ? "▸ " : "  "}${agent.label} · ${agent.status}${
+      entries.push({
+        line: `${selected ? "▸ " : "  "}${statusGlyph(agent.status)} ${agent.label} · ${agent.status}${
           agent.activity.length === 0 ? "" : ` — ${agent.activity}`
         }`,
-        `  ${meta}`,
-      ];
+        status: agent.status,
+        selected,
+      });
+      entries.push({ line: `    ${meta}`, status: null, selected });
+    }
+    return entries.map((entry) => {
+      const width = rowWidth();
+      const line =
+        entry.line.length <= width
+          ? entry.line.padEnd(width)
+          : `${entry.line.slice(0, width - 1)}…`;
+      return { ...entry, line };
     });
-    return padRows(lines, limit * 2, rowWidth());
   });
 
   /** Thread rows, windowed to the terminal and padded so redraws are clean. */
@@ -796,7 +824,9 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         <Show when={state().view === "thread"}>
           <scrollbox height={listRows()} minHeight={0}>
             <For each={state().lines}>
-              {(line: TuiLine) => <text fg={lineColor(line.kind)}>{line.text}</text>}
+              {(line: TuiLine) => (
+                <text fg={lineColor(line.kind)}>{`${lineGlyph(line.kind)} ${line.text}`}</text>
+              )}
             </For>
           </scrollbox>
         </Show>
@@ -806,8 +836,18 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
             fallback={<text fg={theme.textMuted}>no sub-agents yet for this thread</text>}
           >
             <Index each={agentLines()}>
-              {(line) => (
-                <text fg={line().startsWith("▸") ? theme.primary : theme.text}>{line()}</text>
+              {(entry) => (
+                <text
+                  fg={
+                    entry().selected
+                      ? theme.primary
+                      : entry().status === null
+                        ? theme.textFaint
+                        : statusColor(entry().status ?? "")
+                  }
+                >
+                  {entry().line}
+                </text>
               )}
             </Index>
           </Show>

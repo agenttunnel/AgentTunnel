@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationThreadDetailSnapshot } from "@t3tools/contracts";
 
-import { threadRows, threadView } from "./format.ts";
+import { lineGlyph, statusGlyph, threadRows, threadView } from "./format.ts";
 
 const shell = {
   snapshotSequence: 1,
@@ -87,5 +87,21 @@ describe("threadView", () => {
   it("says nothing about agents when activities are excluded", () => {
     const view = threadView(detail, { includeActivities: false });
     expect(view.lines.map((line) => line.kind)).toEqual(["user", "assistant"]);
+  });
+});
+
+describe("status vocabulary", () => {
+  it("gives live work a ring, settled work a dot, and failure a cross", () => {
+    expect(statusGlyph("running")).toBe("◍");
+    expect(statusGlyph("completed")).toBe("●");
+    expect(statusGlyph("failed")).toBe("✗");
+    expect(statusGlyph("cancelled")).toBe("⊘");
+    expect(statusGlyph("idle")).toBe("○");
+  });
+
+  it("marks who wrote each transcript line", () => {
+    expect(lineGlyph("user")).toBe("›");
+    expect(lineGlyph("assistant")).toBe("⏺");
+    expect(lineGlyph("agent")).toBe("·");
   });
 });
