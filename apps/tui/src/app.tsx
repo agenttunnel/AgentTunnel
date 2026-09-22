@@ -93,16 +93,24 @@ function windowRows<A>(rows: ReadonlyArray<A>, index: number, limit: number): Re
   return rows.slice(start, start + limit);
 }
 
-function padRows(lines: ReadonlyArray<string>, count: number): ReadonlyArray<string> {
-  const width = lines.reduce(
-    (widest, line, index) => (index === 0 ? line.length : Math.max(widest, line.length)),
-    0,
-  );
-  // Always emit `count` rows: a list that shrinks would otherwise leave the
-  // previous frame's rows on screen, since rows are reused by position.
-  return Array.from({ length: Math.max(count, lines.length) }, (_, index) =>
-    (lines[index] ?? "").padEnd(width),
-  );
+/**
+ * Rows are written over the previous frame, so every one is padded to the full
+ * terminal width and lists always emit the same number of rows. Anything less
+ * and the renderer leaves the old characters behind — the palette ends up with
+ * two frames' text interleaved on one line.
+ */
+function padRows(
+  lines: ReadonlyArray<string>,
+  count: number,
+  width: number,
+): ReadonlyArray<string> {
+  // Truncate as well as pad: a row wider than the box wraps onto the next line,
+  // which pushes every row below it and paints over them.
+  return Array.from({ length: Math.max(count, lines.length) }, (_, index) => {
+    const line = lines[index] ?? "";
+    const clipped = line.length <= width ? line : `${line.slice(0, width - 1)}…`;
+    return clipped.padEnd(width);
+  });
 }
 
 /** How many picker rows are on screen before the list scrolls around the cursor. */
@@ -612,8 +620,23 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
   });
 
   const dimensions = useTerminalDimensions();
-  /** Rows left for a list once the header, composer, hints and palette are drawn. */
-  const listRows = createMemo(() => Math.max(4, dimensions().height - 6));
+  /**
+   * Width every list row is clipped and padded to: the terminal minus the
+   * boxes' horizontal padding, so a row never wraps onto the next line.
+   */
+  const rowWidth = createMemo(() => Math.max(20, dimensions().width - 5));
+  /** The palette's own rows, when it is showing. */
+  const paletteRows = createMemo(() => {
+    const count = commandSuggestions(state()).length;
+    return count === 0 ? 0 : Math.min(count, MAX_COMMANDS);
+  });
+
+  /**
+   * Rows left for a list. The header, composer, hints, and palette all draw
+   * outside it, and a list that overflows its box paints over them instead of
+   * being clipped — which is what the overlapping rows were.
+   */
+  const listRows = createMemo(() => Math.max(4, dimensions().height - 6 - paletteRows()));
 
   // Every command is offered; the transcript above gives up the rows for it.
   const suggestions = createMemo(() => {
@@ -622,6 +645,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     return padRows(
       rows.map((row) => `${row.id === highlighted ? "▸ " : "  "}${row.label}  ${row.detail ?? ""}`),
       MAX_COMMANDS,
+      rowWidth(),
     );
   });
   const picker = createMemo(() => state().picker);
@@ -681,7 +705,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         `  ${meta}`,
       ];
     });
-    return padRows(lines, limit * 2);
+    return padRows(lines, limit * 2, rowWidth());
   });
 
   /** Thread rows, windowed to the terminal and padded so redraws are clean. */
@@ -703,6 +727,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         return `${selected ? "▸ " : "  "}${row.title}${row.branch === null ? "" : ` · ${row.branch}`}  (${row.projectTitle})`;
       }),
       listRows(),
+      rowWidth(),
     );
   });
 
@@ -716,6 +741,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
           }`,
       ),
       PICKER_ROWS,
+      rowWidth(),
     ),
   );
 
@@ -731,7 +757,13 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         <text fg={theme.text}>{header()}</text>
         <text fg={theme.textMuted}>{state().status}</text>
       </box>
-      <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} flexDirection="column">
+      <box
+        height={listRows()}
+        minHeight={0}
+        paddingLeft={2}
+        paddingRight={2}
+        flexDirection="column"
+      >
         <Show when={state().view === "threads"}>
           <Show
             when={state().threads.length > 0}
@@ -745,7 +777,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
           </Show>
         </Show>
         <Show when={state().view === "thread"}>
-          <scrollbox flexGrow={1} minHeight={0}>
+          <scrollbox height={listRows()} minHeight={0}>
             <For each={state().lines}>
               {(line: TuiLine) => <text fg={lineColor(line.kind)}>{line.text}</text>}
             </For>
@@ -764,7 +796,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
           </Show>
         </Show>
         <Show when={state().view === "agentLog"}>
-          <scrollbox flexGrow={1} minHeight={0}>
+          <scrollbox height={listRows()} minHeight={0}>
             <For each={state().agentLog?.lines ?? []}>
               {(line) => (
                 <text fg={line.startsWith("#") ? theme.textMuted : theme.text}>{line}</text>
@@ -832,7 +864,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         </box>
       </Show>
       <Show when={state().picker === null && suggestions().length > 0}>
-        <box flexDirection="column" paddingLeft={2} paddingRight={2}>
+        <box flexDirection="column" height={suggestions().length} paddingLeft={2} paddingRight={2}>
           <Index each={suggestions()}>
             {(line) => (
               <text fg={line().startsWith("▸") ? theme.primary : theme.textFaint}>{line()}</text>
