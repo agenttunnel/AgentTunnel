@@ -145,6 +145,13 @@ model list and one-shot `pi --mode json -p <prompt> --no-session` per role, tran
 timeout, so a wedged or interactive harness degrades to a readable provider warning instead of
 blocking the registry.
 
+Sub-agents only ever see their own brief, so the orchestrator prompt treats the brief as the mission
+carrier: it opens with why the task matters to the user's goal, states what winning looks like and how
+it will be checked, names the hard part honestly while saying the team is counted on for it, and keeps
+that framing to a sentence — conviction about specific stakes rather than hype. Failures are owned and
+re-briefed with what the last attempt taught ("the last attempt died on X, so this time Y") instead of
+being quietly dropped, and finished work is credited before the next dispatch.
+
 A completed workflow ends with a real final report rather than just the machinery tables. The
 orchestrator's closing `done` action may carry `summary` (what happened) and `next_steps`, and only a
 `done` from a pass that dispatched no new pipelines counts as the final report, so an earlier
