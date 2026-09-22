@@ -30,6 +30,8 @@ interface PendingXAiPromptCompletion {
 
 const completedXAiPromptIdLimit = 128;
 const xAiStopReasonMissingMetaKey = "xAiStopReasonMissing";
+/** Marks a prompt response that came from `_x.ai/session/prompt_complete`, not the ACP RPC. */
+const xAiPromptCompletionFallbackMetaKey = "xAiPromptCompletionFallback";
 const xAiRateLimitedErrorCode = -32003;
 
 const XAiAskUserQuestionOption = Schema.Struct({
@@ -649,12 +651,28 @@ export function promptResponseHasMissingXAiStopReason(
   return meta !== null && typeof meta === "object" && meta[xAiStopReasonMissingMetaKey] === true;
 }
 
+/**
+ * True when the response came from `_x.ai/session/prompt_complete` instead of the
+ * `session/prompt` RPC. Callers settle on this signal before the provider has
+ * necessarily flushed the turn's final output, so they must drain the session
+ * before publishing a terminal event.
+ */
+export function promptResponseCameFromXAiCompletion(
+  response: EffectAcpSchema.PromptResponse,
+): boolean {
+  const meta = response._meta;
+  return (
+    meta !== null && typeof meta === "object" && meta[xAiPromptCompletionFallbackMetaKey] === true
+  );
+}
+
 function promptResponseFromXAi(
   notification: XAiPromptCompleteNotification,
 ): EffectAcpSchema.PromptResponse {
   const stopReason = normalizeXAiStopReason(notification.stopReason);
   const meta: Record<string, unknown> = {
     sessionId: notification.sessionId,
+    [xAiPromptCompletionFallbackMetaKey]: true,
   };
   if (notification.stopReason === undefined) {
     meta[xAiStopReasonMissingMetaKey] = true;

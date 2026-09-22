@@ -74,6 +74,7 @@ import {
   makeXAiAskUserQuestionCancelledResponse,
   makeXAiAskUserQuestionResponse,
   makeXAiExitPlanModeCapturedResponse,
+  promptResponseCameFromXAiCompletion,
   promptResponseHasMissingXAiStopReason,
   XAiAskUserQuestionRequest,
   XAiExitPlanModeRequest,
@@ -94,6 +95,14 @@ const DEFAULT_GROK_TURN_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1_000;
 // reasoning. It still needs a deadline so a lost tool update cannot leave the
 // turn working forever.
 const DEFAULT_GROK_ACTIVE_TOOL_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1_000;
+// `_x.ai/session/prompt_complete` can land before the CLI flushes the turn's
+// final assistant chunk. Settling on the notification alone publishes the
+// terminal event while that chunk is still in flight, and the chunk is then
+// dropped as output for a settled turn. Hold the turn open for a short window of
+// silence so trailing output is attributed first. The cap keeps a provider that
+// keeps streaming from postponing the terminal event indefinitely.
+const XAI_COMPLETION_DRAIN_QUIET_PERIOD = Duration.millis(250);
+const XAI_COMPLETION_DRAIN_MAX_WAIT = Duration.seconds(2);
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -109,6 +118,14 @@ export interface GrokAdapterLiveOptions {
   readonly turnInactivityTimeoutMs?: number;
   /** Override the longer active-tool liveness timeout in focused tests. */
   readonly activeToolInactivityTimeoutMs?: number;
+  /**
+   * Override the quiet window that follows `_x.ai/session/prompt_complete` in
+   * focused tests. Tests that assert on output trailing the completion signal
+   * widen it so a loaded host cannot race the window shut.
+   */
+  readonly xAiCompletionDrainQuietPeriodMs?: number;
+  /** Override the cap on the completion drain in focused tests. */
+  readonly xAiCompletionDrainMaxWaitMs?: number;
 }
 
 interface PendingApproval {
@@ -370,6 +387,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         : DEFAULT_GROK_ACTIVE_TOOL_INACTIVITY_TIMEOUT_MS;
     const activeToolInactivityTimeoutNanos =
       BigInt(activeToolInactivityTimeoutMs) * NANOS_PER_MILLI;
+    const requestedXAiCompletionDrainQuietPeriodMs = options?.xAiCompletionDrainQuietPeriodMs;
+    const xAiCompletionDrainQuietPeriodMs =
+      typeof requestedXAiCompletionDrainQuietPeriodMs === "number" &&
+      Number.isFinite(requestedXAiCompletionDrainQuietPeriodMs)
+        ? Math.max(1, Math.floor(requestedXAiCompletionDrainQuietPeriodMs))
+        : Duration.toMillis(XAI_COMPLETION_DRAIN_QUIET_PERIOD);
+    const requestedXAiCompletionDrainMaxWaitMs = options?.xAiCompletionDrainMaxWaitMs;
+    const xAiCompletionDrainMaxWaitMs =
+      typeof requestedXAiCompletionDrainMaxWaitMs === "number" &&
+      Number.isFinite(requestedXAiCompletionDrainMaxWaitMs)
+        ? Math.max(
+            xAiCompletionDrainQuietPeriodMs,
+            Math.floor(requestedXAiCompletionDrainMaxWaitMs),
+          )
+        : Duration.toMillis(XAI_COMPLETION_DRAIN_MAX_WAIT);
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -1669,6 +1701,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
               ),
             );
+
+          // xAI reports completion out of band, before the CLI has necessarily
+          // flushed the turn's final assistant chunk. Drain the session first so
+          // trailing output lands on this turn instead of arriving after the
+          // terminal event and being dropped. Cancellations skip the window:
+          // Stop must settle immediately, and late output is dropped on purpose.
+          if (promptResponseCameFromXAiCompletion(result) && result.stopReason !== "cancelled") {
+            yield* prepared.acp.awaitSessionUpdateQuiet({
+              quietPeriod: Duration.millis(xAiCompletionDrainQuietPeriodMs),
+              maxWait: Duration.millis(xAiCompletionDrainMaxWaitMs),
+            });
+          }
 
           return yield* withThreadLock(
             input.threadId,

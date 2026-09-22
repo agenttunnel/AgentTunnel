@@ -61,6 +61,8 @@ const permissionRequestCount = Math.max(
   Number(process.env.T3_ACP_PERMISSION_REQUEST_COUNT ?? "1") || 1,
 );
 const sessionId = "mock-session-1";
+/** Blocks the mock's loop between notifications; see `writeJsonRpcNotification`. */
+const notificationWriteDelayMs = Number(process.env.T3_ACP_NOTIFICATION_WRITE_DELAY_MS ?? "0");
 
 let currentModeId = "ask";
 let currentModelId = "default";
@@ -92,6 +94,12 @@ function logExit(reason: string): void {
 
 function writeJsonRpcNotification(method: string, params: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  if (notificationWriteDelayMs > 0) {
+    // Block the mock's loop so the next notification lands in a later read.
+    // Tests that assert on output a provider emits *after* its completion
+    // signal set this to force that output apart from the signal itself.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, notificationWriteDelayMs);
+  }
 }
 
 process.once("SIGTERM", () => {
