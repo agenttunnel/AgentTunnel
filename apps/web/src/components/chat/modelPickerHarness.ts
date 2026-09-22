@@ -1,6 +1,6 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 
-import { agentTunnelHarnessDriverKind } from "../agentTunnelRoles.logic";
+import { agentTunnelHarnessDriverKind } from "@t3tools/client-runtime/state/agentTunnelRoles";
 
 const AGENT_TUNNEL_DRIVER_KIND = ProviderDriverKind.make("agenttunnel");
 

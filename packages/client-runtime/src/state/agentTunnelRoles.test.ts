@@ -17,7 +17,7 @@ import {
   readAgentTunnelAutoMode,
   readAgentTunnelModelConfig,
   readAgentTunnelRoles,
-} from "./agentTunnelRoles.logic";
+} from "./agentTunnelRoles.ts";
 
 describe("agentTunnelRoles", () => {
   it("maps role ids to the AgentTunnelSettings keys", () => {

@@ -46,12 +46,24 @@ describe("matchCommands", () => {
       "model",
       "provider",
       "settings",
+      "agenttunnel",
+      "agents",
+      "token-usage",
       "help",
       "interrupt",
       "refresh",
       "quit",
     ]);
-    expect(threads).toEqual(["new", "model", "provider", "settings", "help", "refresh", "quit"]);
+    expect(threads).toEqual([
+      "new",
+      "model",
+      "provider",
+      "settings",
+      "agenttunnel",
+      "help",
+      "refresh",
+      "quit",
+    ]);
   });
 
   it("matches the query as a case-insensitive prefix", () => {

@@ -12,15 +12,19 @@
  *   bun src/index.tsx --url http://localhost:13773 [--token <session token>]
  *   bun src/index.tsx --demo
  */
+import type { ServerSettings } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
+import { foldAgentLogEntries } from "@t3tools/client-runtime/state/agentLog";
 import { render, useKeyboard } from "@opentui/solid";
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 
 import {
+  agentTunnelCatalog,
   projectRows,
   providerRows,
   serverSettingRows,
@@ -30,10 +34,14 @@ import {
   type TuiProjectRow,
   type TuiThreadRow,
 } from "./format.ts";
+import { buildAgentTunnelPatch, resolveAgentTunnelConfig } from "./agentTunnel.ts";
 import { loadPreferences, savePreferences, type TuiPreferences } from "./preferences.ts";
 import {
   connect,
+  getAgentOutput,
   interruptTurn,
+  streamShell,
+  streamThread,
   loadServerConfig,
   loadShell,
   loadThread,
@@ -42,7 +50,9 @@ import {
   sendTurn,
   startThread,
   updateServerSettings,
+  TuiSessionError,
   type TuiSession,
+  type TuiStream,
 } from "./session.ts";
 import {
   activeProvider,
@@ -53,8 +63,13 @@ import {
   resolveModelSelection,
   selectedThread,
   settingsRows,
+  agentTunnelScreenRows,
+  withAgentLog,
   withCatalogs,
   withPreferences,
+  withShellItem,
+  withThreadEvent,
+  withThreadSnapshot,
   withStatus,
   withThread,
   withThreads,
@@ -152,6 +167,26 @@ const DEMO_THREAD = {
   ],
 };
 
+/**
+ * One log read, flattened for a terminal: markdown keeps its text, tool calls
+ * become a single line, and the raw/error blocks are labelled.
+ */
+const readAgentLogLines = async (
+  session: TuiSession,
+  outputPath: string,
+): Promise<ReadonlyArray<string>> => {
+  const result = await Effect.runPromise(getAgentOutput(session, outputPath));
+  return foldAgentLogEntries(result.entries).map((block) => {
+    if (block.kind === "tool") {
+      return `▸ ${block.title} · ${block.status}${block.tool === "" ? "" : ` (${block.tool})`}`;
+    }
+    if (block.kind === "raw") return `# raw\n${block.text}`;
+    if (block.kind === "error") return `! ${block.text}`;
+    if (block.kind === "reasoning") return `# reasoning\n${block.text}`;
+    return block.text;
+  });
+};
+
 /** Thread ids are opaque to the server and unique per process. */
 const newThreadId = (): Promise<string> =>
   Effect.runPromise(
@@ -176,6 +211,13 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       : withStatus(initialTuiState, `connecting to ${props.args.url ?? ""}…`),
   );
   let session: TuiSession | null = null;
+  let scope: Scope.Scope | null = null;
+  let threadStream: TuiStream | null = null;
+  let shellStream: TuiStream | null = null;
+  let agentLogFiber: Fiber.Fiber<unknown, unknown> | null = null;
+  // The last settings snapshot: patches replace whole maps, so they are built
+  // from what the server last told us, not from a guess.
+  let settings: ServerSettings | null = null;
 
   // Solid's setter returns the stored value; the app treats it as a void write.
   const apply = (next: TuiState): void => {
@@ -200,6 +242,7 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         Effect.runPromise(loadShell(active)),
         Effect.runPromise(loadServerConfig(active)),
       ]);
+      settings = config.settings;
       apply(
         withCatalogs(
           withThreads(
@@ -210,21 +253,56 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
             projects: projectRows(snapshot),
             providers: providerRows(config),
             serverSettings: serverSettingRows(config.settings),
+            agentTunnel: resolveAgentTunnelConfig(config.settings),
+            agentTunnelCatalog: agentTunnelCatalog(config),
           },
         ),
       );
     });
 
+  const stopThreadStream = async (): Promise<void> => {
+    if (threadStream === null) return;
+    const stopping = threadStream;
+    threadStream = null;
+    await Effect.runPromise(stopping.stop());
+  };
+
+  /** Follow one thread: the snapshot arrives first, then every change to it. */
   const openThread = (threadId: string): Promise<void> =>
     guard("open", async () => {
-      if (session === null) return;
+      if (session === null || scope === null) return;
       apply(withStatus(state(), "loading thread…"));
-      const snapshot = await Effect.runPromise(loadThread(session, threadId));
-      const view = threadView(snapshot, {
-        includeActivities: state().preferences.showAgentDetails,
-      });
-      apply(withThread(state(), { id: threadId, ...view }));
+      const active = session;
+      await stopThreadStream();
+      threadStream = await Effect.runPromise(
+        streamThread(
+          active,
+          { threadId, afterSequence: state().lastThreadSequence },
+          (item) => {
+            if (item.kind === "snapshot") apply(withThreadSnapshot(state(), item.snapshot));
+            else if (item.kind === "event") apply(withThreadEvent(state(), item.event));
+          },
+          (error) => {
+            apply(withStatus(state(), `live updates stopped: ${error.message}`));
+            void reconnect();
+          },
+        ).pipe(Effect.provideService(Scope.Scope, scope)),
+      );
     });
+
+  /** Keep the thread list live, and refresh the catalogs whenever it settles. */
+  const startShellStream = async (): Promise<void> => {
+    if (session === null || scope === null) return;
+    const active = session;
+    shellStream = await Effect.runPromise(
+      streamShell(
+        active,
+        { afterSequence: state().lastShellSequence },
+        (item) => apply(withShellItem(state(), item)),
+        (error) => apply(withStatus(state(), `list updates stopped: ${error.message}`)),
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+  };
 
   const send = async (threadId: string, text: string): Promise<void> => {
     if (session === null) return;
@@ -273,11 +351,60 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     });
   };
 
+  /** The log is a unary read; the desktop polls it, and so does the TUI. */
+  const pollAgentLog = (agentId: string, label: string, outputPath: string): void => {
+    void stopAgentLog();
+    const active = session;
+    if (active === null) return;
+    const polling = Effect.gen(function* () {
+      while (state().view === "agentLog") {
+        yield* Effect.tryPromise({
+          try: async () => {
+            const lines = await readAgentLogLines(active, outputPath);
+            apply(withAgentLog(state(), { agentId, label, lines, error: null }));
+          },
+          catch: (error) => new TuiSessionError({ message: String(error) }),
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.sync(() =>
+              apply(withAgentLog(state(), { agentId, label, lines: [], error: String(error) })),
+            ),
+          ),
+        );
+        yield* Effect.sleep("1 second");
+      }
+    });
+    agentLogFiber = Effect.runFork(polling);
+  };
+
+  const stopAgentLog = async (): Promise<void> => {
+    const fiber = agentLogFiber;
+    agentLogFiber = null;
+    if (fiber !== null) await Effect.runPromise(Fiber.interrupt(fiber));
+  };
+
   const persistPreferences = async (patch: Partial<TuiPreferences>): Promise<void> => {
     const next = { ...state().preferences, ...patch };
     await guard("settings", async () => {
       await savePreferences(next);
       apply(withStatus(state(), "settings saved"));
+    });
+  };
+
+  /** One field of the workflow provider's settings, patched the way the web does. */
+  const persistAgentTunnelSetting = async (
+    field: string,
+    value: string | number | boolean,
+  ): Promise<void> => {
+    if (session === null) return;
+    await guard("settings", async () => {
+      const patch =
+        settings === null
+          ? { providers: { agenttunnel: { [field]: value } } }
+          : buildAgentTunnelPatch(settings, field, value);
+      await Effect.runPromise(updateServerSettings(session as TuiSession, patch));
+      apply(withStatus(state(), "workflow settings saved"));
+      await refreshThreads();
     });
   };
 
@@ -287,6 +414,32 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
       await Effect.runPromise(updateServerSettings(session as TuiSession, { [key]: value }));
       apply(withStatus(state(), "server setting saved"));
       await refreshThreads();
+    });
+  };
+
+  /** A dead socket is rebuilt, then everything resubscribes from its cursor. */
+  const reconnect = async (): Promise<void> => {
+    const url = props.args.url;
+    if (url === null || props.args.demo) return;
+    await guard("reconnect", async () => {
+      await stopThreadStream();
+      session = null;
+      scope = await Effect.runPromise(Scope.make());
+      const ticket = await Effect.runPromise(
+        resolveSocketTicket({
+          httpBaseUrl: url.replace(/\/+$/u, ""),
+          token: props.args.token,
+        }).pipe(Effect.provide(remoteHttpClientLayer(fetch))),
+      );
+      session = await Effect.runPromise(
+        connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
+          Effect.provideService(Scope.Scope, scope),
+        ),
+      );
+      apply(withStatus(state(), "reconnected"));
+      await startShellStream();
+      const openId = state().openThreadId;
+      if (openId !== null) await openThread(openId);
     });
   };
 
@@ -328,6 +481,14 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
         if (props.args.demo) return;
         void persistServerSetting(effect.key, effect.value);
         return;
+      case "saveAgentTunnelSetting":
+        if (props.args.demo) return;
+        void persistAgentTunnelSetting(effect.field, effect.value);
+        return;
+      case "openAgentLog":
+        if (props.args.demo) return;
+        pollAgentLog(effect.agentId, effect.label, effect.outputPath);
+        return;
       default:
         return;
     }
@@ -368,13 +529,14 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
           ),
         );
         // One session for the process: the socket scope lives until the TUI exits.
-        const scope = await Effect.runPromise(Scope.make());
+        scope = await Effect.runPromise(Scope.make());
         session = await Effect.runPromise(
           connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
             Effect.provideService(Scope.Scope, scope),
           ),
         );
         await refreshThreads();
+        await startShellStream();
       } catch (error) {
         apply(withStatus(state(), `could not connect: ${String(error)}`));
       }
@@ -385,12 +547,26 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     const current = state();
     if (current.view === "threads") return `AgentTunnel · threads (${current.threads.length})`;
     if (current.view === "settings") return "AgentTunnel · settings";
+    if (current.view === "agenttunnel") return "AgentTunnel · workflow roles";
+    if (current.view === "agents") return `AgentTunnel · agents (${current.agents.length})`;
+    if (current.view === "agentLog") {
+      return `AgentTunnel · ${current.agentLog?.label ?? "agent"} · log`;
+    }
+    if (current.view === "usage") return "AgentTunnel · token usage";
     return `AgentTunnel · ${current.title}`;
   });
 
   const hints = createMemo(() => {
     const current = state();
     if (current.view === "settings") return "↑/↓ move · enter change · esc back · ctrl-c quit";
+    if (current.view === "agenttunnel") {
+      return "↑/↓ move · enter change · esc back · ctrl-r reload · ctrl-c quit";
+    }
+    if (current.view === "agents") {
+      return "↑/↓ move · enter open log · x stop turn · esc back · ctrl-r reload";
+    }
+    if (current.view === "agentLog") return "esc back to agents · ctrl-r refresh · ctrl-c quit";
+    if (current.view === "usage") return "esc back · ctrl-c quit";
     if (current.view === "threads") {
       return "↑/↓ move · enter open · / new thread · ctrl-p commands · ctrl-r reload · ctrl-c quit";
     }
@@ -445,6 +621,60 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
               {(line: TuiLine) => <text fg={lineColor(line.kind)}>{line.text}</text>}
             </For>
           </scrollbox>
+        </Show>
+        <Show when={state().view === "agents"}>
+          <Show
+            when={state().agents.length > 0}
+            fallback={<text fg={theme.textMuted}>no sub-agents yet for this thread</text>}
+          >
+            <For each={state().agents}>
+              {(agent, index) => (
+                <box flexDirection="column">
+                  <text fg={index() === state().agentIndex ? theme.primary : theme.text}>
+                    {`${index() === state().agentIndex ? "▸ " : "  "}${agent.label} · ${agent.status}${
+                      agent.activity.length === 0 ? "" : ` — ${agent.activity}`
+                    }`}
+                  </text>
+                  <text fg={theme.textFaint}>
+                    {[
+                      agent.model,
+                      agent.tokens === null ? null : `${agent.tokens} tokens`,
+                      agent.tools === null ? null : `${agent.tools} tools`,
+                      agent.elapsed,
+                      agent.attempt === null ? null : `run ${agent.attempt}`,
+                    ]
+                      .filter((part): part is string => part !== null && part.length > 0)
+                      .join(" · ")}
+                  </text>
+                </box>
+              )}
+            </For>
+          </Show>
+        </Show>
+        <Show when={state().view === "agentLog"}>
+          <scrollbox flexGrow={1} minHeight={0}>
+            <For each={state().agentLog?.lines ?? []}>
+              {(line) => (
+                <text fg={line.startsWith("#") ? theme.textMuted : theme.text}>{line}</text>
+              )}
+            </For>
+          </scrollbox>
+        </Show>
+        <Show when={state().view === "usage"}>
+          <box flexDirection="column">
+            <For each={state().usageLines}>{(line) => <text fg={theme.text}>{line}</text>}</For>
+          </box>
+        </Show>
+        <Show when={state().view === "agenttunnel"}>
+          <box flexDirection="column">
+            <For each={agentTunnelScreenRows(state())}>
+              {(row, index) => (
+                <text fg={index() === state().agentTunnelIndex ? theme.primary : theme.text}>
+                  {`${index() === state().agentTunnelIndex ? "▸ " : "  "}${row.label}  ${row.value}`}
+                </text>
+              )}
+            </For>
+          </box>
         </Show>
         <Show when={state().view === "settings"}>
           <box flexDirection="column">

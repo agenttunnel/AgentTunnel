@@ -12,7 +12,7 @@ import { type ReactNode, useMemo } from "react";
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { cn } from "~/lib/utils";
 import { ScrollArea } from "~/components/ui/scroll-area";
-import type { AgentTunnelRoleOption } from "./agentTunnelRoles.logic";
+import type { AgentTunnelRoleOption } from "@t3tools/client-runtime/state/agentTunnelRoles";
 import { ContextUsageBar } from "./ContextUsageBar";
 import { type ContextAnalysisThread, deriveContextAnalysis } from "./ContextPanel.logic";
 

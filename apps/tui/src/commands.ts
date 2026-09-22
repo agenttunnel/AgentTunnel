@@ -12,6 +12,9 @@ export type TuiCommandName =
   | "provider"
   | "settings"
   | "help"
+  | "agenttunnel"
+  | "agents"
+  | "token-usage"
   | "interrupt"
   | "refresh"
   | "quit";
@@ -32,6 +35,13 @@ export const TUI_COMMANDS: ReadonlyArray<TuiCommand> = [
   { name: "model", description: "Choose the model", argument: "[model]", scope: "any" },
   { name: "provider", description: "Choose the provider", argument: "[provider]", scope: "any" },
   { name: "settings", description: "Open settings", scope: "any" },
+  {
+    name: "agenttunnel",
+    description: "Workflow roles: harness, model, reasoning",
+    scope: "any",
+  },
+  { name: "agents", description: "Sub-agents: status, logs, usage", scope: "thread" },
+  { name: "token-usage", description: "Token usage per sub-agent", scope: "thread" },
   { name: "help", description: "Key bindings and commands", scope: "any" },
   { name: "interrupt", description: "Stop the current turn", scope: "thread" },
   { name: "refresh", description: "Reload from the server", scope: "any" },

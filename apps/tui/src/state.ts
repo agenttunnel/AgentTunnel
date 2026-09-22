@@ -1,17 +1,40 @@
-import { ProviderInstanceId, type ModelSelection } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  type ModelSelection,
+  type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
+  type OrchestrationShellStreamItem,
+  type OrchestrationThreadDetailSnapshot,
+} from "@t3tools/contracts";
+import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRuntime";
+import { applyShellStreamEvent } from "@t3tools/client-runtime/state/shellReducer";
+import { applyThreadDetailEvent } from "@t3tools/client-runtime/state/threadReducer";
 
+import {
+  agentTunnelHarnessItems,
+  agentTunnelModelItems,
+  agentTunnelNumberItems,
+  agentTunnelRows,
+  agentTunnelVariantItems,
+  parseAgentTunnelItem,
+  type TuiAgentTunnelRow,
+} from "./agentTunnel.ts";
+import { agentRows, agentUsageLines, type TuiAgentRow } from "./agents.ts";
 import {
   commandByName,
   matchCommands,
   parseCommandInput,
   type TuiCommandName,
 } from "./commands.ts";
-import type {
-  TuiLine,
-  TuiProjectRow,
-  TuiProviderRow,
-  TuiServerSettingRow,
-  TuiThreadRow,
+import {
+  threadRows,
+  threadView,
+  type TuiAgentTunnelCatalog,
+  type TuiLine,
+  type TuiProjectRow,
+  type TuiProviderRow,
+  type TuiServerSettingRow,
+  type TuiThreadRow,
 } from "./format.ts";
 import type { TuiPreferences } from "./preferences.ts";
 
@@ -40,11 +63,29 @@ export type TuiEffect =
   | { readonly kind: "quit" }
   | { readonly kind: "savePreferences"; readonly patch: Partial<TuiPreferences> }
   | { readonly kind: "saveServerSetting"; readonly key: string; readonly value: boolean | string }
+  | {
+      readonly kind: "saveAgentTunnelSetting";
+      readonly field: string;
+      readonly value: string | number | boolean;
+    }
+  | {
+      readonly kind: "openAgentLog";
+      readonly agentId: string;
+      readonly label: string;
+      readonly outputPath: string;
+    }
   | null;
 
-export type TuiView = "threads" | "thread" | "settings";
+export type TuiView =
+  | "threads"
+  | "thread"
+  | "settings"
+  | "agenttunnel"
+  | "agents"
+  | "agentLog"
+  | "usage";
 
-export type TuiPickerKind = "command" | "project" | "provider" | "model" | "help";
+export type TuiPickerKind = "command" | "project" | "provider" | "model" | "help" | "agenttunnel";
 
 export interface TuiPickerItem {
   readonly id: string;
@@ -93,6 +134,31 @@ export interface TuiState {
   readonly draft: TuiDraft | null;
   /** Row the settings screen has highlighted. */
   readonly settingsIndex: number;
+  /** The workflow provider's raw settings blob, as the server stores it. */
+  readonly agentTunnel: Record<string, unknown> | null;
+  /** The workflow provider's union catalog, which the role pickers filter. */
+  readonly agentTunnelCatalog: TuiAgentTunnelCatalog;
+  /** Row the AgentTunnel screen has highlighted. */
+  readonly agentTunnelIndex: number;
+  /** The open thread's live snapshot, folded from the subscription. */
+  readonly threadSnapshot: OrchestrationThreadDetailSnapshot | null;
+  /** Highest sequence applied, so a resubscribe resumes without gaps. */
+  readonly lastThreadSequence: number;
+  /** The thread list's live snapshot. */
+  readonly shellSnapshot: OrchestrationShellSnapshot | null;
+  readonly lastShellSequence: number;
+  /** The open thread's sub-agents, in the panel's order. */
+  readonly agents: ReadonlyArray<TuiAgentRow>;
+  readonly agentIndex: number;
+  /** The log the agent screen is showing, refreshed while it is open. */
+  readonly agentLog: {
+    readonly agentId: string;
+    readonly label: string;
+    readonly lines: ReadonlyArray<string>;
+    readonly error: string | null;
+  } | null;
+  /** The token-usage screen's lines. */
+  readonly usageLines: ReadonlyArray<string>;
   /** Row the inline `/` suggestions have highlighted. */
   readonly commandIndex: number;
 }
@@ -123,6 +189,17 @@ export const initialTuiState: TuiState = {
   draft: null,
   settingsIndex: 0,
   commandIndex: 0,
+  agentTunnel: null,
+  agentTunnelCatalog: { instanceId: null, models: [] },
+  agentTunnelIndex: 0,
+  threadSnapshot: null,
+  lastThreadSequence: 0,
+  shellSnapshot: null,
+  lastShellSequence: 0,
+  agents: [],
+  agentIndex: 0,
+  agentLog: null,
+  usageLines: [],
 };
 
 export function withThreads(state: TuiState, threads: ReadonlyArray<TuiThreadRow>): TuiState {
@@ -159,6 +236,8 @@ export function withCatalogs(
     readonly projects?: ReadonlyArray<TuiProjectRow>;
     readonly providers?: ReadonlyArray<TuiProviderRow>;
     readonly serverSettings?: ReadonlyArray<TuiServerSettingRow>;
+    readonly agentTunnel?: Record<string, unknown> | null;
+    readonly agentTunnelCatalog?: TuiAgentTunnelCatalog;
   },
 ): TuiState {
   return {
@@ -166,6 +245,8 @@ export function withCatalogs(
     projects: catalogs.projects ?? state.projects,
     providers: catalogs.providers ?? state.providers,
     serverSettings: catalogs.serverSettings ?? state.serverSettings,
+    agentTunnel: catalogs.agentTunnel === undefined ? state.agentTunnel : catalogs.agentTunnel,
+    agentTunnelCatalog: catalogs.agentTunnelCatalog ?? state.agentTunnelCatalog,
   };
 }
 
@@ -180,11 +261,110 @@ export function withModelSelection(
   return { ...state, modelSelection };
 }
 
+/** Fold a thread snapshot into the transcript, the recap, and the agent rows. */
+export function withThreadSnapshot(
+  state: TuiState,
+  snapshot: OrchestrationThreadDetailSnapshot,
+): TuiState {
+  const view = threadView(snapshot, { includeActivities: state.preferences.showAgentDetails });
+  const agents = agentRows(
+    foldSubagentActivities(snapshot.thread.activities, {
+      sessionLive: snapshot.thread.session !== null && snapshot.thread.session.status === "running",
+    }),
+  );
+  return {
+    ...state,
+    view: "thread",
+    openThreadId: snapshot.thread.id,
+    title: view.title,
+    recap: view.recap,
+    lines: view.lines,
+    threadSnapshot: snapshot,
+    lastThreadSequence: Math.max(state.lastThreadSequence, snapshot.snapshotSequence),
+    agents,
+    agentIndex: Math.min(state.agentIndex, Math.max(0, agents.length - 1)),
+    draft: null,
+    status: `${view.lines.length} entries · ${agents.length} agents`,
+  };
+}
+
+/** One live thread event: fold it in, then re-derive what the view shows. */
+export function withThreadEvent(state: TuiState, event: OrchestrationEvent): TuiState {
+  const snapshot = state.threadSnapshot;
+  if (snapshot === null || event.sequence <= state.lastThreadSequence) return state;
+  const result = applyThreadDetailEvent(snapshot.thread, event);
+  if (result.kind !== "updated") return { ...state, lastThreadSequence: event.sequence };
+  return withThreadSnapshot(
+    { ...state, lastThreadSequence: event.sequence },
+    { ...snapshot, thread: result.thread, snapshotSequence: event.sequence },
+  );
+}
+
+/** One live shell item: the thread list keeps itself current. */
+export function withShellItem(state: TuiState, item: OrchestrationShellStreamItem): TuiState {
+  if (item.kind === "synchronized") return state;
+  if (item.kind === "snapshot") {
+    return {
+      ...state,
+      shellSnapshot: item.snapshot,
+      lastShellSequence: Math.max(state.lastShellSequence, item.snapshot.snapshotSequence),
+      threads: threadRows(item.snapshot),
+    };
+  }
+  const snapshot = state.shellSnapshot;
+  if (snapshot === null) return state;
+  // The shell stream inlines its event variants; there is no wrapper.
+  const next = applyShellStreamEvent(snapshot, item);
+  if (next === snapshot) return state;
+  return {
+    ...state,
+    shellSnapshot: next,
+    lastShellSequence: Math.max(state.lastShellSequence, item.sequence),
+    threads: threadRows(next),
+  };
+}
+
+/** The agent log screen's content, replaced on every read. */
+export function withAgentLog(
+  state: TuiState,
+  log: {
+    readonly agentId: string;
+    readonly label: string;
+    readonly lines: ReadonlyArray<string>;
+    readonly error: string | null;
+  },
+): TuiState {
+  return {
+    ...state,
+    agentLog: log,
+    status:
+      log.error === null
+        ? `${log.label} · ${log.lines.length} log lines`
+        : `log failed: ${log.error}`,
+  };
+}
+
 export function withStatus(state: TuiState, status: string): TuiState {
   return { ...state, status };
 }
 
 export function moveSelection(state: TuiState, delta: number): TuiState {
+  if (state.view === "agents") {
+    const count = state.agents.length;
+    if (count === 0) return state;
+    return {
+      ...state,
+      agentIndex: Math.min(Math.max(0, state.agentIndex + delta), count - 1),
+    };
+  }
+  if (state.view === "agenttunnel") {
+    const count = agentTunnelScreenRows(state).length;
+    if (count === 0) return state;
+    return {
+      ...state,
+      agentTunnelIndex: Math.min(Math.max(0, state.agentTunnelIndex + delta), count - 1),
+    };
+  }
   if (state.view === "settings") {
     const count = settingsRows(state).length;
     if (count === 0) return state;
@@ -267,6 +447,7 @@ export function settingsRows(
 ): ReadonlyArray<{ readonly key: string; readonly label: string; readonly value: string }> {
   const provider = activeProvider(state);
   const rows: Array<{ key: string; label: string; value: string }> = [
+    { key: "agenttunnel", label: "AgentTunnel roles", value: "harness · model · reasoning" },
     { key: "defaultProvider", label: "provider", value: provider?.label ?? "not configured" },
     {
       key: "defaultModel",
@@ -357,7 +538,44 @@ function openPickerFor(state: TuiState, kind: TuiPickerKind): TuiState {
       return { ...state, picker: picker("model", "model", modelItems(state)) };
     case "help":
       return { ...state, picker: picker("help", "keys", helpItems()) };
+    case "agenttunnel":
+      // Opened by the row that needs it, with items built from that row.
+      return state;
   }
+}
+
+/** The rows the AgentTunnel screen lists. */
+export function agentTunnelScreenRows(state: TuiState): ReadonlyArray<TuiAgentTunnelRow> {
+  return agentTunnelRows(state.agentTunnel);
+}
+
+/** Enter on an AgentTunnel row: toggles flip, everything else opens its picker. */
+function activateAgentTunnel(
+  state: TuiState,
+  row: TuiAgentTunnelRow,
+): { readonly state: TuiState; readonly effect: TuiEffect } {
+  if (row.kind === "toggle") {
+    const value = row.value !== "on";
+    return {
+      state: { ...state, agentTunnel: { ...(state.agentTunnel ?? {}), [row.key]: value } },
+      effect: { kind: "saveAgentTunnelSetting", field: row.key, value },
+    };
+  }
+  const items =
+    row.kind === "model"
+      ? agentTunnelModelItems(state.agentTunnel, state.agentTunnelCatalog, row.role ?? "")
+      : row.kind === "harness"
+        ? agentTunnelHarnessItems(row.role ?? "")
+        : row.kind === "variant"
+          ? agentTunnelVariantItems(row.role ?? "")
+          : agentTunnelNumberItems(row.key);
+  return {
+    state: {
+      ...state,
+      picker: { kind: "agenttunnel", title: row.label, items, index: 0, query: "" },
+    },
+    effect: null,
+  };
 }
 
 function helpItems(): ReadonlyArray<TuiPickerItem> {
@@ -438,6 +656,33 @@ function runCommand(
       };
     case "help":
       return { state: openPickerFor({ ...state, input: "" }, "help"), effect: null };
+    case "agenttunnel":
+      return {
+        state: { ...state, input: "", view: "agenttunnel", agentTunnelIndex: 0, picker: null },
+        effect: null,
+      };
+    case "agents":
+      return {
+        state: { ...state, input: "", view: "agents", agentIndex: 0, agentLog: null, picker: null },
+        effect: null,
+      };
+    case "token-usage": {
+      const agents = foldSubagentActivities(state.threadSnapshot?.thread.activities ?? [], {
+        sessionLive:
+          state.threadSnapshot?.thread.session !== null &&
+          state.threadSnapshot?.thread.session.status === "running",
+      });
+      return {
+        state: {
+          ...state,
+          input: "",
+          view: "usage",
+          picker: null,
+          usageLines: agentUsageLines(agents),
+        },
+        effect: null,
+      };
+    }
     case "interrupt":
       return { state: { ...state, input: "" }, effect: { kind: "interrupt" } };
     case "refresh":
@@ -498,6 +743,17 @@ function applyPick(
         effect: { kind: "savePreferences", patch: { defaultModel: id } },
       };
     }
+    case "agenttunnel": {
+      const picked = parseAgentTunnelItem(id);
+      if (picked === null) return { state: closed, effect: null };
+      return {
+        state: {
+          ...closed,
+          agentTunnel: { ...(closed.agentTunnel ?? {}), [picked.field]: picked.value },
+        },
+        effect: { kind: "saveAgentTunnelSetting", field: picked.field, value: picked.value },
+      };
+    }
     default:
       return { state: closed, effect: null };
   }
@@ -508,6 +764,9 @@ function activateSetting(
   state: TuiState,
   key: string,
 ): { readonly state: TuiState; readonly effect: TuiEffect } {
+  if (key === "agenttunnel") {
+    return { state: { ...state, view: "agenttunnel", agentTunnelIndex: 0 }, effect: null };
+  }
   if (key === "defaultProvider") {
     return { state: openPickerFor(state, "provider"), effect: null };
   }
@@ -590,6 +849,80 @@ export function reduceKey(
           effect: null,
         };
       }
+    }
+  }
+
+  if (state.view === "agents") {
+    switch (name) {
+      case "escape":
+        return {
+          state: { ...state, view: state.openThreadId === null ? "threads" : "thread" },
+          effect: null,
+        };
+      case "up":
+      case "down":
+        return { state: moveSelection(state, name === "up" ? -1 : 1), effect: null };
+      case "enter": {
+        const row = state.agents[state.agentIndex];
+        if (row === undefined || row.outputPath === null) return { state, effect: null };
+        return {
+          state: { ...state, view: "agentLog" },
+          effect: {
+            kind: "openAgentLog",
+            agentId: row.id,
+            label: row.label,
+            outputPath: row.outputPath,
+          },
+        };
+      }
+      case "x":
+        // Stopping is the turn's interrupt: the protocol has no per-agent stop.
+        return { state, effect: { kind: "interrupt" } };
+      case "ctrl-r":
+        return { state, effect: { kind: "refresh" } };
+      default:
+        return { state, effect: null };
+    }
+  }
+
+  if (state.view === "agentLog") {
+    switch (name) {
+      case "escape":
+        return { state: { ...state, view: "agents", agentLog: null }, effect: null };
+      case "ctrl-r":
+        return { state, effect: { kind: "refresh" } };
+      default:
+        return { state, effect: null };
+    }
+  }
+
+  if (state.view === "usage") {
+    switch (name) {
+      case "escape":
+        return {
+          state: { ...state, view: state.openThreadId === null ? "threads" : "thread" },
+          effect: null,
+        };
+      default:
+        return { state, effect: null };
+    }
+  }
+
+  if (state.view === "agenttunnel") {
+    switch (name) {
+      case "escape":
+        return { state: { ...state, view: "settings" }, effect: null };
+      case "up":
+      case "down":
+        return { state: moveSelection(state, name === "up" ? -1 : 1), effect: null };
+      case "enter": {
+        const row = agentTunnelScreenRows(state)[state.agentTunnelIndex];
+        return row === undefined ? { state, effect: null } : activateAgentTunnel(state, row);
+      }
+      case "ctrl-r":
+        return { state, effect: { kind: "refresh" } };
+      default:
+        return { state, effect: null };
     }
   }
 

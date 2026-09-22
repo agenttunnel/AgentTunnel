@@ -1,4 +1,4 @@
-import type { AgentTunnelRoleOption } from "./agentTunnelRoles.logic";
+import type { AgentTunnelRoleOption } from "@t3tools/client-runtime/state/agentTunnelRoles";
 
 const shortName = (value: string | null, fallback: string): string =>
   value === null ? fallback : (value.split(/[\\/]/).pop() ?? value);

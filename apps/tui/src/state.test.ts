@@ -149,6 +149,7 @@ describe("reduceKey", () => {
       "model",
       "provider",
       "settings",
+      "agenttunnel",
       "help",
       "refresh",
       "quit",
@@ -253,8 +254,8 @@ describe("the settings screen", () => {
   });
 
   it("flips the agent-details preference on its row", () => {
-    const down = reduceKey(settingsState(), { name: "down" }).state;
-    const state = reduceKey(down, { name: "down" }).state;
+    // Rows: AgentTunnel roles, provider, model, agent details, then the server's.
+    const state = { ...settingsState(), settingsIndex: 3 };
     const toggled = reduceKey(state, { name: "enter" });
     expect(toggled.state.preferences.showAgentDetails).toBe(false);
     expect(toggled.effect).toEqual({
@@ -264,7 +265,7 @@ describe("the settings screen", () => {
   });
 
   it("flips a boolean server setting and asks the server to save it", () => {
-    const state: TuiState = { ...settingsState(), settingsIndex: 3 };
+    const state: TuiState = { ...settingsState(), settingsIndex: 4 };
     const toggled = reduceKey(state, { name: "enter" });
     expect(toggled.state.serverSettings[0]?.value).toBe(false);
     expect(toggled.effect).toEqual({
@@ -275,7 +276,9 @@ describe("the settings screen", () => {
   });
 
   it("leaves a server setting row alone when its value is not boolean", () => {
-    const state: TuiState = { ...settingsState(), settingsIndex: 4 };
+    // Rows: AgentTunnel roles, provider, model, agent details, the boolean
+    // server setting, then the fixture's string-valued one.
+    const state: TuiState = { ...settingsState(), settingsIndex: 5 };
     const result = reduceKey(state, { name: "enter" });
     expect(result.effect).toBeNull();
     expect(result.state.serverSettings).toEqual(serverSettings);

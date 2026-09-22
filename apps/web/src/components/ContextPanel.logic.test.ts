@@ -6,7 +6,7 @@ import { emptyAgentPanelModel } from "@t3tools/client-runtime/state/subagentRunt
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
-import type { AgentTunnelRoleOption } from "./agentTunnelRoles.logic";
+import type { AgentTunnelRoleOption } from "@t3tools/client-runtime/state/agentTunnelRoles";
 import type { ContextAnalysis } from "./ContextPanel.logic";
 import { deriveContextAnalysis } from "./ContextPanel.logic";
 

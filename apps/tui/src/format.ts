@@ -186,3 +186,53 @@ export function serverSettingRows(settings: ServerSettings): ReadonlyArray<TuiSe
   }
   return rows;
 }
+
+/** Which driver backs each harness CLI, so a harness's models can be found. */
+const HARNESS_DRIVERS: Readonly<Record<string, string>> = {
+  opencode: "opencode",
+  codex: "codex",
+  claude: "claudeAgent",
+  "cursor-agent": "cursor",
+  grok: "grok",
+  pi: "pi",
+};
+
+/** The AgentTunnel provider's own catalog: every harness's models, unioned. */
+export interface TuiAgentTunnelCatalog {
+  readonly instanceId: string | null;
+  readonly models: ReadonlyArray<{
+    readonly slug: string;
+    readonly name: string;
+    readonly harnesses: ReadonlyArray<string> | null;
+  }>;
+}
+
+/**
+ * The workflow provider plans and dispatches, so a role's model comes from the
+ * union of every harness's catalog. The workflow provider publishes that union
+ * itself when it can; when it reports no models, fall back to each harness's own
+ * provider, tagged with the harness that backs it.
+ */
+export function agentTunnelCatalog(config: ServerConfig): TuiAgentTunnelCatalog {
+  const workflow = config.providers.find((entry) => entry.driver === "agenttunnel");
+  if (workflow !== undefined && workflow.models.length > 0) {
+    return {
+      instanceId: workflow.instanceId,
+      models: workflow.models.map((model) => ({
+        slug: model.slug,
+        name: model.name,
+        harnesses: model.harnesses ?? null,
+      })),
+    };
+  }
+  const models: Array<{ slug: string; name: string; harnesses: ReadonlyArray<string> | null }> = [];
+  for (const [harness, driver] of Object.entries(HARNESS_DRIVERS)) {
+    for (const provider of config.providers) {
+      if (provider.driver !== driver || !provider.installed || !provider.enabled) continue;
+      for (const model of provider.models) {
+        models.push({ slug: model.slug, name: model.name, harnesses: [harness] });
+      }
+    }
+  }
+  return { instanceId: workflow?.instanceId ?? null, models };
+}

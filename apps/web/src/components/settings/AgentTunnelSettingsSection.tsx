@@ -17,7 +17,7 @@ import {
   applyAgentTunnelApprovedModelsDisableAll,
   applyAgentTunnelApprovedModelsEnableAll,
   readAgentTunnelApprovedModels,
-} from "../agentTunnelRoles.logic";
+} from "@t3tools/client-runtime/state/agentTunnelRoles";
 
 // One row per role, driven by the same list the composer and context panel read.
 const ROLES = AGENT_TUNNEL_ROLES.map((role) => ({ key: role.id, label: role.label }));

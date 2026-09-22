@@ -9,7 +9,7 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { formatContextWindowTokens } from "../lib/contextWindow";
 import { formatDayAwareTimestamp } from "../timestampFormat";
-import type { AgentTunnelRoleOption } from "./agentTunnelRoles.logic";
+import type { AgentTunnelRoleOption } from "@t3tools/client-runtime/state/agentTunnelRoles";
 import { collectDisplayAgents } from "./AgentsPanel.logic";
 import { type ContextUsageSummary, deriveContextUsage } from "./ContextUsageBar.logic";
 

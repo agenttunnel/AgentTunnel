@@ -8,6 +8,7 @@ import {
   ThreadId,
   WS_METHODS,
   type ModelSelection,
+  type OrchestrationGetAgentOutputResult,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadDetailSnapshot,
@@ -18,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Random from "effect/Random";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as Layer from "effect/Layer";
@@ -73,6 +75,25 @@ export function resolveConnection(input: {
  * what `?wsTicket=` verifies. A server that needs no authentication needs no
  * token either, and the connection is made without a ticket.
  */
+/**
+ * Run one subscription to completion in the caller's scope. The stream ends
+ * only when the socket does; the returned handle stops it deliberately.
+ */
+const forkStream = <A>(
+  stream: Stream.Stream<A, unknown>,
+  onItem: (item: A) => void,
+  onError: (error: TuiSessionError) => void,
+): Effect.Effect<TuiStream, TuiSessionError, Scope.Scope> =>
+  Effect.gen(function* () {
+    const fiber = yield* stream.pipe(
+      Stream.mapError((cause: unknown) => toSessionError(cause)),
+      Stream.runForEach((item) => Effect.sync(() => onItem(item))),
+      Effect.catch((error) => Effect.sync(() => onError(error))),
+      Effect.forkChild,
+    );
+    return { stop: () => Fiber.interrupt(fiber) };
+  });
+
 export const connect = (
   connection: TuiConnection,
 ): Effect.Effect<TuiSession, TuiSessionError, Scope.Scope> =>
@@ -285,3 +306,54 @@ export const interruptTurn = (
       createdAt,
     }).pipe(Effect.mapError(toSessionError));
   });
+
+/** A live subscription the caller stops when it is done with it. */
+export interface TuiStream {
+  /** Stop reading; the caller runs it, so this stays a plain Effect. */
+  readonly stop: () => Effect.Effect<void>;
+}
+
+/**
+ * The thread's live detail: the server sends a snapshot and then every event
+ * that touches it. The caller keeps `afterSequence` from what it has applied
+ * and passes it back on reconnect, which is how a resubscribe resumes without
+ * gaps or duplicates.
+ */
+export const streamThread = (
+  session: TuiSession,
+  input: { readonly threadId: string; readonly afterSequence: number },
+  onItem: (item: OrchestrationThreadStreamItem) => void,
+  onError: (error: TuiSessionError) => void,
+): Effect.Effect<TuiStream, TuiSessionError, Scope.Scope> =>
+  Effect.gen(function* () {
+    const stream = session.client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+      threadId: ThreadId.make(input.threadId),
+      afterSequence: input.afterSequence,
+      requestCompletionMarker: true,
+    }) as Stream.Stream<OrchestrationThreadStreamItem, unknown>;
+    return yield* forkStream(stream, onItem, onError);
+  });
+
+/** The thread list, live: projects and threads arrive as they change. */
+export const streamShell = (
+  session: TuiSession,
+  input: { readonly afterSequence: number },
+  onItem: (item: OrchestrationShellStreamItem) => void,
+  onError: (error: TuiSessionError) => void,
+): Effect.Effect<TuiStream, TuiSessionError, Scope.Scope> =>
+  Effect.gen(function* () {
+    const stream = session.client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+      afterSequence: input.afterSequence,
+      requestCompletionMarker: true,
+    }) as Stream.Stream<OrchestrationShellStreamItem, unknown>;
+    return yield* forkStream(stream, onItem, onError);
+  });
+
+/** Read one sub-agent's log. Unary: the desktop polls it once a second. */
+export const getAgentOutput = (
+  session: TuiSession,
+  outputPath: string,
+): Effect.Effect<OrchestrationGetAgentOutputResult, TuiSessionError> =>
+  session.client[ORCHESTRATION_WS_METHODS.getAgentOutput]({ outputPath }).pipe(
+    Effect.mapError(toSessionError),
+  );
