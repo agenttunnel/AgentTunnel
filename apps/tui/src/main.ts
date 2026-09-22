@@ -134,14 +134,16 @@ const run = async (): Promise<void> => {
     if (session === null) return;
     const active = session;
     await Effect.runPromise(
-      Effect.gen(function* () {
-        yield* active.client["orchestration.dispatchCommand"]({
-          type: "thread.turn.interrupt",
-          commandId: CommandId.make(newId(yield* Random.nextInt, yield* Random.nextInt)),
-          threadId: ThreadId.make(threadId),
-          createdAt: DateTime.formatIso(yield* DateTime.now),
-        });
-      }),
+      Effect.all([Random.nextInt, Random.nextInt, DateTime.now]).pipe(
+        Effect.flatMap(([seed, salt, at]) =>
+          active.client["orchestration.dispatchCommand"]({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make(newId(seed, salt)),
+            threadId: ThreadId.make(threadId),
+            createdAt: DateTime.formatIso(at),
+          }),
+        ),
+      ),
     );
     setState(withStatus(state, "interrupt requested"));
   };

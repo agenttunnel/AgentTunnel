@@ -13,12 +13,13 @@ describe("renderTui", () => {
   });
 
   it("lists threads with a cursor on the selection and the key hints below", () => {
+    // Wide enough that the whole key hint fits: clipping is asserted separately.
     const frame = renderTui(
       withThreads(initialTuiState, [
         { id: "a", title: "First", projectTitle: "AgentTunnel", branch: "main", fleet: null },
         { id: "b", title: "Second", projectTitle: "AgentTunnel", branch: null, fleet: null },
       ]),
-      size,
+      { columns: 120, rows: 12 },
     );
     expect(frame[0]).toContain("threads (2)");
     expect(frame[1]).toContain("▸ First · main");

@@ -67,11 +67,14 @@ export function threadView(
   options?: { readonly includeActivities?: boolean },
 ): TuiThreadView {
   const includeActivities = options?.includeActivities ?? true;
-  const agents = foldSubagentActivities(snapshot.activities, {
-    sessionLive: snapshot.session !== null && snapshot.session.status === "running",
+  // The detail snapshot wraps the thread: messages, activities, and the session
+  // live under `thread`, not at the top level.
+  const thread = snapshot.thread;
+  const agents = foldSubagentActivities(thread.activities, {
+    sessionLive: thread.session !== null && thread.session.status === "running",
   });
   const model = deriveAgentPanelModel({ agents });
-  const newestUser = [...snapshot.messages].reverse().find((message) => message.role === "user");
+  const newestUser = [...thread.messages].reverse().find((message) => message.role === "user");
   // The web client's richer recap (`deriveThreadRecap`, PR #40) is not on this
   // branch: it lands with the sticky composer row. Until then the TUI says the
   // same thing with the data this branch has — goal, live fleet, settled work.
@@ -84,7 +87,7 @@ export function threadView(
   const recap = recapParts.length === 0 ? null : recapParts.join("  ·  ");
 
   const lines: TuiLine[] = [];
-  for (const message of snapshot.messages) {
+  for (const message of thread.messages) {
     const text = oneLine(message.text, LINE_MAX_CHARS);
     if (text.length === 0) continue;
     lines.push({ kind: message.role === "user" ? "user" : "assistant", text });
@@ -101,7 +104,7 @@ export function threadView(
   }
 
   return {
-    title: oneLine(snapshot.thread.title, TITLE_MAX_CHARS),
+    title: oneLine(thread.title, TITLE_MAX_CHARS),
     recap,
     lines,
   };
