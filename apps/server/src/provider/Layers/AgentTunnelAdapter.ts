@@ -70,6 +70,11 @@ import {
   type HarnessUsageTotals,
 } from "../agentTunnel/harnessUsage.ts";
 import { makeAgentTunnelInheritedContext } from "../agentTunnel/InheritedContextStore.ts";
+import {
+  makeAgentTunnelThreadContext,
+  threadContextResume,
+  threadResumeNotice,
+} from "../agentTunnel/ThreadContextStore.ts";
 
 const PROVIDER = ProviderDriverKind.make("agenttunnel");
 const RESUME_VERSION = 1;
@@ -166,6 +171,11 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
   const inheritedContext = yield* makeAgentTunnelInheritedContext(
     serverConfig.orchestratorContextDir,
   );
+  // Per-thread memory that outlives the process: the notebook each turn ended
+  // with, plus what every turn was asked to do. The cross-project store above
+  // keeps durable lessons; this one keeps the thread's own context, so closing
+  // the laptop and resuming continues instead of starting over.
+  const threadContext = yield* makeAgentTunnelThreadContext(serverConfig.orchestratorContextDir);
   const runtimeScope = yield* Scope.make();
   const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, AgentTunnelSessionContext>();
@@ -784,6 +794,8 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       createdAt: now,
       updatedAt: now,
     };
+    const priorRecord = yield* threadContext.load(input.threadId);
+    const prior = threadContextResume(priorRecord);
     const context: AgentTunnelSessionContext = {
       session,
       cwd: input.cwd ?? serverConfig.cwd,
@@ -800,8 +812,11 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       workflowId: undefined,
       activeTurnId: undefined,
       stopped: false,
-      threadHistory: [],
-      lastSharedContextDump: undefined,
+      // A session that starts on a thread with a durable record resumes from
+      // it: the orchestrator sees the prior turns and the notebook they left,
+      // instead of an empty thread.
+      threadHistory: [...prior.threadHistory],
+      lastSharedContextDump: prior.sharedContext ?? undefined,
       steering: yield* Queue.unbounded<AgentTunnelSteeringEntry>(),
       agentControl: yield* Queue.unbounded<AgentTunnelAgentCommand>(),
     };
@@ -809,7 +824,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     yield* emit({
       ...(yield* buildEventBase({ threadId: input.threadId })),
       type: "session.started",
-      payload: { message: "AgentTunnel session ready" },
+      payload: { message: threadResumeNotice(priorRecord) ?? "AgentTunnel session ready" },
     });
     yield* emit({
       ...(yield* buildEventBase({ threadId: input.threadId })),
@@ -971,6 +986,12 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           summary: `failed: ${detail.slice(0, 200)}`,
         });
         if (context.threadHistory.length > 10) context.threadHistory.shift();
+        yield* threadContext.record({
+          threadId: input.threadId,
+          task: input.input ?? "",
+          status: "failed",
+          summary: `failed: ${detail.slice(0, 200)}`,
+        });
         yield* completeTurn(context, input.threadId, turnId, "failed", detail);
         return;
       }
@@ -983,6 +1004,13 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       if (workflowResult.contextDump) {
         context.lastSharedContextDump = workflowResult.contextDump;
       }
+      yield* threadContext.record({
+        threadId: input.threadId,
+        task: input.input ?? "",
+        status: workflowResult.status,
+        summary: workflowResult.summary,
+        ...(workflowResult.contextDump ? { sharedContext: workflowResult.contextDump } : {}),
+      });
       yield* inheritedContext.record({
         learnings: workflowResult.learnings ?? [],
         attribution: {

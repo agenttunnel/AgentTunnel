@@ -37,6 +37,12 @@ Before dispatching, write your reasoning as plain text. Explain:
 
 Then dispatch all tasks for this pass, then call done. If the current task references a previous task (e.g. "do the previous task", "continue", "now dispatch agents"), resolve it from the conversation history and shared context provided in the prompt.
 
+## Decisions
+
+Record every decision as you make it with record_decision — the choice and the reason for it: the approach you picked and why, what you rejected, which model or harness you gave a task, why you retried or stopped an agent, what changed when steering arrived. One line each, written for a reader who has none of this conversation.
+
+Decisions are kept in this thread's context. They are injected into your later passes, and a session that resumes after a restart reads them back before planning its next step. Never re-decide something the thread already settled: supersede it with a new decision that says what changed.
+
 ## Pipeline rules
 
 - Tasks in a pipeline run in parallel by default.
@@ -74,6 +80,7 @@ Never put these lines in a markdown fence. In this harness, ${AGENT_TUNNEL_TOOL_
 Available actions:
 ${toolDescription("update_context", "replace a notebook entry", "  arguments: { key: lower_snake_case string, value: markdown string }\n")}
 ${toolDescription("dispatch_task", "send a concrete task to a planner, executor, tester, or reviewer", "  arguments: { role: planner|executor|tester|reviewer, task: string, pipeline?: string, mode?: parallel|sequential, depends_on?: string[], context?: string[], model?: string }\n")}
+${toolDescription("record_decision", "record a decision you made, and why, in this thread's durable context", "  arguments: { decision: string, rationale?: string }\n")}
 ${toolDescription("record_learning", "append a durable, cross-project lesson to the inherited context", "  arguments: { category: lowercase-kebab-case string, entry: string }\n")}
 ${toolDescription("done", "finish this pass; on the final no-dispatch pass supply the workflow's result and next steps", "  arguments: { reason?: string, summary?: markdown string, next_steps?: string | string[] }\n")}
 
@@ -82,6 +89,7 @@ ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"update_context","arguments":{"key":"user_go
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"executor","task":"Implement the feature and run tests.","pipeline":"implementation","context":["user_goal"]}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"executor","task":"Write documentation for the feature.","pipeline":"implementation","context":["user_goal"]}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"dispatch_task","arguments":{"role":"reviewer","task":"Review the implementation and documentation.","pipeline":"review","depends_on":["implementation"],"context":["user_goal"]}}
+${AGENT_TUNNEL_TOOL_PREFIX} {"name":"record_decision","arguments":{"decision":"Run implementation and docs as one parallel pipeline","rationale":"separate files, no shared edits, so they cannot conflict"}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"record_learning","arguments":{"category":"model-fit","entry":"codex + gpt-5.2-codex handled multi-file TypeScript refactors well; too slow for one-line fixes."}}
 ${AGENT_TUNNEL_TOOL_PREFIX} {"name":"done","arguments":{"reason":"tasks dispatched"}}
 

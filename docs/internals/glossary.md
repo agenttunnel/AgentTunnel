@@ -133,6 +133,10 @@ The per-driver list of current model slugs that decides which models land in the
 
 The cross-project memory every AgentTunnel orchestrator inherits and updates. A hidden `.orchestrator-context/` folder in the environment's state directory holds a `GUIDE.md`, one rules file per category under `rules/` (design decisions, harness/model fit, model quality), and a chronological `LOG.md`. The adapter renders the guide and rules into the orchestrator prompt before a workflow and, when the workflow ends, appends the lessons the orchestrator recorded through the `record_learning` action. Updates are serialized by an in-process semaphore plus a lock file, and each entry carries the date, thread, project, workflow, and terminal status that recorded it. See [InheritedContextStore.ts][28].
 
+#### Thread context
+
+A thread's own durable orchestrator memory, as opposed to the cross-project inherited context above: the shared notebook its last turn ended with plus every turn's task, terminal status, and summary. One JSON file per thread under `.orchestrator-context/threads/`, written atomically at the end of each turn and loaded when a session starts, so closing the app and resuming a thread continues from the context the team built instead of an empty notebook. A resumed turn rehydrates the stored notebook into real keys (including the `decisions` the orchestrator recorded with `record_decision`), and the session prints a short notice with the last turn's result and next steps. See [ThreadContextStore.ts][30].
+
 ### Checkpointing
 
 Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].
@@ -216,3 +220,4 @@ ships AgentTunnel already matching it.
 [27]: ../../apps/server/src/provider/Layers/AgentTunnelAdapter.ts
 [28]: ../../apps/server/src/provider/agentTunnel/InheritedContextStore.ts
 [29]: ../../apps/server/src/provider/agentTunnel/Orchestrator.ts
+[30]: ../../apps/server/src/provider/agentTunnel/ThreadContextStore.ts

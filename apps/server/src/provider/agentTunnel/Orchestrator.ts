@@ -1,6 +1,7 @@
 import type { AgentTunnelSettings } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -14,7 +15,7 @@ import {
   normalizeContextLearning,
   type AgentTunnelContextLearning,
 } from "./InheritedContextStore.ts";
-import { AgentTunnelSharedContext } from "./SharedContext.ts";
+import { AgentTunnelSharedContext, parseSharedContextDump } from "./SharedContext.ts";
 import { parseAgentTunnelToolCall, type AgentTunnelToolCall } from "./protocol.ts";
 import {
   EXECUTOR_PROMPT,
@@ -321,6 +322,9 @@ const FINAL_SUMMARY_MAX_CHARS = 300;
 
 const MAX_AGENT_OUTPUT_LINES = 200;
 const MAX_PROGRESS_CHARS = 500;
+/** A recorded decision is one scannable line; the notebook keeps the thread's
+    whole history, so each entry stays short. */
+const DECISION_MAX_CHARS = 300;
 const TASK_LABEL_MAX_CHARS = 72;
 
 const roleIcon = (role: AgentTunnelRole): string =>
@@ -422,18 +426,63 @@ function resolveFinalReportContent(input: {
 const trace = (message: string, fields: Record<string, string | number | boolean>) =>
   Effect.log(message, fields).pipe(Effect.annotateLogs({ scope: "agenttunnel.orchestrator" }));
 
+/** One decision an orchestrator recorded: what it chose, and why. */
+interface RecordedDecision {
+  readonly at: string;
+  readonly line: string;
+}
+
+/**
+ * One recorded decision as a single line: the choice, then the reason when the
+ * orchestrator gave one. Returns null for empty input so the caller can report
+ * a malformed call instead of writing a blank bullet.
+ */
+function normalizeDecision(decision: string, rationale: string | undefined): string | null {
+  const chosen = plainTextPreview(decision, DECISION_MAX_CHARS);
+  if (chosen.length === 0) return null;
+  const why = plainTextPreview(rationale ?? "", DECISION_MAX_CHARS);
+  return why.length > 0 ? `${chosen} — ${why}` : chosen;
+}
+
+/**
+ * The notebook's `decisions` value: the thread's decisions so far, then this
+ * turn's, oldest first, so a resumed session reads them in the order they were
+ * made.
+ */
+function renderDecisionLog(prior: string, decisions: ReadonlyArray<RecordedDecision>): string {
+  const bullets = decisions.map((entry) => `- ${entry.line} _(${entry.at})_`);
+  return [prior.trim(), ...bullets].filter((part) => part.length > 0).join("\n");
+}
+
 /** Execute AgentTunnel's orchestration loop without depending on a UI store. */
 export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   options: AgentTunnelRunOptions,
 ) {
   const context = new AgentTunnelSharedContext();
-  // Rehydrate prior thread context so follow-up turns (e.g. "do the previous task")
-  // can resolve. The adapter persists the last workflow's shared context dump;
-  // we prime the notebook with it as a synthetic entry.
-  if (options.priorSharedContext && options.priorSharedContext.trim().length > 0) {
-    try {
-      context.set("prior_thread_context", options.priorSharedContext.trim());
-    } catch {}
+  // Rehydrate the notebook the thread's previous turn ended with, so a resumed
+  // session ("continue", "do the previous task") reads its own keys back —
+  // including the decisions it recorded — instead of one nested dump. The
+  // adapter loads the dump from the thread's durable context file; a dump we
+  // cannot read back falls back to a single synthetic entry rather than being
+  // dropped.
+  const priorDump = options.priorSharedContext?.trim() ?? "";
+  let priorDecisions = "";
+  if (priorDump.length > 0) {
+    const sections = parseSharedContextDump(priorDump);
+    if (sections.size > 0) {
+      for (const [key, value] of sections) {
+        // An older thread's nested dump is redundant once its own keys are back.
+        if (key === "prior_thread_context") continue;
+        try {
+          context.set(key, value);
+        } catch {}
+      }
+      priorDecisions = sections.get("decisions") ?? "";
+    } else {
+      try {
+        context.set("prior_thread_context", priorDump);
+      } catch {}
+    }
   }
   const pipelines = new Map<string, PipelineState>();
   const pipelineOrder: string[] = [];
@@ -441,6 +490,8 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
   const taskRecords: TaskRecord[] = [];
   const recordedLearnings: AgentTunnelContextLearning[] = [];
   const recordedLearningKeys = new Set<string>();
+  const recordedDecisions: RecordedDecision[] = [];
+  const recordedDecisionKeys = new Set<string>();
   const workflowStartedAt = yield* Clock.currentTimeMillis;
   let nextTaskIndex = 0;
   let orchestratorPasses = 0;
@@ -732,6 +783,37 @@ export const runAgentTunnel = Effect.fn("runAgentTunnel")(function* (
         yield* emit({
           type: "orchestrator.output",
           text: `\n- ${roleIcon(role)} Queued **${role} · ${label}** in \`${pipelineId}\` · ${mode}${modelText}${dependencyText}${contextText}\n`,
+        });
+        return;
+      }
+
+      if (call.name === "record_decision") {
+        const decision = normalizeDecision(
+          stringValue(call.arguments.decision) ?? "",
+          stringValue(call.arguments.rationale),
+        );
+        if (decision === null) {
+          yield* emit({
+            type: "orchestrator.output",
+            text: `> ⚠️ Invalid record_decision arguments — decision must be a non-empty string.\n`,
+          });
+          return;
+        }
+        if (recordedDecisionKeys.has(decision)) return;
+        recordedDecisionKeys.add(decision);
+        const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        recordedDecisions.push({ at, line: decision });
+        // The notebook is the durable copy: it rides into the turn's context
+        // dump, which the adapter persists per thread and the next session
+        // reads back.
+        context.set("decisions", renderDecisionLog(priorDecisions, recordedDecisions));
+        yield* trace("decision recorded", {
+          workflowId: options.workflowId,
+          chars: decision.length,
+        });
+        yield* emit({
+          type: "orchestrator.output",
+          text: `\n🧭 **Decision recorded** — ${plainTextPreview(decision, 200)}\n`,
         });
         return;
       }
