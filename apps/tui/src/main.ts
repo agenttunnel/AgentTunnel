@@ -41,6 +41,7 @@ Usage: t3-tui --url <http://host:port> [--token <wsTicket>]
   --url    AgentTunnel server origin (default: $T3CODE_URL)
   --token  session token, sent as the WebSocket ticket (default: $T3CODE_TOKEN);
            omit it for a server started without auth
+  --demo   render a canned thread and transcript without connecting (UI check)
   --help   this message
 `;
 
@@ -48,18 +49,61 @@ export function parseArgs(argv: ReadonlyArray<string>): {
   readonly url: string | null;
   readonly token: string | undefined;
   readonly help: boolean;
+  readonly demo: boolean;
 } {
   let url: string | null = process.env.T3CODE_URL?.trim() ?? null;
   let token = process.env.T3CODE_TOKEN?.trim() || undefined;
   let help = false;
+  let demo = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") help = true;
+    else if (arg === "--demo") demo = true;
     else if (arg === "--url") url = argv[index + 1]?.trim() ?? null;
     else if (arg === "--token") token = argv[index + 1]?.trim() || undefined;
   }
-  return { url: url === "" ? null : url, token, help };
+  return { url: url === "" ? null : url, token, help, demo };
 }
+
+/**
+ * A canned thread for `--demo`: the UI, key handling, and rendering can be
+ * checked in a terminal without a server or a credential. Nothing is sent
+ * anywhere; the composer's effects are ignored in this mode.
+ */
+const DEMO_THREADS = [
+  {
+    id: "demo-1",
+    title: "Router state design doc",
+    projectTitle: "AgentTunnel",
+    branch: "main",
+    fleet: null,
+  },
+  {
+    id: "demo-2",
+    title: "Subagent manager polish",
+    projectTitle: "AgentTunnel",
+    branch: "feat/agents",
+    fleet: null,
+  },
+  {
+    id: "demo-3",
+    title: "Depot CI migration",
+    projectTitle: "AgentTunnel",
+    branch: null,
+    fleet: null,
+  },
+];
+const DEMO_THREAD = {
+  id: "demo-1",
+  title: "Router state design doc",
+  recap: "Goal: finish the design doc  ·  2 agents working · executor: wiring the row",
+  lines: [
+    { kind: "user" as const, text: "Write the design doc for router state." },
+    { kind: "assistant" as const, text: "Splitting into recon, draft, and review pipelines." },
+    { kind: "agent" as const, text: "planner · completed — outline recorded in the notebook" },
+    { kind: "agent" as const, text: "executor · running — wiring the row" },
+  ],
+};
 
 /** Client-side id for one command: opaque to the server, unique per process. */
 const newId = (seed: number, salt: number): string =>
@@ -77,13 +121,39 @@ const run = async (): Promise<void> => {
     process.stdout.write(USAGE);
     return;
   }
-  if (args.url === null) {
+  if (args.url === null && !args.demo) {
     process.stderr.write(`${USAGE}\n--url is required (or set T3CODE_URL).\n`);
     process.exitCode = 2;
     return;
   }
 
-  let state = withStatus(initialTuiState, `connecting to ${args.url}…`);
+  if (args.demo) {
+    const demoState = withThread(withThreads(initialTuiState, DEMO_THREADS), DEMO_THREAD);
+    let state = withStatus(demoState, "demo — no server connected");
+    NodeReadline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("keypress", (_input, key) => {
+      const { state: next, effect } = reduceKey(state, { name: key?.name, text: key?.sequence });
+      state = next;
+      if (effect?.kind === "quit") {
+        process.stdout.write("\u001b[2J\u001b[H");
+        if (process.stdin.isTTY) process.stdin.setRawMode(false);
+        process.exitCode = 0;
+        return;
+      }
+      if (effect?.kind === "open" || effect?.kind === "refresh" || effect?.kind === "send") {
+        state = withStatus(state, "demo — actions are inert");
+      }
+      paint(state);
+    });
+    paint(state);
+    return;
+  }
+
+  // `--demo` returned above, so a real run always has a URL.
+  const url = args.url as string;
+  let state = withStatus(initialTuiState, `connecting to ${url}…`);
   let session: TuiSession | null = null;
   paint(state);
 
@@ -159,7 +229,7 @@ const run = async (): Promise<void> => {
     // One session for the process: the socket scope is released when the TUI exits.
     const scope = await Effect.runPromise(Scope.make());
     session = await Effect.runPromise(
-      connect(resolveConnection({ url: args.url, token: args.token })).pipe(
+      connect(resolveConnection({ url, token: args.token })).pipe(
         Effect.provideService(Scope.Scope, scope),
       ),
     );
