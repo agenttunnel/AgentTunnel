@@ -6,10 +6,16 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   agentAttemptLabel,
+  agentRunLabel,
   agentControlAction,
   findAgentById,
   liveAgents,
+  phaseStatusLabel,
+  pruneQueuedRetries,
+  subagentRunKey,
+  tallySubagents,
   workflowMembers,
+  workflowTallyLabel,
 } from "./AgentsPanel.logic";
 
 function agent(overrides: Partial<RuntimeSubagent> & Pick<RuntimeSubagent, "id">): RuntimeSubagent {
@@ -160,5 +166,133 @@ describe("agentAttemptLabel", () => {
     const retried = agent({ id: "wf-1:task_1", status: "running", attempt: 2 });
     expect(agentControlAction(retried)).toBe("stop");
     expect(agentAttemptLabel(retried)).toBe("attempt 2");
+  });
+});
+
+describe("agentRunLabel", () => {
+  it("stays quiet until the row has run more than once", () => {
+    expect(agentRunLabel(agent({ id: "a-first", activationCount: 1 }))).toBeNull();
+    expect(agentRunLabel(agent({ id: "a-resumed", activationCount: 2 }))).toBe("run 2");
+  });
+
+  it("leaves the numbering to the attempt chip when the provider marks attempts", () => {
+    expect(agentRunLabel(agent({ id: "a-retried", activationCount: 2, attempt: 2 }))).toBeNull();
+  });
+});
+
+describe("tallySubagents", () => {
+  it("counts settled rows and the failures among them", () => {
+    expect(
+      tallySubagents([
+        agent({ id: "a-completed", status: "completed" }),
+        agent({ id: "a-failed", status: "failed" }),
+        agent({ id: "a-stopped", status: "interrupted" }),
+        agent({ id: "a-running", status: "running" }),
+        agent({ id: "a-idle", status: "idle" }),
+      ]),
+    ).toEqual({ total: 5, settled: 3, failed: 1 });
+  });
+});
+
+describe("workflowTallyLabel", () => {
+  it("leads with failures", () => {
+    expect(workflowTallyLabel({ total: 7, settled: 7, failed: 0 })).toBe("7/7 settled");
+    expect(workflowTallyLabel({ total: 7, settled: 7, failed: 2 })).toBe("2 failed · 7/7 settled");
+    expect(workflowTallyLabel({ total: 3, settled: 1, failed: 1 })).toBe("1 failed · 1/3 settled");
+  });
+});
+
+describe("phaseStatusLabel", () => {
+  it("reads a clean phase by its state", () => {
+    expect(phaseStatusLabel({ state: "pending", members: [], activeCount: 0 })).toBe("pending");
+    expect(
+      phaseStatusLabel({
+        state: "done",
+        members: [agent({ id: "p-1", status: "completed" })],
+        activeCount: 0,
+      }),
+    ).toBe("1 done");
+    expect(
+      phaseStatusLabel({
+        state: "running",
+        members: [
+          agent({ id: "p-1", status: "completed" }),
+          agent({ id: "p-2", status: "running" }),
+        ],
+        activeCount: 1,
+      }),
+    ).toBe("1 active · 1 done");
+  });
+
+  it("never calls a phase with failures done", () => {
+    expect(
+      phaseStatusLabel({
+        state: "done",
+        members: [agent({ id: "p-1", status: "failed" }), agent({ id: "p-2", status: "failed" })],
+        activeCount: 0,
+      }),
+    ).toBe("2 failed");
+    expect(
+      phaseStatusLabel({
+        state: "done",
+        members: [
+          agent({ id: "p-1", status: "failed" }),
+          agent({ id: "p-2", status: "completed" }),
+        ],
+        activeCount: 0,
+      }),
+    ).toBe("1 failed · 1 done");
+    expect(
+      phaseStatusLabel({
+        state: "running",
+        members: [
+          agent({ id: "p-1", status: "failed" }),
+          agent({ id: "p-2", status: "completed" }),
+          agent({ id: "p-3", status: "running" }),
+        ],
+        activeCount: 1,
+      }),
+    ).toBe("1 failed · 1 active · 1 done");
+  });
+});
+
+describe("pruneQueuedRetries", () => {
+  const roster = (agents: ReadonlyArray<RuntimeSubagent>) =>
+    new Map(agents.map((entry) => [entry.id, entry]));
+  const failed = agent({ id: "wf-1:task_1", status: "failed", attempt: 1 });
+
+  it("keeps a queued retry until its slot moves", () => {
+    const queued = new Map([[failed.id, subagentRunKey(failed)]]);
+    // Progress rows on the dead run must not clear the acknowledgement.
+    const stillFailed = agent({
+      id: failed.id,
+      status: "failed",
+      attempt: 1,
+      updatedAt: "2026-01-01T00:00:30.000Z",
+      error: "still the old failure",
+    });
+    expect(pruneQueuedRetries(queued, roster([stillFailed]))).toBe(queued);
+  });
+
+  it("clears the acknowledgement once the retry is running", () => {
+    const queued = new Map([[failed.id, subagentRunKey(failed)]]);
+    const reopened = agent({ id: failed.id, status: "running", attempt: 2 });
+    expect(pruneQueuedRetries(queued, roster([reopened])).size).toBe(0);
+  });
+
+  it("clears it when the slot came back on a new attempt", () => {
+    const queued = new Map([[failed.id, subagentRunKey(failed)]]);
+    const retried = agent({ id: failed.id, status: "running", attempt: 2, startedAt: null });
+    expect(pruneQueuedRetries(queued, roster([retried])).size).toBe(0);
+  });
+
+  it("clears it when the row left the roster", () => {
+    const queued = new Map([[failed.id, subagentRunKey(failed)]]);
+    expect(pruneQueuedRetries(queued, roster([])).size).toBe(0);
+  });
+
+  it("returns the same map when there is nothing to do", () => {
+    const empty: ReadonlyMap<string, string> = new Map();
+    expect(pruneQueuedRetries(empty, roster([failed]))).toBe(empty);
   });
 });
