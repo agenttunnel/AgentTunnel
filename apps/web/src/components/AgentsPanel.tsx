@@ -33,7 +33,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { createContext, use, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, use, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
@@ -45,11 +45,19 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { AgentLogView } from "./AgentLogView";
 import {
   type AgentControlAction,
+  type QueuedRetries,
   agentAttemptLabel,
   agentControlAction,
+  agentRunLabel,
+  collectDisplayAgents,
   findAgentById,
   liveAgents,
+  phaseStatusLabel,
+  pruneQueuedRetries,
+  subagentRunKey,
+  tallySubagents,
   workflowMembers,
+  workflowTallyLabel,
 } from "./AgentsPanel.logic";
 
 /**
@@ -98,6 +106,43 @@ const AgentControlTargetCtx = createContext<{
 } | null>(null);
 
 /**
+ * Retries the user has already asked for. The provider queues them until the
+ * round settles, so the row has to say so itself: its status legitimately stays
+ * failed until the run actually comes back, and a second click would only queue
+ * the same command again. Entries clear the moment the slot moves on.
+ */
+const QueuedRetryCtx = createContext<{
+  readonly queued: ReadonlySet<string>;
+  readonly markQueued: (agentId: string) => void;
+} | null>(null);
+
+/** Chip beside a row's identity while its retry waits its turn. */
+function QueuedRetryChip() {
+  return (
+    <span className="shrink-0 rounded-sm border border-info/40 px-1 font-mono text-[.65rem] text-info-foreground">
+      retry queued
+    </span>
+  );
+}
+
+/** Panel-wide contexts, composed so the layout tree stays one level deep. */
+function AgentPanelContexts({
+  target,
+  retries,
+  children,
+}: {
+  target: { environmentId: EnvironmentId; threadId: ThreadId } | null;
+  retries: { readonly queued: ReadonlySet<string>; readonly markQueued: (agentId: string) => void };
+  children: ReactNode;
+}) {
+  return (
+    <QueuedRetryCtx value={retries}>
+      <AgentControlTargetCtx value={target}>{children}</AgentControlTargetCtx>
+    </QueuedRetryCtx>
+  );
+}
+
+/**
  * The one control a row offers, decided by agentControlAction: Stop while the
  * agent is in flight, Retry once it settled as failed or stopped. Disabled
  * while its own command is in flight; the command layer reports failures, so
@@ -107,7 +152,9 @@ const AgentControlTargetCtx = createContext<{
  */
 function AgentControls({ agent, className }: { agent: RuntimeSubagent; className?: string }) {
   const target = use(AgentControlTargetCtx);
+  const queuedRetries = use(QueuedRetryCtx);
   const action: AgentControlAction | null = agentControlAction(agent);
+  const queued = queuedRetries?.queued.has(agent.id) ?? false;
   const [pending, setPending] = useState(false);
   const interruptAgent = useAtomCommand(threadEnvironment.interruptAgent, "agent interrupt");
   const retryAgent = useAtomCommand(threadEnvironment.retryAgent, "agent retry");
@@ -115,7 +162,11 @@ function AgentControls({ agent, className }: { agent: RuntimeSubagent; className
   if (action === null || target === null) {
     return null;
   }
-  const label = action === "stop" ? "Stop this agent" : "Retry this agent";
+  const label = queued
+    ? "Retry queued — waiting for the current round to settle"
+    : action === "stop"
+      ? "Stop this agent"
+      : "Retry this agent";
   return (
     <span className={cn("flex shrink-0 items-center", className)}>
       <Tooltip>
@@ -124,7 +175,7 @@ function AgentControls({ agent, className }: { agent: RuntimeSubagent; className
             <Button
               size="icon-micro"
               variant="ghost-muted"
-              disabled={pending}
+              disabled={pending || queued}
               aria-label={label}
               onClick={() => {
                 setPending(true);
@@ -132,9 +183,16 @@ function AgentControls({ agent, className }: { agent: RuntimeSubagent; className
                   environmentId: target.environmentId,
                   input: { threadId: target.threadId, agentId: agent.id },
                 };
-                void (action === "stop" ? interruptAgent(input) : retryAgent(input)).finally(() =>
-                  setPending(false),
-                );
+                void (action === "stop" ? interruptAgent(input) : retryAgent(input))
+                  .then((result) => {
+                    // Only a retry that the provider accepted is acknowledged,
+                    // and only while the row still reads as retryable: if the run
+                    // already came back, there is nothing to wait for.
+                    if (action === "retry" && result._tag === "Success") {
+                      queuedRetries?.markQueued(agent.id);
+                    }
+                  })
+                  .finally(() => setPending(false));
               }}
             />
           }
@@ -392,6 +450,7 @@ function AgentDetail({
   const visuals = STATUS_VISUALS[agent.status];
   const [logOpen, setLogOpen] = useState(false);
   const attemptLabel = agentAttemptLabel(agent);
+  const queued = use(QueuedRetryCtx)?.queued.has(agent.id) ?? false;
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const metadata = [
     agent.role,
@@ -418,6 +477,7 @@ function AgentDetail({
           {agent.title || visuals.label}
         </span>
         {attemptLabel ? <span className={ATTEMPT_CHIP_CLASS}>{attemptLabel}</span> : null}
+        {queued ? <QueuedRetryChip /> : null}
         <span className="shrink-0 font-mono text-[.7rem] text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <AgentElapsed agent={agent} />
@@ -508,6 +568,7 @@ function AgentRow({
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const attemptLabel = agentAttemptLabel(agent);
+  const queued = use(QueuedRetryCtx)?.queued.has(agent.id) ?? false;
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const role =
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
@@ -517,7 +578,7 @@ function AgentRow({
     modelLabel,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
-    agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
+    agentRunLabel(agent),
   ].filter((value): value is string => value !== null);
 
   return (
@@ -538,6 +599,7 @@ function AgentRow({
             </span>
           ) : null}
           {attemptLabel ? <span className={ATTEMPT_CHIP_CLASS}>{attemptLabel}</span> : null}
+          {queued ? <QueuedRetryChip /> : null}
           <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground/50" />
         </span>
         <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
@@ -581,44 +643,55 @@ function PhaseRail({ group }: { group: AgentPanelWorkflowGroup }) {
   }
   return (
     <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1.5 pb-1 pt-1.5">
-      {group.phases.map((phase, index) => (
-        <div key={phase.index} className="flex items-center gap-1">
-          {index > 0 ? (
-            <ChevronRight aria-hidden className="size-3 text-muted-foreground/40" />
-          ) : null}
-          <div
-            className={cn(
-              "flex items-center gap-1 rounded-sm border px-1.5 py-0.5",
-              phase.state === "running"
-                ? "border-info/40"
-                : phase.state === "done"
-                  ? "border-success/30"
-                  : "border-border/50",
-            )}
-          >
-            <span
+      {group.phases.map((phase, index) => {
+        // The rail is the run's shape at a glance: where it broke has to show
+        // there too, not only in the phase header below it.
+        const failed = phase.members.some((member) => member.status === "failed");
+        return (
+          <div key={phase.index} className="flex items-center gap-1">
+            {index > 0 ? (
+              <ChevronRight aria-hidden className="size-3 text-muted-foreground/40" />
+            ) : null}
+            <div
               className={cn(
-                "font-mono text-[.65rem]",
-                phase.state === "running"
-                  ? "text-info-foreground"
-                  : phase.state === "done"
-                    ? "text-success-foreground"
-                    : "text-muted-foreground/70",
+                "flex items-center gap-1 rounded-sm border px-1.5 py-0.5",
+                failed
+                  ? "border-destructive/40"
+                  : phase.state === "running"
+                    ? "border-info/40"
+                    : phase.state === "done"
+                      ? "border-success/30"
+                      : "border-border/50",
               )}
             >
-              {phase.state === "done" ? "✓ " : ""}
-              {phase.title}
-            </span>
-            <span className="flex items-center gap-0.5">
-              {phase.members.length === 0 ? (
-                <span className="font-mono text-[.6rem] text-muted-foreground/50">–</span>
-              ) : (
-                phase.members.map((member) => <StatusDot key={member.id} status={member.status} />)
-              )}
-            </span>
+              <span
+                className={cn(
+                  "font-mono text-[.65rem]",
+                  failed
+                    ? "text-destructive-foreground"
+                    : phase.state === "running"
+                      ? "text-info-foreground"
+                      : phase.state === "done"
+                        ? "text-success-foreground"
+                        : "text-muted-foreground/70",
+                )}
+              >
+                {phase.state === "done" && !failed ? "✓ " : ""}
+                {phase.title}
+              </span>
+              <span className="flex items-center gap-0.5">
+                {phase.members.length === 0 ? (
+                  <span className="font-mono text-[.6rem] text-muted-foreground/50">–</span>
+                ) : (
+                  phase.members.map((member) => (
+                    <StatusDot key={member.id} status={member.status} />
+                  ))
+                )}
+              </span>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -690,6 +763,8 @@ function PhaseSection({
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
   const previousState = useRef(phase.state);
+  // A phase with failures is never "done" to the reader, however settled it is.
+  const failed = tallySubagents(phase.members).failed > 0;
 
   useEffect(() => {
     if (previousState.current !== "running" && phase.state === "running") {
@@ -706,11 +781,13 @@ function PhaseSection({
         aria-expanded={open}
         className={cn(
           "mt-2 flex w-full items-center gap-1.5 rounded-sm px-1.5 text-left text-[.65rem] font-medium uppercase tracking-wider hover:bg-accent/40",
-          phase.state === "done"
-            ? "text-success-foreground"
-            : phase.state === "running"
-              ? "text-info-foreground"
-              : "text-muted-foreground/70",
+          failed
+            ? "text-destructive-foreground"
+            : phase.state === "done"
+              ? "text-success-foreground"
+              : phase.state === "running"
+                ? "text-info-foreground"
+                : "text-muted-foreground/70",
         )}
       >
         {open ? (
@@ -718,14 +795,19 @@ function PhaseSection({
         ) : (
           <ChevronRight aria-hidden className="size-3 shrink-0" />
         )}
-        {phase.state === "done" ? <Check aria-hidden className="size-3" /> : null}
+        {failed ? (
+          <X aria-hidden className="size-3 shrink-0" />
+        ) : phase.state === "done" ? (
+          <Check aria-hidden className="size-3 shrink-0" />
+        ) : null}
         <span>{phase.title}</span>
-        <span className="font-normal normal-case text-muted-foreground/70">
-          {phase.state === "pending" && phase.members.length === 0
-            ? "pending"
-            : phase.state === "done"
-              ? `${phase.settledCount} done`
-              : `${phase.activeCount} active · ${phase.settledCount} done`}
+        <span
+          className={cn(
+            "font-normal normal-case",
+            failed ? "text-destructive-foreground/80" : "text-muted-foreground/70",
+          )}
+        >
+          {phaseStatusLabel(phase)}
         </span>
         {!open && phase.members.length > 0 ? (
           <span className="ml-auto flex items-center gap-0.5">
@@ -760,13 +842,7 @@ function ExpandedWorkflowSection({
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
   const members = workflowMembers(group);
-  const settled = members.filter(
-    (member) =>
-      member.status === "completed" ||
-      member.status === "failed" ||
-      member.status === "cancelled" ||
-      member.status === "interrupted",
-  ).length;
+  const tally = tallySubagents(members);
   const scriptPath = group.workflow.runHandles?.scriptPath;
   const canShowScript = scriptPath !== undefined && environmentId !== null && threadId !== null;
   return (
@@ -789,8 +865,13 @@ function ExpandedWorkflowSection({
             {"{}"} script
           </button>
         ) : null}
-        <span className="ml-auto font-mono normal-case text-muted-foreground/80">
-          {settled}/{members.length} settled
+        <span
+          className={cn(
+            "ml-auto font-mono normal-case",
+            tally.failed > 0 ? "text-destructive-foreground" : "text-muted-foreground/80",
+          )}
+        >
+          {tally.total > 0 ? workflowTallyLabel(tally) : null}
         </span>
         <Button
           size="icon-micro"
@@ -926,16 +1007,41 @@ export function AgentsPanel({
     () => (environmentId !== null && threadId !== null ? { environmentId, threadId } : null),
     [environmentId, threadId],
   );
+  // Queued retries are acknowledged per row until the fold shows that slot
+  // moving, so the panel never re-offers a retry the provider is still holding.
+  const [queuedRetries, setQueuedRetries] = useState<QueuedRetries>(() => new Map());
+  const rosterById = useMemo(
+    () => new Map(collectDisplayAgents(model).map((agent) => [agent.id, agent])),
+    [model],
+  );
+  useEffect(() => {
+    setQueuedRetries((current) => pruneQueuedRetries(current, rosterById));
+  }, [rosterById]);
+  const queuedRetryState = useMemo(
+    () => ({
+      queued: new Set(queuedRetries.keys()),
+      markQueued: (agentId: string) => {
+        const agent = rosterById.get(agentId);
+        // Only a row that still offers Retry is waiting on one: if the run came
+        // back before the command resolved, there is nothing to acknowledge.
+        if (agent === undefined || agentControlAction(agent) !== "retry") {
+          return;
+        }
+        setQueuedRetries((current) => new Map(current).set(agentId, subagentRunKey(agent)));
+      },
+    }),
+    [queuedRetries, rosterById],
+  );
 
   if (selectedAgent) {
     return (
-      <AgentControlTargetCtx value={controlTarget}>
+      <AgentPanelContexts target={controlTarget} retries={queuedRetryState}>
         <AgentDetail
           agent={selectedAgent}
           environmentId={environmentId}
           onBack={() => setSelectedAgentId(null)}
         />
-      </AgentControlTargetCtx>
+      </AgentPanelContexts>
     );
   }
 
@@ -953,7 +1059,7 @@ export function AgentsPanel({
   }
 
   return (
-    <AgentControlTargetCtx value={controlTarget}>
+    <AgentPanelContexts target={controlTarget} retries={queuedRetryState}>
       <div className="flex h-full min-h-0 flex-col">
         <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-2 p-2">
@@ -1024,6 +1130,6 @@ export function AgentsPanel({
           <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
         </footer>
       </div>
-    </AgentControlTargetCtx>
+    </AgentPanelContexts>
   );
 }
