@@ -5,8 +5,12 @@ It speaks the same WebSocket RPC as the web, desktop, and mobile clients, so a t
 terminal is the same thread everywhere.
 
 ```bash
-bun apps/tui/src/index.tsx --url http://localhost:13773
+bun apps/tui/src/index.tsx --url http://localhost:13773   # from the repository root
+vp run --filter @t3tools/tui demo                          # or through the package script
 ```
+
+`app.tsx` carries `/** @jsxImportSource @opentui/solid */`, so Bun compiles it with OpenTUI's JSX
+runtime no matter which directory it is launched from.
 
 It renders through [OpenTUI](https://github.com/sst/opentui) — the same terminal UI stack opencode's
 client uses — so it runs under Bun (`engines.bun >= 1.3`) rather than Node.

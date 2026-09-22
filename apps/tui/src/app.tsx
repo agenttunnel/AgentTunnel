@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 /**
  * `t3-tui` — AgentTunnel in a terminal.
  *
