@@ -162,6 +162,31 @@ describe("reduceKey", () => {
     expect(reduceKey(moved.state, { name: "up" }).state.commandIndex).toBe(0);
   });
 
+  it("keeps every matching command and wraps the highlight at both ends", () => {
+    const state = type(threadView(), "/");
+    const ids = commandSuggestions(state).map((row) => row.id);
+    // The palette lists them all: nothing is trimmed off the end.
+    expect(ids.at(-1)).toBe("quit");
+    expect(ids.length).toBeGreaterThan(1);
+
+    expect(reduceKey(state, { name: "up" }).state.commandIndex).toBe(ids.length - 1);
+    const atEnd = { ...state, commandIndex: ids.length - 1 };
+    expect(reduceKey(atEnd, { name: "down" }).state.commandIndex).toBe(0);
+  });
+
+  it("wraps picker navigation at both ends", () => {
+    const opened = reduceKey(type(threadView(), "/new"), { name: "enter" }).state;
+    const items = opened.picker?.items ?? [];
+    expect(items.length).toBeGreaterThan(1);
+
+    expect(reduceKey(opened, { name: "up" }).state.picker?.index).toBe(items.length - 1);
+    const atEnd = {
+      ...opened,
+      picker: opened.picker === null ? null : { ...opened.picker, index: items.length - 1 },
+    };
+    expect(reduceKey(atEnd, { name: "down" }).state.picker?.index).toBe(0);
+  });
+
   it("runs the highlighted suggestion on enter instead of sending the text", () => {
     const state = type(withThreads(catalogs, threads), "/new");
     const result = reduceKey(state, { name: "enter" });
@@ -185,7 +210,8 @@ describe("the project picker", () => {
     const state = projectPicker();
     const down = reduceKey(state, { name: "down" });
     expect(down.state.picker?.index).toBe(1);
-    expect(reduceKey(state, { name: "up" }).state.picker?.index).toBe(0);
+    // Wrapping is asserted in its own test; here the middle of the list moves.
+    expect(reduceKey(down.state, { name: "up" }).state.picker?.index).toBe(0);
 
     const filtered = type(down.state, "bet");
     expect(filtered.picker?.query).toBe("bet");

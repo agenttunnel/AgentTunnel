@@ -21,8 +21,8 @@ import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { foldAgentLogEntries } from "@t3tools/client-runtime/state/agentLog";
-import { render, useKeyboard } from "@opentui/solid";
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 
 import {
   agentTunnelCatalog,
@@ -76,6 +76,40 @@ import {
   type TuiEffect,
   type TuiState,
 } from "./state.ts";
+
+/**
+ * Rows are rendered by position, so each one is padded to the longest line:
+ * a shorter line would otherwise leave the previous frame's characters behind.
+ * The cursor row is marked here, which is also what colours it.
+ */
+/**
+ * A window of `limit` rows that always contains `index`. Lists longer than the
+ * terminal are clipped to it: an overflowing box paints over the palette and
+ * the composer instead of scrolling.
+ */
+function windowRows<A>(rows: ReadonlyArray<A>, index: number, limit: number): ReadonlyArray<A> {
+  if (rows.length <= limit) return rows;
+  const start = Math.min(Math.max(0, index - Math.floor(limit / 2)), rows.length - limit);
+  return rows.slice(start, start + limit);
+}
+
+function padRows(lines: ReadonlyArray<string>, count: number): ReadonlyArray<string> {
+  const width = lines.reduce(
+    (widest, line, index) => (index === 0 ? line.length : Math.max(widest, line.length)),
+    0,
+  );
+  // Always emit `count` rows: a list that shrinks would otherwise leave the
+  // previous frame's rows on screen, since rows are reused by position.
+  return Array.from({ length: Math.max(count, lines.length) }, (_, index) =>
+    (lines[index] ?? "").padEnd(width),
+  );
+}
+
+/** How many picker rows are on screen before the list scrolls around the cursor. */
+const PICKER_ROWS = 12;
+
+/** Every command fits; the palette reserves this many rows so redraws are clean. */
+const MAX_COMMANDS = 14;
 
 /** OpenTUI takes hex colors; these mirror the app's palette. */
 const theme = {
@@ -577,18 +611,113 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
     return "enter send · / commands · ctrl-i interrupt · esc back · ctrl-r reload · ctrl-c quit";
   });
 
-  const suggestions = createMemo(() => commandSuggestions(state()).slice(0, 6));
+  const dimensions = useTerminalDimensions();
+  /** Rows left for a list once the header, composer, hints and palette are drawn. */
+  const listRows = createMemo(() => Math.max(4, dimensions().height - 6));
+
+  // Every command is offered; the transcript above gives up the rows for it.
+  const suggestions = createMemo(() => {
+    const rows = commandSuggestions(state());
+    const highlighted = highlightedSuggestion(state())?.id;
+    return padRows(
+      rows.map((row) => `${row.id === highlighted ? "▸ " : "  "}${row.label}  ${row.detail ?? ""}`),
+      MAX_COMMANDS,
+    );
+  });
   const picker = createMemo(() => state().picker);
+  /** The row the picker has highlighted, by id, so a windowed list still marks it. */
+  const pickerSelection = createMemo(() => {
+    const current = picker();
+    if (current === null) return null;
+    const query = current.query.trim().toLowerCase();
+    const matches =
+      query.length === 0
+        ? current.items
+        : current.items.filter((item) => item.label.toLowerCase().includes(query));
+    return matches[current.index] ?? null;
+  });
+  /** Picker rows, windowed around the cursor so the selection is always on screen. */
   const pickerRows = createMemo(() => {
     const current = picker();
     if (current === null) return [];
     const query = current.query.trim().toLowerCase();
-    return (
+    const matches =
       query.length === 0
         ? current.items
-        : current.items.filter((item) => item.label.toLowerCase().includes(query))
-    ).slice(0, 12);
+        : current.items.filter((item) => item.label.toLowerCase().includes(query));
+    if (matches.length <= PICKER_ROWS) return matches;
+    const start = Math.min(
+      Math.max(0, current.index - Math.floor(PICKER_ROWS / 2)),
+      matches.length - PICKER_ROWS,
+    );
+    return matches.slice(start, start + PICKER_ROWS);
   });
+  /** Agent rows, two lines each, windowed to the terminal. */
+  const agentLines = createMemo(() => {
+    const limit = Math.max(1, Math.floor(listRows() / 2));
+    const rows = windowRows(state().agents, state().agentIndex, limit);
+    const offset =
+      state().agents.length <= limit
+        ? 0
+        : Math.max(
+            0,
+            Math.min(state().agentIndex - Math.floor(limit / 2), state().agents.length - limit),
+          );
+    const lines = rows.flatMap((agent, index) => {
+      const selected = offset + index === state().agentIndex;
+      const meta = [
+        agent.model,
+        agent.tokens === null ? null : `${agent.tokens} tokens`,
+        agent.tools === null ? null : `${agent.tools} tools`,
+        agent.elapsed,
+        agent.attempt === null ? null : `run ${agent.attempt}`,
+      ]
+        .filter((part): part is string => part !== null && part.length > 0)
+        .join(" · ");
+      return [
+        `${selected ? "▸ " : "  "}${agent.label} · ${agent.status}${
+          agent.activity.length === 0 ? "" : ` — ${agent.activity}`
+        }`,
+        `  ${meta}`,
+      ];
+    });
+    return padRows(lines, limit * 2);
+  });
+
+  /** Thread rows, windowed to the terminal and padded so redraws are clean. */
+  const threadLines = createMemo(() => {
+    const rows = windowRows(state().threads, state().selectedIndex, listRows());
+    const offset =
+      state().threads.length - rows.length === 0
+        ? 0
+        : Math.max(
+            0,
+            Math.min(
+              state().selectedIndex - Math.floor(listRows() / 2),
+              state().threads.length - listRows(),
+            ),
+          );
+    return padRows(
+      rows.map((row, index) => {
+        const selected = offset + index === state().selectedIndex;
+        return `${selected ? "▸ " : "  "}${row.title}${row.branch === null ? "" : ` · ${row.branch}`}  (${row.projectTitle})`;
+      }),
+      listRows(),
+    );
+  });
+
+  /** Picker lines, padded to a common width for the same reason. */
+  const pickerLines = createMemo(() =>
+    padRows(
+      pickerRows().map(
+        (item) =>
+          `${item.id === pickerSelection()?.id ? "▸ " : "  "}${item.label}${
+            item.detail === null ? "" : `  ${item.detail}`
+          }`,
+      ),
+      PICKER_ROWS,
+    ),
+  );
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={theme.background}>
@@ -608,15 +737,11 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
             when={state().threads.length > 0}
             fallback={<text fg={theme.textMuted}>no threads yet — type /new to start one</text>}
           >
-            <For each={state().threads}>
-              {(row, index) => (
-                <text fg={index() === state().selectedIndex ? theme.primary : theme.text}>
-                  {`${index() === state().selectedIndex ? "▸ " : "  "}${row.title}${
-                    row.branch === null ? "" : ` · ${row.branch}`
-                  }  (${row.projectTitle})`}
-                </text>
+            <Index each={threadLines()}>
+              {(line) => (
+                <text fg={line().startsWith("▸") ? theme.primary : theme.text}>{line()}</text>
               )}
-            </For>
+            </Index>
           </Show>
         </Show>
         <Show when={state().view === "thread"}>
@@ -631,28 +756,11 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
             when={state().agents.length > 0}
             fallback={<text fg={theme.textMuted}>no sub-agents yet for this thread</text>}
           >
-            <For each={state().agents}>
-              {(agent, index) => (
-                <box flexDirection="column">
-                  <text fg={index() === state().agentIndex ? theme.primary : theme.text}>
-                    {`${index() === state().agentIndex ? "▸ " : "  "}${agent.label} · ${agent.status}${
-                      agent.activity.length === 0 ? "" : ` — ${agent.activity}`
-                    }`}
-                  </text>
-                  <text fg={theme.textFaint}>
-                    {[
-                      agent.model,
-                      agent.tokens === null ? null : `${agent.tokens} tokens`,
-                      agent.tools === null ? null : `${agent.tools} tools`,
-                      agent.elapsed,
-                      agent.attempt === null ? null : `run ${agent.attempt}`,
-                    ]
-                      .filter((part): part is string => part !== null && part.length > 0)
-                      .join(" · ")}
-                  </text>
-                </box>
+            <Index each={agentLines()}>
+              {(line) => (
+                <text fg={line().startsWith("▸") ? theme.primary : theme.text}>{line()}</text>
               )}
-            </For>
+            </Index>
           </Show>
         </Show>
         <Show when={state().view === "agentLog"}>
@@ -716,30 +824,20 @@ function App(props: { readonly args: ReturnType<typeof parseArgs> }) {
           <text
             fg={theme.textMuted}
           >{`${picker()?.title ?? ""}${picker()?.query === "" ? "" : ` · ${picker()?.query ?? ""}`}`}</text>
-          <For each={pickerRows()}>
-            {(item, index) => (
-              <text fg={index() === (picker()?.index ?? 0) ? theme.primary : theme.text}>
-                {`${index() === (picker()?.index ?? 0) ? "▸ " : "  "}${item.label}${
-                  item.detail === null ? "" : `  ${item.detail}`
-                }`}
-              </text>
+          <Index each={pickerLines()}>
+            {(line) => (
+              <text fg={line().startsWith("▸") ? theme.primary : theme.text}>{line()}</text>
             )}
-          </For>
+          </Index>
         </box>
       </Show>
       <Show when={state().picker === null && suggestions().length > 0}>
         <box flexDirection="column" paddingLeft={2} paddingRight={2}>
-          <For each={suggestions()}>
-            {(item, index) => (
-              <text
-                fg={
-                  item.id === highlightedSuggestion(state())?.id ? theme.primary : theme.textFaint
-                }
-              >
-                {`${item.label}  ${item.detail ?? ""}`}
-              </text>
+          <Index each={suggestions()}>
+            {(line) => (
+              <text fg={line().startsWith("▸") ? theme.primary : theme.textFaint}>{line()}</text>
             )}
-          </For>
+          </Index>
         </box>
       </Show>
       <Show when={state().view === "thread" || state().input.length > 0}>

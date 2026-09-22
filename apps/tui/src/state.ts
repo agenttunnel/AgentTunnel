@@ -822,7 +822,8 @@ export function reduceKey(
       case "down": {
         const count = pickerItems(state).length;
         if (count === 0) return { state, effect: null };
-        const index = Math.min(Math.max(0, current.index + (name === "up" ? -1 : 1)), count - 1);
+        // Pickers wrap too, so the last row is one key away from the first.
+        const index = (current.index + (name === "up" ? -1 : 1) + count) % count;
         return { state: { ...state, picker: { ...current, index } }, effect: null };
       }
       case "backspace":
@@ -953,10 +954,9 @@ export function reduceKey(
     switch (name) {
       case "up":
       case "down": {
-        const index = Math.min(
-          Math.max(0, state.commandIndex + (name === "up" ? -1 : 1)),
-          suggestions.length - 1,
-        );
+        // The list wraps: down on the last row returns to the first.
+        const delta = name === "up" ? -1 : 1;
+        const index = (state.commandIndex + delta + suggestions.length) % suggestions.length;
         return { state: { ...state, commandIndex: index }, effect: null };
       }
       case "tab": {
