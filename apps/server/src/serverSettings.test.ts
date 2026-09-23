@@ -160,6 +160,22 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.deepEqual(
         yield* decodeSettingsPatch({
+          providers: { agenttunnel: { approvedModels: ["opencode-go/glm-5"] } },
+        }),
+        {
+          providers: { agenttunnel: { approvedModels: ["opencode-go/glm-5"] } },
+        },
+      );
+
+      assert.deepEqual(
+        yield* decodeSettingsPatch({ providers: { agenttunnel: { approvedModels: [] } } }),
+        {
+          providers: { agenttunnel: { approvedModels: [] } },
+        },
+      );
+
+      assert.deepEqual(
+        yield* decodeSettingsPatch({
           textGenerationModelSelection: {
             options: [{ id: "fastMode", value: false }],
           },
@@ -187,6 +203,28 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       });
       assert.isFalse(disabled.providers.agenttunnel.autoMode);
       assert.isFalse((yield* serverSettings.getSettings).providers.agenttunnel.autoMode);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("round-trips agenttunnel approved models without collapsing empty to absent", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+
+      const initial = yield* serverSettings.getSettings;
+      assert.isUndefined(initial.providers.agenttunnel.approvedModels);
+
+      const none = yield* serverSettings.updateSettings({
+        providers: { agenttunnel: { approvedModels: [] } },
+      });
+      assert.deepEqual(none.providers.agenttunnel.approvedModels, []);
+
+      const some = yield* serverSettings.updateSettings({
+        providers: { agenttunnel: { approvedModels: ["opencode-go/glm-5"] } },
+      });
+      assert.deepEqual(some.providers.agenttunnel.approvedModels, ["opencode-go/glm-5"]);
+
+      const persisted = yield* serverSettings.getSettings;
+      assert.deepEqual(persisted.providers.agenttunnel.approvedModels, ["opencode-go/glm-5"]);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 

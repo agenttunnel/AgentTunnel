@@ -8,7 +8,12 @@ import {
   applyAgentTunnelRoleHarness,
   applyAgentTunnelRoleModel,
   applyAgentTunnelRoleVariant,
+  applyAgentTunnelApprovedModelToggle,
+  applyAgentTunnelApprovedModelsDisableAll,
+  applyAgentTunnelApprovedModelsEnableAll,
   applyAgentTunnelAutoMode,
+  isAgentTunnelModelApproved,
+  readAgentTunnelApprovedModels,
   readAgentTunnelAutoMode,
   readAgentTunnelModelConfig,
   readAgentTunnelRoles,
@@ -192,6 +197,71 @@ describe("agentTunnelRoles", () => {
     expect(applyAgentTunnelAutoMode({ enabled: true, autoMode: true }, false)).toEqual({
       enabled: true,
     });
+  });
+
+  it("reads approved models as absent (null) or an explicit list", () => {
+    expect(readAgentTunnelApprovedModels(undefined)).toBeNull();
+    expect(readAgentTunnelApprovedModels({})).toBeNull();
+    expect(readAgentTunnelApprovedModels({ approvedModels: [] })).toEqual([]);
+    expect(readAgentTunnelApprovedModels({ approvedModels: ["a", "b"] })).toEqual(["a", "b"]);
+    // Defensive: a non-array value is treated as absent, not as an empty list.
+    expect(readAgentTunnelApprovedModels({ approvedModels: "a/b" })).toBeNull();
+    expect(readAgentTunnelApprovedModels({ approvedModels: { slug: "a/b" } })).toBeNull();
+  });
+
+  it("treats an absent approved list as every model being approved", () => {
+    expect(isAgentTunnelModelApproved(undefined, "a/b")).toBe(true);
+    expect(isAgentTunnelModelApproved({}, "a/b")).toBe(true);
+    expect(isAgentTunnelModelApproved({ approvedModels: ["a/b"] }, "a/b")).toBe(true);
+    expect(isAgentTunnelModelApproved({ approvedModels: ["a/b"] }, "c/d")).toBe(false);
+    // Explicit empty approves none.
+    expect(isAgentTunnelModelApproved({ approvedModels: [] }, "a/b")).toBe(false);
+  });
+
+  it("materializes the approved list when toggling a model off from absent", () => {
+    expect(
+      applyAgentTunnelApprovedModelToggle({ enabled: true }, "b", false, ["a", "b", "c"]),
+    ).toEqual({ enabled: true, approvedModels: ["a", "c"] });
+  });
+
+  it("keeps the approved list absent when toggling a model on from absent", () => {
+    expect(applyAgentTunnelApprovedModelToggle({ enabled: true }, "b", true, ["a", "b"])).toEqual({
+      enabled: true,
+    });
+  });
+
+  it("adds and removes slugs from an explicit approved list", () => {
+    expect(
+      applyAgentTunnelApprovedModelToggle({ approvedModels: ["a"] }, "b", true, ["a", "b"]),
+    ).toEqual({ approvedModels: ["a", "b"] });
+    expect(
+      applyAgentTunnelApprovedModelToggle({ approvedModels: ["a", "b"] }, "a", false, ["a", "b"]),
+    ).toEqual({ approvedModels: ["b"] });
+    // Removing the last approved model keeps the explicit empty list.
+    expect(
+      applyAgentTunnelApprovedModelToggle({ approvedModels: ["a"] }, "a", false, ["a"]),
+    ).toEqual({ approvedModels: [] });
+  });
+
+  it("does not duplicate a slug that is already approved", () => {
+    expect(
+      applyAgentTunnelApprovedModelToggle({ approvedModels: ["a", "b"] }, "a", true, ["a", "b"]),
+    ).toEqual({ approvedModels: ["a", "b"] });
+  });
+
+  it("enables all models by deleting the key and disables all with []", () => {
+    expect(
+      applyAgentTunnelApprovedModelsEnableAll({ approvedModels: ["a"], enabled: true }),
+    ).toEqual({ enabled: true });
+    expect(
+      applyAgentTunnelApprovedModelsDisableAll({ approvedModels: ["a"], enabled: true }),
+    ).toEqual({ enabled: true, approvedModels: [] });
+    // Disable all from absent writes the explicit empty list, not a delete.
+    expect(applyAgentTunnelApprovedModelsDisableAll({ enabled: true })).toEqual({
+      enabled: true,
+      approvedModels: [],
+    });
+    expect(applyAgentTunnelApprovedModelsEnableAll({ approvedModels: [] })).toEqual({});
   });
 
   it("ignores unknown roles", () => {
