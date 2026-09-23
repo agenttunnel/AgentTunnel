@@ -227,6 +227,26 @@ describe("renderFrame", () => {
     expect(fleetLine).not.toContain("0/6");
   });
 
+  it("greets on open, and stands aside once you move", () => {
+    const frame = renderFrame(
+      { ...catalogs, threads: catalogs.threads, welcome: true },
+      { rows: 24, cols: 100, now: Date.parse("2026-01-01T00:00:00.000Z") },
+    ).map(strip);
+    const joined = frame.join("\n");
+    expect(joined).toContain("Welcome back!");
+    expect(joined).toContain("AgentTunnel");
+    expect(joined).toContain("Tips");
+    expect(joined).toContain("/     commands, /new starts a thread");
+    expect(joined).toContain("Workspace");
+    expect(joined).toContain("cai_api");
+
+    // a deliberate move puts it away for good
+    const moving = reduceKey({ ...catalogs, welcome: true }, { name: "down" });
+    expect(moving.state.welcome).toBe(false);
+    const after = renderFrame(moving.state, { rows: 24, cols: 100, now: 0 }).map(strip).join("\n");
+    expect(after).not.toContain("Welcome back!");
+  });
+
   it("says why a picker is empty instead of showing a blank card", () => {
     const opening = reduceKey(type({ ...catalogs, projects: [] }, "/new"), { name: "enter" });
     const frame = renderFrame(opening.state, SIZE).map(strip).join("\n");
@@ -283,7 +303,14 @@ describe("renderFrame", () => {
   it("truncates instead of wrapping, so no line ever exceeds the width", () => {
     const long = "x".repeat(500);
     const state: TuiState = withThreads({ ...catalogs, view: "threads" as const }, [
-      { id: "t1", title: long, projectTitle: long, branch: null, fleet: null },
+      {
+        id: "t1",
+        title: long,
+        projectTitle: long,
+        branch: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        fleet: null,
+      },
     ]);
     const frame = renderFrame(state, SIZE);
     for (const line of frame) expect(visibleWidth(line)).toBeLessThanOrEqual(SIZE.cols);

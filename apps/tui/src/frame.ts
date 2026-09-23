@@ -3,7 +3,14 @@ import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRu
 
 import { agentRows, agentUsageLines } from "./agents.ts";
 import { renderMarkdown } from "./markdown.ts";
-import { lineGlyph, statusGlyph, threadRows, threadView, type TuiLine } from "./format.ts";
+import {
+  lineGlyph,
+  relativeAge,
+  statusGlyph,
+  threadRows,
+  threadView,
+  type TuiLine,
+} from "./format.ts";
 import {
   agentTunnelScreenRows,
   commandSuggestions,
@@ -229,6 +236,64 @@ function transcriptLines(state: TuiState, cols: number): string[] {
     out.push(paint("! the run stopped here — ctrl-r reloads, or send a follow-up", "muted"));
   }
   return out;
+}
+
+/**
+ * The welcome panel: who this is, what to press, and what you were doing. It
+ * stands in for the list until the first deliberate move, the way omp greets a
+ * session.
+ */
+function welcomeLines(state: TuiState, cols: number, rows: number, now: number): string[] {
+  const leftWidth = Math.max(22, Math.min(32, Math.floor(cols / 3)));
+  const rightWidth = Math.max(20, cols - leftWidth - 1);
+
+  const workflow = state.providers.find((provider) => provider.driver === "agenttunnel");
+  const model = workflow?.models.find((entry) => entry.isDefault === true) ?? workflow?.models[0];
+  const recent = state.threads.slice(0, Math.max(1, Math.min(5, rows - 12)));
+
+  const left = [
+    paint("Welcome back!", "primary", { bold: true }),
+    "",
+    paint("  AgentTunnel", "text", { bold: true }),
+    paint("  terminal client", "faint"),
+    "",
+    paint(`${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}`, "muted"),
+    paint(`${state.projects.length} project${state.projects.length === 1 ? "" : "s"}`, "muted"),
+    model === undefined ? paint("no workflow model", "warn") : paint(model.name, "muted"),
+    workflow === undefined ? null : paint(workflow.label, "faint"),
+  ].filter((line): line is string => line !== null);
+
+  const right = [
+    paint("Tips", "primary", { bold: true }),
+    paint("/     commands, /new starts a thread", "muted"),
+    paint("enter open · ↑/↓ move · ctrl-a agents", "muted"),
+    paint("ctrl-r reload · ctrl-c quit", "muted"),
+    "",
+    paint("Workspace", "primary", { bold: true }),
+    state.projects.length === 0
+      ? paint("/add-project <path> registers a directory", "muted")
+      : paint(state.projects.map((project) => project.title).join(", "), "muted"),
+    "",
+    paint("Recent sessions", "primary", { bold: true }),
+    ...(recent.length === 0
+      ? [paint("nothing yet — /new starts one", "faint")]
+      : recent.map(
+          (thread) =>
+            `${paint("•", "faint")} ${truncate(thread.title, rightWidth - 12)} ${paint(
+              relativeAge(thread.updatedAt, now),
+              "faint",
+            )}`,
+        )),
+  ];
+
+  const height = Math.max(left.length, right.length);
+  const panel: string[] = [];
+  for (let index = 0; index < height; index += 1) {
+    panel.push(
+      `${pad(truncate(left[index] ?? "", leftWidth - 2), leftWidth - 2)}  ${right[index] ?? ""}`,
+    );
+  }
+  return card("", panel, cols);
 }
 
 function listLines(state: TuiState, cols: number): string[] {
@@ -574,7 +639,15 @@ export function renderFrame(state: TuiState, size: FrameSize): string[] {
             ? state.agentTunnelIndex
             : state.selectedIndex;
 
-  const body = windowed(bodyLines(state, cols), bodyHeight, cursor);
+  const greeting =
+    state.welcome && state.view === "threads" && state.picker === null
+      ? welcomeLines(state, cols, bodyHeight, size.now ?? 0)
+      : null;
+  const body = windowed(
+    greeting === null ? bodyLines(state, cols) : greeting,
+    bodyHeight,
+    greeting === null ? cursor : 0,
+  );
   const out: string[] = [pad(header(state, cols), cols)];
   if (split) {
     // The thread stays on top, scrolled to its newest line.

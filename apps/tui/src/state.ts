@@ -169,6 +169,8 @@ export interface TuiState {
   readonly runningSince: string | null;
   /** Spinner phase; the app advances it while work is running. */
   readonly spinner: number;
+  /** The welcome panel, until the user does something. */
+  readonly welcome: boolean;
   /** Row the inline `/` suggestions have highlighted. */
   readonly commandIndex: number;
 }
@@ -212,6 +214,7 @@ export const initialTuiState: TuiState = {
   usageLines: [],
   runningSince: null,
   spinner: 0,
+  welcome: true,
 };
 
 export function withThreads(state: TuiState, threads: ReadonlyArray<TuiThreadRow>): TuiState {
@@ -343,7 +346,14 @@ export function withThreadSnapshot(
 
 /** Show a thread: the view change is what opening means, so it is explicit. */
 export function withOpenThread(state: TuiState, threadId: string): TuiState {
-  return { ...state, view: "thread", openThreadId: threadId, agentLog: null, picker: null };
+  return {
+    ...state,
+    view: "thread",
+    openThreadId: threadId,
+    agentLog: null,
+    picker: null,
+    welcome: false,
+  };
 }
 
 /** One live thread event: fold it in, then re-derive what the view shows. */
@@ -506,6 +516,11 @@ export function isThreadRunning(state: TuiState): boolean {
 
 export function withSpinner(state: TuiState, spinner: number): TuiState {
   return { ...state, spinner };
+}
+
+/** Any deliberate move puts the welcome panel away for good. */
+export function withWelcomeDismissed(state: TuiState): TuiState {
+  return state.welcome ? { ...state, welcome: false } : state;
 }
 
 export function withStatus(state: TuiState, status: string): TuiState {
@@ -1226,11 +1241,14 @@ export function reduceKey(
   if (state.view === "threads") {
     switch (name) {
       case "up":
-        return { state: moveSelection(state, -1), effect: null };
+        return { state: withWelcomeDismissed(moveSelection(state, -1)), effect: null };
       case "down":
-        return { state: moveSelection(state, 1), effect: null };
+        return { state: withWelcomeDismissed(moveSelection(state, 1)), effect: null };
       case "enter":
-        return { state, effect: selectedThread(state) === null ? null : { kind: "open" } };
+        return {
+          state: withWelcomeDismissed(state),
+          effect: selectedThread(state) === null ? null : { kind: "open" },
+        };
       case "ctrl-r":
         return { state, effect: { kind: "refresh" } };
       case "backspace":

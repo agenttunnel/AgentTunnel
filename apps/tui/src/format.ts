@@ -57,6 +57,8 @@ export interface TuiThreadRow {
   readonly title: string;
   readonly projectTitle: string;
   readonly branch: string | null;
+  /** When the thread last changed, for "2m ago" in the welcome panel. */
+  readonly updatedAt: string;
   /** `7/7 settled`-style fleet summary, or null when the thread has no agents. */
   readonly fleet: string | null;
 }
@@ -93,6 +95,19 @@ export interface TuiLine {
   readonly text: string;
 }
 
+/** `just now` / `4m ago` / `3h ago` / `2d ago`, from an ISO timestamp. */
+export function relativeAge(iso: string, now: number): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return "";
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 const TITLE_MAX_CHARS = 80;
 const LINE_MAX_CHARS = 400;
 /** Transcript entries keep their line breaks; only runaway text is bounded. */
@@ -114,6 +129,7 @@ export function threadRows(snapshot: OrchestrationShellSnapshot): ReadonlyArray<
       title: oneLine(thread.title, TITLE_MAX_CHARS),
       projectTitle: projectTitles.get(thread.projectId) ?? "unknown project",
       branch: thread.branch,
+      updatedAt: thread.updatedAt,
       fleet: null,
     }));
 }

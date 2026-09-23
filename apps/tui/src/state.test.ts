@@ -25,8 +25,22 @@ import {
 } from "./state.ts";
 
 const threads = [
-  { id: "a", title: "First thread", projectTitle: "AgentTunnel", branch: "main", fleet: null },
-  { id: "b", title: "Second thread", projectTitle: "AgentTunnel", branch: null, fleet: null },
+  {
+    id: "a",
+    title: "First thread",
+    projectTitle: "AgentTunnel",
+    branch: "main",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    fleet: null,
+  },
+  {
+    id: "b",
+    title: "Second thread",
+    projectTitle: "AgentTunnel",
+    branch: null,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    fleet: null,
+  },
 ];
 
 const codex = ProviderInstanceId.make("codex");

@@ -118,6 +118,7 @@ function demoState(): TuiState {
       title: "Router state design doc",
       projectTitle: "AgentTunnel",
       branch: "main",
+      updatedAt: "2026-01-01T00:00:00.000Z",
       fleet: null,
     },
     {
@@ -125,6 +126,7 @@ function demoState(): TuiState {
       title: "Subagent manager polish",
       projectTitle: "AgentTunnel",
       branch: "feat/agents",
+      updatedAt: "2026-01-01T00:00:00.000Z",
       fleet: null,
     },
   ]);
