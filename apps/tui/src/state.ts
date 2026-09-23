@@ -476,7 +476,10 @@ export function activeProvider(state: TuiState): TuiProviderRow | null {
     const match = state.providers.find((provider) => provider.instanceId === wanted);
     if (match !== undefined) return match;
   }
-  return state.providers[0] ?? null;
+  // Nothing chosen: the workflow provider is what this client is for, so it
+  // wins over whatever happens to sit first in the catalog.
+  const workflow = state.providers.find((provider) => provider.driver === "agenttunnel");
+  return workflow ?? state.providers[0] ?? null;
 }
 
 /** The selection a new turn should carry, resolved from everything known. */
@@ -497,7 +500,9 @@ export function resolveModelSelection(
   }
   if (provider === null) return null;
   const preferred =
-    provider.models.find((model) => model.name === provider.label) ?? provider.models[0];
+    provider.models.find((model) => model.isDefault === true) ??
+    provider.models.find((model) => model.name === provider.label) ??
+    provider.models[0];
   return preferred === undefined
     ? null
     : { instanceId: ProviderInstanceId.make(provider.instanceId), model: preferred.slug };

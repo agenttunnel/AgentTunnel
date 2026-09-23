@@ -206,6 +206,16 @@ function transcriptLines(state: TuiState, cols: number): string[] {
       out.push(paint(marker + text, color(line.kind)));
     });
   }
+  // A failed run's reason goes last, where the eye already is, and in full:
+  // the status strip only has room for the beginning of it.
+  const session = state.threadSnapshot?.thread.session ?? null;
+  if (session?.status === "error" && session.lastError !== null) {
+    out.push("");
+    for (const line of wrap(session.lastError, cols - 2)) {
+      out.push(paint(`! ${line}`, "err"));
+    }
+    out.push(paint("! the run stopped here — ctrl-r reloads, or send a follow-up", "muted"));
+  }
   return out;
 }
 
@@ -437,7 +447,7 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
 
   const goal =
     failed && session?.lastError != null
-      ? session.lastError
+      ? truncate(session.lastError, Math.max(20, Math.floor(cols / 2)))
       : state.recap === null
         ? state.title
         : state.recap;

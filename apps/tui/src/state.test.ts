@@ -13,6 +13,7 @@ import {
   selectedThread,
   visibleLines,
   withCatalogs,
+  withModelSelection,
   withOpenThread,
   withPreferences,
   withThreadEvent,
@@ -199,6 +200,37 @@ describe("reduceKey", () => {
     // that folding it in does not move the user off the panel they opened.
     const unrelated = { sequence: 2, type: "project.created", payload: {} } as never;
     expect(withThreadEvent(onAgents, unrelated).view).toBe("agents");
+  });
+
+  it("starts a thread on the workflow provider, not the first in the catalog", () => {
+    // A catalog where a bare agent provider sits first, as it does in practice.
+    const withCodex = withCatalogs(initialTuiState, {
+      providers: [
+        {
+          instanceId: "codex",
+          label: "Codex",
+          driver: "codex",
+          models: [{ slug: "gpt-5", name: "GPT-5" }],
+        },
+        {
+          instanceId: "agenttunnel",
+          label: "AgentTunnel",
+          driver: "agenttunnel",
+          models: [{ slug: "opencode/big-pickle", name: "big pickle", isDefault: true }],
+        },
+      ],
+    });
+    expect(activeProvider(withCodex)?.instanceId).toBe("agenttunnel");
+    expect(resolveModelSelection(withCodex, null)).toEqual({
+      instanceId: ProviderInstanceId.make("agenttunnel"),
+      model: "opencode/big-pickle",
+    });
+    // an explicit choice still wins
+    const chosen = withModelSelection(withCodex, {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5",
+    });
+    expect(resolveModelSelection(chosen, null)?.instanceId).toBe("codex");
   });
 
   it("opens a thread only when the caller says so", () => {

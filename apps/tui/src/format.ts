@@ -23,7 +23,12 @@ export interface TuiProviderRow {
   readonly instanceId: string;
   readonly label: string;
   readonly driver: string;
-  readonly models: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
+  readonly models: ReadonlyArray<{
+    readonly slug: string;
+    readonly name: string;
+    /** The provider's own default, which a new thread should start from. */
+    readonly isDefault?: boolean;
+  }>;
 }
 
 /** A server setting the settings screen can flip, with its current value. */
@@ -186,7 +191,11 @@ export function providerRows(config: ServerConfig): ReadonlyArray<TuiProviderRow
       instanceId: provider.instanceId,
       label: provider.displayName ?? provider.instanceId,
       driver: provider.driver,
-      models: provider.models.map((model) => ({ slug: model.slug, name: model.name })),
+      models: provider.models.map((model) => ({
+        slug: model.slug,
+        name: model.name,
+        isDefault: model.isDefault === true,
+      })),
     }));
 }
 
