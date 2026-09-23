@@ -240,21 +240,37 @@ function threadRowsFrom(state: TuiState) {
   return state.shellSnapshot === null ? state.threads : threadRows(state.shellSnapshot);
 }
 
+/**
+ * A task id is long and only means anything as an identity; when the agent it
+ * points at is not in this roster, the tail keeps the link readable.
+ */
+function shortAgentId(id: string): string {
+  const tail = id.split(/[-_]/u).at(-1) ?? id;
+  return `#${tail.length > 6 ? tail.slice(-6) : tail}`;
+}
+
 function agentLines(state: TuiState, cols: number): string[] {
   const out: string[] = [];
+  const byId = new Map(state.agents.map((agent) => [agent.id, agent.label]));
   state.agents.forEach((agent, index) => {
     const selected = index === state.agentIndex;
-    const tone = selected ? "primary" : statusTone(agent.status);
+    const tone = statusTone(agent.status);
+    // Live work spins, so the panel moves while the fleet does.
+    const glyph =
+      agent.status === "running" || agent.status === "pending"
+        ? (SPINNER[state.spinner % SPINNER.length] ?? "◐")
+        : statusGlyph(agent.status);
+    const link =
+      agent.parentId === null
+        ? ""
+        : ` ↳ retry of ${byId.get(agent.parentId) ?? shortAgentId(agent.parentId)}`;
+    const line = `${selected ? "▸" : " "} ${glyph} ${agent.label} · ${agent.status}${
+      agent.activity.length === 0 ? "" : ` — ${agent.activity}`
+    }${link}`;
     out.push(
-      paint(
-        truncate(
-          `${selected ? "▸" : " "} ${statusGlyph(agent.status)} ${agent.label} · ${agent.status}${
-            agent.activity.length === 0 ? "" : ` — ${agent.activity}`
-          }`,
-          cols,
-        ),
-        tone,
-      ),
+      selected
+        ? paint(truncate(line, cols), tone, { bold: true })
+        : paint(truncate(line, cols), tone),
     );
     const meta = [
       agent.model,
@@ -262,6 +278,7 @@ function agentLines(state: TuiState, cols: number): string[] {
       agent.tools === null ? null : `${agent.tools} tools`,
       agent.elapsed,
       agent.attempt === null ? null : `run ${agent.attempt}`,
+      selected ? "l log · x stop · r restart" : null,
     ]
       .filter((part): part is string => part !== null && part.length > 0)
       .join(" · ");
@@ -302,7 +319,10 @@ function usageLines(state: TuiState, cols: number): string[] {
 
 function logLines(state: TuiState, cols: number): string[] {
   const lines = state.agentLog?.lines ?? [];
-  if (state.agentLog?.error != null) return [paint(truncate(state.agentLog.error, cols), "err")];
+  if (state.agentLog?.error != null) {
+    return [paint(truncate(state.agentLog.error, cols), "muted")];
+  }
+  if (lines.length === 0) return [paint("waiting for the agent to write something…", "faint")];
   return lines.map((line) =>
     paint(
       truncate(line.startsWith("#") ? line : `  ${line}`, cols),
@@ -439,7 +459,7 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
 function hints(state: TuiState, cols: number): string {
   if (isSplit(state)) {
     const panel: Partial<Record<TuiState["view"], string>> = {
-      agents: "↑/↓ move · enter open log · x stop turn · esc close panel",
+      agents: "↑/↓ move · l log · x stop agent · r restart agent · esc close panel",
       agentLog: "esc back to agents · ctrl-r refresh",
       settings: "↑/↓ move · enter change · esc close panel",
       agenttunnel: "↑/↓ move · enter change · esc close panel",
@@ -449,7 +469,7 @@ function hints(state: TuiState, cols: number): string {
   const byView: Record<TuiState["view"], string> = {
     threads: "↑/↓ move · enter open · / commands · ctrl-p palette · ctrl-c quit",
     thread: "enter send · / commands · ctrl-a agents · ctrl-i interrupt · esc back",
-    agents: "↑/↓ move · enter open log · x stop turn · esc back",
+    agents: "↑/↓ move · l log · x stop agent · r restart agent · esc back",
     agentLog: "esc back to agents · ctrl-r refresh",
     usage: "esc back",
     settings: "↑/↓ move · enter change · esc back",

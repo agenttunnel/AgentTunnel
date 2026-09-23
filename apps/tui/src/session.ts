@@ -315,6 +315,38 @@ const hash = (value: string): string => {
   return accumulator.toString(36);
 };
 
+/**
+ * Stop one sub-agent (or restart one that failed). Both address the agent by
+ * the task id the run reports, which stays stable across attempts.
+ */
+const agentCommand = (
+  session: TuiSession,
+  type: "thread.agent.interrupt" | "thread.agent.retry",
+  input: { readonly threadId: string; readonly agentId: string },
+): Effect.Effect<void, TuiSessionError> =>
+  Effect.gen(function* () {
+    const at = DateTime.formatIso(yield* DateTime.now);
+    yield* session.client["orchestration.dispatchCommand"]({
+      type,
+      commandId: CommandId.make(
+        `tui-agent-${`${type}${input.agentId}${at}`.length}-${input.agentId}`,
+      ),
+      threadId: ThreadId.make(input.threadId),
+      agentId: input.agentId,
+      createdAt: at,
+    } as never);
+  }).pipe(Effect.mapError(toSessionError));
+
+export const interruptAgent = (
+  session: TuiSession,
+  input: { readonly threadId: string; readonly agentId: string },
+): Effect.Effect<void, TuiSessionError> => agentCommand(session, "thread.agent.interrupt", input);
+
+export const retryAgent = (
+  session: TuiSession,
+  input: { readonly threadId: string; readonly agentId: string },
+): Effect.Effect<void, TuiSessionError> => agentCommand(session, "thread.agent.retry", input);
+
 /** Ask the server to stop the running turn. */
 export const interruptTurn = (
   session: TuiSession,

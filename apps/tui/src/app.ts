@@ -37,6 +37,8 @@ import { loadPreferences, savePreferences, type TuiPreferences } from "./prefere
 import {
   addProject,
   connect,
+  interruptAgent,
+  retryAgent,
   getAgentOutput,
   interruptTurn,
   loadServerConfig,
@@ -362,7 +364,17 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
           }).pipe(
             Effect.catch((error) =>
               Effect.sync(() =>
-                apply(withAgentLog(state, { agentId, label, lines: [], error: error.message })),
+                apply(
+                  withAgentLog(state, {
+                    agentId,
+                    label,
+                    lines: [],
+                    // An agent that never wrote a log is normal, not a crash.
+                    error: error.message.includes("not found")
+                      ? `${label} has not written a log yet`
+                      : error.message,
+                  }),
+                ),
               ),
             ),
           );
@@ -505,6 +517,22 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
         if (args.demo) return;
         void persistAgentTunnelSetting(effect.field, effect.value);
         return;
+      case "killAgent":
+      case "retryAgent": {
+        const threadIdForAgent = previous.openThreadId;
+        if (threadIdForAgent === null || args.demo) return;
+        const stopping = effect.kind === "killAgent";
+        void guard(stopping ? "stop agent" : "restart agent", async () => {
+          if (session === null) return;
+          const call = stopping ? interruptAgent : retryAgent;
+          await Effect.runPromise(
+            call(session, { threadId: threadIdForAgent, agentId: effect.agentId }),
+          );
+          apply(withStatus(state, stopping ? "agent stopped" : "agent restarted"));
+          await openThread(threadIdForAgent);
+        });
+        return;
+      }
       case "addProject":
         if (args.demo) return;
         void registerProject(effect.workspaceRoot);

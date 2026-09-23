@@ -62,6 +62,7 @@ describe("agentRows", () => {
         elapsed: "1m 54s",
         attempt: null,
         outputPath: "/logs/thread/task-run.log",
+        parentId: null,
       },
     ]);
   });
@@ -113,6 +114,7 @@ describe("agentRows", () => {
       elapsed: "1m 54s",
       attempt: 2,
       outputPath: null,
+      parentId: null,
     });
   });
 

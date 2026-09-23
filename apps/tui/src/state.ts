@@ -69,6 +69,8 @@ export type TuiEffect =
       readonly value: string | number | boolean;
     }
   | { readonly kind: "addProject"; readonly workspaceRoot: string }
+  | { readonly kind: "killAgent"; readonly agentId: string }
+  | { readonly kind: "retryAgent"; readonly agentId: string }
   | {
       readonly kind: "openAgentLog";
       readonly agentId: string;
@@ -367,7 +369,10 @@ export function withRunningState(state: TuiState, now: string): TuiState {
 
 /** Whether the strip should animate; the app ticks only while this is true. */
 export function isThreadRunning(state: TuiState): boolean {
-  return state.runningSince !== null;
+  return (
+    state.runningSince !== null ||
+    state.agents.some((agent) => ["pending", "running", "waiting"].includes(agent.status))
+  );
 }
 
 export function withSpinner(state: TuiState, spinner: number): TuiState {
@@ -914,7 +919,8 @@ export function reduceKey(
       case "up":
       case "down":
         return { state: moveSelection(state, name === "up" ? -1 : 1), effect: null };
-      case "enter": {
+      case "enter":
+      case "l": {
         const row = state.agents[state.agentIndex];
         if (row === undefined || row.outputPath === null) return { state, effect: null };
         return {
@@ -927,12 +933,27 @@ export function reduceKey(
           },
         };
       }
-      case "x":
-        // Stopping is the turn's interrupt: the protocol has no per-agent stop.
-        return { state, effect: { kind: "interrupt" } };
+      case "x": {
+        // One agent, not the whole turn: the protocol addresses it by task id.
+        const row = state.agents[state.agentIndex];
+        if (row === undefined) return { state, effect: null };
+        return {
+          state: { ...state, status: `stopping ${row.label}…` },
+          effect: { kind: "killAgent", agentId: row.id },
+        };
+      }
+      case "r": {
+        const row = state.agents[state.agentIndex];
+        if (row === undefined) return { state, effect: null };
+        return {
+          state: { ...state, status: `restarting ${row.label}…` },
+          effect: { kind: "retryAgent", agentId: row.id },
+        };
+      }
       case "ctrl-r":
         return { state, effect: { kind: "refresh" } };
       default:
+        // The panel owns the letters; nothing falls through to the composer.
         return { state, effect: null };
     }
   }

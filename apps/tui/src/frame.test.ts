@@ -43,6 +43,9 @@ const catalogs = withCatalogs(initialTuiState, {
 
 const strip = (line: string): string => line.replace(/\u001b\[[0-9;]*m/gu, "");
 
+/** The spinner phases, so the test asserts the frame advances, not a glyph. */
+const SPINNER_GLYPHS = ["◐", "◓", "◑", "◒"] as const;
+
 const type = (state: TuiState, text: string): TuiState => {
   let next = state;
   for (const character of text) {
@@ -83,6 +86,56 @@ describe("renderFrame", () => {
     // every command row sits inside the card, one per line
     for (const row of commandRows) expect(text.indexOf(row)).toBeGreaterThan(cardTop);
     for (const row of commandRows) expect(text.indexOf(row)).toBeLessThan(cardBottom);
+  });
+
+  it("colours agents by state, spins the running ones, and links a retry", () => {
+    const agents = [
+      {
+        id: "task_2",
+        label: "planner",
+        status: "running",
+        activity: "reading files",
+        model: "opencode/big-pickle",
+        tokens: null,
+        tools: null,
+        elapsed: "1m 0s",
+        attempt: null,
+        outputPath: null,
+        parentId: null,
+      },
+      {
+        id: "task_3",
+        label: "planner",
+        status: "failed",
+        activity: "ENOENT",
+        model: null,
+        tokens: null,
+        tools: null,
+        elapsed: null,
+        attempt: 2,
+        outputPath: null,
+        parentId: "task_2",
+      },
+    ];
+    const state: TuiState = {
+      ...catalogs,
+      view: "agents" as const,
+      agents,
+      agentIndex: 0,
+      spinner: 1,
+    };
+    const frame = renderFrame(state, { rows: 18, cols: 100, now: 0 });
+
+    // a running row is amber (38;2;224;175;104), a failed row red (38;2;247;118;142)
+    const runningRow = frame.find((line) => line.includes("reading files")) ?? "";
+    const failedRow = frame.find((line) => line.includes("ENOENT")) ?? "";
+    // SGR triple, bold or not: 224;175;104 is amber, 247;118;142 is red.
+    expect(runningRow).toContain("38;2;224;175;104m");
+    expect(failedRow).toContain("38;2;247;118;142m");
+    // live work spins, settled work does not
+    expect(runningRow).toContain(SPINNER_GLYPHS.at(1) ?? "◓");
+    // the retry says where it came from
+    expect(strip(failedRow)).toContain("↳ retry of planner");
   });
 
   it("says why a picker is empty instead of showing a blank card", () => {

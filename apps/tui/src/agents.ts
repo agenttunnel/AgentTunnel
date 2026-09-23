@@ -25,7 +25,10 @@ export interface TuiAgentRow {
   readonly tools: number | null;
   readonly elapsed: string | null; // "1m 54s" style, from startedAt/completedAt/durationMs
   readonly attempt: number | null; // activation/attempt count when > 1
-  readonly outputPath: string | null; // the agent's log file, for the log view
+  /** The agent's log file, for the log view. */
+  readonly outputPath: string | null;
+  /** The agent this run was retried from, when the provider says so. */
+  readonly parentId: string | null;
 }
 
 /** The web panel's elapsed format, so both clients spell a run the same way. */
@@ -143,6 +146,7 @@ export function agentRows(
     elapsed: elapsedFor(agent, now),
     attempt: agent.attempt !== null && agent.attempt > 1 ? agent.attempt : null,
     outputPath: agent.outputFile,
+    parentId: agent.parentAgentId,
   }));
 }
 
