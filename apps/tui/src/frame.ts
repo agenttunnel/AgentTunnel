@@ -419,9 +419,12 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
   const stateWord =
     session === null ? "no session" : session.status === "running" ? "working" : session.status;
 
+  const failed = session?.status === "error";
+  const stateTone: TuiColor = failed ? "err" : running ? "warn" : "muted";
+
   const left = [
-    running ? paint(phase, "warn") : paint("⏸", "faint"),
-    paint(stateWord, running ? "warn" : "muted"),
+    failed ? paint("✗", "err") : running ? paint(phase, "warn") : paint("⏸", "faint"),
+    paint(stateWord, stateTone),
     elapsed(state.runningSince, now) === null
       ? null
       : paint(elapsed(state.runningSince, now) ?? "", "muted"),
@@ -432,7 +435,12 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
     .filter((part): part is string => part !== null)
     .join(paint(" · ", "faint"));
 
-  const goal = state.recap === null ? state.title : state.recap;
+  const goal =
+    failed && session?.lastError != null
+      ? session.lastError
+      : state.recap === null
+        ? state.title
+        : state.recap;
   const goalGap = Math.max(1, cols - visibleWidth(left) - visibleWidth(goal) - 1);
   const first = `${left}${" ".repeat(goalGap)}${paint(truncate(goal, cols), "faint")}`;
 

@@ -270,17 +270,54 @@ export function withModelSelection(
   return { ...state, modelSelection };
 }
 
+/**
+ * The session's own row. The provider reports the orchestrator as a task only
+ * once it dispatches something, so a run that failed first would leave the
+ * panel empty — the run itself is still worth seeing, and its error is the
+ * only detail available.
+ */
+function orchestratorRow(
+  session: { readonly status: string; readonly lastError: string | null } | null,
+): TuiAgentRow | null {
+  if (session === null) return null;
+  const status =
+    session.status === "running" || session.status === "starting"
+      ? "running"
+      : session.status === "error"
+        ? "failed"
+        : session.status === "interrupted" || session.status === "stopped"
+          ? "cancelled"
+          : "idle";
+  return {
+    id: "session",
+    label: "orchestrator",
+    status,
+    activity: session.lastError ?? (session.status === "running" ? "planning" : ""),
+    model: null,
+    tokens: null,
+    tools: null,
+    elapsed: null,
+    attempt: null,
+    outputPath: null,
+    parentId: null,
+  };
+}
+
 /** Fold a thread snapshot into the transcript, the recap, and the agent rows. */
 export function withThreadSnapshot(
   state: TuiState,
   snapshot: OrchestrationThreadDetailSnapshot,
 ): TuiState {
   const view = threadView(snapshot, { includeActivities: state.preferences.showAgentDetails });
-  const agents = agentRows(
+  const reported = agentRows(
     foldSubagentActivities(snapshot.thread.activities, {
       sessionLive: snapshot.thread.session !== null && snapshot.thread.session.status === "running",
     }),
   );
+  const session = snapshot.thread.session;
+  const hasOrchestrator = reported.some((row) => row.label.toLowerCase().includes("orchestrator"));
+  const orchestrator = hasOrchestrator ? null : orchestratorRow(session);
+  const agents = orchestrator === null ? reported : [orchestrator, ...reported];
   return {
     ...state,
     openThreadId: snapshot.thread.id,
@@ -335,6 +372,17 @@ export function withShellItem(state: TuiState, item: OrchestrationShellStreamIte
     lastShellSequence: Math.max(state.lastShellSequence, item.sequence),
     threads: threadRows(next),
   };
+}
+
+/** What the session row can show: state, provider, and the failure reason. */
+export function sessionDetail(state: TuiState): ReadonlyArray<string> {
+  const session = state.threadSnapshot?.thread.session ?? null;
+  if (session === null) return ["no session for this thread yet"];
+  const lines = [`state      ${session.status}`];
+  if (session.providerName !== null) lines.push(`provider   ${session.providerName}`);
+  lines.push(`runtime    ${session.runtimeMode}`);
+  if (session.lastError !== null) lines.push("", session.lastError);
+  return lines;
 }
 
 /** The agent log screen's content, replaced on every read. */
@@ -922,7 +970,17 @@ export function reduceKey(
       case "enter":
       case "l": {
         const row = state.agents[state.agentIndex];
-        if (row === undefined || row.outputPath === null) return { state, effect: null };
+        if (row === undefined) return { state, effect: null };
+        if (row.outputPath === null) {
+          // No log file: show what the session itself can say about the run.
+          return {
+            state: withAgentLog(
+              { ...state, view: "agentLog" },
+              { agentId: row.id, label: row.label, lines: sessionDetail(state), error: null },
+            ),
+            effect: null,
+          };
+        }
         return {
           state: { ...state, view: "agentLog" },
           effect: {

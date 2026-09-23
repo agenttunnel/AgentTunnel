@@ -138,6 +138,46 @@ describe("renderFrame", () => {
     expect(strip(failedRow)).toContain("↳ retry of planner");
   });
 
+  it("names the failure and shows the orchestrator when a run dies early", () => {
+    const snapshot = {
+      snapshotSequence: 1,
+      thread: {
+        id: "t1",
+        title: "Explore the repo",
+        activities: [],
+        messages: [{ id: "m1", role: "user", text: "Explore the repo", attachments: [] }],
+        session: {
+          threadId: "t1",
+          status: "error",
+          providerName: "agenttunnel",
+          runtimeMode: "full-access",
+          lastError: "opencode exited with code 1: model not available",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    } as unknown as Parameters<typeof withThreadSnapshot>[1];
+
+    const opened = withOpenThread(withThreadSnapshot(catalogs, snapshot), "t1");
+    const frame = renderFrame(opened, { rows: 20, cols: 100, now: 0 }).map(strip).join("\n");
+
+    // the reason is in the transcript, not just an "error" label
+    expect(frame).toContain("opencode exited with code 1: model not available");
+    // and in the strip, where the state word is
+    expect(frame).toContain("✗ · error");
+    // the run itself is on the roster, so `l` has something to open
+    const panel = renderFrame(
+      { ...opened, view: "agents" as const },
+      {
+        rows: 20,
+        cols: 100,
+        now: 0,
+      },
+    )
+      .map(strip)
+      .join("\n");
+    expect(panel).toContain("orchestrator · failed");
+  });
+
   it("says why a picker is empty instead of showing a blank card", () => {
     const opening = reduceKey(type({ ...catalogs, projects: [] }, "/new"), { name: "enter" });
     const frame = renderFrame(opening.state, SIZE).map(strip).join("\n");
