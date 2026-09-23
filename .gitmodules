@@ -1,0 +1,11 @@
+# `.repos/alchemy-effect` is vendored with `git subtree`, so it carries the
+# Alchemy repository's own `.vendor/alchemy` submodule pointer along with its
+# tree. Registering that path here (deliberately fetched by nobody) keeps
+# `git submodule update` and the `git submodule foreach` pass GitHub's checkout
+# action runs in every job from dying with "No url found for submodule path".
+# `update = none` matches `.repos/alchemy-effect/.gitmodules` and skips the
+# ~900 MB v1 checkout instead of cloning it.
+[submodule ".repos/alchemy-effect/.vendor/alchemy"]
+	path = .repos/alchemy-effect/.vendor/alchemy
+	url = https://github.com/alchemy-run/alchemy.git
+	update = none
