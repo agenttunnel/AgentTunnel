@@ -231,16 +231,26 @@ function listLines(state: TuiState, cols: number): string[] {
 function fleetCounts(state: TuiState): {
   readonly total: number;
   readonly running: number;
+  readonly settled: number;
+  readonly failed: number;
   readonly tokens: number;
 } {
   const activities = state.threadSnapshot?.thread.activities ?? [];
   const agents = foldSubagentActivities(activities, {
     sessionLive: state.threadSnapshot?.thread.session?.status === "running",
   });
+  const running = agents.filter((agent) =>
+    ["pending", "running", "waiting"].includes(agent.status),
+  ).length;
+  const failed = agents.filter((agent) =>
+    ["failed", "cancelled", "interrupted"].includes(agent.status),
+  ).length;
   return {
     total: agents.length,
-    running: agents.filter((agent) => ["pending", "running", "waiting"].includes(agent.status))
-      .length,
+    running,
+    // The bar fills on settled work: a finished fleet reads 6/6, not 0/6.
+    settled: agents.length - running - failed,
+    failed,
     tokens: agents.reduce((total, agent) => total + (agent.usage?.totalTokens ?? 0), 0),
   };
 }
@@ -455,10 +465,13 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
   const first = `${left}${" ".repeat(goalGap)}${paint(truncate(goal, cols), "faint")}`;
 
   const counts = fleetCounts(state);
+  // The bar fills on settled work, and says so: a finished fleet reads 6/6.
   const progress =
     counts.total === 0
       ? null
-      : `${paint(bar(counts.running / counts.total, 6), "primary")} ${counts.running}/${counts.total}`;
+      : `${paint(bar(counts.settled / counts.total, 6), counts.failed > 0 ? "warn" : "primary")} ${
+          counts.settled
+        }/${counts.total} settled`;
   const second = [
     row?.projectTitle === null || row?.projectTitle === undefined
       ? null
@@ -466,6 +479,8 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
     row?.branch === null || row?.branch === undefined ? null : paint(row.branch, "muted"),
     counts.total === 0 ? paint("no agents yet", "faint") : paint(`${counts.total} agents`, "muted"),
     progress,
+    counts.running > 0 ? paint(`${counts.running} running`, "warn") : null,
+    counts.failed > 0 ? paint(`${counts.failed} failed`, "err") : null,
     counts.tokens === 0 ? null : paint(`${formatTokens(counts.tokens)} tok`, "muted"),
   ]
     .filter((part): part is string => part !== null)

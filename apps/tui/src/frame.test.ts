@@ -178,6 +178,45 @@ describe("renderFrame", () => {
     expect(panel).toContain("orchestrator · failed");
   });
 
+  it("reads a finished fleet as complete, not as zero of six", () => {
+    const tasks = Array.from({ length: 6 }, (_, index) => [
+      {
+        id: `start-${index}`,
+        kind: "task.started",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {
+          taskId: `task_${index}`,
+          taskType: "local_agent",
+          agentKind: "agent",
+          detail: `agent ${index}`,
+        },
+      },
+      {
+        id: `done-${index}`,
+        kind: "task.completed",
+        createdAt: "2026-01-01T00:01:00.000Z",
+        payload: { taskId: `task_${index}`, agentKind: "agent", status: "completed" },
+      },
+    ]).flat();
+    const snapshot = {
+      snapshotSequence: 1,
+      thread: {
+        id: "t1",
+        title: "explore the repo",
+        activities: tasks,
+        messages: [{ id: "m1", role: "user", text: "explore the repo", attachments: [] }],
+        session: { threadId: "t1", status: "ready", providerName: "agenttunnel" },
+      },
+    } as unknown as Parameters<typeof withThreadSnapshot>[1];
+
+    const opened = withOpenThread(withThreadSnapshot(catalogs, snapshot), "t1");
+    const frame = renderFrame(opened, { rows: 20, cols: 110, now: 0 }).map(strip);
+    const fleetLine = frame.at(-2) ?? "";
+    expect(fleetLine).toContain("6 agents");
+    expect(fleetLine).toContain("6/6 settled");
+    expect(fleetLine).not.toContain("0/6");
+  });
+
   it("says why a picker is empty instead of showing a blank card", () => {
     const opening = reduceKey(type({ ...catalogs, projects: [] }, "/new"), { name: "enter" });
     const frame = renderFrame(opening.state, SIZE).map(strip).join("\n");
@@ -327,7 +366,9 @@ describe("renderFrame", () => {
     expect(stateLine).toContain("2m 14s");
     expect(stateLine).toContain("opencode");
     expect(fleetLine).toContain("2 agents");
-    expect(fleetLine).toContain("1/2");
+    // The bar counts settled work, so a finished fleet does not read 0/6.
+    expect(fleetLine).toContain("1/2 settled");
+    expect(fleetLine).toContain("1 running");
     expect(frame.at(-1)).toContain("enter send");
   });
 
