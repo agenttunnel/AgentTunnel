@@ -363,6 +363,10 @@ function pickerLinesFor(state: TuiState, cols: number, budget: number): string[]
   const picker = state.picker;
   if (picker === null) return [];
   const rows = pickerItems(state).map((row, index) => ({ row, index }));
+  // An empty picker should say why it is empty, not just be empty.
+  if (rows.length === 0) {
+    return card(picker.title, ["nothing to choose yet — /add-project <path>"], cols);
+  }
   const shown = windowed(rows, Math.max(1, budget - 3), picker.index);
   return card(
     `${picker.title} · ${rows.length}`,

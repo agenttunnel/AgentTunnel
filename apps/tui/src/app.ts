@@ -74,6 +74,9 @@ import {
 import { foldAgentLogEntries } from "@t3tools/client-runtime/state/agentLog";
 import type { ServerSettings } from "@t3tools/contracts";
 
+/** Attempts the first connection makes while the server finishes starting. */
+const ERROR_RETRIES = 6;
+
 const USAGE = `t3-tui — AgentTunnel in a terminal
 
 Usage: bun src/index.ts [--url <http://host:port>] [--token <session token>]
@@ -369,23 +372,47 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
     );
   };
 
+  /**
+   * Open a session, retrying while the server finishes starting: its port
+   * accepts connections before auth is wired, and the ticket exchange then
+   * times out. Nothing here is fatal — ctrl-r retries too.
+   */
+  const openSession = async (attempts: number): Promise<void> => {
+    const url = args.url;
+    if (url === null) return;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const ticket = await Effect.runPromise(
+          resolveSocketTicket({
+            httpBaseUrl: url.replace(/\/+$/u, ""),
+            token: args.token,
+          }).pipe(Effect.provide(remoteHttpClientLayer(fetch))),
+        );
+        const scope = await Effect.runPromise(Scope.make());
+        session = await Effect.runPromise(
+          connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
+            Effect.provideService(Scope.Scope, scope),
+          ),
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        session = null;
+        if (attempt < attempts - 1) {
+          apply(withStatus(state, `connecting… (attempt ${attempt + 2} of ${attempts})`));
+          await Effect.runPromise(Effect.sleep("1 second"));
+        }
+      }
+    }
+    throw lastError;
+  };
+
   const reconnect = async (): Promise<void> =>
     guard("reconnect", async () => {
-      const url = args.url;
-      if (url === null) return;
+      if (args.url === null) return;
       await stopThreadStream();
-      session = null;
-      const scope = await Effect.runPromise(Scope.make());
-      const ticket = await Effect.runPromise(
-        resolveSocketTicket({ httpBaseUrl: url.replace(/\/+$/u, ""), token: args.token }).pipe(
-          Effect.provide(remoteHttpClientLayer(fetch)),
-        ),
-      );
-      session = await Effect.runPromise(
-        connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
-          Effect.provideService(Scope.Scope, scope),
-        ),
-      );
+      await openSession(3);
       apply(withStatus(state, "reconnected"));
       await startShellStream();
       if (state.openThreadId !== null) await openThread(state.openThreadId);
@@ -436,6 +463,11 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
         shutdown(0);
         return;
       case "refresh":
+        // With no session there is nothing to refresh: this is a retry.
+        if (session === null) {
+          void reconnect();
+          return;
+        }
         void (previous.view === "thread" && threadId !== null
           ? openThread(threadId)
           : refreshThreads());
@@ -523,27 +555,19 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
     return;
   }
 
-  await guard("connect", async () => {
-    const url = args.url;
-    if (url === null) return;
-    try {
-      const preferences = await loadPreferences();
-      apply(withPreferences(state, preferences));
-    } catch (error) {
-      apply(withStatus(state, `settings not loaded: ${String(error)}`));
-    }
-    const scope = await Effect.runPromise(Scope.make());
-    const ticket = await Effect.runPromise(
-      resolveSocketTicket({ httpBaseUrl: url.replace(/\/+$/u, ""), token: args.token }).pipe(
-        Effect.provide(remoteHttpClientLayer(fetch)),
-      ),
-    );
-    session = await Effect.runPromise(
-      connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
-        Effect.provideService(Scope.Scope, scope),
-      ),
-    );
+  try {
+    const preferences = await loadPreferences();
+    apply(withPreferences(state, preferences));
+  } catch (error) {
+    apply(withStatus(state, `settings not loaded: ${String(error)}`));
+  }
+
+  try {
+    await openSession(ERROR_RETRIES);
     await refreshThreads();
     await startShellStream();
-  });
+  } catch (error) {
+    // Not fatal: ctrl-r retries. Say so rather than leaving a dead screen.
+    apply(withStatus(state, `${String(error)} — press ctrl-r to retry`));
+  }
 }

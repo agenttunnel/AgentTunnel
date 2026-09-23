@@ -4,6 +4,7 @@ import { renderFrame } from "./frame.ts";
 import { visibleWidth } from "./theme.ts";
 import {
   initialTuiState,
+  reduceKey,
   withCatalogs,
   withOpenThread,
   withRunningState,
@@ -82,6 +83,13 @@ describe("renderFrame", () => {
     // every command row sits inside the card, one per line
     for (const row of commandRows) expect(text.indexOf(row)).toBeGreaterThan(cardTop);
     for (const row of commandRows) expect(text.indexOf(row)).toBeLessThan(cardBottom);
+  });
+
+  it("says why a picker is empty instead of showing a blank card", () => {
+    const opening = reduceKey(type({ ...catalogs, projects: [] }, "/new"), { name: "enter" });
+    const frame = renderFrame(opening.state, SIZE).map(strip).join("\n");
+    expect(frame).toContain("nothing to choose yet");
+    expect(frame).toContain("/add-project");
   });
 
   it("draws the card's borders intact on every row", () => {
