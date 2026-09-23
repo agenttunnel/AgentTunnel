@@ -53,12 +53,16 @@ import {
 } from "./session.ts";
 import {
   initialTuiState,
+  isThreadRunning,
   reduceKey,
   resolveModelSelection,
   selectedThread,
   withAgentLog,
   withCatalogs,
+  withOpenThread,
   withPreferences,
+  withRunningState,
+  withSpinner,
   withShellItem,
   withStatus,
   withThreadEvent,
@@ -182,6 +186,30 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
     if (next === state) return;
     state = next;
     requestPaint();
+    syncTicker();
+  };
+
+  /**
+   * Elapsed time and the spinner have to move while work runs, and must cost
+   * nothing when it does not: the ticker is forked only while the thread runs.
+   */
+  let ticker: Fiber.Fiber<unknown, unknown> | null = null;
+  const syncTicker = (): void => {
+    const running = isThreadRunning(state);
+    if (running && ticker === null) {
+      ticker = Effect.runFork(
+        Effect.gen(function* () {
+          while (isThreadRunning(state)) {
+            apply(withSpinner(state, state.spinner + 1));
+            yield* Effect.sleep("1 second");
+          }
+        }),
+      );
+    } else if (!running && ticker !== null) {
+      const fiber = ticker;
+      ticker = null;
+      void Effect.runPromise(Fiber.interrupt(fiber));
+    }
   };
 
   const stopFiber = async (fiber: Fiber.Fiber<unknown, unknown> | null): Promise<void> => {
@@ -238,14 +266,18 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
     guard("open", async () => {
       if (session === null) return;
       const active = session;
-      apply(withStatus(state, "loading thread…"));
+      apply(withOpenThread(withStatus(state, "loading thread…"), threadId));
       await stopThreadStream();
       threadFiber = Effect.runFork(
         threadStream(active, { threadId, afterSequence: state.lastThreadSequence }).pipe(
           Stream.runForEach((item) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
+              // Effect's clock, so the elapsed time the strip shows is the
+              // server's timeline rather than a stray Date.
+              const at = DateTime.formatIso(yield* DateTime.now);
               if (item.kind === "snapshot") apply(withThreadSnapshot(state, item.snapshot));
               else if (item.kind === "event") apply(withThreadEvent(state, item.event));
+              apply(withRunningState(state, at));
             }),
           ),
           Effect.catch((error: TuiSessionError) =>
@@ -458,6 +490,7 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
   const shutdown = (code: number): void => {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (ticker !== null) void Effect.runPromise(Fiber.interrupt(ticker));
     painter.exit();
     process.stdin.setRawMode?.(false);
     process.stdin.pause();

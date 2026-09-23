@@ -6,6 +6,7 @@ import { lineGlyph, statusGlyph, threadRows, threadView, type TuiLine } from "./
 import {
   agentTunnelScreenRows,
   commandSuggestions,
+  isThreadRunning,
   highlightedSuggestion,
   pickerItems,
   settingsRows,
@@ -27,6 +28,8 @@ import { pad, paint, truncate, visibleWidth, type TuiColor } from "./theme.ts";
 export interface FrameSize {
   readonly rows: number;
   readonly cols: number;
+  /** Wall clock, so the elapsed time in the status strip is the caller's. */
+  readonly now?: number;
 }
 
 const HEADER_ROWS = 1;
@@ -35,6 +38,26 @@ const HINTS_ROWS = 1;
 const MAX_PALETTE_ROWS = 8;
 const CARD_MAX_COLS = 76;
 const LABEL_COLS = 22;
+
+/** Spinner phases, advanced by the app while work runs. */
+const SPINNER = ["◐", "◓", "◑", "◒"] as const;
+
+const STATUS_ROWS = 2;
+
+/** `2m 14s`, the way omp counts a running turn. */
+function elapsed(since: string | null, now: number): string | null {
+  if (since === null || now === 0) return null;
+  const seconds = Math.max(0, Math.round((now - Date.parse(since)) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function bar(fraction: number, width: number): string {
+  const filled = Math.max(0, Math.min(width, Math.round(fraction * width)));
+  return "▓".repeat(filled) + "░".repeat(Math.max(0, width - filled));
+}
 
 /** Composer cursor: a block, so it reads as an input even when empty. */
 const CURSOR = "█";
@@ -99,6 +122,33 @@ function card(title: string, body: ReadonlyArray<string>, cols: number): string[
   return [paint(top, "faint"), ...rows, paint(bottom, "faint")].map((line) => pad(line, cols));
 }
 
+const VIEW_TITLES: Record<TuiState["view"], string> = {
+  threads: "threads",
+  thread: "thread",
+  agents: "agents",
+  agentLog: "log",
+  usage: "token usage",
+  settings: "settings",
+  agenttunnel: "workflow roles",
+};
+
+/**
+ * A command view opens *below* the running thread instead of replacing it, the
+ * way the reference TUIs keep the session visible while a panel is up. The
+ * thread keeps streaming into the top half; esc returns to it full height.
+ */
+function isSplit(state: TuiState): boolean {
+  return state.openThreadId !== null && state.view !== "thread" && state.view !== "threads";
+}
+
+/** `── agents ─────────` marks where the panel begins. */
+function separator(state: TuiState, cols: number): string {
+  const lead = paint("── ", "faint");
+  const label = paint(`${VIEW_TITLES[state.view]} `, "muted");
+  const remaining = Math.max(0, cols - visibleWidth(lead) - visibleWidth(label));
+  return pad(lead + label + paint("─".repeat(remaining), "faint"), cols);
+}
+
 function header(state: TuiState, cols: number): string {
   const titles: Record<TuiState["view"], string> = {
     threads: `AgentTunnel · threads (${state.threads.length})`,
@@ -109,9 +159,10 @@ function header(state: TuiState, cols: number): string {
     settings: "AgentTunnel · settings",
     agenttunnel: "AgentTunnel · workflow roles",
   };
+  const title = isSplit(state) ? `AgentTunnel · ${state.title}` : titles[state.view];
   const right = fleetText(state) ?? state.status;
-  const gap = Math.max(1, cols - visibleWidth(titles[state.view]) - visibleWidth(right) - 1);
-  return `${truncate(titles[state.view], cols)}${" ".repeat(gap)}${paint(truncate(right, cols), "muted")}`;
+  const gap = Math.max(1, cols - visibleWidth(title) - visibleWidth(right) - 1);
+  return `${truncate(title, cols)}${" ".repeat(gap)}${paint(truncate(right, cols), "muted")}`;
 }
 
 /** Spend and posture for the open thread, the way the hub roster summarises it. */
@@ -164,6 +215,24 @@ function listLines(state: TuiState, cols: number): string[] {
     const text = `${selected ? "▸" : " "} ${row.title}${row.branch === null ? "" : ` · ${row.branch}`}  (${row.projectTitle})`;
     return paint(truncate(text, cols), selected ? "primary" : "text");
   });
+}
+
+/** Running, settled, failed, and spend for the open thread. */
+function fleetCounts(state: TuiState): {
+  readonly total: number;
+  readonly running: number;
+  readonly tokens: number;
+} {
+  const activities = state.threadSnapshot?.thread.activities ?? [];
+  const agents = foldSubagentActivities(activities, {
+    sessionLive: state.threadSnapshot?.thread.session?.status === "running",
+  });
+  return {
+    total: agents.length,
+    running: agents.filter((agent) => ["pending", "running", "waiting"].includes(agent.status))
+      .length,
+    tokens: agents.reduce((total, agent) => total + (agent.usage?.totalTokens ?? 0), 0),
+  };
 }
 
 /** The shell snapshot the list renders; empty until one arrives. */
@@ -246,11 +315,15 @@ function logLines(state: TuiState, cols: number): string[] {
 function bodyLines(state: TuiState, cols: number): string[] {
   switch (state.view) {
     case "threads":
-      return listLines(state, cols);
+      return listLines(state, cols).length > 0
+        ? listLines(state, cols)
+        : [paint("no threads yet — /new starts one, /add-project registers a directory", "muted")];
     case "thread":
       return transcriptLines(state, cols);
     case "agents":
-      return agentLines(state, cols);
+      return state.agents.length > 0
+        ? agentLines(state, cols)
+        : [paint("no sub-agents yet for this thread", "muted")];
     case "agentLog":
       return logLines(state, cols);
     case "usage":
@@ -309,7 +382,66 @@ function composerLine(state: TuiState, cols: number): string {
   );
 }
 
+/**
+ * The status strip: what the workflow is doing right now, the way omp's footer
+ * states it — state and elapsed on one line, the workspace and how far the
+ * fleet has got on the next. Only facts the server actually sends.
+ */
+function statusStrip(state: TuiState, cols: number, now: number): string[] {
+  const session = state.threadSnapshot?.thread.session ?? null;
+  const row = state.threads.find((entry) => entry.id === state.openThreadId) ?? null;
+  const phase = SPINNER[state.spinner % SPINNER.length] ?? "◐";
+  const running = isThreadRunning(state);
+  const stateWord =
+    session === null ? "no session" : session.status === "running" ? "working" : session.status;
+
+  const left = [
+    running ? paint(phase, "warn") : paint("⏸", "faint"),
+    paint(stateWord, running ? "warn" : "muted"),
+    elapsed(state.runningSince, now) === null
+      ? null
+      : paint(elapsed(state.runningSince, now) ?? "", "muted"),
+    session?.providerName === null || session?.providerName === undefined
+      ? null
+      : paint(session.providerName, "muted"),
+  ]
+    .filter((part): part is string => part !== null)
+    .join(paint(" · ", "faint"));
+
+  const goal = state.recap === null ? state.title : state.recap;
+  const goalGap = Math.max(1, cols - visibleWidth(left) - visibleWidth(goal) - 1);
+  const first = `${left}${" ".repeat(goalGap)}${paint(truncate(goal, cols), "faint")}`;
+
+  const counts = fleetCounts(state);
+  const progress =
+    counts.total === 0
+      ? null
+      : `${paint(bar(counts.running / counts.total, 6), "primary")} ${counts.running}/${counts.total}`;
+  const second = [
+    row?.projectTitle === null || row?.projectTitle === undefined
+      ? null
+      : paint(row.projectTitle, "muted"),
+    row?.branch === null || row?.branch === undefined ? null : paint(row.branch, "muted"),
+    counts.total === 0 ? paint("no agents yet", "faint") : paint(`${counts.total} agents`, "muted"),
+    progress,
+    counts.tokens === 0 ? null : paint(`${formatTokens(counts.tokens)} tok`, "muted"),
+  ]
+    .filter((part): part is string => part !== null)
+    .join(paint(" · ", "faint"));
+
+  return [pad(truncate(first, cols), cols), pad(truncate(second, cols), cols)];
+}
+
 function hints(state: TuiState, cols: number): string {
+  if (isSplit(state)) {
+    const panel: Partial<Record<TuiState["view"], string>> = {
+      agents: "↑/↓ move · enter open log · x stop turn · esc close panel",
+      agentLog: "esc back to agents · ctrl-r refresh",
+      settings: "↑/↓ move · enter change · esc close panel",
+      agenttunnel: "↑/↓ move · enter change · esc close panel",
+    };
+    return paint(truncate(panel[state.view] ?? "esc close panel", cols), "faint");
+  }
   const byView: Record<TuiState["view"], string> = {
     threads: "↑/↓ move · enter open · / commands · ctrl-p palette · ctrl-c quit",
     thread: "enter send · / commands · ctrl-a agents · ctrl-i interrupt · esc back",
@@ -328,7 +460,8 @@ function hints(state: TuiState, cols: number): string {
  */
 export function renderFrame(state: TuiState, size: FrameSize): string[] {
   const { rows, cols } = size;
-  const showComposer = state.view === "thread" || state.draft !== null || state.input.length > 0;
+  const showComposer =
+    !isSplit(state) && (state.view === "thread" || state.draft !== null || state.input.length > 0);
   const overlay = paletteLines(state, cols, MAX_PALETTE_ROWS);
   const picking = pickerLinesFor(state, cols, MAX_PALETTE_ROWS);
   const overlayRows = picking.length > 0 ? picking.length : overlay.length;
@@ -340,14 +473,20 @@ export function renderFrame(state: TuiState, size: FrameSize): string[] {
       ? []
       : [paint(`new thread in ${state.draft.projectTitle} — type the first message`, "muted")];
 
+  const split = isSplit(state);
   const chrome =
     HEADER_ROWS +
+    STATUS_ROWS +
     (showComposer ? COMPOSER_ROWS : 0) +
     HINTS_ROWS +
     recap.length +
     draft.length +
-    overlayRows;
-  const bodyHeight = Math.max(1, rows - chrome);
+    overlayRows +
+    (split ? 1 : 0);
+  const available = Math.max(2, rows - chrome);
+  // The running thread keeps the larger share; the panel gets the rest.
+  const threadHeight = split ? Math.max(3, Math.floor(available * 0.6)) : available;
+  const bodyHeight = split ? Math.max(2, available - threadHeight) : available;
 
   const cursor =
     state.view === "thread"
@@ -362,11 +501,23 @@ export function renderFrame(state: TuiState, size: FrameSize): string[] {
 
   const body = windowed(bodyLines(state, cols), bodyHeight, cursor);
   const out: string[] = [pad(header(state, cols), cols)];
+  if (split) {
+    // The thread stays on top, scrolled to its newest line.
+    const transcript = windowed(
+      transcriptLines(state, cols),
+      threadHeight,
+      Number.MAX_SAFE_INTEGER,
+    );
+    out.push(...fill(transcript, threadHeight, cols));
+    out.push(pad(separator(state, cols), cols));
+  }
   out.push(...fill(body, bodyHeight, cols));
   out.push(...fill(recap, recap.length, cols));
   out.push(...fill(draft, draft.length, cols));
   out.push(...fill(picking.length > 0 ? picking : overlay, overlayRows, cols));
   if (showComposer) out.push(composerLine(state, cols));
+  // The app passes the clock; a frame rendered without one has no elapsed row.
+  out.push(...statusStrip(state, cols, size.now ?? 0));
   out.push(pad(hints(state, cols), cols));
   return fill(out, rows, cols);
 }

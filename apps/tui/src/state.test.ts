@@ -13,7 +13,10 @@ import {
   selectedThread,
   visibleLines,
   withCatalogs,
+  withOpenThread,
   withPreferences,
+  withThreadEvent,
+  withThreadSnapshot,
   withThread,
   withThreads,
   type TuiState,
@@ -182,6 +185,27 @@ describe("reduceKey", () => {
     expect(reduceKey(state, { name: "up" }).state.commandIndex).toBe(ids.length - 1);
     const atEnd = { ...state, commandIndex: ids.length - 1 };
     expect(reduceKey(atEnd, { name: "down" }).state.commandIndex).toBe(0);
+  });
+
+  it("lets a streamed snapshot update content without stealing the view", () => {
+    const opening = {
+      thread: { id: "t1", title: "explore", activities: [], messages: [], session: null },
+      snapshotSequence: 1,
+    } as unknown as Parameters<typeof withThreadSnapshot>[1];
+    const onAgents = { ...withThreadSnapshot(initialTuiState, opening), view: "agents" as const };
+    const later = { ...opening, snapshotSequence: 2 } as typeof opening;
+    expect(withThreadSnapshot(onAgents, later).view).toBe("agents");
+    // A project event is one the thread reducer leaves alone; the point here is
+    // that folding it in does not move the user off the panel they opened.
+    const unrelated = { sequence: 2, type: "project.created", payload: {} } as never;
+    expect(withThreadEvent(onAgents, unrelated).view).toBe("agents");
+  });
+
+  it("opens a thread only when the caller says so", () => {
+    expect(withOpenThread(initialTuiState, "t1")).toMatchObject({
+      view: "thread",
+      openThreadId: "t1",
+    });
   });
 
   it("wraps picker navigation at both ends", () => {

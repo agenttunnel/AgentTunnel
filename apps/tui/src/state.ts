@@ -160,6 +160,10 @@ export interface TuiState {
   } | null;
   /** The token-usage screen's lines. */
   readonly usageLines: ReadonlyArray<string>;
+  /** When the running turn started, so the status strip can count up. */
+  readonly runningSince: string | null;
+  /** Spinner phase; the app advances it while work is running. */
+  readonly spinner: number;
   /** Row the inline `/` suggestions have highlighted. */
   readonly commandIndex: number;
 }
@@ -201,6 +205,8 @@ export const initialTuiState: TuiState = {
   agentIndex: 0,
   agentLog: null,
   usageLines: [],
+  runningSince: null,
+  spinner: 0,
 };
 
 export function withThreads(state: TuiState, threads: ReadonlyArray<TuiThreadRow>): TuiState {
@@ -275,7 +281,6 @@ export function withThreadSnapshot(
   );
   return {
     ...state,
-    view: "thread",
     openThreadId: snapshot.thread.id,
     title: view.title,
     recap: view.recap,
@@ -287,6 +292,11 @@ export function withThreadSnapshot(
     draft: null,
     status: `${view.lines.length} entries · ${agents.length} agents`,
   };
+}
+
+/** Show a thread: the view change is what opening means, so it is explicit. */
+export function withOpenThread(state: TuiState, threadId: string): TuiState {
+  return { ...state, view: "thread", openThreadId: threadId, agentLog: null, picker: null };
 }
 
 /** One live thread event: fold it in, then re-derive what the view shows. */
@@ -343,6 +353,25 @@ export function withAgentLog(
         ? `${log.label} · ${log.lines.length} log lines`
         : `log failed: ${log.error}`,
   };
+}
+
+/** Track when the turn started running, so the strip can count elapsed time. */
+export function withRunningState(state: TuiState, now: string): TuiState {
+  const running =
+    state.threadSnapshot?.thread.session !== null &&
+    state.threadSnapshot?.thread.session.status === "running";
+  if (running && state.runningSince === null) return { ...state, runningSince: now };
+  if (!running && state.runningSince !== null) return { ...state, runningSince: null };
+  return state;
+}
+
+/** Whether the strip should animate; the app ticks only while this is true. */
+export function isThreadRunning(state: TuiState): boolean {
+  return state.runningSince !== null;
+}
+
+export function withSpinner(state: TuiState, spinner: number): TuiState {
+  return { ...state, spinner };
 }
 
 export function withStatus(state: TuiState, status: string): TuiState {
@@ -934,7 +963,13 @@ export function reduceKey(
   if (state.view === "agenttunnel") {
     switch (name) {
       case "escape":
-        return { state: { ...state, view: "settings" }, effect: null };
+        return {
+          state: {
+            ...state,
+            view: state.openThreadId === null ? "settings" : "thread",
+          },
+          effect: null,
+        };
       case "up":
       case "down":
         return { state: moveSelection(state, name === "up" ? -1 : 1), effect: null };
