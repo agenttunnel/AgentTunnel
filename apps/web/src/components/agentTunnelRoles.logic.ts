@@ -231,6 +231,77 @@ export function applyAgentTunnelAutoMode(
   return next;
 }
 
+/** Provider config key holding the slugs auto mode may dispatch. */
+const APPROVED_MODELS_KEY = "approvedModels";
+
+/**
+ * Reads the auto-mode approved model slugs. `null` means the key is absent,
+ * which is not the same as an empty list: absent approves every model (the
+ * pre-existing behavior), while `[]` approves none.
+ */
+export function readAgentTunnelApprovedModels(
+  config: Record<string, unknown> | undefined,
+): ReadonlyArray<string> | null {
+  const value = config?.[APPROVED_MODELS_KEY];
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+/** Whether auto mode may dispatch the slug; absent list approves everything. */
+export function isAgentTunnelModelApproved(
+  config: Record<string, unknown> | undefined,
+  slug: string,
+): boolean {
+  const approved = readAgentTunnelApprovedModels(config);
+  return approved === null || approved.includes(slug);
+}
+
+/**
+ * Toggles one model's approval. An absent list already approves everything, so
+ * enabling is a no-op; disabling materializes the explicit list of every other
+ * model. Once explicit, the slug is added or removed without collapsing an
+ * empty list back to absent — `[]` legitimately means "none approved".
+ */
+export function applyAgentTunnelApprovedModelToggle(
+  config: Record<string, unknown>,
+  slug: string,
+  enabled: boolean,
+  allSlugs: ReadonlyArray<string>,
+): Record<string, unknown> {
+  const next = { ...config };
+  const current = readAgentTunnelApprovedModels(config);
+  if (current === null) {
+    if (!enabled) {
+      next[APPROVED_MODELS_KEY] = allSlugs.filter((entry) => entry !== slug);
+    }
+    return next;
+  }
+  next[APPROVED_MODELS_KEY] = enabled
+    ? current.includes(slug)
+      ? [...current]
+      : [...current, slug]
+    : current.filter((entry) => entry !== slug);
+  return next;
+}
+
+/** Approves every model by deleting the key (absent means all). */
+export function applyAgentTunnelApprovedModelsEnableAll(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...config };
+  delete next[APPROVED_MODELS_KEY];
+  return next;
+}
+
+/** Approves no models with an explicit empty list. */
+export function applyAgentTunnelApprovedModelsDisableAll(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...config, [APPROVED_MODELS_KEY]: [] };
+}
+
 /** Sets the role's reasoning variant, or clears it back to the harness default. */
 export function applyAgentTunnelRoleVariant(
   config: Record<string, unknown>,

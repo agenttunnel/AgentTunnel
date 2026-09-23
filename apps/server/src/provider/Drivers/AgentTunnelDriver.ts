@@ -162,6 +162,10 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
           (model) => model.harnesses === undefined || model.harnesses.includes(orchestratorHarness),
         )
         .map((model) => model.slug);
+      const approvedOrchestratorModels = filterApprovedModels(
+        orchestratorModels,
+        config.approvedModels,
+      );
       const snapshot: ServerProvider = {
         instanceId,
         driver: DRIVER_KIND,
@@ -199,7 +203,7 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
       };
       const adapter = yield* makeAgentTunnelAdapter(config, {
         instanceId,
-        availableModels: orchestratorModels,
+        availableModels: approvedOrchestratorModels,
         ...(environment ? { environment } : {}),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
@@ -326,6 +330,24 @@ export function mergeHarnessCatalogs(
     models.push({ slug, name: slug, isCustom: true, capabilities: null });
   }
   return models;
+}
+
+/**
+ * The models auto mode is allowed to dispatch.
+ *
+ * `undefined` means the user has not narrowed the list, so every available
+ * model is approved. Any present value is the exact allowlist, which makes an
+ * empty array mean "approve none" — absent and empty must not collapse.
+ * Output preserves the order of `models`, and slugs in `approved` that are not
+ * in `models` are ignored.
+ */
+export function filterApprovedModels(
+  models: ReadonlyArray<string>,
+  approved: ReadonlyArray<string> | undefined,
+): ReadonlyArray<string> {
+  if (approved === undefined) return models;
+  const approvedSlugs = new Set(approved);
+  return models.filter((model) => approvedSlugs.has(model));
 }
 
 function modelsFromInventory(

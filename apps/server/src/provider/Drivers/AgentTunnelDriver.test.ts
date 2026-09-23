@@ -1,7 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { AgentTunnelDriver, catalogHarnesses, mergeHarnessCatalogs } from "./AgentTunnelDriver.ts";
+import {
+  AgentTunnelDriver,
+  catalogHarnesses,
+  filterApprovedModels,
+  mergeHarnessCatalogs,
+} from "./AgentTunnelDriver.ts";
 
 const decodeConfig = Schema.decodeSync(AgentTunnelDriver.configSchema);
 
@@ -105,6 +110,53 @@ describe("mergeHarnessCatalogs", () => {
   it("falls back to custom models when no harness answered", () => {
     expect(mergeHarnessCatalogs([], ["custom/one"])).toEqual([
       { slug: "custom/one", name: "custom/one", isCustom: true, capabilities: null },
+    ]);
+  });
+});
+
+describe("filterApprovedModels", () => {
+  const models = ["opencode-go/glm-5", "google/gemini-2.5-flash", "openai/gpt-5.4"];
+
+  it("treats an absent list as every model approved", () => {
+    expect(filterApprovedModels(models, undefined)).toEqual(models);
+  });
+
+  it("keeps only approved slugs, preserving the catalog order", () => {
+    expect(filterApprovedModels(models, ["openai/gpt-5.4", "opencode-go/glm-5"])).toEqual([
+      "opencode-go/glm-5",
+      "openai/gpt-5.4",
+    ]);
+  });
+
+  it("treats a present empty list as no models approved", () => {
+    expect(filterApprovedModels(models, [])).toEqual([]);
+  });
+
+  it("ignores approved slugs the catalog does not offer", () => {
+    expect(filterApprovedModels(models, ["not/a/model", "google/gemini-2.5-flash"])).toEqual([
+      "google/gemini-2.5-flash",
+    ]);
+  });
+
+  it("does not duplicate output when the approved list repeats a slug", () => {
+    expect(filterApprovedModels(models, ["openai/gpt-5.4", "openai/gpt-5.4"])).toEqual([
+      "openai/gpt-5.4",
+    ]);
+  });
+});
+
+describe("AgentTunnelSettings approvedModels", () => {
+  it("leaves the key absent when the setting was never written", () => {
+    expect(decodeConfig({}).approvedModels).toBeUndefined();
+  });
+
+  it("preserves an empty list instead of collapsing it to absent", () => {
+    expect(decodeConfig({ approvedModels: [] }).approvedModels).toEqual([]);
+  });
+
+  it("preserves an explicit allowlist", () => {
+    expect(decodeConfig({ approvedModels: ["opencode-go/glm-5"] }).approvedModels).toEqual([
+      "opencode-go/glm-5",
     ]);
   });
 });

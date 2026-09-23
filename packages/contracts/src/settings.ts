@@ -768,6 +768,11 @@ export const AgentTunnelSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    // Which models auto mode may dispatch. Absent means every available model
+    // is approved; present (including empty) is the exact allowlist.
+    approvedModels: Schema.optionalKey(Schema.Array(Schema.String)).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
   },
   {
     order: [
@@ -1128,6 +1133,7 @@ const AgentTunnelSettingsPatch = Schema.Struct({
   agentRetryWaitMinutes: Schema.optionalKey(Schema.Int),
   dangerouslySkipPermissions: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  approvedModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export const ServerSettingsPatch = Schema.Struct({
