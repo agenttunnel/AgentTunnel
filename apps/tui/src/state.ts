@@ -1005,8 +1005,11 @@ export function reduceKey(
   state: TuiState,
   key: { readonly name?: string; readonly text?: string },
 ): { readonly state: TuiState; readonly effect: TuiEffect } {
-  // Terminals report the Enter key as `return`; the reducer speaks one name.
-  const name = key.name === "return" ? "enter" : (key.name ?? "");
+  // Terminals report Enter as `return`; the reducer speaks one name. A single
+  // printable character counts as its own name too, so letter shortcuts work —
+  // letters arrive as `text`, never as `name`.
+  const typed = key.text !== undefined && [...key.text].length === 1 ? key.text : "";
+  const name = key.name === "return" ? "enter" : (key.name ?? typed);
   if (name === "ctrl-c") {
     return { state, effect: { kind: "quit" } };
   }

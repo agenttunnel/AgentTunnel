@@ -203,6 +203,52 @@ describe("reduceKey", () => {
     expect(withThreadEvent(onAgents, unrelated).view).toBe("agents");
   });
 
+  it("takes letter keys in the panel, where letters arrive as text", () => {
+    // Terminals deliver letters as `text`, not as a key name, so a shortcut
+    // written as a name never fires — which is exactly how `l` did nothing.
+    const row = {
+      id: "task_1",
+      label: "planner",
+      status: "failed",
+      activity: "ENOENT",
+      model: null,
+      tokens: null,
+      tools: null,
+      elapsed: null,
+      attempt: null,
+      harness: null,
+      inputTokens: null,
+      cachedTokens: null,
+      outputTokens: null,
+      costUsd: null,
+      outputPath: "/logs/task_1.log",
+      parentId: null,
+    };
+    const panel = {
+      ...withOpenThread(initialTuiState, "t1"),
+      agents: [row as never],
+      agentIndex: 0,
+      view: "agents" as const,
+    };
+
+    const logs = reduceKey(panel, { text: "l" });
+    expect(logs.state.view).toBe("agentLog");
+    expect(logs.effect).toMatchObject({ kind: "openAgentLog", agentId: "task_1" });
+
+    expect(reduceKey(panel, { text: "x" }).effect).toEqual({
+      kind: "killAgent",
+      agentId: "task_1",
+    });
+    expect(reduceKey(panel, { text: "r" }).effect).toEqual({
+      kind: "retryAgent",
+      agentId: "task_1",
+    });
+
+    // and typing in the composer still appends the letters
+    const typed = reduceKey(withOpenThread(initialTuiState, "t1"), { text: "hello" });
+    expect(typed.state.input).toBe("hello");
+  });
+
   it("opens an agent's own detail when the provider published no log", () => {
     const row = {
       id: "task_1",
