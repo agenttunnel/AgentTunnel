@@ -4,6 +4,7 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import type { TuiProjectRow, TuiProviderRow, TuiServerSettingRow } from "./format.ts";
 import {
   activeProvider,
+  agentDetail,
   commandSuggestions,
   initialTuiState,
   moveSelection,
@@ -200,6 +201,60 @@ describe("reduceKey", () => {
     // that folding it in does not move the user off the panel they opened.
     const unrelated = { sequence: 2, type: "project.created", payload: {} } as never;
     expect(withThreadEvent(onAgents, unrelated).view).toBe("agents");
+  });
+
+  it("opens an agent's own detail when the provider published no log", () => {
+    const row = {
+      id: "task_1",
+      label: "planner",
+      status: "completed",
+      activity: "Finding recorded",
+      model: "opencode/big-pickle",
+      tokens: "1.2k",
+      tools: 4,
+      elapsed: "2m 10s",
+      attempt: null,
+      harness: "opencode-go",
+      inputTokens: 1_000,
+      cachedTokens: 800,
+      outputTokens: 200,
+      costUsd: 0.42,
+      outputPath: null,
+      parentId: null,
+    };
+    const activities = [
+      {
+        id: "a1",
+        kind: "task.started",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { taskId: "task_1", taskType: "local_agent", agentKind: "agent" },
+      },
+      {
+        id: "a2",
+        kind: "task.completed",
+        createdAt: "2026-01-01T00:02:10.000Z",
+        payload: {
+          taskId: "task_1",
+          agentKind: "agent",
+          status: "completed",
+          typedUsage: { totalTokens: 1_200, cachedInputTokens: 800, costUsd: 0.42 },
+        },
+      },
+    ];
+    const snapshot = {
+      snapshotSequence: 1,
+      thread: { id: "t1", title: "explore", activities, messages: [], session: null },
+    } as unknown as Parameters<typeof withThreadSnapshot>[1];
+    const state = withThreadSnapshot(initialTuiState, snapshot);
+    const lines = agentDetail(state, row as never).join("\n");
+
+    expect(lines).toContain("planner · completed");
+    expect(lines).toContain("opencode-go · opencode/big-pickle");
+    expect(lines).toContain("cached 800");
+    expect(lines).toContain("$0.420");
+    // per-turn usage, from the typed rollup on the row
+    expect(lines).toContain("per turn");
+    expect(lines).toContain("00:02:10");
   });
 
   it("starts a thread on the workflow provider, not the first in the catalog", () => {

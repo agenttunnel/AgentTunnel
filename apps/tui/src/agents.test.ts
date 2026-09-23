@@ -61,6 +61,11 @@ describe("agentRows", () => {
         tools: null,
         elapsed: "1m 54s",
         attempt: null,
+        harness: null,
+        inputTokens: null,
+        cachedTokens: null,
+        outputTokens: null,
+        costUsd: null,
         outputPath: "/logs/thread/task-run.log",
         parentId: null,
       },
@@ -113,6 +118,11 @@ describe("agentRows", () => {
       tools: 12,
       elapsed: "1m 54s",
       attempt: 2,
+      harness: null,
+      inputTokens: null,
+      cachedTokens: null,
+      outputTokens: null,
+      costUsd: null,
       outputPath: null,
       parentId: null,
     });
@@ -242,9 +252,14 @@ describe("agentUsageLines", () => {
       ),
     ]);
 
+    // Each agent states who ran it and what it spent, split into input, output,
+    // cache hits and cost; the fleet total closes the report.
     expect(agentUsageLines(agents)).toEqual([
-      "explorer · 1.2k tok · 3 tools",
-      "verifier · 3.4k tok",
+      "explorer · completed",
+      "  in 1.2k · total 1.2k · 3 tools",
+      "verifier · completed",
+      "  in 3.4k · total 3.4k",
+      "",
       "Σ 4.6k tok",
     ]);
   });

@@ -6,7 +6,10 @@ import {
   type OrchestrationShellStreamItem,
   type OrchestrationThreadDetailSnapshot,
 } from "@t3tools/contracts";
-import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  foldSubagentActivities,
+  formatSubagentTokenCount,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { applyShellStreamEvent } from "@t3tools/client-runtime/state/shellReducer";
 import { applyThreadDetailEvent } from "@t3tools/client-runtime/state/threadReducer";
 
@@ -19,7 +22,7 @@ import {
   parseAgentTunnelItem,
   type TuiAgentTunnelRow,
 } from "./agentTunnel.ts";
-import { agentRows, agentUsageLines, type TuiAgentRow } from "./agents.ts";
+import { agentRows, agentUsageLines, formatCost, type TuiAgentRow } from "./agents.ts";
 import {
   commandByName,
   matchCommands,
@@ -298,6 +301,11 @@ function orchestratorRow(
     tools: null,
     elapsed: null,
     attempt: null,
+    harness: null,
+    inputTokens: null,
+    cachedTokens: null,
+    outputTokens: null,
+    costUsd: null,
     outputPath: null,
     parentId: null,
   };
@@ -372,6 +380,79 @@ export function withShellItem(state: TuiState, item: OrchestrationShellStreamIte
     lastShellSequence: Math.max(state.lastShellSequence, item.sequence),
     threads: threadRows(next),
   };
+}
+
+/**
+ * What one agent can say about itself when the provider published no log file:
+ * who ran it, what it spent, how each run went, and where its transcript lives
+ * if the harness kept one.
+ */
+export function agentDetail(state: TuiState, row: TuiAgentRow): ReadonlyArray<string> {
+  const activities = state.threadSnapshot?.thread.activities ?? [];
+  const agent = foldSubagentActivities(activities, {
+    sessionLive: state.threadSnapshot?.thread.session?.status === "running",
+  }).find((entry) => entry.id === row.id);
+
+  const lines = [`${row.label} · ${row.status}`];
+  const identity = [row.harness, row.model].filter(
+    (part): part is string => part !== null && part.length > 0,
+  );
+  if (identity.length > 0) lines.push(identity.join(" · "));
+  const spend = [
+    row.tokens === null ? null : `${row.tokens} total`,
+    row.inputTokens === null ? null : `in ${formatSubagentTokenCount(row.inputTokens)}`,
+    row.cachedTokens === null || row.cachedTokens === 0
+      ? null
+      : `cached ${formatSubagentTokenCount(row.cachedTokens)}`,
+    row.outputTokens === null ? null : `out ${formatSubagentTokenCount(row.outputTokens)}`,
+    row.tools === null ? null : `${row.tools} tools`,
+    row.elapsed,
+    formatCost(row.costUsd),
+  ].filter((part): part is string => part !== null);
+  if (spend.length > 0) lines.push(spend.join(" · "));
+
+  if (agent !== undefined) {
+    if (agent.progress !== null) lines.push("", agent.progress);
+    if (agent.result !== null) lines.push("", agent.result);
+    if (agent.error !== null) lines.push("", agent.error);
+    const handles = agent.runHandles;
+    const where = [
+      handles?.transcriptDir === undefined ? null : `transcript ${handles.transcriptDir}`,
+      handles?.sessionUrl === undefined ? null : `session ${handles.sessionUrl}`,
+      handles?.scriptPath === undefined ? null : `script ${handles.scriptPath}`,
+    ].filter((part): part is string => part !== null);
+    if (where.length > 0) lines.push("", ...where);
+  }
+
+  // Per-run usage, from the rows the provider stamped with a typed rollup.
+  const perRun = activities.filter(
+    (activity) =>
+      typeof activity.payload === "object" &&
+      activity.payload !== null &&
+      (activity.payload as Record<string, unknown>).taskId === row.id &&
+      (activity.payload as Record<string, unknown>).typedUsage !== undefined,
+  );
+  if (perRun.length > 0) {
+    lines.push("", "per turn");
+    for (const activity of perRun) {
+      const usage = (activity.payload as Record<string, unknown>).typedUsage as Record<
+        string,
+        unknown
+      >;
+      const parts = [
+        activity.kind.replace("task.", ""),
+        typeof usage.totalTokens === "number" ? formatSubagentTokenCount(usage.totalTokens) : null,
+        typeof usage.cachedInputTokens === "number" && usage.cachedInputTokens > 0
+          ? `cached ${formatSubagentTokenCount(usage.cachedInputTokens)}`
+          : null,
+        typeof usage.costUsd === "number" ? formatCost(usage.costUsd) : null,
+      ].filter((part): part is string => part !== null);
+      lines.push(`  ${activity.createdAt.slice(11, 19)}  ${parts.join(" · ")}`);
+    }
+  } else if (row.outputPath === null) {
+    lines.push("", "this provider reports usage per agent, not per turn");
+  }
+  return lines;
 }
 
 /** What the session row can show: state, provider, and the failure reason. */
@@ -995,11 +1076,13 @@ export function reduceKey(
         const row = state.agents[state.agentIndex];
         if (row === undefined) return { state, effect: null };
         if (row.outputPath === null) {
-          // No log file: show what the session itself can say about the run.
+          // No log file: show what this agent can say about itself, and for the
+          // session's own row, what the session can.
+          const lines = row.id === "session" ? sessionDetail(state) : agentDetail(state, row);
           return {
             state: withAgentLog(
               { ...state, view: "agentLog" },
-              { agentId: row.id, label: row.label, lines: sessionDetail(state), error: null },
+              { agentId: row.id, label: row.label, lines, error: null },
             ),
             effect: null,
           };

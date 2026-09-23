@@ -25,6 +25,14 @@ export interface TuiAgentRow {
   readonly tools: number | null;
   readonly elapsed: string | null; // "1m 54s" style, from startedAt/completedAt/durationMs
   readonly attempt: number | null; // activation/attempt count when > 1
+  /** CLI that ran the agent, when the provider picked one per task. */
+  readonly harness: string | null;
+  /** Token split, for the usage screen: cache hits matter as much as totals. */
+  readonly inputTokens: number | null;
+  readonly cachedTokens: number | null;
+  readonly outputTokens: number | null;
+  /** Harness-computed cost, absent when nothing was priced. */
+  readonly costUsd: number | null;
   /** The agent's log file, for the log view. */
   readonly outputPath: string | null;
   /** The agent this run was retried from, when the provider says so. */
@@ -145,6 +153,11 @@ export function agentRows(
     tools: agent.usage?.toolUses ?? null,
     elapsed: elapsedFor(agent, now),
     attempt: agent.attempt !== null && agent.attempt > 1 ? agent.attempt : null,
+    harness: agent.harness,
+    inputTokens: agent.usage?.inputTokens ?? null,
+    cachedTokens: agent.usage?.cachedInputTokens ?? null,
+    outputTokens: agent.usage?.outputTokens ?? null,
+    costUsd: agent.usage?.costUsd ?? null,
     outputPath: agent.outputFile,
     parentId: agent.parentAgentId,
   }));
@@ -174,24 +187,69 @@ export function fleetTotals(agents: ReadonlyArray<RuntimeSubagent>): {
   return { tokens, running, settled, failed };
 }
 
+/** `$0.42`, or null when the harness priced nothing. */
+export function formatCost(costUsd: number | null): string | null {
+  if (costUsd === null || costUsd === 0) return null;
+  return costUsd < 1 ? `$${costUsd.toFixed(3)}` : `$${costUsd.toFixed(2)}`;
+}
+
 export function agentUsageLines(agents: ReadonlyArray<RuntimeSubagent>): ReadonlyArray<string> {
   if (agents.length === 0) {
     return [];
   }
   const model = deriveAgentPanelModel({ agents });
-  const lines = orderedRoster(model).flatMap((agent) => {
+  const lines: string[] = [];
+  let cost = 0;
+  let cached = 0;
+  let input = 0;
+  let output = 0;
+  let priced = false;
+
+  for (const agent of orderedRoster(model)) {
     const usage = agent.usage;
+    const head = `${agent.role ?? agent.title} · ${agent.status}`;
     if (usage === null) {
-      return [];
+      lines.push(head, "  no usage reported yet");
+      continue;
     }
-    const parts = [
-      `${agent.role ?? agent.title} · ${formatSubagentTokenCount(usage.totalTokens)} tok`,
-    ];
-    if (usage.toolUses !== undefined) {
-      parts.push(`${usage.toolUses} tools`);
+    cost += usage.costUsd ?? 0;
+    if (usage.costUsd !== undefined) priced = true;
+    cached += usage.cachedInputTokens ?? 0;
+    input += usage.inputTokens ?? 0;
+    output += usage.outputTokens ?? 0;
+
+    // Who ran it, on what: the two facts a cost line is useless without.
+    const identity = [
+      agent.harness,
+      agent.model === null ? null : formatSubagentModelLabel(agent.model, agent.effort),
+    ]
+      .filter((part): part is string => part !== null && part.length > 0)
+      .join(" · ");
+    lines.push(identity.length === 0 ? head : `${head}  ${identity}`);
+
+    const tokens = [`in ${formatSubagentTokenCount(usage.inputTokens ?? usage.totalTokens)}`];
+    if (usage.cachedInputTokens !== undefined && usage.cachedInputTokens > 0) {
+      const share = Math.round(
+        (usage.cachedInputTokens / Math.max(1, usage.inputTokens ?? 1)) * 100,
+      );
+      tokens.push(`cached ${formatSubagentTokenCount(usage.cachedInputTokens)} (${share}%)`);
     }
-    return [parts.join(" · ")];
-  });
-  lines.push(`Σ ${formatSubagentTokenCount(model.totalTokens)} tok`);
+    if (usage.outputTokens !== undefined) {
+      tokens.push(`out ${formatSubagentTokenCount(usage.outputTokens)}`);
+    }
+    tokens.push(`total ${formatSubagentTokenCount(usage.totalTokens)}`);
+    if (usage.toolUses !== undefined) tokens.push(`${usage.toolUses} tools`);
+    const spend = formatCost(usage.costUsd ?? null);
+    if (spend !== null) tokens.push(spend);
+    lines.push(`  ${tokens.join(" · ")}`);
+  }
+
+  const total = [`Σ ${formatSubagentTokenCount(model.totalTokens)} tok`];
+  if (cached > 0) total.push(`cached ${formatSubagentTokenCount(cached)}`);
+  if (input > 0) total.push(`in ${formatSubagentTokenCount(input)}`);
+  if (output > 0) total.push(`out ${formatSubagentTokenCount(output)}`);
+  const totalSpend = formatCost(priced ? cost : null);
+  if (totalSpend !== null) total.push(`${totalSpend} across ${agents.length} agents`);
+  lines.push("", total.join(" · "));
   return lines;
 }
