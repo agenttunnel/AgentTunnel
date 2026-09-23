@@ -10,7 +10,7 @@
  */
 import * as Effect from "effect/Effect";
 
-import { run } from "./app.tsx";
+import { run } from "./app.ts";
 
 const packageDir = import.meta.dir;
 const root = `${packageDir}/../../..`;

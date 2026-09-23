@@ -1,0 +1,516 @@
+/**
+ * `t3-tui` — AgentTunnel in a terminal.
+ *
+ * The presentation is a pure function: `renderFrame(state, size)` returns the
+ * screen as lines, and the painter writes only the lines that changed. Input
+ * comes straight from stdin, translated by `parseKeys` into the keys the
+ * reducer speaks. Between those two ends, everything is the same data layer the
+ * web client uses — the shell and thread subscriptions, `server.getConfig` for
+ * providers and settings, and `thread.turn.start` with `bootstrap.createThread`
+ * to start a thread.
+ *
+ *   bun src/index.ts --url http://localhost:13773 [--token <session token>]
+ *   bun src/index.ts --demo
+ */
+import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Random from "effect/Random";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
+
+import {
+  agentTunnelCatalog,
+  projectRows,
+  providerRows,
+  serverSettingRows,
+  threadRows,
+  threadView,
+} from "./format.ts";
+import { buildAgentTunnelPatch, resolveAgentTunnelConfig } from "./agentTunnel.ts";
+import { renderFrame } from "./frame.ts";
+import { parseKeys } from "./keys.ts";
+import { createPainter } from "./paint.ts";
+import { loadPreferences, savePreferences, type TuiPreferences } from "./preferences.ts";
+import {
+  addProject,
+  connect,
+  getAgentOutput,
+  interruptTurn,
+  loadServerConfig,
+  loadShell,
+  resolveConnection,
+  resolveSocketTicket,
+  sendTurn,
+  shellStream,
+  startThread,
+  threadStream,
+  updateServerSettings,
+  TuiSessionError,
+  type TuiSession,
+} from "./session.ts";
+import {
+  initialTuiState,
+  reduceKey,
+  resolveModelSelection,
+  selectedThread,
+  withAgentLog,
+  withCatalogs,
+  withPreferences,
+  withShellItem,
+  withStatus,
+  withThreadEvent,
+  withThreadSnapshot,
+  withThreads,
+  type TuiEffect,
+  type TuiState,
+} from "./state.ts";
+import { foldAgentLogEntries } from "@t3tools/client-runtime/state/agentLog";
+import type { ServerSettings } from "@t3tools/contracts";
+
+const USAGE = `t3-tui — AgentTunnel in a terminal
+
+Usage: bun src/index.ts [--url <http://host:port>] [--token <session token>]
+       bun src/index.ts --demo
+
+  --url    AgentTunnel server origin (default: $T3CODE_URL)
+  --token  session credential, exchanged for a WebSocket ticket (default: $T3CODE_TOKEN)
+  --demo   render canned data without connecting
+  --help   this message
+`;
+
+export function parseArgs(argv: ReadonlyArray<string>): {
+  readonly url: string | null;
+  readonly token: string | undefined;
+  readonly demo: boolean;
+  readonly help: boolean;
+} {
+  let url: string | null = process.env.T3CODE_URL?.trim() ?? null;
+  let token = process.env.T3CODE_TOKEN?.trim() || undefined;
+  let demo = false;
+  let help = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") help = true;
+    else if (arg === "--demo") demo = true;
+    else if (arg === "--url") url = argv[index + 1]?.trim() ?? null;
+    else if (arg === "--token") token = argv[index + 1]?.trim() || undefined;
+  }
+  return { url: url === "" ? null : url, token, demo, help };
+}
+
+/** A canned screen for `--demo`, so the rendering can be seen without a server. */
+function demoState(): TuiState {
+  return withThreads(withStatus(initialTuiState, "demo — not connected"), [
+    {
+      id: "demo-1",
+      title: "Router state design doc",
+      projectTitle: "AgentTunnel",
+      branch: "main",
+      fleet: null,
+    },
+    {
+      id: "demo-2",
+      title: "Subagent manager polish",
+      projectTitle: "AgentTunnel",
+      branch: "feat/agents",
+      fleet: null,
+    },
+  ]);
+}
+
+/** One log read, flattened: markdown stays text, tools become one line. */
+async function readAgentLogLines(
+  session: TuiSession,
+  outputPath: string,
+): Promise<ReadonlyArray<string>> {
+  const result = await Effect.runPromise(getAgentOutput(session, outputPath));
+  return foldAgentLogEntries(result.entries).map((block) => {
+    if (block.kind === "tool") {
+      return `▸ ${block.title} · ${block.status}${block.tool === "" ? "" : ` (${block.tool})`}`;
+    }
+    if (block.kind === "raw") return `# raw\n${block.text}`;
+    if (block.kind === "error") return `! ${block.text}`;
+    if (block.kind === "reasoning") return `# reasoning\n${block.text}`;
+    return block.text;
+  });
+}
+
+export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): Promise<void> {
+  const args = parseArgs(argv);
+  if (args.help) {
+    process.stdout.write(USAGE);
+    return;
+  }
+  if (args.url === null && !args.demo) {
+    process.stderr.write(`${USAGE}\n--url is required (or set T3CODE_URL), or use --demo.\n`);
+    process.exitCode = 2;
+    return;
+  }
+
+  let state: TuiState = args.demo ? demoState() : withStatus(initialTuiState, "connecting…");
+  let session: TuiSession | null = null;
+  let settings: ServerSettings | null = null;
+  let threadFiber: Fiber.Fiber<unknown, unknown> | null = null;
+  let shellFiber: Fiber.Fiber<unknown, unknown> | null = null;
+  let logFiber: Fiber.Fiber<unknown, unknown> | null = null;
+
+  const painter = createPainter({
+    write: (chunk) => process.stdout.write(chunk),
+    size: () => ({ rows: process.stdout.rows ?? 24, cols: process.stdout.columns ?? 80 }),
+    onResize: (handler) => {
+      process.stdout.on("resize", handler);
+      return () => {
+        process.stdout.off("resize", handler);
+      };
+    },
+  });
+
+  let scheduled = false;
+  const requestPaint = (): void => {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
+      painter.paint(renderFrame(state, painter.size));
+    });
+  };
+
+  const apply = (next: TuiState): void => {
+    if (next === state) return;
+    state = next;
+    requestPaint();
+  };
+
+  const stopFiber = async (fiber: Fiber.Fiber<unknown, unknown> | null): Promise<void> => {
+    if (fiber !== null) await Effect.runPromise(Fiber.interrupt(fiber));
+  };
+
+  const stopThreadStream = async (): Promise<void> => {
+    const fiber = threadFiber;
+    threadFiber = null;
+    await stopFiber(fiber);
+  };
+
+  const stopAgentLog = async (): Promise<void> => {
+    const fiber = logFiber;
+    logFiber = null;
+    await stopFiber(fiber);
+  };
+
+  const guard = async (label: string, run: () => Promise<void>): Promise<void> => {
+    try {
+      await run();
+    } catch (error) {
+      apply(withStatus(state, `${label} failed: ${String(error)}`));
+    }
+  };
+
+  const refreshThreads = (): Promise<void> =>
+    guard("refresh", async () => {
+      if (session === null) return;
+      const active = session;
+      const [snapshot, config] = await Promise.all([
+        Effect.runPromise(loadShell(active)),
+        Effect.runPromise(loadServerConfig(active)),
+      ]);
+      settings = config.settings;
+      apply(
+        withCatalogs(
+          withThreads(
+            withStatus(state, `${snapshot.threads.length} threads`),
+            threadRows(snapshot),
+          ),
+          {
+            projects: projectRows(snapshot),
+            providers: providerRows(config),
+            serverSettings: serverSettingRows(config.settings),
+            agentTunnel: resolveAgentTunnelConfig(config.settings),
+            agentTunnelCatalog: agentTunnelCatalog(config),
+          },
+        ),
+      );
+    });
+
+  const openThread = (threadId: string): Promise<void> =>
+    guard("open", async () => {
+      if (session === null) return;
+      const active = session;
+      apply(withStatus(state, "loading thread…"));
+      await stopThreadStream();
+      threadFiber = Effect.runFork(
+        threadStream(active, { threadId, afterSequence: state.lastThreadSequence }).pipe(
+          Stream.runForEach((item) =>
+            Effect.sync(() => {
+              if (item.kind === "snapshot") apply(withThreadSnapshot(state, item.snapshot));
+              else if (item.kind === "event") apply(withThreadEvent(state, item.event));
+            }),
+          ),
+          Effect.catch((error: TuiSessionError) =>
+            Effect.sync(() => {
+              apply(withStatus(state, `live updates stopped: ${error.message}`));
+              void reconnect();
+            }),
+          ),
+        ),
+      );
+    });
+
+  const startShellStream = async (): Promise<void> => {
+    if (session === null) return;
+    const active = session;
+    await stopFiber(shellFiber);
+    shellFiber = Effect.runFork(
+      shellStream(active, { afterSequence: state.lastShellSequence }).pipe(
+        Stream.runForEach((item) => Effect.sync(() => apply(withShellItem(state, item)))),
+        Effect.catch((error: TuiSessionError) =>
+          Effect.sync(() => apply(withStatus(state, `list updates stopped: ${error.message}`))),
+        ),
+      ),
+    );
+  };
+
+  const send = async (threadId: string, text: string): Promise<void> =>
+    guard("send", async () => {
+      if (session === null) return;
+      const selection = state.modelSelection;
+      await Effect.runPromise(
+        sendTurn(session, {
+          threadId,
+          text,
+          ...(selection === null ? {} : { modelSelection: selection }),
+        }),
+      );
+      apply(withStatus(state, "sent"));
+      await openThread(threadId);
+    });
+
+  const createThread = async (
+    previous: TuiState,
+    projectId: string,
+    title: string,
+    text: string,
+  ): Promise<void> =>
+    guard("create", async () => {
+      if (session === null) return;
+      const project = previous.projects.find((row) => row.id === projectId) ?? null;
+      const modelSelection = resolveModelSelection(previous, project);
+      if (modelSelection === null) {
+        apply(withStatus(state, "no provider configured — run /provider"));
+        return;
+      }
+      const threadId = await Effect.runPromise(
+        Random.nextInt.pipe(Effect.map((seed) => `tui-${seed.toString(36)}`)),
+      );
+      await Effect.runPromise(
+        startThread(session, { threadId, projectId, title, text, modelSelection }),
+      );
+      apply(withStatus(state, "created"));
+      await openThread(threadId);
+    });
+
+  const pollAgentLog = (agentId: string, label: string, outputPath: string): void => {
+    void stopAgentLog();
+    const active = session;
+    if (active === null) return;
+    logFiber = Effect.runFork(
+      Effect.gen(function* () {
+        while (state.view === "agentLog") {
+          yield* Effect.tryPromise({
+            try: async () => {
+              const lines = await readAgentLogLines(active, outputPath);
+              apply(withAgentLog(state, { agentId, label, lines, error: null }));
+            },
+            catch: (error) => new TuiSessionError({ message: String(error) }),
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.sync(() =>
+                apply(withAgentLog(state, { agentId, label, lines: [], error: error.message })),
+              ),
+            ),
+          );
+          yield* Effect.sleep("1 second");
+        }
+      }),
+    );
+  };
+
+  const reconnect = async (): Promise<void> =>
+    guard("reconnect", async () => {
+      const url = args.url;
+      if (url === null) return;
+      await stopThreadStream();
+      session = null;
+      const scope = await Effect.runPromise(Scope.make());
+      const ticket = await Effect.runPromise(
+        resolveSocketTicket({ httpBaseUrl: url.replace(/\/+$/u, ""), token: args.token }).pipe(
+          Effect.provide(remoteHttpClientLayer(fetch)),
+        ),
+      );
+      session = await Effect.runPromise(
+        connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
+          Effect.provideService(Scope.Scope, scope),
+        ),
+      );
+      apply(withStatus(state, "reconnected"));
+      await startShellStream();
+      if (state.openThreadId !== null) await openThread(state.openThreadId);
+    });
+
+  const persistPreferences = (patch: Partial<TuiPreferences>): Promise<void> =>
+    guard("settings", async () => {
+      const next = { ...state.preferences, ...patch };
+      await savePreferences(next);
+      apply(withStatus(state, "settings saved"));
+    });
+
+  const persistServerSetting = (key: string, value: boolean | string): Promise<void> =>
+    guard("settings", async () => {
+      if (session === null) return;
+      await Effect.runPromise(updateServerSettings(session, { [key]: value }));
+      apply(withStatus(state, "server setting saved"));
+      await refreshThreads();
+    });
+
+  const persistAgentTunnelSetting = (
+    field: string,
+    value: string | number | boolean,
+  ): Promise<void> =>
+    guard("settings", async () => {
+      if (session === null) return;
+      const patch =
+        settings === null
+          ? { providers: { agenttunnel: { [field]: value } } }
+          : buildAgentTunnelPatch(settings, field, value);
+      await Effect.runPromise(updateServerSettings(session, patch));
+      apply(withStatus(state, "workflow settings saved"));
+      await refreshThreads();
+    });
+
+  const registerProject = (workspaceRoot: string): Promise<void> =>
+    guard("add project", async () => {
+      if (session === null) return;
+      await Effect.runPromise(addProject(session, { workspaceRoot }));
+      apply(withStatus(state, `added ${workspaceRoot}`));
+      await refreshThreads();
+    });
+
+  const perform = (effect: TuiEffect, previous: TuiState): void => {
+    const threadId = previous.openThreadId;
+    switch (effect?.kind) {
+      case "quit":
+        shutdown(0);
+        return;
+      case "refresh":
+        void (previous.view === "thread" && threadId !== null
+          ? openThread(threadId)
+          : refreshThreads());
+        return;
+      case "open": {
+        const row = selectedThread(previous);
+        if (row !== null) void openThread(row.id);
+        return;
+      }
+      case "send":
+        if (threadId === null || args.demo) return;
+        void send(threadId, effect.text);
+        return;
+      case "createThread":
+        if (args.demo) return;
+        void createThread(previous, effect.projectId, effect.title, effect.text);
+        return;
+      case "interrupt":
+        if (threadId === null || args.demo) return;
+        void guard("interrupt", async () => {
+          if (session === null) return;
+          await Effect.runPromise(interruptTurn(session, threadId));
+          apply(withStatus(state, "interrupt requested"));
+        });
+        return;
+      case "savePreferences":
+        if (args.demo) return;
+        void persistPreferences(effect.patch);
+        return;
+      case "saveServerSetting":
+        if (args.demo) return;
+        void persistServerSetting(effect.key, effect.value);
+        return;
+      case "saveAgentTunnelSetting":
+        if (args.demo) return;
+        void persistAgentTunnelSetting(effect.field, effect.value);
+        return;
+      case "addProject":
+        if (args.demo) return;
+        void registerProject(effect.workspaceRoot);
+        return;
+      case "openAgentLog":
+        if (args.demo) return;
+        pollAgentLog(effect.agentId, effect.label, effect.outputPath);
+        return;
+      default:
+        return;
+    }
+  };
+
+  let shuttingDown = false;
+  const shutdown = (code: number): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    painter.exit();
+    process.stdin.setRawMode?.(false);
+    process.stdin.pause();
+    void stopThreadStream();
+    void stopFiber(shellFiber);
+    void stopAgentLog();
+    process.exit(code);
+  };
+
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
+
+  painter.enter();
+  process.stdin.setRawMode?.(true);
+  process.stdin.resume();
+  process.stdin.on("data", (chunk: Buffer) => {
+    for (const key of parseKeys(chunk.toString("utf8"))) {
+      const before = state;
+      const { state: next, effect } = reduceKey(before, key);
+      apply(next);
+      perform(effect, before);
+    }
+    // The reducer can leave the view without touching state (for example when a
+    // picker opens); repaint anyway so the frame always matches the state.
+    requestPaint();
+  });
+
+  if (args.demo) {
+    requestPaint();
+    return;
+  }
+
+  await guard("connect", async () => {
+    const url = args.url;
+    if (url === null) return;
+    try {
+      const preferences = await loadPreferences();
+      apply(withPreferences(state, preferences));
+    } catch (error) {
+      apply(withStatus(state, `settings not loaded: ${String(error)}`));
+    }
+    const scope = await Effect.runPromise(Scope.make());
+    const ticket = await Effect.runPromise(
+      resolveSocketTicket({ httpBaseUrl: url.replace(/\/+$/u, ""), token: args.token }).pipe(
+        Effect.provide(remoteHttpClientLayer(fetch)),
+      ),
+    );
+    session = await Effect.runPromise(
+      connect(resolveConnection({ url, ticket: ticket ?? undefined })).pipe(
+        Effect.provideService(Scope.Scope, scope),
+      ),
+    );
+    await refreshThreads();
+    await startShellStream();
+  });
+}

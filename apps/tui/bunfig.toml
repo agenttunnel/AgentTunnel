@@ -1,6 +1,0 @@
-# The TUI renders through OpenTUI (the stack opencode's terminal client uses),
-# whose JSX runtime is provided by this preload.
-preload = ["@opentui/solid/preload"]
-
-[test]
-preload = ["@opentui/solid/preload"]

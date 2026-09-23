@@ -1,8 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid",
     "types": ["node", "bun"],
     "lib": ["ESNext", "DOM", "DOM.Iterable", "esnext.disposable"]
   },
