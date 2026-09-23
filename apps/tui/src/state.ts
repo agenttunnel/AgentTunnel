@@ -482,12 +482,26 @@ export function activeProvider(state: TuiState): TuiProviderRow | null {
   return workflow ?? state.providers[0] ?? null;
 }
 
-/** The selection a new turn should carry, resolved from everything known. */
+/** Whether the catalog actually has the instance a selection names. */
+function isRoutable(state: TuiState, selection: ModelSelection): boolean {
+  return state.providers.some((provider) => provider.instanceId === selection.instanceId);
+}
+
+/**
+ * The selection a new turn should carry, resolved from everything known.
+ *
+ * Every candidate is checked against the catalog first: projects carry stored
+ * defaults from other clients, and one naming an instance this environment does
+ * not have is exactly how a thread ends up unroutable. A selection that cannot
+ * be routed is skipped rather than sent.
+ */
 export function resolveModelSelection(
   state: TuiState,
   project: TuiProjectRow | null,
 ): ModelSelection | null {
-  if (state.modelSelection !== null) return state.modelSelection;
+  if (state.modelSelection !== null && isRoutable(state, state.modelSelection)) {
+    return state.modelSelection;
+  }
   const provider = activeProvider(state);
   if (provider !== null && state.preferences.defaultModel !== null) {
     const model = provider.models.find((entry) => entry.slug === state.preferences.defaultModel);
@@ -495,7 +509,11 @@ export function resolveModelSelection(
       return { instanceId: ProviderInstanceId.make(provider.instanceId), model: model.slug };
     }
   }
-  if (project !== null && project.defaultModelSelection !== null) {
+  if (
+    project !== null &&
+    project.defaultModelSelection !== null &&
+    isRoutable(state, project.defaultModelSelection)
+  ) {
     return project.defaultModelSelection;
   }
   if (provider === null) return null;

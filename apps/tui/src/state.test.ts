@@ -233,6 +233,49 @@ describe("reduceKey", () => {
     expect(resolveModelSelection(chosen, null)?.instanceId).toBe("codex");
   });
 
+  it("ignores a stored default whose instance is not configured", () => {
+    // Projects carry defaults written by other clients; this one names codex,
+    // which this environment does not have. Sending it makes the thread
+    // unroutable, so it must be skipped rather than honoured.
+    const catalog = withCatalogs(initialTuiState, {
+      providers: [
+        {
+          instanceId: "agenttunnel",
+          label: "AgentTunnel",
+          driver: "agenttunnel",
+          models: [{ slug: "opencode/big-pickle", name: "big pickle", isDefault: true }],
+        },
+      ],
+    });
+    const project = {
+      id: "p1",
+      title: "cai_api",
+      workspaceRoot: "/tmp/cai_api",
+      defaultModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+    };
+    expect(resolveModelSelection(catalog, project)).toEqual({
+      instanceId: ProviderInstanceId.make("agenttunnel"),
+      model: "opencode/big-pickle",
+    });
+
+    // a default this environment can route is still honoured
+    const routable = withCatalogs(catalog, {
+      providers: [
+        ...catalog.providers,
+        {
+          instanceId: "codex",
+          label: "Codex",
+          driver: "codex",
+          models: [{ slug: "gpt-5.4", name: "GPT-5.4" }],
+        },
+      ],
+    });
+    expect(resolveModelSelection(routable, project)?.instanceId).toBe("codex");
+  });
+
   it("opens a thread only when the caller says so", () => {
     expect(withOpenThread(initialTuiState, "t1")).toMatchObject({
       view: "thread",
