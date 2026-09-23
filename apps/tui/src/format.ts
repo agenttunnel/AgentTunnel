@@ -95,6 +95,8 @@ export interface TuiLine {
 
 const TITLE_MAX_CHARS = 80;
 const LINE_MAX_CHARS = 400;
+/** Transcript entries keep their line breaks; only runaway text is bounded. */
+const MESSAGE_MAX_CHARS = 8_000;
 
 function oneLine(text: string, max: number): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -148,8 +150,14 @@ export function threadView(
 
   const lines: TuiLine[] = [];
   for (const message of thread.messages) {
-    const text = oneLine(message.text, LINE_MAX_CHARS);
-    if (text.length === 0) continue;
+    const trimmed = message.text.replace(/\s+$/u, "");
+    if (trimmed.length === 0) continue;
+    // Markdown is rendered line by line downstream, so the breaks have to
+    // survive this step — collapsing them here is what flattened the answers.
+    const text =
+      trimmed.length <= MESSAGE_MAX_CHARS
+        ? trimmed
+        : `${trimmed.slice(0, MESSAGE_MAX_CHARS - 1).trimEnd()}…`;
     lines.push({ kind: message.role === "user" ? "user" : "assistant", text });
   }
   if (includeActivities) {

@@ -2,6 +2,7 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRuntime";
 
 import { agentRows, agentUsageLines } from "./agents.ts";
+import { renderMarkdown } from "./markdown.ts";
 import { lineGlyph, statusGlyph, threadRows, threadView, type TuiLine } from "./format.ts";
 import {
   agentTunnelScreenRows,
@@ -200,10 +201,21 @@ function formatTokens(total: number): string {
 function transcriptLines(state: TuiState, cols: number): string[] {
   const out: string[] = [];
   for (const line of state.lines) {
-    const wrapped = wrap(line.text, cols - 2);
-    wrapped.forEach((text, index) => {
-      const marker = index === 0 ? `${lineGlyph(line.kind)} ` : "  ";
-      out.push(paint(marker + text, color(line.kind)));
+    if (line.kind === "user") {
+      const wrapped = wrap(line.text, cols - 2);
+      wrapped.forEach((text, index) => {
+        out.push(paint(`${index === 0 ? `${lineGlyph("user")} ` : "  "}${text}`, color("user")));
+      });
+      continue;
+    }
+    // Assistant and system turns are markdown: render the structure instead of
+    // flattening it, and give the thinking blocks their own dimmed voice.
+    const rendered = renderMarkdown(line.text, cols - 2, {
+      thinkingTone: "faint",
+      collapseThinking: 24,
+    });
+    rendered.forEach((text, index) => {
+      out.push(`${index === 0 ? paint(`${lineGlyph(line.kind)} `, "muted") : "  "}${text}`);
     });
   }
   // A failed run's reason goes last, where the eye already is, and in full:
@@ -546,8 +558,9 @@ export function renderFrame(state: TuiState, size: FrameSize): string[] {
   const bodyHeight = split ? Math.max(2, available - threadHeight) : available;
 
   const cursor =
-    state.view === "thread"
-      ? Number.MAX_SAFE_INTEGER
+    state.view === "thread" || state.view === "agentLog"
+      ? // Both follow the newest line: a live log should not scroll away.
+        Number.MAX_SAFE_INTEGER
       : state.view === "agents"
         ? state.agentIndex * 2
         : state.view === "settings"
