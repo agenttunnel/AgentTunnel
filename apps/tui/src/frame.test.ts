@@ -234,6 +234,22 @@ describe("renderFrame", () => {
     expect(frame).toContain("/add-project");
   });
 
+  it("highlights the selected menu row in the accent colour", () => {
+    // The picker's cursor row is the one about to be chosen.
+    const opening = reduceKey(type({ ...catalogs, view: "threads" as const }, "/new"), {
+      name: "enter",
+    });
+    const frame = renderFrame(opening.state, { rows: 20, cols: 100, now: 0 });
+    const selected = frame.find((line) => line.includes("▸") && line.includes("cai_api")) ?? "";
+    expect(selected).toContain("38;2;122;162;247m");
+    expect(selected).toContain("1;38;2;122;162;247m");
+
+    // and so is the palette's
+    const palette = renderFrame(type(catalogs, "/"), { rows: 20, cols: 100, now: 0 });
+    const command = palette.find((line) => line.includes("▸") && line.includes("/new")) ?? "";
+    expect(command).toContain("1;38;2;122;162;247m");
+  });
+
   it("draws the card's borders intact on every row", () => {
     const frame = renderFrame(type(catalogs, "/"), SIZE).map(strip);
     const cardRows = frame.filter((line) => line.includes("│"));

@@ -403,9 +403,12 @@ function paletteLines(state: TuiState, cols: number, budget: number): string[] {
   return card(
     `commands · ${rows.length}`,
     shown.map((row) => {
-      const marker = row.id === selected ? "▸" : " ";
+      const chosen = row.id === selected;
+      const marker = chosen ? "▸" : " ";
       const label = pad(truncate(row.label, 22), 22);
-      return `${marker} ${label} ${row.detail ?? ""}`;
+      const line = `${marker} ${label} ${row.detail ?? ""}`;
+      // The cursor row is the one you are about to run: say so in colour.
+      return chosen ? paint(line, "primary", { bold: true }) : line;
     }),
     cols,
   );
@@ -423,9 +426,11 @@ function pickerLinesFor(state: TuiState, cols: number, budget: number): string[]
   return card(
     `${picker.title} · ${rows.length}`,
     shown.map(({ row, index }) => {
-      const marker = index === picker.index ? "▸" : " ";
+      const chosen = index === picker.index;
+      const marker = chosen ? "▸" : " ";
       const label = pad(truncate(row.label, 26), 26);
-      return `${marker} ${label} ${row.detail ?? ""}`;
+      const line = `${marker} ${label} ${row.detail ?? ""}`;
+      return chosen ? paint(line, "primary", { bold: true }) : line;
     }),
     cols,
   );
