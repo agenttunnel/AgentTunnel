@@ -213,7 +213,7 @@ describe("theme files", () => {
       colors: {
         canvas: canonical("#07152f"),
         accent: canonical("#67c2ff"),
-        placeholder: canonical("#968d9f"),
+        placeholder: "oklch(0.66 0.012 265)",
       },
     });
   });
@@ -392,31 +392,31 @@ describe("theme files", () => {
 
   it("keeps the T3 Chat palette faithful and readable", () => {
     expectThemeColors(T3_CHAT_THEME.colors, {
-      canvas: "#fdf7fd",
-      chrome: "#fdf7fd",
-      toolbarBorder: "#efbdeb",
-      toolbarControl: "#f3e6f5",
-      toolbarControlHover: "#eccfe3",
-      surfaceRaised: "#fdfafd",
-      input: "#e7c1dc",
-      focus: "#db2777",
-      messageSurface: "#f7def2",
-      codeBackground: "#f5ecf9",
-      codeForeground: "#673c8b",
-      accentSurface: "#f3e6f5",
-      sidebar: "#f2e1f4",
+      canvas: "#f8f9fc",
+      chrome: "#f8f9fc",
+      toolbarBorder: "#dcdee2",
+      toolbarControl: "#eef0f4",
+      toolbarControlHover: "#e1e3e8",
+      surfaceRaised: "#fbfcfe",
+      input: "#ced1d6",
+      focus: "#965800",
+      messageSurface: "#eceef3",
+      codeBackground: "#f0f2f4",
+      codeForeground: "#353b45",
+      accentSurface: "#eef0f4",
+      sidebar: "#f2f3f7",
     });
     expectThemeColors(T3_CHAT_THEME.variants!.dark!, {
-      canvas: "#1f1a24",
-      chrome: "#1f1a24",
-      surface: "#29232d",
-      surfaceRaised: "#2c2631",
-      input: "#302029",
-      focus: "#db2777",
-      messageSurface: "#2b2431",
-      codeBackground: "#1f1a24",
-      sidebar: "#171018",
-      sidebarBorder: "#322028",
+      canvas: "#111316",
+      chrome: "#111316",
+      surface: "#18191d",
+      surfaceRaised: "#1e2025",
+      input: "#2b2e33",
+      focus: "#e9b452",
+      messageSurface: "#1c1e22",
+      codeBackground: "#121417",
+      sidebar: "#0d0e12",
+      sidebarBorder: "#222429",
     });
 
     for (const mode of ["light", "dark"] as const) {
