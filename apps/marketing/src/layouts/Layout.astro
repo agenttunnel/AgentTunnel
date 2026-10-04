@@ -41,7 +41,8 @@ const {
       <nav class="nav">
         <div class="nav-inner">
           <a href="/" class="nav-brand" aria-label="AgentTunnel home">
-            <span class="nav-brand-name">AgentTunnel</span>
+            <!-- Served from public/; source of truth is assets/prod/wordmark.svg. -->
+            <img class="nav-brand-mark" src="/wordmark.svg" alt="" width="598" height="122" />
           </a>
           <div class="nav-right">
             <a
@@ -322,19 +323,18 @@ const {
   .nav-brand {
     display: inline-flex;
     align-items: center;
-    color: var(--fg);
-    transition: color 0.2s ease;
+    transition: opacity 0.2s ease;
   }
 
   .nav-brand:hover {
-    color: #fff;
+    opacity: 0.85;
   }
 
-  .nav-brand-name {
-    font-size: 16px;
-    font-weight: 650;
-    letter-spacing: -0.025em;
-    line-height: 1;
+  .nav-brand-mark {
+    /* The wordmark outlines are drawn at 100 units per em, so 1.22em matches
+       the 16px brand text it replaces: 122 / 100 * 16px = 19.52px tall. */
+    height: 19.52px;
+    width: auto;
   }
 
   .nav-right {

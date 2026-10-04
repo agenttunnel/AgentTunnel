@@ -18,6 +18,7 @@ import {
   SidebarStageBackdrop,
   useEnvironmentStageLabel,
 } from "../SidebarStageBackdrop";
+import { Wordmark } from "../Wordmark";
 import { Badge } from "../ui/badge";
 import {
   SidebarFooter,
@@ -89,14 +90,9 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       )}
       to="/"
     >
-      <span
-        className={cn(
-          "truncate text-sm font-medium tracking-tight",
-          onBackdrop ? "text-white" : "text-foreground",
-        )}
-      >
-        AgentTunnel
-      </span>
+      {/* 1.22em is the wordmark's natural height per em, so it renders at the
+          optical size of the text-sm label it replaced. */}
+      <Wordmark className="h-[1.22em] w-auto shrink-0 text-sm" />
     </Link>
   );
 }

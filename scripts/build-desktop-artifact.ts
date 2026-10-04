@@ -2183,7 +2183,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       category: "public.app-category.developer-tools",
       protocols: [
         {
-          name: "T3 Code",
+          name: "AgentTunnel",
           schemes: ["t3code", "t3code-dev"],
         },
       ],
@@ -2231,7 +2231,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // t3code:// OAuth callbacks to the app.
       protocols: [
         {
-          name: "T3 Code",
+          name: "AgentTunnel",
           schemes: ["t3code", "t3code-dev"],
         },
       ],
