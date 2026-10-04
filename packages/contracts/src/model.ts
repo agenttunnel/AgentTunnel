@@ -134,6 +134,7 @@ const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
 const AGENT_TUNNEL_DRIVER_KIND = ProviderDriverKind.make("agenttunnel");
+const COMMAND_CODE_DRIVER_KIND = ProviderDriverKind.make("commandcode");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
 
@@ -156,6 +157,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [PI_DRIVER_KIND]: "google/gemini-3-pro-preview",
+  [COMMAND_CODE_DRIVER_KIND]: "deepseek/deepseek-v4-flash",
   [AGENT_TUNNEL_DRIVER_KIND]: "openai/gpt-5",
 };
 
@@ -168,6 +170,7 @@ export const DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CURSOR_DRIVER_KIND]: "composer-2",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [PI_DRIVER_KIND]: "google/gemini-2.5-flash-lite",
+  [COMMAND_CODE_DRIVER_KIND]: "deepseek/deepseek-v4-flash",
   [AGENT_TUNNEL_DRIVER_KIND]: "openai/gpt-5",
 };
 
@@ -219,6 +222,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
   },
   [OPENCODE_DRIVER_KIND]: {},
   [PI_DRIVER_KIND]: {},
+  [COMMAND_CODE_DRIVER_KIND]: {},
   [AGENT_TUNNEL_DRIVER_KIND]: {},
 };
 
@@ -231,5 +235,6 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [GROK_DRIVER_KIND]: "Grok",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [PI_DRIVER_KIND]: "Pi",
+  [COMMAND_CODE_DRIVER_KIND]: "Command Code",
   [AGENT_TUNNEL_DRIVER_KIND]: "AgentTunnel",
 };

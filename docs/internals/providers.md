@@ -7,7 +7,7 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with seven entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with eight entries:
 
 | Driver kind   | Driver source                                 |
 | ------------- | --------------------------------------------- |
@@ -17,6 +17,7 @@ orchestration layer does not know which one is behind a thread.
 | `grok`        | [`Drivers/GrokDriver.ts`][grok]               |
 | `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode]       |
 | `pi`          | [`Drivers/PiDriver.ts`][pi]                   |
+| `commandcode` | [`Drivers/CommandCodeDriver.ts`][commandcode] |
 | `agenttunnel` | [`Drivers/AgentTunnelDriver.ts`][agenttunnel] |
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
@@ -101,6 +102,24 @@ runs `pi --version` and `pi --list-models` ([`Layers/PiProvider.ts`][pi-provider
 `provider/model`. Pi instances are manual-refresh only (`refreshOnInterval` false), and text
 generation uses one-shot `pi --mode json -p` invocations
 ([`textGeneration/PiTextGeneration.ts`][pi-textgen]).
+
+## Command Code ACP sessions
+
+Command Code runs as a child of the server: `command-code acp` speaks the Agent Client Protocol
+over stdin/stdout ([`acp/CommandCodeAcpSupport.ts`][commandcode-support]). One child serves one
+thread; `session/new` creates the session on first use and `session/load` resumes it from the id in
+the thread's resume cursor. Closing the adapter scope kills the child. Command Code authenticates
+through the account created by `command-code login`, so an unauthenticated machine fails session
+start with an `AUTH_REQUIRED` error instead of prompting.
+
+The adapter maps ACP session updates onto `ProviderRuntimeEvent`s and AgentTunnel's runtime modes
+onto Command Code's permission modes: `approval-required`→`default`,
+`auto-accept-edits`→`auto-accept`, `auto`→`dont-ask`, `full-access`→`bypass`; the plan interaction
+mode selects `plan`. Model switches use the unstable ACP `session/set_model` capability. The
+snapshot probe runs `command-code --version` and `command-code status --json`, and discovers the
+catalog from an ACP `session/new` result
+([`Layers/CommandCodeProvider.ts`][commandcode-provider]). Text generation reuses short-lived ACP
+sessions ([`textGeneration/CommandCodeTextGeneration.ts`][commandcode-textgen]).
 
 ## Model manifest
 
@@ -334,6 +353,10 @@ when a request opens (approval) or user input is requested, via
 [pi-adapter]: ../../apps/server/src/provider/Layers/PiAdapter.ts
 [pi-provider]: ../../apps/server/src/provider/Layers/PiProvider.ts
 [pi-textgen]: ../../apps/server/src/textGeneration/PiTextGeneration.ts
+[commandcode]: ../../apps/server/src/provider/Drivers/CommandCodeDriver.ts
+[commandcode-support]: ../../apps/server/src/provider/acp/CommandCodeAcpSupport.ts
+[commandcode-provider]: ../../apps/server/src/provider/Layers/CommandCodeProvider.ts
+[commandcode-textgen]: ../../apps/server/src/textGeneration/CommandCodeTextGeneration.ts
 [agenttunnel]: ../../apps/server/src/provider/Drivers/AgentTunnelDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts
