@@ -16,12 +16,15 @@ import * as NodePath from "node:path";
 export interface TuiPreferences {
   readonly defaultProvider: string | null;
   readonly defaultModel: string | null;
+  /** The accent in force, either a built-in name or a `#rrggbb`. */
+  readonly defaultAccent: string | null;
   readonly showAgentDetails: boolean;
 }
 
 export const defaultPreferences: TuiPreferences = {
   defaultProvider: null,
   defaultModel: null,
+  defaultAccent: null,
   showAgentDetails: true,
 };
 
@@ -81,11 +84,13 @@ export function parsePreferences(text: string): TuiPreferences {
   const fields = record as Record<string, unknown>;
   const provider = fields["defaultProvider"];
   const model = fields["defaultModel"];
+  const accent = fields["defaultAccent"];
   const details = fields["showAgentDetails"];
   return {
     defaultProvider:
       typeof provider === "string" && provider.trim().length > 0 ? provider.trim() : null,
     defaultModel: typeof model === "string" && model.trim().length > 0 ? model.trim() : null,
+    defaultAccent: typeof accent === "string" && accent.trim().length > 0 ? accent.trim() : null,
     showAgentDetails: typeof details === "boolean" ? details : defaultPreferences.showAgentDetails,
   };
 }
@@ -96,6 +101,7 @@ export function serializePreferences(value: TuiPreferences): string {
     {
       defaultProvider: value.defaultProvider,
       defaultModel: value.defaultModel,
+      defaultAccent: value.defaultAccent,
       showAgentDetails: value.showAgentDetails,
     },
     null,
@@ -109,6 +115,71 @@ export async function loadPreferences(path: string = preferencesPath()): Promise
     return parsePreferences(await NodeFSP.readFile(path, "utf8"));
   } catch {
     return defaultPreferences;
+  }
+}
+
+/**
+ * The TUI's own theme overrides, beside its settings. Every reference client
+ * ships one (`~/.claude/themes/*.json`, opencode's `themes/`, Codex's
+ * `.tmTheme`), and the reason is the same: the terminal's own colours are a
+ * guess we cannot verify from here, so the user gets the last word.
+ */
+export function themePath(
+  env: {
+    readonly XDG_CONFIG_HOME?: string | undefined;
+    readonly HOME?: string | undefined;
+  } = processEnvironment,
+): string {
+  return preferencesPath(env).replace(/tui\.json$/u, "theme.json");
+}
+
+const HEX = /^#[0-9a-f]{3}$|^#[0-9a-f]{6}$/iu;
+
+export interface TuiThemeFile {
+  /** A built-in accent name or a `#rrggbb`, applied on top of the palette. */
+  readonly accent: string | null;
+  /** Role overrides, kept to real hex so a typo cannot paint garbage. */
+  readonly colors: Record<string, string>;
+}
+
+/**
+ * `{ "accent": "mint", "colors": { "primary": "#ff0000" } }`. Anything else is
+ * ignored rather than rejected: a theme file is a convenience, and a broken one
+ * must not stop the client from starting.
+ */
+export function parseTheme(text: string): TuiThemeFile {
+  const empty: TuiThemeFile = { accent: null, colors: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return empty;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return empty;
+  const record = parsed as { readonly accent?: unknown; readonly colors?: unknown };
+  const accent =
+    typeof record.accent === "string" && record.accent.trim().length > 0
+      ? record.accent.trim()
+      : null;
+  const colors: Record<string, string> = {};
+  if (
+    typeof record.colors === "object" &&
+    record.colors !== null &&
+    !Array.isArray(record.colors)
+  ) {
+    for (const [role, value] of Object.entries(record.colors as Record<string, unknown>)) {
+      if (typeof value === "string" && HEX.test(value)) colors[role] = value;
+    }
+  }
+  return { accent, colors };
+}
+
+/** Read the overrides, or nothing when the file is missing or unreadable. */
+export async function loadTheme(path: string = themePath()): Promise<TuiThemeFile> {
+  try {
+    return parseTheme(await NodeFSP.readFile(path, "utf8"));
+  } catch {
+    return { accent: null, colors: {} };
   }
 }
 

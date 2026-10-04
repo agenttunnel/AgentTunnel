@@ -11,6 +11,7 @@ export type TuiCommandName =
   | "model"
   | "provider"
   | "settings"
+  | "theme"
   | "help"
   | "agenttunnel"
   | "agents"
@@ -36,6 +37,12 @@ export const TUI_COMMANDS: ReadonlyArray<TuiCommand> = [
   { name: "model", description: "Choose the model", argument: "[model]", scope: "any" },
   { name: "provider", description: "Choose the provider", argument: "[provider]", scope: "any" },
   { name: "settings", description: "Open settings", scope: "any" },
+  {
+    name: "theme",
+    description: "Change the accent colour",
+    argument: "[name|#rrggbb]",
+    scope: "any",
+  },
   {
     name: "agenttunnel",
     description: "Workflow roles: harness, model, reasoning",

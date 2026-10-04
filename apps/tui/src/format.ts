@@ -70,15 +70,16 @@ export interface TuiThreadView {
 }
 
 /**
- * One glyph per line kind and per agent status, the way both reference TUIs
- * mark rows: a filled dot for settled work, a ring for live work, a cross for
- * what failed. Text keeps the detail; the glyph carries the state.
+ * One glyph per line kind, in Claude Code's grammar: a chevron for what you
+ * asked, a filled dot for the assistant, a nested corner for tool and sub-agent
+ * output, and a bang for a system note. Text keeps the detail; the glyph carries
+ * the role.
  */
 export function lineGlyph(kind: TuiLine["kind"]): string {
-  if (kind === "user") return "›";
-  if (kind === "agent") return "·";
+  if (kind === "user") return ">";
+  if (kind === "agent") return "●";
   if (kind === "system") return "!";
-  return "⏺";
+  return "●";
 }
 
 export function statusGlyph(status: string): string {

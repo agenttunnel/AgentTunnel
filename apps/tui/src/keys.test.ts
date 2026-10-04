@@ -26,6 +26,13 @@ describe("parseKeys", () => {
     ]);
   });
 
+  it("reads the tilde keys, which the composer leaves for scrolling", () => {
+    expect(parseKeys("\u001b[5~")).toEqual([{ name: "pageup" }]);
+    expect(parseKeys("\u001b[6~")).toEqual([{ name: "pagedown" }]);
+    // The delete key shares the shape and must keep working.
+    expect(parseKeys("\u001b[3~")).toEqual([{ name: "delete" }]);
+  });
+
   it("tells ctrl-i from tab through the kitty protocol", () => {
     expect(parseKeys("\u0009")).toEqual([{ name: "tab" }]);
     expect(parseKeys("\u001b[105;5u")).toEqual([{ name: "ctrl-i" }]);

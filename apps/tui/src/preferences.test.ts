@@ -17,6 +17,7 @@ import {
 const settings: TuiPreferences = {
   defaultProvider: "anthropic",
   defaultModel: "claude-sonnet-4",
+  defaultAccent: null,
   showAgentDetails: false,
 };
 
@@ -70,6 +71,7 @@ describe("parsePreferences", () => {
     expect(parsePreferences('{"defaultProvider":"openai"}')).toEqual({
       defaultProvider: "openai",
       defaultModel: null,
+      defaultAccent: null,
       showAgentDetails: true,
     });
     expect(parsePreferences('{"defaultModel":42,"showAgentDetails":"yes"}')).toEqual(
@@ -77,7 +79,12 @@ describe("parsePreferences", () => {
     );
     expect(
       parsePreferences('{"defaultProvider":"  ","defaultModel":"gpt-5","extra":true}'),
-    ).toEqual({ defaultProvider: null, defaultModel: "gpt-5", showAgentDetails: true });
+    ).toEqual({
+      defaultProvider: null,
+      defaultModel: "gpt-5",
+      defaultAccent: null,
+      showAgentDetails: true,
+    });
   });
 
   it("round-trips through serialization, trailing newline included", () => {
@@ -87,11 +94,13 @@ describe("parsePreferences", () => {
     expect(JSON.parse(text)).toEqual({
       defaultProvider: "anthropic",
       defaultModel: "claude-sonnet-4",
+      defaultAccent: null,
       showAgentDetails: false,
     });
     expect(Object.keys(JSON.parse(serializePreferences(defaultPreferences)))).toEqual([
       "defaultProvider",
       "defaultModel",
+      "defaultAccent",
       "showAgentDetails",
     ]);
   });

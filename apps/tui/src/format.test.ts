@@ -100,8 +100,8 @@ describe("status vocabulary", () => {
   });
 
   it("marks who wrote each transcript line", () => {
-    expect(lineGlyph("user")).toBe("›");
-    expect(lineGlyph("assistant")).toBe("⏺");
-    expect(lineGlyph("agent")).toBe("·");
+    expect(lineGlyph("user")).toBe(">");
+    expect(lineGlyph("assistant")).toBe("●");
+    expect(lineGlyph("agent")).toBe("●");
   });
 });

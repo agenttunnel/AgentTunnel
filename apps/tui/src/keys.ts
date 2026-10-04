@@ -47,6 +47,13 @@ const KITTY_CTRL: Readonly<Record<number, string>> = {
   112: "ctrl-p",
 };
 
+/** CSI `<n>~` keys: PageUp and PageDown, which take over transcript scrolling. */
+const TILDE_KEYS: Record<string, string> = {
+  "3": "delete",
+  "5": "pageup",
+  "6": "pagedown",
+};
+
 const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 
@@ -85,7 +92,10 @@ export function parseKeys(chunk: string): ReadonlyArray<TuiKey> {
     if (csi !== null) {
       const named = CSI_KEYS[csi[2] ?? ""];
       if (named !== undefined) keys.push({ name: named });
-      else if (csi[2] === "~" && csi[1] === "3") keys.push({ name: "delete" });
+      else if (csi[2] === "~") {
+        const tilde = TILDE_KEYS[csi[1] ?? ""];
+        if (tilde !== undefined) keys.push({ name: tilde });
+      }
       index += csi[0].length;
       continue;
     }

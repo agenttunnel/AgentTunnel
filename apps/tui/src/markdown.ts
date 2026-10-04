@@ -119,7 +119,38 @@ export function renderMarkdown(
   const lines = text.replace(/\r\n?/gu, "\n").split("\n");
   let fence = false;
   let thinking = false;
-  let thinkingLines = 0;
+  let pendingDetails = false;
+  let thinkingBuffer: string[] = [];
+
+  /**
+   * A thinking block opens with its label on its own dim line, the way Claude
+   * Code marks reasoning: one marker, then the body indented under it.
+   */
+  const startThinking = (label: string): void => {
+    thinking = true;
+    thinkingBuffer = [];
+    const text = label.length === 0 ? "thinking" : label;
+    out.push(paint(truncate(`  ✻ ${text}`, cols), options?.thinkingTone ?? "faint"));
+  };
+
+  /** Emit a finished thinking block: the head of it, then what it cost to hide. */
+  const flushThinking = (): void => {
+    const limit = options?.collapseThinking ?? 0;
+    const tone = options?.thinkingTone ?? "faint";
+    const shown = limit > 0 ? thinkingBuffer.slice(0, limit) : thinkingBuffer;
+    for (const entry of shown) {
+      if (entry.length === 0) continue;
+      for (const wrapped of wrapSpans(inline(entry), cols, "    ")) {
+        out.push(paint(wrapped, tone));
+      }
+    }
+    const hidden = thinkingBuffer.length - shown.length;
+    if (hidden > 0) {
+      out.push(paint(`    … +${hidden} more line${hidden === 1 ? "" : "s"}`, tone));
+    }
+    thinkingBuffer = [];
+    out.push("");
+  };
 
   for (const raw of lines) {
     const line = raw.replace(/\s+$/u, "");
@@ -134,34 +165,35 @@ export function renderMarkdown(
       continue;
     }
 
-    // `<details><summary>…</summary>` opens a thinking block; `</details>` closes it.
+    // `<details>` and `<summary>` reach us on their own lines, and sometimes on
+    // one; both shapes open the same thinking block. Getting this wrong leaks
+    // raw tags into the transcript, which is exactly what it did before.
+    if (/^\s*<details>\s*$/u.test(line)) {
+      pendingDetails = true;
+      continue;
+    }
+    const summaryLine = /^\s*<summary>([\s\S]*?)<\/summary>\s*$/u.exec(line);
+    if (pendingDetails && summaryLine !== null) {
+      pendingDetails = false;
+      startThinking((summaryLine[1] ?? "").replace(/<[^>]*>/gu, "").trim());
+      continue;
+    }
     const open = /^\s*<details>\s*<summary>([\s\S]*?)<\/summary>\s*$/u.exec(line);
     if (open !== null) {
-      thinking = true;
-      thinkingLines = 0;
-      const label = (open[1] ?? "").replace(/<[^>]*>/gu, "").trim();
-      out.push(paint(truncate(`  ${label.length === 0 ? "thinking" : label}`, cols), "faint"));
+      pendingDetails = false;
+      startThinking((open[1] ?? "").replace(/<[^>]*>/gu, "").trim());
       continue;
     }
     if (/^\s*<\/details>\s*$/u.test(line)) {
-      thinking = false;
-      out.push("");
+      pendingDetails = false;
+      if (thinking) {
+        thinking = false;
+        flushThinking();
+      }
       continue;
     }
     if (thinking) {
-      const limit = options?.collapseThinking ?? 0;
-      if (limit > 0 && thinkingLines >= limit) {
-        if (thinkingLines === limit) {
-          out.push(paint("  … (open the log for the rest)", "faint"));
-        }
-        thinkingLines += 1;
-        continue;
-      }
-      thinkingLines += 1;
-      const spans = inline(line.trim());
-      for (const wrapped of wrapSpans(spans, cols, "    ")) {
-        out.push(paint(wrapped, options?.thinkingTone ?? "faint"));
-      }
+      thinkingBuffer.push(line.trim());
       continue;
     }
 
@@ -209,6 +241,9 @@ export function renderMarkdown(
 
     out.push(...wrapSpans(inline(line), cols, ""));
   }
+
+  // A thinking block that never closes still has to say what it is hiding.
+  if (thinking) flushThinking();
 
   while (out.length > 0 && out.at(-1) === "") out.pop();
   // Unpadded: the frame pads every line to the terminal itself, and doing it

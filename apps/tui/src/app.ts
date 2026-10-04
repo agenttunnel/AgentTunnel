@@ -31,9 +31,10 @@ import {
 } from "./format.ts";
 import { buildAgentTunnelPatch, resolveAgentTunnelConfig } from "./agentTunnel.ts";
 import { renderFrame } from "./frame.ts";
+import { DRAFT_THREAD, loadHistory, saveHistory } from "./history.ts";
 import { parseKeys } from "./keys.ts";
 import { createPainter } from "./paint.ts";
-import { loadPreferences, savePreferences, type TuiPreferences } from "./preferences.ts";
+import { loadPreferences, loadTheme, savePreferences, type TuiPreferences } from "./preferences.ts";
 import {
   addProject,
   connect,
@@ -61,6 +62,8 @@ import {
   selectedThread,
   withAgentLog,
   withCatalogs,
+  withHistory,
+  withHistoryRenamed,
   withOpenThread,
   withPreferences,
   withRunningState,
@@ -75,6 +78,20 @@ import {
 } from "./state.ts";
 import { foldAgentLogEntries } from "@t3tools/client-runtime/state/agentLog";
 import type { ServerSettings } from "@t3tools/contracts";
+import {
+  accentName,
+  applyAccent,
+  applyPaletteOverrides,
+  applyTerminalTheme,
+  nextAccent,
+  palette,
+  parseBackgroundReply,
+  type TuiColor,
+} from "./theme.ts";
+
+/** OSC 11 asks the terminal for its background; the reply is what themes us. */
+const OSC11_QUERY = "\u001b]11;?\u0007";
+const OSC11_TIMEOUT_MS = 150;
 
 /** Attempts the first connection makes while the server finishes starting. */
 const ERROR_RETRIES = 6;
@@ -343,6 +360,10 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
       const threadId = await Effect.runPromise(
         Random.nextInt.pipe(Effect.map((seed) => `tui-${seed.toString(36)}`)),
       );
+      // The prompt was typed before this thread had an id; move its history onto
+      // the real one so ↑ works here straight away.
+      apply(withHistoryRenamed(state, DRAFT_THREAD, threadId));
+      void saveHistory(state.history);
       await Effect.runPromise(
         startThread(session, { threadId, projectId, title, text, modelSelection }),
       );
@@ -493,10 +514,13 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
       }
       case "send":
         if (threadId === null || args.demo) return;
+        // The reducer already recorded it; the file is the mirror, not the source.
+        void saveHistory(state.history);
         void send(threadId, effect.text);
         return;
       case "createThread":
         if (args.demo) return;
+        void saveHistory(state.history);
         void createThread(previous, effect.projectId, effect.title, effect.text);
         return;
       case "interrupt":
@@ -511,6 +535,19 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
         if (args.demo) return;
         void persistPreferences(effect.patch);
         return;
+      case "setAccent": {
+        // An empty argument cycles, so `/theme` alone is enough to change it.
+        const wanted = effect.value.length > 0 ? effect.value : nextAccent();
+        if (!applyAccent(wanted)) {
+          apply(withStatus(state, `unknown accent: ${wanted}`));
+          return;
+        }
+        // Every cell was painted in the old accent.
+        painter.invalidate();
+        apply(withStatus(state, `accent: ${accentName()}`));
+        if (!args.demo) void persistPreferences({ defaultAccent: accentName() });
+        return;
+      }
       case "saveServerSetting":
         if (args.demo) return;
         void persistServerSetting(effect.key, effect.value);
@@ -565,11 +602,47 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
 
+  // A no-colour environment gets no colour at all, probe or not.
+  if (process.env["NO_COLOR"] !== undefined) applyTerminalTheme({ mode: "none" });
+
   painter.enter();
   process.stdin.setRawMode?.(true);
   process.stdin.resume();
+
+  /**
+   * Ask the terminal what colour it is, so the palette and the surface ramp are
+   * derived from it instead of assumed. The reply arrives on stdin, before any
+   * key press, and is consumed here rather than being mistaken for typing.
+   */
+  let probing = process.env["NO_COLOR"] === undefined;
+  if (probing) {
+    process.stdout.write(OSC11_QUERY);
+    // No answer: keep the dark default and stop looking.
+    Effect.runFork(
+      Effect.sleep(`${OSC11_TIMEOUT_MS} millis`).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            probing = false;
+          }),
+        ),
+      ),
+    );
+  }
+
   process.stdin.on("data", (chunk: Buffer) => {
-    for (const key of parseKeys(chunk.toString("utf8"))) {
+    const text = chunk.toString("utf8");
+    if (probing) {
+      const background = parseBackgroundReply(text);
+      if (background !== null) {
+        probing = false;
+        applyTerminalTheme({ background });
+        // Every cell was painted with the previous palette.
+        painter.invalidate();
+        requestPaint();
+        return;
+      }
+    }
+    for (const key of parseKeys(text)) {
       const before = state;
       const { state: next, effect } = reduceKey(before, key);
       apply(next);
@@ -590,6 +663,47 @@ export async function run(argv: ReadonlyArray<string> = process.argv.slice(2)): 
     apply(withPreferences(state, preferences));
   } catch (error) {
     apply(withStatus(state, `settings not loaded: ${String(error)}`));
+  }
+
+  let rememberedAccent: string | null = null;
+  try {
+    const preferences = await loadPreferences();
+    rememberedAccent = preferences.defaultAccent;
+    apply(withPreferences(state, preferences));
+  } catch (error) {
+    apply(withStatus(state, `settings not loaded: ${String(error)}`));
+  }
+
+  // The prompts sent from this directory, so ↑ means the same thing here as it
+  // does in a shell.
+  try {
+    apply(withHistory(state, await loadHistory()));
+  } catch (error) {
+    apply(withStatus(state, `history not loaded: ${String(error)}`));
+  }
+
+  // The accent, in precedence order: the environment, the user's theme file,
+  // then whatever they last chose in here.
+  const fromEnvironment = process.env["T3CODE_ACCENT"]?.trim();
+  const themeFile = await loadTheme().catch(() => ({ accent: null, colors: {} }));
+  const chosen = fromEnvironment || themeFile.accent || rememberedAccent;
+  if (chosen !== null && chosen !== undefined && !applyAccent(chosen)) {
+    apply(withStatus(state, `unknown accent: ${chosen}`));
+  }
+
+  // The user's own role colours, if they wrote any, outrank the terminal's.
+  try {
+    const known = new Set(Object.keys(palette));
+    const valid: Partial<Record<TuiColor, string>> = {};
+    for (const [role, value] of Object.entries(themeFile.colors)) {
+      if (known.has(role)) valid[role as TuiColor] = value;
+    }
+    if (Object.keys(valid).length > 0) {
+      applyPaletteOverrides(valid);
+      requestPaint();
+    }
+  } catch (error) {
+    apply(withStatus(state, `theme not loaded: ${String(error)}`));
   }
 
   try {

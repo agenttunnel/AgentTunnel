@@ -1,7 +1,7 @@
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { foldSubagentActivities } from "@t3tools/client-runtime/state/subagentRuntime";
 
-import { agentRows, agentUsageLines } from "./agents.ts";
+import { agentRows, agentUsageLines, formatCost } from "./agents.ts";
 import { renderMarkdown } from "./markdown.ts";
 import {
   lineGlyph,
@@ -14,13 +14,24 @@ import {
 import {
   agentTunnelScreenRows,
   commandSuggestions,
+  activeProvider,
   isThreadRunning,
   highlightedSuggestion,
   pickerItems,
   settingsRows,
   type TuiState,
 } from "./state.ts";
-import { pad, paint, truncate, visibleWidth, type TuiColor } from "./theme.ts";
+import {
+  chip,
+  fleetHue,
+  keycap,
+  pad,
+  paint,
+  truncate,
+  visibleWidth,
+  type TuiColor,
+  type TuiSurface,
+} from "./theme.ts";
 
 /**
  * The whole screen as lines of text.
@@ -40,12 +51,82 @@ export interface FrameSize {
   readonly now?: number;
 }
 
-const HEADER_ROWS = 1;
-const COMPOSER_ROWS = 1;
+const HEADER_ROWS = 2;
+const COMPOSER_ROWS = 4;
 const HINTS_ROWS = 1;
 const MAX_PALETTE_ROWS = 8;
 const CARD_MAX_COLS = 76;
 const LABEL_COLS = 22;
+
+/** The brand mark on the left of the header, the way every reference signs its chrome. */
+const BRAND = "AgentTunnel";
+
+/** The keys each surface answers to, written as keycaps rather than a sentence. */
+const KEY_HINTS: Record<TuiState["view"], ReadonlyArray<readonly [string, string]>> = {
+  threads: [
+    ["↑/↓", "move"],
+    ["enter", "open"],
+    ["type", "starts a thread"],
+    ["/", "commands"],
+    ["ctrl-a", "agents"],
+    ["ctrl-c", "quit"],
+  ],
+  thread: [
+    ["↑/↓", "history"],
+    ["enter", "send"],
+    ["/", "commands"],
+    ["ctrl-a", "agents"],
+    ["ctrl-i", "interrupt"],
+    ["esc", "back"],
+  ],
+  agents: [
+    ["↑/↓", "move"],
+    ["l", "log"],
+    ["x", "stop"],
+    ["r", "restart"],
+    ["esc", "back"],
+  ],
+  agentLog: [
+    ["esc", "back"],
+    ["ctrl-r", "refresh"],
+  ],
+  usage: [["esc", "back"]],
+  settings: [
+    ["↑/↓", "move"],
+    ["enter", "change"],
+    ["esc", "back"],
+  ],
+  agenttunnel: [
+    ["↑/↓", "move"],
+    ["enter", "change"],
+    ["esc", "back"],
+  ],
+};
+
+/** The same, for a command panel opened under a running thread. */
+const PANEL_HINTS: Partial<Record<TuiState["view"], ReadonlyArray<readonly [string, string]>>> = {
+  agents: [
+    ["↑/↓", "move"],
+    ["l", "log"],
+    ["x", "stop agent"],
+    ["r", "restart agent"],
+    ["esc", "close panel"],
+  ],
+  agentLog: [
+    ["esc", "back to agents"],
+    ["ctrl-r", "refresh"],
+  ],
+  settings: [
+    ["↑/↓", "move"],
+    ["enter", "change"],
+    ["esc", "close panel"],
+  ],
+  agenttunnel: [
+    ["↑/↓", "move"],
+    ["enter", "change"],
+    ["esc", "close panel"],
+  ],
+};
 
 /** Spinner phases, advanced by the app while work runs. */
 const SPINNER = ["◐", "◓", "◑", "◒"] as const;
@@ -62,16 +143,8 @@ function elapsed(since: string | null, now: number): string | null {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-function bar(fraction: number, width: number): string {
-  const filled = Math.max(0, Math.min(width, Math.round(fraction * width)));
-  return "▓".repeat(filled) + "░".repeat(Math.max(0, width - filled));
-}
-
 /** Composer cursor: a block, so it reads as an input even when empty. */
 const CURSOR = "█";
-
-const color = (kind: TuiLine["kind"]): TuiColor =>
-  kind === "user" ? "primary" : kind === "agent" ? "faint" : kind === "system" ? "warn" : "text";
 
 const statusTone = (status: string): TuiColor => {
   if (status === "failed" || status === "cancelled" || status === "interrupted") return "err";
@@ -87,6 +160,38 @@ function fill(lines: ReadonlyArray<string>, height: number, cols: number): strin
     out.push(pad(truncate(lines[index] ?? "", cols), cols));
   }
   return out;
+}
+
+/**
+ * The same, but the content sits in the middle of its band. An idle screen with
+ * a block pinned to the top and a screenful of nothing under it reads as a bug;
+ * every reference client centres it and lets the space around it be deliberate.
+ */
+function fillCentered(lines: ReadonlyArray<string>, height: number, cols: number): string[] {
+  const above = Math.max(0, Math.floor((height - lines.length) / 2));
+  const below = Math.max(0, height - lines.length - above);
+  return fill(
+    [
+      ...Array.from({ length: above }, () => ""),
+      ...lines,
+      ...Array.from({ length: below }, () => ""),
+    ],
+    height,
+    cols,
+  );
+}
+
+/** Centre one line horizontally, ignoring the colour it already carries. */
+function center(line: string, cols: number): string {
+  const margin = Math.max(0, Math.floor((cols - visibleWidth(line)) / 2));
+  return `${" ".repeat(margin)}${line}`;
+}
+/** The same, but the content sits at the bottom of its band: a live transcript
+ * belongs against the composer, the way Claude Code pins the newest line to the
+ * input, so the eye never crosses empty screen to find it. */
+function fillAbove(lines: ReadonlyArray<string>, height: number, cols: number): string[] {
+  const blanks = Math.max(0, height - lines.length);
+  return fill([...Array.from({ length: blanks }, () => ""), ...lines], height, cols);
 }
 
 /** Wrap to at most `cols` columns, so a transcript never loses text silently. */
@@ -159,18 +264,27 @@ function separator(state: TuiState, cols: number): string {
 
 function header(state: TuiState, cols: number): string {
   const titles: Record<TuiState["view"], string> = {
-    threads: `AgentTunnel · threads (${state.threads.length})`,
-    thread: `AgentTunnel · ${state.title}`,
-    agents: `AgentTunnel · agents (${state.agents.length})`,
-    agentLog: `AgentTunnel · ${state.agentLog?.label ?? "agent"} · log`,
-    usage: "AgentTunnel · token usage",
-    settings: "AgentTunnel · settings",
-    agenttunnel: "AgentTunnel · workflow roles",
+    threads: `threads (${state.threads.length})`,
+    thread: state.title,
+    agents: `agents (${state.agents.length})`,
+    agentLog: `${state.agentLog?.label ?? "agent"} · log`,
+    usage: "token usage",
+    settings: "settings",
+    agenttunnel: "workflow roles",
   };
-  const title = isSplit(state) ? `AgentTunnel · ${state.title}` : titles[state.view];
+  const title = isSplit(state) ? state.title : titles[state.view];
+  const left = `${paint("▌", "primary")} ${paint(BRAND, "text", { bold: true })} ${paint(
+    "·",
+    "faint",
+  )} ${paint(title, "muted")}`;
   const right = fleetText(state) ?? state.status;
-  const gap = Math.max(1, cols - visibleWidth(title) - visibleWidth(right) - 1);
-  return `${truncate(title, cols)}${" ".repeat(gap)}${paint(truncate(right, cols), "muted")}`;
+  const gap = Math.max(1, cols - visibleWidth(left) - visibleWidth(right) - 1);
+  return `${left}${" ".repeat(gap)}${paint(truncate(right, cols), "muted")}`;
+}
+
+/** A dim rule, so the chrome reads as a frame instead of more transcript. */
+function rule(cols: number): string {
+  return paint("─".repeat(Math.max(0, cols)), "line");
 }
 
 /** Spend and posture for the open thread, the way the hub roster summarises it. */
@@ -204,14 +318,24 @@ function formatTokens(total: number): string {
   return `${total}`;
 }
 
-/** The transcript: physical lines, wrapped, newest at the bottom. */
+/**
+ * The transcript in Claude Code's grammar: `>` for what you asked, `⏺` for the
+ * assistant, `⎿` for nested tool and sub-agent output, two-space hangs under
+ * every marker, and a blank line between turns so roles never run together.
+ */
 function transcriptLines(state: TuiState, cols: number): string[] {
   const out: string[] = [];
+  let previous: TuiLine["kind"] | null = null;
   for (const line of state.lines) {
+    if (previous !== null && previous !== line.kind) out.push("");
+    previous = line.kind;
     if (line.kind === "user") {
-      const wrapped = wrap(line.text, cols - 2);
-      wrapped.forEach((text, index) => {
-        out.push(paint(`${index === 0 ? `${lineGlyph("user")} ` : "  "}${text}`, color("user")));
+      wrap(line.text, cols - 2).forEach((text, index) => {
+        out.push(
+          index === 0
+            ? `${paint(">", "primary", { bold: true })} ${paint(text, "text")}`
+            : `  ${paint(text, "text")}`,
+        );
       });
       continue;
     }
@@ -221,8 +345,20 @@ function transcriptLines(state: TuiState, cols: number): string[] {
       thinkingTone: "faint",
       collapseThinking: 24,
     });
+    const nested = line.kind === "agent";
+    const lead = line.kind === "system" ? "warn" : nested ? "faint" : "primary";
     rendered.forEach((text, index) => {
-      out.push(`${index === 0 ? paint(`${lineGlyph(line.kind)} `, "muted") : "  "}${text}`);
+      if (index !== 0) {
+        out.push(`  ${text}`);
+        return;
+      }
+      // Tool and sub-agent output hangs off the turn above it, Claude Code's
+      // `⎿` corner, rather than starting a new paragraph.
+      out.push(
+        nested
+          ? `  ${paint(lineGlyph(line.kind), lead)}  ${text}`
+          : `${paint(lineGlyph(line.kind), lead)} ${text}`,
+      );
     });
   }
   // A failed run's reason goes last, where the eye already is, and in full:
@@ -293,14 +429,49 @@ function welcomeLines(state: TuiState, cols: number, rows: number, now: number):
       `${pad(truncate(left[index] ?? "", leftWidth - 2), leftWidth - 2)}  ${right[index] ?? ""}`,
     );
   }
-  return card("", panel, cols);
+  return [
+    pad(center(paint("✻ AgentTunnel", "primary", { bold: true }), cols), cols),
+    pad(center(paint("terminal client for your workflows", "faint"), cols), cols),
+    "",
+    ...card("", panel, cols),
+  ];
 }
 
-function listLines(state: TuiState, cols: number): string[] {
-  return threadRowsFrom(state).map((row, index) => {
+/**
+ * The thread list as a table with stable lanes: cursor, title, project, branch,
+ * fleet, age. Rows are things you scan, so the columns do not move between rows,
+ * the state lives in a tone, and the row under the cursor is a filled band.
+ */
+function listLines(state: TuiState, cols: number, now: number): string[] {
+  const rows = threadRowsFrom(state);
+  const ages = rows.map((row) => relativeAge(row.updatedAt, now));
+  const widthOf = (text: string | null): number => (text === null ? 0 : visibleWidth(text));
+  const projectWidth = Math.max(0, ...rows.map((row) => widthOf(row.projectTitle)));
+  const branchWidth = Math.max(0, ...rows.map((row) => widthOf(row.branch)));
+  const fleetWidth = Math.max(0, ...rows.map((row) => widthOf(row.fleet)));
+  const ageWidth = Math.max(0, ...ages.map(widthOf));
+  // cursor + the four two-column gaps between the five lanes.
+  const fixed = 2 + 8 + projectWidth + branchWidth + fleetWidth + ageWidth;
+  const titleWidth = Math.max(8, cols - fixed);
+
+  return rows.map((row, index) => {
     const selected = index === state.selectedIndex;
-    const text = `${selected ? "▸" : " "} ${row.title}${row.branch === null ? "" : ` · ${row.branch}`}  (${row.projectTitle})`;
-    return paint(truncate(text, cols), selected ? "primary" : "text");
+    const bg: { readonly bg?: TuiSurface } = selected ? { bg: "high" } : {};
+    const cursor = paint(selected ? "▸" : " ", "primary", bg);
+    const title = paint(
+      pad(truncate(row.title, titleWidth), titleWidth),
+      selected ? "text" : "muted",
+      bg,
+    );
+    const project = paint(pad(truncate(row.projectTitle, projectWidth), projectWidth), "faint", bg);
+    const branch = paint(pad(truncate(row.branch ?? "", branchWidth), branchWidth), "info", bg);
+    const fleet = paint(pad(truncate(row.fleet ?? "", fleetWidth), fleetWidth), "ok", bg);
+    const when = paint(ages[index] ?? "", "faint", bg);
+    const line = `${cursor} ${title}  ${project}  ${branch}  ${fleet}  ${when}`;
+    // A selected row is a surface, so the band reaches the right edge.
+    const rest = Math.max(0, cols - visibleWidth(line));
+    const tail = selected && rest > 0 ? paint(" ".repeat(rest), "text", bg) : "";
+    return truncate(`${line}${tail}`, cols);
   });
 }
 
@@ -361,14 +532,19 @@ function agentLines(state: TuiState, cols: number): string[] {
       agent.parentId === null
         ? ""
         : ` ↳ retry of ${byId.get(agent.parentId) ?? shortAgentId(agent.parentId)}`;
-    const line = `${selected ? "▸" : " "} ${glyph} ${agent.label} · ${agent.status}${
-      agent.activity.length === 0 ? "" : ` — ${agent.activity}`
-    }${link}`;
-    out.push(
-      selected
-        ? paint(truncate(line, cols), tone, { bold: true })
-        : paint(truncate(line, cols), tone),
-    );
+    // The name carries the agent's own hue, the status word carries the state:
+    // the roster reads as a fleet of individuals, not as a column of labels.
+    const hue = fleetHue(agent.id);
+    const head = `${selected ? paint("▸", "primary") : " "} ${paint(glyph, tone)} ${paint(
+      agent.label,
+      hue,
+      selected ? { bold: true } : undefined,
+    )} ${paint("·", "faint")} ${paint(agent.status, tone)}`;
+    const tail = `${agent.activity.length === 0 ? "" : paint(` — ${agent.activity}`, "muted")}${paint(
+      link,
+      "faint",
+    )}`;
+    out.push(truncate(`${head}${tail}`, cols));
     const meta = [
       agent.model,
       agent.tokens === null ? null : `${agent.tokens} tokens`,
@@ -429,12 +605,14 @@ function logLines(state: TuiState, cols: number): string[] {
 }
 
 /** The body for the current view, before windowing. */
-function bodyLines(state: TuiState, cols: number): string[] {
+function bodyLines(state: TuiState, cols: number, now: number): string[] {
   switch (state.view) {
-    case "threads":
-      return listLines(state, cols).length > 0
-        ? listLines(state, cols)
+    case "threads": {
+      const list = listLines(state, cols, now);
+      return list.length > 0
+        ? list
         : [paint("no threads yet — /new starts one, /add-project registers a directory", "muted")];
+    }
     case "thread":
       return transcriptLines(state, cols);
     case "agents":
@@ -501,11 +679,45 @@ function pickerLinesFor(state: TuiState, cols: number, budget: number): string[]
   );
 }
 
-function composerLine(state: TuiState, cols: number): string {
-  return pad(
-    truncate(`${paint("❯ ", "primary")}${state.input}${paint(CURSOR, "faint")}`, cols),
-    cols,
-  );
+/**
+ * The composer, in Claude Code's shape: a rounded box around the input, opened
+ * by a chevron, with the mode and the model under it and the shortcut hint last.
+ */
+function composerLines(state: TuiState, cols: number): string[] {
+  const width = Math.max(8, cols);
+  const inner = width - 4;
+  // Square corners on purpose: the rounded set (╭╮╰╯) is missing from plenty of
+  // monospace fonts, and a box whose corners and rules vanish reads as a glitch.
+  const top = `┌${"─".repeat(width - 2)}┐`;
+  const bottom = `└${"─".repeat(width - 2)}┘`;
+  const empty = state.input.length === 0;
+  const text = empty
+    ? paint("ask anything, or / for commands", "faint")
+    : paint(state.input, "text");
+  const cursor = empty ? "" : paint(CURSOR, "primary");
+  const body = `${paint(">", "primary", { bold: true })} ${truncate(`${text}${cursor}`, inner - 2)}`;
+  const prompt = `│ ${pad(body, inner)} │`;
+
+  const provider = activeProvider(state);
+  const model =
+    state.modelSelection?.model ??
+    state.preferences.defaultModel ??
+    provider?.models[0]?.slug ??
+    null;
+  const left = [
+    paint(state.draft === null ? "auto" : `new thread · ${state.draft.projectTitle}`, "muted"),
+    model === null ? null : paint(model, "muted"),
+    provider === null ? null : paint(provider.label, "muted"),
+  ]
+    .filter((part): part is string => part !== null)
+    .join(paint(" · ", "faint"));
+  // Claude Code's hint line, with the bindings this client actually answers to.
+  const right = `? ${paint("for shortcuts", "faint")}`;
+  const gap = Math.max(1, cols - 2 - visibleWidth(left) - visibleWidth(right));
+  const meta = `  ${left}${" ".repeat(gap)}${right}`;
+  // The frame is drawn brighter than a transcript rule: it is chrome, and chrome
+  // that disappears into the background is worse than no chrome at all.
+  return [paint(top, "faint"), prompt, paint(bottom, "faint"), meta];
 }
 
 /**
@@ -517,9 +729,10 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
   const session = state.threadSnapshot?.thread.session ?? null;
   const row = state.threads.find((entry) => entry.id === state.openThreadId) ?? null;
   const phase = SPINNER[state.spinner % SPINNER.length] ?? "◐";
-  const running = isThreadRunning(state);
-  const stateWord =
-    session === null ? "no session" : session.status === "running" ? "working" : session.status;
+  // One predicate for the glyph, the tone and the word: a strip that says
+  // "working" beside a pause glyph is a strip nobody can believe.
+  const running = isThreadRunning(state) || session?.status === "running";
+  const stateWord = session === null ? "no session" : running ? "working" : session.status;
 
   const failed = session?.status === "error";
   const stateTone: TuiColor = failed ? "err" : running ? "warn" : "muted";
@@ -547,60 +760,132 @@ function statusStrip(state: TuiState, cols: number, now: number): string[] {
   const first = `${left}${" ".repeat(goalGap)}${paint(truncate(goal, cols), "faint")}`;
 
   const counts = fleetCounts(state);
-  // The bar fills on settled work, and says so: a finished fleet reads 6/6.
-  const progress =
-    counts.total === 0
-      ? null
-      : `${paint(bar(counts.settled / counts.total, 6), counts.failed > 0 ? "warn" : "primary")} ${
-          counts.settled
-        }/${counts.total} settled`;
+  // The ledger says who is where: a chip each for the workspace facts, then the
+  // fleet ribbon, which is the one thing this client is about.
   const second = [
     row?.projectTitle === null || row?.projectTitle === undefined
       ? null
-      : paint(row.projectTitle, "muted"),
-    row?.branch === null || row?.branch === undefined ? null : paint(row.branch, "muted"),
-    counts.total === 0 ? paint("no agents yet", "faint") : paint(`${counts.total} agents`, "muted"),
-    progress,
+      : chip(row.projectTitle, "text"),
+    row?.branch === null || row?.branch === undefined ? null : chip(row.branch, "info"),
+    counts.total === 0 ? paint("no agents yet", "faint") : ribbon(counts),
     counts.running > 0 ? paint(`${counts.running} running`, "warn") : null,
     counts.failed > 0 ? paint(`${counts.failed} failed`, "err") : null,
     counts.tokens === 0 ? null : paint(`${formatTokens(counts.tokens)} tok`, "muted"),
   ]
     .filter((part): part is string => part !== null)
-    .join(paint(" · ", "faint"));
+    .join(" ");
 
   return [pad(truncate(first, cols), cols), pad(truncate(second, cols), cols)];
 }
 
+/**
+ * The fleet ribbon: one cell per agent, coloured by how it ended, so a settled
+ * fleet reads green and a broken one shows red at the same glance. This is the
+ * client's own instrument — the references track one agent, we track many.
+ */
+function ribbon(counts: {
+  readonly settled: number;
+  readonly running: number;
+  readonly failed: number;
+  readonly total: number;
+}): string {
+  const cells = [
+    counts.settled === 0 ? "" : paint("▰".repeat(counts.settled), "ok"),
+    counts.running === 0 ? "" : paint("▰".repeat(counts.running), "warn"),
+    counts.failed === 0 ? "" : paint("▰".repeat(counts.failed), "err"),
+  ].join("");
+  return `${cells} ${paint(`${counts.settled}/${counts.total} settled`, "muted")}`;
+}
+
 function hints(state: TuiState, cols: number): string {
-  if (isSplit(state)) {
-    const panel: Partial<Record<TuiState["view"], string>> = {
-      agents: "↑/↓ move · l log · x stop agent · r restart agent · esc close panel",
-      agentLog: "esc back to agents · ctrl-r refresh",
-      settings: "↑/↓ move · enter change · esc close panel",
-      agenttunnel: "↑/↓ move · enter change · esc close panel",
-    };
-    return paint(truncate(panel[state.view] ?? "esc close panel", cols), "faint");
-  }
-  const byView: Record<TuiState["view"], string> = {
-    threads: "↑/↓ move · enter open · / commands · ctrl-p palette · ctrl-c quit",
-    thread: "enter send · / commands · ctrl-a agents · ctrl-i interrupt · esc back",
-    agents: "↑/↓ move · l log · x stop agent · r restart agent · esc back",
-    agentLog: "esc back to agents · ctrl-r refresh",
-    usage: "esc back",
-    settings: "↑/↓ move · enter change · esc back",
-    agenttunnel: "↑/↓ move · enter change · esc back",
-  };
-  return paint(truncate(byView[state.view], cols), "faint");
+  const pairs = isSplit(state)
+    ? (PANEL_HINTS[state.view] ?? ([["esc", "close panel"]] as const))
+    : KEY_HINTS[state.view];
+  const rendered = pairs.map(([key, label]) => keycap(key, label)).join(paint("   ", "faint"));
+  return truncate(rendered, cols);
 }
 
 /**
  * The whole frame: exactly `size.rows` lines, each exactly `size.cols` wide.
  * The composer only exists where typing means something.
  */
+/** The right rail: opencode shows one above 120 columns, 42 wide. */
+const RAIL_COLS = 42;
+const RAIL_MIN_WIDTH = 120;
+
 export function renderFrame(state: TuiState, size: FrameSize): string[] {
+  const rail =
+    size.cols > RAIL_MIN_WIDTH && state.view === "thread" ? sidebarLines(state, size) : null;
+  if (rail === null) return renderMain(state, size);
+  const mainCols = Math.max(20, size.cols - RAIL_COLS - 1);
+  const main = renderMain(state, { ...size, cols: mainCols });
+  return main.map((line, row) => {
+    const right = rail[row] ?? "";
+    return `${pad(truncate(line, mainCols), mainCols)} ${pad(truncate(right, RAIL_COLS), RAIL_COLS)}`;
+  });
+}
+
+/**
+ * The context rail: what this thread has spent, on what, and where. A wide
+ * terminal was leaving half the screen empty; this is what belongs there.
+ */
+function sidebarLines(state: TuiState, size: FrameSize): string[] {
+  const counts = fleetCounts(state);
+  const session = state.threadSnapshot?.thread.session ?? null;
+  const row = state.threads.find((entry) => entry.id === state.openThreadId) ?? null;
+  const provider = activeProvider(state);
+  const model = state.modelSelection?.model ?? state.preferences.defaultModel ?? null;
+  const spent = state.agents.reduce((total, agent) => total + (agent.costUsd ?? 0), 0);
+
+  const heading = (text: string): string => paint(text, "text", { bold: true });
+  const muted = (text: string): string => paint(text, "muted");
+
+  const out: string[] = [""];
+  const section = (title: string, lines: ReadonlyArray<string | null>): void => {
+    out.push(heading(title));
+    for (const line of lines) {
+      if (line !== null) out.push(muted(line));
+    }
+    out.push("");
+  };
+
+  out.push(muted(session === null ? "no session" : `session · ${session.status}`));
+  out.push("");
+  section("Context", [
+    `${counts.tokens === 0 ? 0 : formatTokens(counts.tokens)} tokens`,
+    spent === 0 ? null : `${formatCost(spent)} spent`,
+  ]);
+  section("Model", [model ?? "provider default", provider?.label ?? "no provider"]);
+  section("Workspace", [
+    row?.projectTitle ?? null,
+    row?.branch ?? null,
+    state.draft === null ? null : `new thread · ${state.draft.projectTitle}`,
+  ]);
+  section("Agents", [
+    counts.total === 0 ? "none yet" : `${counts.total} · ${counts.settled} settled`,
+    counts.running === 0 ? null : `${counts.running} running`,
+    counts.failed === 0 ? null : `${counts.failed} failed`,
+  ]);
+
+  // The rail's own footer, the way opencode pins the workspace at its bottom.
+  const footer = [
+    row?.projectTitle === null || row?.projectTitle === undefined
+      ? null
+      : paint(truncate(row.projectTitle, RAIL_COLS), "faint"),
+    paint(truncate(BRAND, RAIL_COLS), "faint"),
+  ].filter((line): line is string => line !== null);
+  const height = Math.max(0, size.rows - out.length - footer.length);
+  const padded = [...out, ...Array.from({ length: height }, () => ""), ...footer];
+  return fill(padded, size.rows, RAIL_COLS);
+}
+
+/**
+ * Everything but the rail: the frame in one column, exactly `size.rows` lines of
+ * exactly `size.cols` columns.
+ */
+function renderMain(state: TuiState, size: FrameSize): string[] {
   const { rows, cols } = size;
-  const showComposer =
-    !isSplit(state) && (state.view === "thread" || state.draft !== null || state.input.length > 0);
+  const showComposer = !isSplit(state);
   const overlay = paletteLines(state, cols, MAX_PALETTE_ROWS);
   const picking = pickerLinesFor(state, cols, MAX_PALETTE_ROWS);
   const overlayRows = picking.length > 0 ? picking.length : overlay.length;
@@ -644,11 +929,11 @@ export function renderFrame(state: TuiState, size: FrameSize): string[] {
       ? welcomeLines(state, cols, bodyHeight, size.now ?? 0)
       : null;
   const body = windowed(
-    greeting === null ? bodyLines(state, cols) : greeting,
+    greeting === null ? bodyLines(state, cols, size.now ?? 0) : greeting,
     bodyHeight,
     greeting === null ? cursor : 0,
   );
-  const out: string[] = [pad(header(state, cols), cols)];
+  const out: string[] = [pad(header(state, cols), cols), rule(cols)];
   if (split) {
     // The thread stays on top, scrolled to its newest line.
     const transcript = windowed(
@@ -659,11 +944,20 @@ export function renderFrame(state: TuiState, size: FrameSize): string[] {
     out.push(...fill(transcript, threadHeight, cols));
     out.push(pad(separator(state, cols), cols));
   }
-  out.push(...fill(body, bodyHeight, cols));
+  // A live transcript grows upward from the composer; an idle screen is a hero,
+  // centred in the space it has rather than pinned to the top of it.
+  const anchored = state.view === "thread" || state.view === "agentLog";
+  out.push(
+    ...(greeting !== null
+      ? fillCentered(body, bodyHeight, cols)
+      : anchored
+        ? fillAbove(body, bodyHeight, cols)
+        : fill(body, bodyHeight, cols)),
+  );
   out.push(...fill(recap, recap.length, cols));
   out.push(...fill(draft, draft.length, cols));
   out.push(...fill(picking.length > 0 ? picking : overlay, overlayRows, cols));
-  if (showComposer) out.push(composerLine(state, cols));
+  if (showComposer) out.push(...composerLines(state, cols));
   // The app passes the clock; a frame rendered without one has no elapsed row.
   out.push(...statusStrip(state, cols, size.now ?? 0));
   out.push(pad(hints(state, cols), cols));

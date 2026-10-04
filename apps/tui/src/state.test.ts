@@ -14,6 +14,7 @@ import {
   selectedThread,
   visibleLines,
   withCatalogs,
+  withHistory,
   withModelSelection,
   withOpenThread,
   withPreferences,
@@ -102,6 +103,83 @@ function projectPicker(): TuiState {
   return reduceKey(type(withThreads(catalogs, threads), "/new"), { name: "enter" }).state;
 }
 
+describe("the composer history", () => {
+  // `threadView()` opens thread "a", so these are that thread's prompts.
+  const withPrompts = (prompts: ReadonlyArray<string>, threadId = "a"): TuiState =>
+    withHistory(threadView(), { [threadId]: prompts });
+
+  it("offers only what this thread was sent", () => {
+    const other = withPrompts(["another thread's prompt"], "b");
+    expect(reduceKey(other, { name: "up" }).state.input).toBe("");
+    const mine = withHistory(threadView(), { a: ["mine"], b: ["theirs"] });
+    expect(reduceKey(mine, { name: "up" }).state.input).toBe("mine");
+  });
+
+  it("walks back from the newest prompt and forward again", () => {
+    let state = withPrompts(["first", "second"]);
+    state = reduceKey(state, { name: "up" }).state;
+    expect(state.input).toBe("second");
+    state = reduceKey(state, { name: "up" }).state;
+    expect(state.input).toBe("first");
+    // The oldest entry is the end of the line, not a wrap.
+    state = reduceKey(state, { name: "up" }).state;
+    expect(state.input).toBe("first");
+    state = reduceKey(state, { name: "down" }).state;
+    expect(state.input).toBe("second");
+  });
+
+  it("hands back whatever was being typed when the walk ends", () => {
+    let state = type(withPrompts(["first", "second"]), "half-written");
+    state = reduceKey(state, { name: "up" }).state;
+    expect(state.input).toBe("second");
+    state = reduceKey(state, { name: "down" }).state;
+    expect(state.input).toBe("half-written");
+    expect(state.historyIndex).toBeNull();
+  });
+
+  it("ignores the arrows when there is nothing to recall", () => {
+    const state = withPrompts([]);
+    expect(reduceKey(state, { name: "up" }).state.input).toBe("");
+    expect(reduceKey(state, { name: "down" }).state).toBe(state);
+  });
+
+  it("leaves the walk as soon as you type", () => {
+    let state = reduceKey(withPrompts(["first", "second"]), { name: "up" }).state;
+    expect(state.input).toBe("second");
+    state = reduceKey(state, { name: "s", text: "s" }).state;
+    expect(state.input).toBe("seconds");
+    // The next ↑ starts over from the newest prompt, not from mid-edit.
+    state = reduceKey(state, { name: "up" }).state;
+    expect(state.input).toBe("second");
+  });
+
+  it("records a sent prompt and leaves the composer empty", () => {
+    const sent = reduceKey(type(threadView(), "explore the repo"), { name: "enter" });
+    expect(sent.effect).toEqual({ kind: "send", text: "explore the repo" });
+    expect(sent.state.input).toBe("");
+    // Filed against the thread it was sent to, not a global list.
+    expect(sent.state.history).toEqual({ a: ["explore the repo"] });
+    // And it is what the next ↑ offers.
+    expect(reduceKey(sent.state, { name: "up" }).state.input).toBe("explore the repo");
+  });
+
+  it("records the first message of a thread it creates too", () => {
+    let state = reduceKey(type(withThreads(catalogs, threads), "/new"), { name: "enter" }).state;
+    state = reduceKey(state, { name: "enter" }).state;
+    const created = reduceKey(type(state, "start me off"), { name: "enter" });
+    expect(created.effect?.kind).toBe("createThread");
+    // The thread has no id yet, so it waits in the draft bucket for the app.
+    expect(created.state.history).toEqual({ "": ["start me off"] });
+    expect(reduceKey(created.state, { name: "up" }).state.input).toBe("start me off");
+  });
+
+  it("keeps the transcript on the paging keys now the arrows are taken", () => {
+    const scrolled = reduceKey({ ...threadView(), scrollback: 5 }, { name: "pageup" }).state;
+    expect(scrolled.scrollback).toBe(4);
+    expect(reduceKey(scrolled, { name: "pagedown" }).state.scrollback).toBe(5);
+  });
+});
+
 describe("reduceKey", () => {
   it("moves the cursor inside the list and opens the selected thread", () => {
     let state = withThreads(initialTuiState, threads);
@@ -168,6 +246,7 @@ describe("reduceKey", () => {
       "model",
       "provider",
       "settings",
+      "theme",
       "agenttunnel",
       "add-project",
       "help",
@@ -539,6 +618,7 @@ describe("resolveModelSelection", () => {
   const preferences = {
     defaultProvider: null,
     defaultModel: null,
+    defaultAccent: null,
     showAgentDetails: true,
   };
 
@@ -547,6 +627,7 @@ describe("resolveModelSelection", () => {
       ...preferences,
       defaultProvider: "codex",
       defaultModel: "gpt-5-mini",
+      defaultAccent: null,
     });
     const selection = resolveModelSelection(
       { ...state, modelSelection: { instanceId: claude, model: "sonnet" } },
@@ -560,6 +641,7 @@ describe("resolveModelSelection", () => {
       ...preferences,
       defaultProvider: "claude",
       defaultModel: "sonnet",
+      defaultAccent: null,
     });
     expect(resolveModelSelection(state, projectWithDefault)).toEqual({
       instanceId: claude,

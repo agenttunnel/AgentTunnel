@@ -29,6 +29,7 @@ import {
   parseCommandInput,
   type TuiCommandName,
 } from "./commands.ts";
+import { entriesFor, remember, renameThread, type HistoryMap } from "./history.ts";
 import {
   threadRows,
   threadView,
@@ -65,6 +66,7 @@ export type TuiEffect =
   | { readonly kind: "open" }
   | { readonly kind: "quit" }
   | { readonly kind: "savePreferences"; readonly patch: Partial<TuiPreferences> }
+  | { readonly kind: "setAccent"; readonly value: string }
   | { readonly kind: "saveServerSetting"; readonly key: string; readonly value: boolean | string }
   | {
       readonly kind: "saveAgentTunnelSetting";
@@ -125,6 +127,12 @@ export interface TuiState {
   readonly recap: string | null;
   readonly lines: ReadonlyArray<TuiLine>;
   readonly input: string;
+  /** Prompts already sent, per thread, oldest first: what ↑ walks back through. */
+  readonly history: HistoryMap;
+  /** The history entry the composer is showing, or null while composing. */
+  readonly historyIndex: number | null;
+  /** What was typed before the walk began, so ↓ can hand it back. */
+  readonly historyDraft: string;
   /** Last thing that happened, shown in the status line (errors included). */
   readonly status: string;
   readonly scrollback: number;
@@ -178,6 +186,7 @@ export interface TuiState {
 export const emptyPreferences: TuiPreferences = {
   defaultProvider: null,
   defaultModel: null,
+  defaultAccent: null,
   showAgentDetails: true,
 };
 
@@ -190,6 +199,9 @@ export const initialTuiState: TuiState = {
   recap: null,
   lines: [],
   input: "",
+  history: {},
+  historyIndex: null,
+  historyDraft: "",
   status: "connecting…",
   scrollback: 0,
   projects: [],
@@ -220,6 +232,17 @@ export const initialTuiState: TuiState = {
 export function withThreads(state: TuiState, threads: ReadonlyArray<TuiThreadRow>): TuiState {
   const selectedIndex = Math.min(state.selectedIndex, Math.max(0, threads.length - 1));
   return { ...state, threads, selectedIndex };
+}
+
+/** The prompts each thread can walk back through, loaded at boot. */
+export function withHistory(state: TuiState, history: HistoryMap): TuiState {
+  return { ...state, history, historyIndex: null, historyDraft: "" };
+}
+
+/** Move the draft composer's log onto the thread it just created. */
+export function withHistoryRenamed(state: TuiState, from: string, to: string): TuiState {
+  const history = renameThread(state.history, from, to);
+  return history === state.history ? state : { ...state, history };
 }
 
 export function withThread(
@@ -859,6 +882,12 @@ function runCommand(
       };
     case "help":
       return { state: openPickerFor({ ...state, input: "" }, "help"), effect: null };
+    case "theme":
+      // No argument cycles, so `/theme` is one keystroke away from a new look.
+      return {
+        state: { ...state, input: "" },
+        effect: { kind: "setAccent", value: argument.trim() },
+      };
     case "agenttunnel":
       return {
         state: { ...state, input: "", view: "agenttunnel", agentTunnelIndex: 0, picker: null },
@@ -1025,6 +1054,11 @@ export function reduceKey(
   // letters arrive as `text`, never as `name`.
   const typed = key.text !== undefined && [...key.text].length === 1 ? key.text : "";
   const name = key.name === "return" ? "enter" : (key.name ?? typed);
+  // `?` with nothing typed is the shortcut peek the composer advertises, so the
+  // hint and the key cannot drift apart.
+  if (name === "?" && state.input.length === 0 && state.picker === null) {
+    return { state: openPickerFor(state, "help"), effect: null };
+  }
   if (name === "ctrl-c") {
     return { state, effect: { kind: "quit" } };
   }
@@ -1244,11 +1278,41 @@ export function reduceKey(
         return { state: withWelcomeDismissed(moveSelection(state, -1)), effect: null };
       case "down":
         return { state: withWelcomeDismissed(moveSelection(state, 1)), effect: null };
-      case "enter":
+      case "enter": {
+        const text = state.input.trim();
+        // The home screen has a composer now, so what you type there has to do
+        // something: it starts the work, the way the reference clients behave.
+        if (text.length > 0) {
+          const title = text.split("\n")[0]?.slice(0, 80).trim() ?? "";
+          const project = state.projects.length === 1 ? state.projects[0] : undefined;
+          if (project === undefined && state.projects.length === 0) {
+            return {
+              state: { ...state, input: "", status: "no projects — /add-project <path> first" },
+              effect: null,
+            };
+          }
+          if (project === undefined) {
+            // More than one: choose where it goes, and keep what was typed.
+            return {
+              state: { ...openPickerFor(state, "project"), input: state.input },
+              effect: null,
+            };
+          }
+          return {
+            state: recordSent(state, text),
+            effect: {
+              kind: "createThread",
+              projectId: project.id,
+              title: title.length === 0 ? "New thread" : title,
+              text,
+            },
+          };
+        }
         return {
           state: withWelcomeDismissed(state),
           effect: selectedThread(state) === null ? null : { kind: "open" },
         };
+      }
       case "ctrl-r":
         return { state, effect: { kind: "refresh" } };
       case "backspace":
@@ -1277,12 +1341,21 @@ export function reduceKey(
       };
     case "ctrl-r":
       return { state, effect: { kind: "refresh" } };
+    // ↑/↓ belong to the composer here, the way they do in a shell; the
+    // transcript scrolls with the paging keys instead.
     case "up":
-      return { state: moveSelection(state, -1), effect: null };
+      return { state: browseHistory(state, true), effect: null };
     case "down":
+      return { state: browseHistory(state, false), effect: null };
+    case "pageup":
+      return { state: moveSelection(state, -1), effect: null };
+    case "pagedown":
       return { state: moveSelection(state, 1), effect: null };
     case "backspace":
-      return { state: { ...state, input: state.input.slice(0, -1) }, effect: null };
+      return {
+        state: { ...stopBrowsing(state), input: state.input.slice(0, -1) },
+        effect: null,
+      };
     case "ctrl-i":
       return { state, effect: { kind: "interrupt" } };
     case "enter": {
@@ -1300,7 +1373,7 @@ export function reduceKey(
       if (state.draft !== null) {
         const title = text.split("\n")[0]?.slice(0, 80).trim() ?? "";
         return {
-          state: { ...state, input: "", status: `starting ${state.draft.projectTitle}…` },
+          state: { ...recordSent(state, text), status: `starting ${state.draft.projectTitle}…` },
           effect: {
             kind: "createThread",
             projectId: state.draft.projectId,
@@ -1310,13 +1383,17 @@ export function reduceKey(
         };
       }
       if (state.openThreadId === null) return { state, effect: null };
-      return { state: { ...state, input: "" }, effect: { kind: "send", text } };
+      return { state: recordSent(state, text), effect: { kind: "send", text } };
     }
     default:
       return key.text === undefined || key.text.length === 0
         ? { state, effect: null }
         : {
-            state: { ...state, input: `${state.input}${key.text}`, commandIndex: 0 },
+            state: {
+              ...stopBrowsing(state),
+              input: `${state.input}${key.text}`,
+              commandIndex: 0,
+            },
             effect: null,
           };
   }
@@ -1328,3 +1405,38 @@ export function visibleLines(state: TuiState, rows: number): ReadonlyArray<TuiLi
   const end = Math.max(window, state.lines.length - state.scrollback);
   return state.lines.slice(Math.max(0, end - window), end);
 }
+
+/**
+ * Move the composer through the prompts already sent *in this thread*,
+ * shell-style: ↑ walks back from the newest, ↓ walks forward, and stepping past
+ * the newest restores what was being typed before the walk began.
+ */
+export function browseHistory(state: TuiState, older: boolean): TuiState {
+  const entries = entriesFor(state.history, state.openThreadId);
+  if (entries.length === 0) return state;
+  if (older) {
+    const index =
+      state.historyIndex === null ? entries.length - 1 : Math.max(0, state.historyIndex - 1);
+    const draft = state.historyIndex === null ? state.input : state.historyDraft;
+    return { ...state, historyIndex: index, historyDraft: draft, input: entries[index] ?? "" };
+  }
+  if (state.historyIndex === null) return state;
+  const index = state.historyIndex + 1;
+  if (index >= entries.length) {
+    return { ...state, historyIndex: null, input: state.historyDraft };
+  }
+  return { ...state, historyIndex: index, input: entries[index] ?? "" };
+}
+
+/** Typing takes the composer out of the walk, so the next ↑ starts from the newest. */
+const stopBrowsing = (state: TuiState): TuiState =>
+  state.historyIndex === null ? state : { ...state, historyIndex: null, historyDraft: "" };
+
+/** A sent prompt joins this thread's history, and the composer leaves the walk. */
+const recordSent = (state: TuiState, text: string): TuiState => ({
+  ...stopBrowsing(state),
+  input: "",
+  history: remember(state.history, state.openThreadId, text),
+  historyIndex: null,
+  historyDraft: "",
+});

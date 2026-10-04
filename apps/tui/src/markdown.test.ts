@@ -32,21 +32,36 @@ describe("renderMarkdown", () => {
     const lines = render(
       "answer\n<details><summary>🧠 Orchestrator thinking</summary>\nreasoning here\n</details>\ntail",
     );
-    expect(lines).toContain("  🧠 Orchestrator thinking");
+    expect(lines).toContain("  ✻ 🧠 Orchestrator thinking");
     expect(lines).toContain("    reasoning here");
     // the answer and the tail are outside the block
     expect(lines[0]).toBe("answer");
     expect(lines.at(-1)).toBe("tail");
   });
 
-  it("collapses a long thinking block with a pointer to the log", () => {
+  it("reads a details/summary pair that arrives on separate lines", () => {
+    // The provider writes the tags on their own lines; requiring them to share
+    // one line leaked raw tags into the transcript, which is what this guards.
+    const lines = render(
+      "answer\n<details>\n<summary>🧠 Orchestrator thinking</summary>\nreasoning here\n</details>\ntail",
+    );
+    expect(lines.some((line) => line.includes("<details>"))).toBe(false);
+    expect(lines.some((line) => line.includes("<summary>"))).toBe(false);
+    expect(lines.some((line) => line.includes("</details>"))).toBe(false);
+    expect(lines).toContain("  ✻ 🧠 Orchestrator thinking");
+    expect(lines).toContain("    reasoning here");
+    expect(lines.at(-1)).toBe("tail");
+  });
+
+  it("collapses a long thinking block and says how much it hid", () => {
     const body = Array.from({ length: 40 }, (_, index) => `thought ${index}`).join("\n");
     const lines = renderMarkdown(`<details><summary>thinking</summary>\n${body}\n</details>`, 40, {
       collapseThinking: 3,
     }).map(strip);
     expect(lines.some((line) => line.includes("thought 2"))).toBe(true);
     expect(lines.some((line) => line.includes("thought 20"))).toBe(false);
-    expect(lines.some((line) => line.includes("open the log"))).toBe(true);
+    // The head of the block, then the count of what it is holding back.
+    expect(lines.some((line) => line.includes("… +37 more lines"))).toBe(true);
   });
 
   it("strips inline emphasis but keeps the words", () => {
@@ -67,7 +82,7 @@ describe("renderMarkdown", () => {
   it("drops the trailing blank lines a block leaves behind", () => {
     expect(render("text\n<details><summary>t</summary>\nx\n</details>")).toEqual([
       "text",
-      "  t",
+      "  ✻ t",
       "    x",
     ]);
   });

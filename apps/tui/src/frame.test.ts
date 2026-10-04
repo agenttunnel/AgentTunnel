@@ -136,12 +136,12 @@ describe("renderFrame", () => {
     };
     const frame = renderFrame(state, { rows: 18, cols: 100, now: 0 });
 
-    // a running row is amber (38;2;224;175;104), a failed row red (38;2;247;118;142)
+    // a running row is amber (38;2;245;167;66), a failed row red (38;2;255;107;129)
     const runningRow = frame.find((line) => line.includes("reading files")) ?? "";
     const failedRow = frame.find((line) => line.includes("ENOENT")) ?? "";
-    // SGR triple, bold or not: 224;175;104 is amber, 247;118;142 is red.
-    expect(runningRow).toContain("38;2;224;175;104m");
-    expect(failedRow).toContain("38;2;247;118;142m");
+    // SGR triple, bold or not: 245;167;66 is amber, 255;107;129 is red.
+    expect(runningRow).toContain("38;2;245;167;66m");
+    expect(failedRow).toContain("38;2;255;107;129m");
     // live work spins, settled work does not
     expect(runningRow).toContain(SPINNER_GLYPHS.at(1) ?? "◓");
     // the retry says where it came from
@@ -222,9 +222,10 @@ describe("renderFrame", () => {
     const opened = withOpenThread(withThreadSnapshot(catalogs, snapshot), "t1");
     const frame = renderFrame(opened, { rows: 20, cols: 110, now: 0 }).map(strip);
     const fleetLine = frame.at(-2) ?? "";
-    expect(fleetLine).toContain("6 agents");
     expect(fleetLine).toContain("6/6 settled");
     expect(fleetLine).not.toContain("0/6");
+    // Every cell of the ribbon is a settled agent, so the fleet reads all green.
+    expect(fleetLine).toContain("▰▰▰▰▰▰");
   });
 
   it("greets on open, and stands aside once you move", () => {
@@ -261,13 +262,13 @@ describe("renderFrame", () => {
     });
     const frame = renderFrame(opening.state, { rows: 20, cols: 100, now: 0 });
     const selected = frame.find((line) => line.includes("▸") && line.includes("cai_api")) ?? "";
-    expect(selected).toContain("38;2;122;162;247m");
-    expect(selected).toContain("1;38;2;122;162;247m");
+    expect(selected).toContain("38;2;217;119;87m");
+    expect(selected).toContain("1;38;2;217;119;87m");
 
     // and so is the palette's
     const palette = renderFrame(type(catalogs, "/"), { rows: 20, cols: 100, now: 0 });
     const command = palette.find((line) => line.includes("▸") && line.includes("/new")) ?? "";
-    expect(command).toContain("1;38;2;122;162;247m");
+    expect(command).toContain("1;38;2;217;119;87m");
   });
 
   it("draws the card's borders intact on every row", () => {
@@ -280,11 +281,21 @@ describe("renderFrame", () => {
     }
   });
 
-  it("shows the composer only where typing means something", () => {
+  it("keeps the composer on every screen, home included", () => {
     const threadFrame = renderFrame({ ...catalogs, view: "thread" as const }, SIZE);
-    expect(threadFrame.some((line) => strip(line).startsWith("❯"))).toBe(true);
-    const listFrame = renderFrame(catalogs, SIZE);
-    expect(listFrame.some((line) => strip(line).startsWith("❯"))).toBe(false);
+    expect(threadFrame.some((line) => strip(line).startsWith("│ >"))).toBe(true);
+    // The home screen is where work starts, so it has the input too.
+    const listFrame = renderFrame({ ...catalogs, welcome: false }, SIZE);
+    expect(listFrame.some((line) => strip(line).startsWith("│ >"))).toBe(true);
+  });
+
+  it("centres the greeting instead of pinning it to the top", () => {
+    const tall: TuiState = { ...catalogs, welcome: true, view: "threads" as const };
+    const rows = renderFrame(tall, { rows: 40, cols: 100, now: 0 }).map(strip);
+    const welcome = rows.findIndex((line) => line.includes("Welcome back!"));
+    // Somewhere in the middle of the screen, not against the header.
+    expect(welcome).toBeGreaterThan(6);
+    expect(welcome).toBeLessThan(30);
   });
 
   it("keeps every section in its own band, with the hints last", () => {
@@ -418,11 +429,31 @@ describe("renderFrame", () => {
     expect(stateLine).toContain("working");
     expect(stateLine).toContain("2m 14s");
     expect(stateLine).toContain("opencode");
-    expect(fleetLine).toContain("2 agents");
-    // The bar counts settled work, so a finished fleet does not read 0/6.
     expect(fleetLine).toContain("1/2 settled");
     expect(fleetLine).toContain("1 running");
     expect(frame.at(-1)).toContain("enter send");
+  });
+
+  it("believes the server's running session, so the glyph and the word agree", () => {
+    // No local running state and no agents: only the session says work is live.
+    const live = {
+      snapshotSequence: 1,
+      thread: {
+        id: "t1",
+        title: "hey",
+        activities: [],
+        messages: [{ id: "m1", role: "user", text: "hey", attachments: [] }],
+        session: { threadId: "t1", status: "running", providerName: "agenttunnel" },
+      },
+    } as unknown as Parameters<typeof withThreadSnapshot>[1];
+    const opened = withOpenThread(withThreadSnapshot(catalogs, live), "t1");
+    const rows = renderFrame(opened, { rows: 20, cols: 100, now: 0 }).map(strip);
+    // From the bottom: hints, the fleet ledger, then the state line.
+    const stateLine = rows.at(-3) ?? "";
+    expect(stateLine).toContain("working");
+    // The amber spinner, not the pause glyph that used to sit beside "working".
+    expect(SPINNER_GLYPHS.some((glyph) => stateLine.includes(glyph))).toBe(true);
+    expect(stateLine).not.toContain("⏸");
   });
 
   it("summarises the fleet in the header once a thread has agents", () => {

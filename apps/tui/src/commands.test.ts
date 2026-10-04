@@ -46,6 +46,7 @@ describe("matchCommands", () => {
       "model",
       "provider",
       "settings",
+      "theme",
       "agenttunnel",
       "agents",
       "token-usage",
@@ -60,6 +61,7 @@ describe("matchCommands", () => {
       "model",
       "provider",
       "settings",
+      "theme",
       "agenttunnel",
       "add-project",
       "help",
@@ -71,7 +73,10 @@ describe("matchCommands", () => {
   it("matches the query as a case-insensitive prefix", () => {
     expect(matchCommands("mod", "threads").map((command) => command.name)).toEqual(["model"]);
     expect(matchCommands("Pro", "thread").map((command) => command.name)).toEqual(["provider"]);
-    expect(matchCommands("TH", "thread").map((command) => command.name)).toEqual(["threads"]);
+    expect(matchCommands("TH", "thread").map((command) => command.name)).toEqual([
+      "threads",
+      "theme",
+    ]);
   });
 
   it("trims the query and returns nothing when it matches no command", () => {
@@ -102,6 +107,6 @@ describe("commandByName", () => {
     const withArgument = TUI_COMMANDS.filter((command) => command.argument !== undefined).map(
       (command) => command.name,
     );
-    expect(withArgument).toEqual(["model", "provider", "add-project"]);
+    expect(withArgument).toEqual(["model", "provider", "theme", "add-project"]);
   });
 });

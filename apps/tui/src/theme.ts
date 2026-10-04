@@ -4,17 +4,251 @@
  * renderer can be exercised without a terminal.
  */
 
-export type TuiColor = "primary" | "text" | "muted" | "faint" | "ok" | "warn" | "err";
+/**
+ * The foreground roles. `primary` and `accent` are the product's indigo family
+ * and carry identity: indigo for the agent and the chrome, violet for the fleet
+ * (one stable hue per sub-agent), cyan for links and machine facts. Warm and
+ * cool status tones are reserved for state that actually failed or is running.
+ */
+export type TuiColor =
+  | "primary"
+  | "accent"
+  | "info"
+  | "text"
+  | "muted"
+  | "faint"
+  | "line"
+  | "ok"
+  | "warn"
+  | "err";
 
-export const palette: Readonly<Record<TuiColor, string>> = {
-  primary: "#7aa2f7",
-  text: "#e6e6ef",
-  muted: "#8b8b9e",
-  faint: "#5a5a6b",
-  ok: "#9ece6a",
-  warn: "#e0af68",
-  err: "#f7768e",
+export const DARK_PALETTE: Readonly<Record<TuiColor, string>> = {
+  primary: "#d97757",
+  accent: "#c9a2ff",
+  info: "#8ad4ff",
+  text: "#f2f2f7",
+  muted: "#a8a8c0",
+  faint: "#74748c",
+  line: "#42425c",
+  ok: "#7fd88f",
+  warn: "#f5a742",
+  err: "#ff6b81",
 };
+
+/**
+ * The accent is the one colour that carries the product's voice: the prompt
+ * chevron, the assistant's bullet, the brand mark. It is chosen by name so it
+ * can be changed while the client runs, and each name has a light-terminal
+ * variant so a swap on paper stays readable.
+ */
+export const ACCENTS = {
+  clay: { dark: "#d97757", light: "#b4532a" },
+  indigo: { dark: "#7aa2f7", light: "#3b5bdb" },
+  violet: { dark: "#bb9af7", light: "#7048e8" },
+  mint: { dark: "#5fe3c0", light: "#0b7285" },
+  amber: { dark: "#f5a742", light: "#9a6b16" },
+  rose: { dark: "#ff6b81", light: "#c02b45" },
+} as const satisfies Readonly<Record<string, { dark: string; light: string }>>;
+
+export type AccentName = keyof typeof ACCENTS;
+
+export const ACCENT_NAMES = Object.keys(ACCENTS) as ReadonlyArray<AccentName>;
+
+/** The accent in force: a built-in name, or a `#rrggbb` the user typed. */
+let accent: string = "clay";
+
+export const accentName = (): string => accent;
+
+const resolveAccent = (mode: "dark" | "light"): string => {
+  if (accent.startsWith("#")) return accent;
+  const entry = ACCENTS[accent as AccentName] ?? ACCENTS.clay;
+  return mode === "light" ? entry.light : entry.dark;
+};
+
+/** Take a built-in name or any `#rrggbb`; false when the value makes no sense. */
+export function applyAccent(value: string): boolean {
+  const trimmed = value.trim();
+  const named = trimmed.toLowerCase();
+  const chosen = named in ACCENTS ? named : trimmed;
+  if (!chosen.startsWith("#") && !(chosen in ACCENTS)) return false;
+  if (chosen.startsWith("#") && !/^#[0-9a-f]{3}$|^#[0-9a-f]{6}$/iu.test(chosen)) return false;
+  accent = chosen;
+  // Choosing an accent is an explicit act, so it clears a theme.json override of
+  // the same role instead of being silently outranked by it.
+  const { primary: _cleared, ...rest } = paletteOverrides;
+  paletteOverrides = rest;
+  applyTerminalTheme({});
+  return true;
+}
+
+/** The next accent after this one, so `/theme` cycles without an argument. */
+export function nextAccent(current: string = accent): string {
+  const index = ACCENT_NAMES.indexOf(current as AccentName);
+  return ACCENT_NAMES[(index + 1) % ACCENT_NAMES.length] ?? "clay";
+}
+
+/**
+ * The same roles on a light terminal. Every reference client decides this by the
+ * terminal's own background rather than assuming dark, and so do we: a palette
+ * tuned for black is unreadable on paper, and its surfaces invert into smudges.
+ */
+export const LIGHT_PALETTE: Readonly<Record<TuiColor, string>> = {
+  primary: "#b4532a",
+  accent: "#7048e8",
+  info: "#0b7285",
+  text: "#1b1b24",
+  muted: "#5c5c6b",
+  faint: "#8a8a99",
+  line: "#d3d3dd",
+  ok: "#2f7d43",
+  warn: "#9a6b16",
+  err: "#c02b45",
+};
+
+/** The active palette. Replaced in place so importers keep their reference. */
+export const palette: Record<TuiColor, string> = { ...DARK_PALETTE };
+
+/**
+ * Backgrounds, kept apart from the foreground roles. They are *derived* from the
+ * terminal's own background rather than hardcoded: a fixed near-black strip is
+ * invisible on one terminal and a grey smear on another. Codex blends its user
+ * band the same way (12% toward white on dark, 4% toward black on light).
+ */
+export type TuiSurface = "raised" | "high";
+
+export const surfaces: Record<TuiSurface, string> = {
+  raised: "#171725",
+  high: "#20202f",
+};
+
+/** The assumed background when the terminal will not say (or is pure black). */
+const ASSUMED_DARK_BACKGROUND = "#0a0a0c";
+
+const parseHex = (hex: string): readonly [number, number, number] => {
+  const digits = hex.startsWith("#") ? hex.slice(1) : hex;
+  const wide = digits.length === 3 ? digits.replace(/./gu, (c) => c + c) : digits;
+  return [
+    Number.parseInt(wide.slice(0, 2), 16),
+    Number.parseInt(wide.slice(2, 4), 16),
+    Number.parseInt(wide.slice(4, 6), 16),
+  ];
+};
+
+const toHex = (rgb: readonly [number, number, number]): string =>
+  `#${rgb
+    .map((channel) =>
+      Math.max(0, Math.min(255, Math.round(channel)))
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+
+/** `blend("#ff0000", "#0000ff", 0.5)` is half way from the first to the second. */
+export function blend(from: string, toward: string, alpha: number): string {
+  const a = parseHex(from);
+  const b = parseHex(toward);
+  const mix = (index: 0 | 1 | 2): number => a[index] + (b[index] - a[index]) * alpha;
+  return toHex([mix(0), mix(1), mix(2)]);
+}
+
+/** Relative luminance, the same 0.299/0.587/0.114 test Codex and Gemini use. */
+export function isLightBackground(hex: string): boolean {
+  const [red, green, blue] = parseHex(hex);
+  return 0.299 * red + 0.587 * green + 0.114 * blue > 128;
+}
+
+export interface TerminalTheme {
+  /** The terminal's own background, when it answered our query. */
+  readonly background: string | null;
+  readonly mode: "dark" | "light";
+  /** False when the environment asks for no colour at all. */
+  readonly colors: boolean;
+}
+
+const terminal: { background: string | null; mode: "dark" | "light"; colors: boolean } = {
+  background: null,
+  mode: "dark",
+  colors: true,
+};
+
+/** What the theme currently believes about the terminal, for tests and callers. */
+export const terminalTheme = (): TerminalTheme => ({ ...terminal });
+
+/** Overrides from the user's `theme.json`, re-applied whenever the mode changes. */
+let paletteOverrides: Partial<Record<TuiColor, string>> = {};
+
+/**
+ * Adopt the terminal's background: pick the palette for its lightness and build
+ * the surface ramp by blending toward white (dark) or black (light), so chrome
+ * is always visible against whatever the user actually runs.
+ */
+export function applyTerminalTheme(input: {
+  readonly background?: string | null | undefined;
+  readonly mode?: "dark" | "light" | "none" | undefined;
+}): void {
+  if (input.background !== undefined && input.background !== null) {
+    terminal.background = input.background;
+  }
+  const base = input.background ?? terminal.background ?? ASSUMED_DARK_BACKGROUND;
+  if (input.mode === "none") {
+    terminal.colors = false;
+    return;
+  }
+  terminal.colors = true;
+  terminal.mode = input.mode ?? (isLightBackground(base) ? "light" : "dark");
+  Object.assign(palette, terminal.mode === "light" ? LIGHT_PALETTE : DARK_PALETTE);
+  // The accent outranks the palette's own primary, and survives a mode change.
+  palette.primary = resolveAccent(terminal.mode);
+  const toward = terminal.mode === "light" ? "#000000" : "#ffffff";
+  // Pronounced on purpose: chrome you cannot see is chrome that is not there.
+  surfaces.raised = blend(base, toward, terminal.mode === "light" ? 0.07 : 0.1);
+  surfaces.high = blend(base, toward, terminal.mode === "light" ? 0.14 : 0.18);
+  // A user's own colours outrank anything derived from the terminal.
+  Object.assign(palette, paletteOverrides);
+  rebuildColors();
+}
+
+/** `#rrggbb` overrides for any role, layered on top of the derived palette. */
+export function applyPaletteOverrides(overrides: Partial<Record<TuiColor, string>>): void {
+  paletteOverrides = { ...paletteOverrides, ...overrides };
+  Object.assign(palette, overrides);
+  rebuildColors();
+}
+
+/**
+ * Read the terminal's answer to an OSC 11 query (`rgb:rrrr/gggg/bbbb`, or the
+ * 8-bit form). Returns null for anything that is not that reply, so the app can
+ * pass the bytes on to the key parser untouched.
+ */
+export function parseBackgroundReply(chunk: string): string | null {
+  // eslint-disable-next-line no-control-regex -- ANSI escapes are control characters by construction.
+  const match = /\u001b\]11;rgb:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/iu.exec(chunk);
+  if (match === null) return null;
+  const channel = (value: string): number => {
+    const parsed = Number.parseInt(value, 16);
+    return value.length <= 2 ? parsed : Math.round((parsed / 0xffff) * 255);
+  };
+  return toHex([channel(match[1] ?? "0"), channel(match[2] ?? "0"), channel(match[3] ?? "0")]);
+}
+
+/** One stable hue per sub-agent, so an agent keeps its colour everywhere. */
+export const FLEET_HUES: ReadonlyArray<TuiColor> = [
+  "primary",
+  "accent",
+  "info",
+  "ok",
+  "warn",
+  "err",
+];
+
+/** The hue a fleet member is known by, derived from its id so it never moves. */
+export function fleetHue(id: string): TuiColor {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (hash * 31 + id.charCodeAt(index)) % 100_003;
+  }
+  return FLEET_HUES[hash % FLEET_HUES.length] ?? "primary";
+}
 
 const ESCAPE = "\u001b";
 const RESET = `${ESCAPE}[0m`;
@@ -32,24 +266,56 @@ function foregroundParams(hex: string): string {
   return `38;2;${r};${g};${b}`;
 }
 
-const FOREGROUND: Readonly<Record<TuiColor, string>> = {
-  primary: foregroundParams(palette.primary),
-  text: foregroundParams(palette.text),
-  muted: foregroundParams(palette.muted),
-  faint: foregroundParams(palette.faint),
-  ok: foregroundParams(palette.ok),
-  warn: foregroundParams(palette.warn),
-  err: foregroundParams(palette.err),
-};
+let FOREGROUND: Record<TuiColor, string> = {} as Record<TuiColor, string>;
+let BACKGROUND: Record<TuiSurface, string> = {} as Record<TuiSurface, string>;
+
+/** `48;2;r;g;b`, the truecolor background parameters for a `#rrggbb` value. */
+function backgroundParams(hex: string): string {
+  return foregroundParams(hex).replace(/^38;/u, "48;");
+}
+
+/** Recompute the SGR parameters after the palette or the surfaces change. */
+function rebuildColors(): void {
+  const roles = Object.keys(palette) as ReadonlyArray<TuiColor>;
+  const next: Partial<Record<TuiColor, string>> = {};
+  for (const role of roles) next[role] = foregroundParams(palette[role]);
+  FOREGROUND = next as Record<TuiColor, string>;
+  BACKGROUND = {
+    raised: backgroundParams(surfaces.raised),
+    high: backgroundParams(surfaces.high),
+  };
+}
+
+rebuildColors();
 
 /** Wrap text in the color's SGR sequence, always ending with a reset. */
 export function paint(
   text: string,
   color: TuiColor,
-  options?: { readonly bold?: boolean },
+  options?: { readonly bold?: boolean; readonly bg?: TuiSurface },
 ): string {
-  const bold = options?.bold === true ? "1;" : "";
-  return `${ESCAPE}[${bold}${FOREGROUND[color]}m${text}${RESET}`;
+  // NO_COLOR, a dumb terminal, or an explicit no-colour theme: the layout must
+  // still hold, so the text is passed through and the width arithmetic ignores it.
+  if (!terminal.colors) return text;
+  const parameters = [FOREGROUND[color]];
+  if (options?.bold === true) parameters.unshift("1");
+  if (options?.bg !== undefined) parameters.push(BACKGROUND[options.bg]);
+  return `${ESCAPE}[${parameters.join(";")}m${text}${RESET}`;
+}
+
+/**
+ * A padded pill: a filled surface with one word in it. The footer uses these to
+ * say where the work is happening without spending a whole row per fact.
+ */
+export function chip(text: string, color: TuiColor, bg: TuiSurface = "high"): string {
+  return paint(` ${text} `, color, { bg });
+}
+
+/** A key binding: the key reads as a key, the verb stays quiet. */
+export function keycap(key: string, label: string, options?: { readonly bg?: TuiSurface }): string {
+  const keyStyle = options?.bg === undefined ? { bold: true } : { bold: true, bg: options.bg };
+  const labelStyle = options?.bg === undefined ? {} : { bg: options.bg };
+  return `${paint(key, "text", keyStyle)} ${paint(label, "faint", labelStyle)}`;
 }
 
 /**
