@@ -5,6 +5,105 @@
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
 
+/* Geist (SIL OFL 1.1) is the product's UI and code typeface. Self-hosted so the
+   interface never waits on a network font fetch; system stacks remain the
+   fallback in `--font-sans` / `--font-mono`. Subsets mirror the upstream
+   @font-face ranges. */
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-cyrillic-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-cyrillic-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-vietnamese-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301,
+    U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-mono-cyrillic-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-mono-cyrillic-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-mono-vietnamese-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301,
+    U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-mono-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/geist-mono-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 /* On mobile, morph the expanded hero composer into the compact docked
    composer while it moves; the rest of the app remains visually stationary. */
 html[data-mobile-composer-route-transition="true"]::view-transition-old(root),
@@ -88,7 +187,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
    * Compact UI geometry. Keep these values semantic so sidebar, palette,
    * tooltip, and toolbar controls cannot quietly drift apart.
    */
-  --control-radius: 0.5rem;
+  --control-radius: 0.625rem;
   --sidebar-content-inset: 0.5rem;
   --sidebar-control-gap: 0.5rem;
   --sidebar-icon-color: color-mix(
@@ -112,12 +211,34 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --workspace-titlebar-control-size: 1.75rem;
   --workspace-titlebar-control-gap: 0.75rem;
 
+  /*
+   * Motion and elevation. Named so transitions and shadows read the same
+   * intent everywhere instead of drifting into ad-hoc cubic-bezier strings.
+   */
+  --dur-instant: 80ms;
+  --dur-fast: 140ms;
+  --dur-base: 200ms;
+  --dur-slow: 280ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --shadow-strength: 0.14;
+  --elev-raised:
+    0 1px 2px -1px rgb(0 0 0 / calc(var(--shadow-strength) * 0.75)),
+    0 2px 6px -2px rgb(0 0 0 / calc(var(--shadow-strength) * 0.6));
+  --elev-floating:
+    0 4px 10px -3px rgb(0 0 0 / calc(var(--shadow-strength) * 0.7)),
+    0 12px 28px -8px rgb(0 0 0 / calc(var(--shadow-strength) * 0.5));
+  --elev-overlay:
+    0 8px 20px -6px rgb(0 0 0 / calc(var(--shadow-strength) * 0.8)),
+    0 24px 56px -12px rgb(0 0 0 / calc(var(--shadow-strength) * 0.6));
+
   @variant dark {
     --appearance-contrast-target: white;
     --app-scrollbar-thumb: rgb(255 255 255 / 8%);
     --app-scrollbar-thumb-hover: rgb(255 255 255 / 12%);
     --glass-blur: 16px;
     --glass-saturation: 1.08;
+    --shadow-strength: 0.6;
   }
 }
 
@@ -137,9 +258,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
    the variables and Settings -> Appearance can override them at runtime. The
    default stacks are mirrored in `appearanceFonts.ts`. */
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-sans:
+    "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
-    ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+    "Geist Mono Variable", "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono",
+    monospace;
 }
 
 @theme inline {
@@ -314,13 +437,13 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
   border-color: color-mix(in srgb, var(--contrast-foreground) 10%, transparent);
-  box-shadow: 0 24px 64px -24px rgb(0 0 0 / 65%);
+  box-shadow: var(--elev-overlay);
 
   @variant dark {
     border-color: color-mix(in srgb, var(--color-white) 8%, transparent);
     box-shadow:
       inset 0 1px rgb(255 255 255 / 4%),
-      0 24px 72px -20px rgb(0 0 0 / 90%);
+      var(--elev-overlay);
   }
 
   @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
@@ -516,37 +639,38 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
 @layer base {
   :root {
-    /* Keep the original AgentTunnel artwork palettes as the defaults. Built-in
-       themes override them with their own pigments in the components layer. */
-    --stage-art-top: oklch(0.782169 0.123386 240.226);
-    --stage-art-mid: oklch(0.616111 0.195824 259.735);
-    --stage-art-bottom: oklch(0.441553 0.232394 265.474);
-    --stage-art-highlight: oklch(0.951597 0.037289 215.482);
-    --stage-art-secondary: oklch(0.794668 0.12136 235.46);
-    --stage-art-tertiary: oklch(0.678991 0.170261 275.365);
-    --stage-art-line: oklch(0.959666 0.029238 218.179);
-    --stage-art-celeste-highlight: oklch(0.968763 0.045822 196.42);
-    --stage-art-celeste-secondary: oklch(0.827395 0.126071 211.26);
-    --stage-art-violet-highlight: oklch(0.895381 0.053248 286.447);
-    --stage-art-grid-line: oklch(0.966822 0.01757 239.99);
-    --stage-night-base-top: oklch(0.283792 0.117327 297.201);
-    --stage-night-base-mid: oklch(0.227147 0.086086 277.99);
-    --stage-night-base-bottom: oklch(0.200528 0.055699 261.216);
+    /* AgentTunnel's default artwork material: warm amber light at the end of a
+       graphite tunnel. Built-in themes override these with their own pigments
+       in the components layer. */
+    --stage-art-top: oklch(0.78 0.14 78);
+    --stage-art-mid: oklch(0.6 0.15 72);
+    --stage-art-bottom: oklch(0.4 0.11 65);
+    --stage-art-highlight: oklch(0.95 0.04 85);
+    --stage-art-secondary: oklch(0.78 0.13 80);
+    --stage-art-tertiary: oklch(0.68 0.12 60);
+    --stage-art-line: oklch(0.95 0.03 82);
+    --stage-art-celeste-highlight: oklch(0.97 0.035 88);
+    --stage-art-celeste-secondary: oklch(0.83 0.12 80);
+    --stage-art-violet-highlight: oklch(0.9 0.05 70);
+    --stage-art-grid-line: oklch(0.97 0.02 82);
+    --stage-night-base-top: oklch(0.32 0.09 72);
+    --stage-night-base-mid: oklch(0.25 0.07 70);
+    --stage-night-base-bottom: oklch(0.19 0.05 68);
     --stage-night-top: var(--stage-night-base-top);
     --stage-night-mid: var(--stage-night-base-mid);
     --stage-night-bottom: var(--stage-night-base-bottom);
-    --stage-night-highlight: oklch(0.707246 0.157418 252.091);
-    --stage-night-secondary: oklch(0.600473 0.182225 277.296);
-    --stage-night-tertiary: oklch(0.62583 0.210886 305.994);
-    --stage-night-line: oklch(0.938794 0.029114 273.103);
-    --stage-night-glow-highlight: oklch(0.553749 0.176543 271.958);
-    --stage-night-glow-secondary: oklch(0.345571 0.117466 273.568);
-    --stage-night-sparkle: oklch(0.880867 0.057747 269.011);
+    --stage-night-highlight: oklch(0.72 0.13 78);
+    --stage-night-secondary: oklch(0.62 0.13 74);
+    --stage-night-tertiary: oklch(0.6 0.12 65);
+    --stage-night-line: oklch(0.94 0.03 80);
+    --stage-night-glow-highlight: oklch(0.55 0.12 76);
+    --stage-night-glow-secondary: oklch(0.35 0.09 72);
+    --stage-night-sparkle: oklch(0.88 0.05 80);
 
     @variant dark {
-      --stage-art-top: oklch(0.581473 0.149124 256.9);
-      --stage-art-mid: oklch(0.456509 0.159377 261.945);
-      --stage-art-bottom: oklch(0.291327 0.136578 267.649);
+      --stage-art-top: oklch(0.55 0.13 75);
+      --stage-art-mid: oklch(0.4 0.11 70);
+      --stage-art-bottom: oklch(0.25 0.08 65);
     }
   }
 
@@ -576,22 +700,22 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
      These colors stay deliberately deep at the top edge so the white stage
      wordmark and controls retain contrast in both appearance modes. */
   html[data-theme-id="t3-chat"] {
-    --stage-art-top: oklch(0.760675 0.141361 348.019);
-    --stage-art-mid: oklch(0.588093 0.188832 353.138);
-    --stage-art-bottom: oklch(0.383959 0.135096 348.656);
-    --stage-art-highlight: oklch(0.949689 0.034241 339.171);
-    --stage-art-secondary: oklch(0.763402 0.163836 352.525);
-    --stage-art-tertiary: oklch(0.70819 0.180285 311.949);
-    --stage-art-line: oklch(0.952158 0.034194 336.179);
+    --stage-art-top: oklch(0.78 0.14 78);
+    --stage-art-mid: oklch(0.6 0.15 72);
+    --stage-art-bottom: oklch(0.4 0.11 65);
+    --stage-art-highlight: oklch(0.95 0.04 85);
+    --stage-art-secondary: oklch(0.78 0.13 80);
+    --stage-art-tertiary: oklch(0.68 0.12 60);
+    --stage-art-line: oklch(0.95 0.03 82);
 
     @variant dark {
-      --stage-art-top: oklch(0.540689 0.143665 347.587);
-      --stage-art-mid: oklch(0.396586 0.126592 347.6);
-      --stage-art-bottom: oklch(0.249959 0.079694 340.523);
-      --stage-art-highlight: oklch(0.921297 0.051708 343.229);
-      --stage-art-secondary: oklch(0.667398 0.165674 352.549);
-      --stage-art-tertiary: oklch(0.609315 0.163722 306.315);
-      --stage-art-line: oklch(0.945349 0.036045 341.433);
+      --stage-art-top: oklch(0.55 0.13 75);
+      --stage-art-mid: oklch(0.4 0.11 70);
+      --stage-art-bottom: oklch(0.25 0.08 65);
+      --stage-art-highlight: oklch(0.92 0.05 80);
+      --stage-art-secondary: oklch(0.67 0.14 78);
+      --stage-art-tertiary: oklch(0.61 0.12 60);
+      --stage-art-line: oklch(0.94 0.035 80);
     }
   }
 
@@ -1388,7 +1512,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 :root {
   color-scheme: light;
   --radius: 0.625rem;
-  --background: var(--color-zinc-25);
+  --background: oklch(0.982 0.004 265);
   --app-chrome-background: var(--background);
   --toolbar-background: var(--app-chrome-background);
   --toolbar-foreground: var(--foreground);
@@ -1397,17 +1521,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --toolbar-control-foreground: var(--foreground);
   --toolbar-control-hover: var(--accent);
   --surface-raised: color-mix(in srgb, var(--card) 20%, transparent);
-  --foreground: var(--color-zinc-800);
-  --card: var(--color-white);
-  --card-foreground: var(--color-zinc-800);
-  --popover: var(--color-white);
-  --popover-foreground: var(--color-zinc-800);
-  --primary: oklch(0.488 0.217 264);
-  --primary-foreground: var(--color-white);
-  --secondary: var(--color-zinc-50);
-  --secondary-foreground: var(--color-zinc-800);
-  --muted: var(--color-zinc-50);
-  --muted-foreground: var(--color-zinc-500);
+  --foreground: oklch(0.3 0.02 265);
+  --card: oklch(0.972 0.004 265);
+  --card-foreground: oklch(0.3 0.02 265);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.3 0.02 265);
+  --primary: oklch(0.52 0.12 65);
+  --primary-foreground: oklch(0.99 0.005 265);
+  --secondary: oklch(0.94 0.006 265);
+  --secondary-foreground: oklch(0.3 0.02 265);
+  --muted: oklch(0.955 0.005 265);
+  --muted-foreground: oklch(0.52 0.015 265);
   --placeholder: var(--muted-foreground);
   --secondary-label: var(--muted-foreground);
   --icon-muted: var(--muted-foreground);
@@ -1416,15 +1540,15 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --message-action: var(--primary);
   --message-action-foreground: var(--primary-foreground);
   --message-action-hover: color-mix(in srgb, var(--primary) 90%, var(--background));
-  --accent: var(--color-zinc-100);
-  --accent-foreground: var(--color-zinc-900);
+  --accent: oklch(0.955 0.005 265);
+  --accent-foreground: oklch(0.3 0.02 265);
   --error: var(--color-red-500);
   --error-foreground: var(--color-red-700);
   --error-surface: color-mix(in srgb, var(--error) 8%, transparent);
   --destructive: var(--error);
-  --border: var(--color-zinc-200);
-  --input: var(--color-zinc-300);
-  --ring: var(--primary);
+  --border: oklch(0.9 0.006 265);
+  --input: oklch(0.86 0.008 265);
+  --ring: oklch(0.52 0.12 65);
   --destructive-foreground: var(--error-foreground);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -1436,108 +1560,110 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --update: var(--primary);
   --update-foreground: var(--primary);
   --update-surface: color-mix(in srgb, var(--update) 12%, transparent);
-  /* Keep every sidebar primitive on the same light surface hierarchy, including
-     portaled mobile sheets and settings navigation outside the app sidebar. */
-  --sidebar: var(--color-zinc-50);
+  /* Keep every sidebar primitive on the same graphite surface hierarchy,
+     including portaled mobile sheets and settings navigation outside the app
+     sidebar. */
+  --sidebar: oklch(0.965 0.005 265);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
-  --sidebar-control-surface: var(--color-zinc-100);
-  --sidebar-row-hover: var(--color-zinc-25);
-  --sidebar-row-active: var(--color-white);
-  --sidebar-row-selected: var(--color-white);
+  --sidebar-control-surface: oklch(0.985 0.003 265);
+  --sidebar-row-hover: oklch(0.945 0.006 265);
+  --sidebar-row-active: oklch(0.925 0.008 265);
+  --sidebar-row-selected: oklch(0.915 0.009 265);
   --sidebar-border: var(--border);
   --sidebar-stage-fade: var(--sidebar);
-  --code-background: color-mix(in srgb, var(--card) 90%, var(--background));
+  --code-background: oklch(0.96 0.004 265);
   --code-foreground: var(--foreground);
   --terminal-background: var(--background);
   --terminal-foreground: var(--foreground);
-  --terminal-cursor: rgb(38 56 78);
-  --terminal-selection-background: rgb(37 63 99 / 20%);
+  --terminal-cursor: rgb(151 88 0);
+  --terminal-selection-background: rgb(151 88 0 / 18%);
 
   @variant dark {
     color-scheme: dark;
-    /* Keep the workspace in the same neutral-black family as sidebar v2.
-       Surfaces lift from this base instead of starting from a milky gray. */
-    --background: var(--color-neutral-950);
+    /* The stock AgentTunnel look: a graphite workspace that lifts from a
+       near-black base, tinted to the same hue as the sidebar. */
+    --background: oklch(0.185 0.008 265);
     --surface-raised: var(--secondary);
-    --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--background) 97%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --popover: color-mix(in srgb, var(--background) 94%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: oklch(0.571 0.21 264);
-    --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
+    --foreground: oklch(0.965 0.003 265);
+    --card: oklch(0.215 0.008 265);
+    --card-foreground: oklch(0.965 0.003 265);
+    --popover: oklch(0.205 0.009 265);
+    --popover-foreground: oklch(0.965 0.003 265);
+    --primary: oklch(0.8 0.13 80);
+    --primary-foreground: oklch(0.19 0.02 70);
+    --secondary: oklch(0.3 0.009 265);
+    --secondary-foreground: oklch(0.9 0.006 265);
+    --muted: oklch(0.28 0.008 265);
+    --muted-foreground: oklch(0.7 0.012 265);
+    --accent: oklch(0.32 0.03 265);
+    --accent-foreground: oklch(0.95 0.01 265);
     --error: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
     --error-foreground: var(--color-red-400);
     --error-surface: color-mix(in srgb, var(--error) 16%, transparent);
-    --border: --alpha(var(--color-white) / 6%);
-    --input: --alpha(var(--color-white) / 8%);
+    --border: oklch(0.285 0.009 265);
+    --input: oklch(0.3 0.01 265);
     --info-foreground: var(--color-blue-400);
     --success-foreground: var(--color-emerald-400);
     --warning-foreground: var(--color-amber-400);
     --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
     --update-foreground: var(--color-blue-400);
     --update-surface: color-mix(in srgb, var(--update) 18%, transparent);
-    --sidebar: var(--card);
-    --sidebar-control-surface: var(--muted);
-    --sidebar-row-hover: var(--accent);
-    --sidebar-row-active: var(--accent);
-    --sidebar-row-selected: var(--muted);
-    --sidebar-stage-fade: var(--card);
-    --terminal-cursor: rgb(180 203 255);
-    --terminal-selection-background: rgb(180 203 255 / 25%);
+    --sidebar: oklch(0.165 0.008 265);
+    --sidebar-control-surface: oklch(0.215 0.009 265);
+    --sidebar-row-hover: oklch(0.225 0.009 265);
+    --sidebar-row-active: oklch(0.25 0.01 265);
+    --sidebar-row-selected: oklch(0.27 0.011 265);
+    --sidebar-stage-fade: oklch(0.185 0.008 265);
+    --terminal-cursor: rgb(233 180 82);
+    --terminal-selection-background: rgb(233 180 82 / 22%);
   }
 }
 
-/* Keep both sidebar implementations (default and legacy) on the same quiet
-   zinc hierarchy: zinc-50 navigation, zinc-25 hover, and white selected/raised
-   surfaces. */
+/* Keep both sidebar implementations (default and legacy) on the same graphite
+   hierarchy: a slightly recessed navigation surface, a raised card body, and
+   lifted hover/selected rows, all tinted to the AgentTunnel hue (265). */
 [data-app-sidebar] {
-  --background: var(--color-zinc-25);
-  --foreground: var(--color-zinc-800);
-  --card: var(--color-white);
-  --card-foreground: var(--color-zinc-800);
-  --accent: var(--color-zinc-100);
-  --accent-foreground: var(--color-zinc-900);
-  --muted: var(--color-zinc-50);
-  --muted-foreground: var(--color-zinc-500);
-  --border: var(--color-zinc-200);
-  --input: var(--color-zinc-300);
-  --sidebar: var(--color-zinc-50);
-  --sidebar-foreground: var(--color-zinc-800);
-  --sidebar-muted-foreground: var(--color-zinc-500);
-  --sidebar-control-surface: var(--color-zinc-100);
-  --sidebar-row-hover: var(--color-zinc-25);
-  --sidebar-row-active: var(--color-white);
-  --sidebar-row-selected: var(--color-white);
-  --sidebar-border: var(--color-zinc-200);
+  --background: oklch(0.982 0.004 265);
+  --foreground: oklch(0.3 0.02 265);
+  --card: oklch(0.972 0.004 265);
+  --card-foreground: oklch(0.3 0.02 265);
+  --accent: oklch(0.955 0.005 265);
+  --accent-foreground: oklch(0.3 0.02 265);
+  --muted: oklch(0.965 0.005 265);
+  --muted-foreground: oklch(0.52 0.015 265);
+  --border: oklch(0.9 0.006 265);
+  --input: oklch(0.86 0.008 265);
+  --sidebar: oklch(0.965 0.005 265);
+  --sidebar-foreground: oklch(0.3 0.02 265);
+  --sidebar-muted-foreground: oklch(0.52 0.015 265);
+  --sidebar-control-surface: oklch(0.985 0.003 265);
+  --sidebar-row-hover: oklch(0.945 0.006 265);
+  --sidebar-row-active: oklch(0.925 0.008 265);
+  --sidebar-row-selected: oklch(0.915 0.009 265);
+  --sidebar-border: oklch(0.9 0.006 265);
   --sidebar-stage-fade: var(--sidebar);
 
   @variant dark {
-    --background: #000;
-    --foreground: #f1f3f7;
-    --card: #000;
-    --card-foreground: var(--foreground);
-    --accent: #191a1d;
-    --accent-foreground: #f7f9ff;
-    --muted: #0a0a0a;
-    --muted-foreground: #a3a3a3;
-    --border: rgb(255 255 255 / 8%);
-    --input: rgb(255 255 255 / 18%);
-    --sidebar: var(--card);
-    --sidebar-foreground: var(--foreground);
-    --sidebar-muted-foreground: var(--muted-foreground);
-    --sidebar-control-surface: var(--muted);
-    --sidebar-row-hover: color-mix(in srgb, var(--contrast-foreground) 8%, transparent);
-    --sidebar-row-active: color-mix(in srgb, var(--contrast-foreground) 11%, transparent);
-    --sidebar-row-selected: color-mix(in srgb, var(--contrast-foreground) 7%, transparent);
-    --sidebar-border: var(--border);
-    --sidebar-stage-fade: var(--card);
+    --background: oklch(0.165 0.008 265);
+    --foreground: oklch(0.95 0.004 265);
+    --card: oklch(0.185 0.008 265);
+    --card-foreground: oklch(0.95 0.004 265);
+    --accent: oklch(0.225 0.009 265);
+    --accent-foreground: oklch(0.95 0.004 265);
+    --muted: oklch(0.185 0.008 265);
+    --muted-foreground: oklch(0.7 0.012 265);
+    --border: oklch(0.26 0.009 265);
+    --input: oklch(0.3 0.01 265);
+    --sidebar: oklch(0.165 0.008 265);
+    --sidebar-foreground: oklch(0.95 0.004 265);
+    --sidebar-muted-foreground: oklch(0.7 0.012 265);
+    --sidebar-control-surface: oklch(0.215 0.009 265);
+    --sidebar-row-hover: oklch(0.225 0.009 265);
+    --sidebar-row-active: oklch(0.25 0.01 265);
+    --sidebar-row-selected: oklch(0.27 0.011 265);
+    --sidebar-border: oklch(0.26 0.009 265);
+    --sidebar-stage-fade: oklch(0.185 0.008 265);
   }
 }
 

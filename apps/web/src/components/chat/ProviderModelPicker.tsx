@@ -350,7 +350,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                   aria-label="Model config"
                   data-model-picker-panel="true"
                   className={cn(
-                    "dropdown-glass fixed z-[140] flex max-h-[100dvh] flex-col overflow-hidden rounded-xl border text-popover-foreground shadow-[0_24px_60px_-24px_rgb(0_0_0/70%)]",
+                    "dropdown-glass fixed z-[140] flex max-h-[100dvh] flex-col overflow-hidden rounded-xl border text-popover-foreground shadow-[var(--elev-overlay)]",
                     panelPosition === null && "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
                   )}
                   style={

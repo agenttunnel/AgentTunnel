@@ -67,8 +67,8 @@ describe("mobile themes", () => {
   });
 
   it("preserves the existing mobile palette as the default", () => {
-    expect(readDefaultMobileThemeVariables("light")["--color-screen"]).toBe("#f2f2f7");
-    expect(readDefaultMobileThemeVariables("dark")["--color-screen"]).toBe("#0a0a0a");
+    expect(readDefaultMobileThemeVariables("light")["--color-screen"]).toBe("#f8f9fc");
+    expect(readDefaultMobileThemeVariables("dark")["--color-screen"]).toBe("#111316");
     expect(readDefaultMobileThemeVariables("light")["--color-user-bubble-skill-foreground"]).toBe(
       "#f0abfc",
     );
