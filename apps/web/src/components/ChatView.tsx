@@ -183,7 +183,7 @@ import {
   applyAgentTunnelAutoMode,
   readAgentTunnelModelConfig,
   readAgentTunnelRoles,
-} from "./agentTunnelRoles.logic";
+} from "@t3tools/client-runtime/state/agentTunnelRoles";
 import { getDriverOption } from "./settings/providerDriverMeta";
 import { buildProviderInstanceUpdatePatch } from "./settings/SettingsPanels.logic";
 import {

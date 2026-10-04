@@ -1,7 +1,7 @@
 import type { OrchestrationAgentLogEntry } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { foldAgentLogEntries, type AgentLogBlock } from "./AgentLogView.logic";
+import { foldAgentLogEntries, type AgentLogBlock } from "./agentLog.ts";
 
 const stripIds = (blocks: ReadonlyArray<AgentLogBlock>) =>
   blocks.map(({ id: _id, ...rest }) => rest);

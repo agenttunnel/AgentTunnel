@@ -1,3 +1,4 @@
+import { foldAgentLogEntries, type AgentLogBlock } from "@t3tools/client-runtime/state/agentLog";
 import type { OrchestrationAgentLogEntry } from "@t3tools/contracts";
 import { Check, ChevronDown, X } from "lucide-react";
 import { useState } from "react";
@@ -7,7 +8,6 @@ import { cn } from "~/lib/utils";
 import ChatMarkdown from "./ChatMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { toolIcon } from "./ToolCallRow";
-import { foldAgentLogEntries, type AgentLogBlock } from "./AgentLogView.logic";
 
 function MarkdownBlock({ text }: { text: string }) {
   return (

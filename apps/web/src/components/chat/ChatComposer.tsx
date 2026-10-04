@@ -134,7 +134,7 @@ import {
   agentTunnelHarnessProviderKind,
   AGENT_TUNNEL_HARNESS_OPTIONS,
   AGENT_TUNNEL_REASONING_OPTIONS,
-} from "../agentTunnelRoles.logic";
+} from "@t3tools/client-runtime/state/agentTunnelRoles";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
