@@ -94,6 +94,41 @@ export function agentTunnelHarnessDriverKind(harness: string): ProviderDriverKin
   return kind === undefined ? null : ProviderDriverKind.make(kind);
 }
 
+/**
+ * Harness options for the provider instances actually present on the
+ * environment. The preset catalog says which CLIs the workflow driver knows how
+ * to run; this narrows it to the ones whose provider kind is installed, so a
+ * role never offers a harness the environment cannot run. A harness a role is
+ * already configured with stays listed even when its provider is not installed,
+ * so a saved selection never silently disappears.
+ */
+export function agentTunnelHarnessOptions(input: {
+  readonly providerKinds: ReadonlyArray<string>;
+  readonly selectedHarnesses?: ReadonlyArray<string> | undefined;
+}): ReadonlyArray<{ readonly value: string; readonly label: string }> {
+  const installedKinds = new Set(input.providerKinds);
+  const options: Array<{ value: string; label: string }> = [];
+  const seen = new Set<string>();
+  for (const option of AGENT_TUNNEL_HARNESS_OPTIONS) {
+    const kind = agentTunnelHarnessProviderKind(option.value);
+    if (kind === null || !installedKinds.has(kind)) {
+      continue;
+    }
+    seen.add(option.value);
+    options.push(option);
+  }
+  for (const selected of input.selectedHarnesses ?? []) {
+    const value = selected.trim();
+    if (value.length === 0 || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    const preset = AGENT_TUNNEL_HARNESS_OPTIONS.find((option) => option.value === value);
+    options.push(preset ?? { value, label: `${value} (custom)` });
+  }
+  return options;
+}
+
 export interface AgentTunnelRoleOption {
   readonly id: string;
   readonly label: string;

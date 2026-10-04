@@ -1,6 +1,6 @@
 import {
-  AGENT_TUNNEL_HARNESS_OPTIONS,
   AGENT_TUNNEL_REASONING_OPTIONS,
+  agentTunnelHarnessOptions,
   agentTunnelRoleHarnessKey,
   agentTunnelRoleModelKey,
   agentTunnelRoleVariantKey,
@@ -194,13 +194,19 @@ export function agentTunnelModelItems(
   return items;
 }
 
-/** The harness CLIs a role can run on. */
+/**
+ * The harness CLIs a role can run on: the installed provider kinds, plus the
+ * role's current pick so a saved selection never disappears.
+ */
 export function agentTunnelHarnessItems(
   roleId: string,
+  providerKinds: ReadonlyArray<string>,
+  selectedHarness?: string | undefined,
 ): ReadonlyArray<{ readonly id: string; readonly label: string; readonly detail: string | null }> {
-  return AGENT_TUNNEL_HARNESS_OPTIONS.map((option) =>
-    agentTunnelItem(`${roleId}Harness`, option.value, option.label),
-  );
+  return agentTunnelHarnessOptions({
+    providerKinds,
+    selectedHarnesses: selectedHarness === undefined ? [] : [selectedHarness],
+  }).map((option) => agentTunnelItem(`${roleId}Harness`, option.value, option.label));
 }
 
 /** Reasoning effort passed to the role's harness. */

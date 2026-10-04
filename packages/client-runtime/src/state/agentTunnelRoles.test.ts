@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  agentTunnelHarnessOptions,
   agentTunnelHarnessProviderKind,
   agentTunnelRoleHarnessKey,
   agentTunnelRoleModelKey,
@@ -268,5 +269,40 @@ describe("agentTunnelRoles", () => {
     const config = { executorModel: "p/m" };
     expect(applyAgentTunnelRoleModel(config, "bogus", "x/y")).toBe(config);
     expect(applyAgentTunnelRoleHarness(config, "bogus", "codex")).toBe(config);
+  });
+});
+
+describe("agentTunnelHarnessOptions", () => {
+  it("lists only harnesses whose provider kind is installed", () => {
+    expect(agentTunnelHarnessOptions({ providerKinds: ["codex"] })).toEqual([
+      { value: "codex", label: "Codex" },
+    ]);
+    expect(
+      agentTunnelHarnessOptions({ providerKinds: ["claudeAgent", "grok"] }).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["claude", "grok"]);
+  });
+
+  it("keeps a selected harness visible even when its provider is not installed", () => {
+    expect(
+      agentTunnelHarnessOptions({
+        providerKinds: ["codex"],
+        selectedHarnesses: ["opencode"],
+      }).map((option) => option.value),
+    ).toEqual(["codex", "opencode"]);
+  });
+
+  it("labels an unknown selected harness as custom", () => {
+    expect(
+      agentTunnelHarnessOptions({
+        providerKinds: [],
+        selectedHarnesses: ["/opt/bin/my-agent"],
+      }),
+    ).toEqual([{ value: "/opt/bin/my-agent", label: "/opt/bin/my-agent (custom)" }]);
+  });
+
+  it("returns nothing when nothing is installed and nothing is selected", () => {
+    expect(agentTunnelHarnessOptions({ providerKinds: [] })).toEqual([]);
   });
 });
