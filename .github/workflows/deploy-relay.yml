@@ -15,7 +15,7 @@ concurrency:
 jobs:
   deploy_relay:
     name: Deploy production relay
-    runs-on: depot-ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment:
       name: production
@@ -35,7 +35,7 @@ jobs:
       ALCHEMY_TELEMETRY_DISABLED: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
         with:
           sparse-checkout: |
             /*

@@ -30,7 +30,7 @@ permissions:
 jobs:
   prepare:
     name: Resolve version
-    runs-on: depot-ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -58,17 +58,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: depot-macos-14
+          - runner: blacksmith-6vcpu-macos-15
             platform: mac
             target: dmg
             arch: arm64
             rust_target: aarch64-apple-darwin
-          - runner: depot-ubuntu-24.04
+          - runner: blacksmith-4vcpu-ubuntu-2404
             platform: linux
             target: AppImage
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
-          - runner: depot-windows-2025
+          - runner: blacksmith-4vcpu-windows-2025
             platform: win
             target: nsis
             arch: x64
@@ -189,7 +189,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [prepare, build]
-    runs-on: depot-ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8
