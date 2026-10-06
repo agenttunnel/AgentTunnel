@@ -45,7 +45,7 @@ jobs:
   ios:
     name: iPhone 6.9, iPhone 6.5, and iPad 13
     if: inputs.platform == 'all' || inputs.platform == 'ios'
-    runs-on: depot-macos-14
+    runs-on: blacksmith-6vcpu-macos-15
     # Capturing every palette multiplies the device matrix by six, and only the
     # one native build is shared between them.
     timeout-minutes: ${{ inputs.theme == 'all' && 300 || 60 }}
@@ -97,7 +97,7 @@ jobs:
     # GitHub-hosted on purpose: the Android emulator needs /dev/kvm, and Depot
     # GitHub Actions runners don't expose it — only Depot CI sandboxes do.
     # https://depot.dev/docs/github-actions/troubleshooting
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Capturing every palette multiplies the device matrix by six, and only the
     # one native build is shared between them.
     timeout-minutes: ${{ inputs.theme == 'all' && 300 || 60 }}
@@ -105,7 +105,7 @@ jobs:
       T3_SHOWCASE_ANDROID_ABI: x86_64
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: useblacksmith/checkout@v1
         with:
           sparse-checkout: |
             /*
