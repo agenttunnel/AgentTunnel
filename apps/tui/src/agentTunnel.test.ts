@@ -149,13 +149,17 @@ describe("agentTunnelModelItems", () => {
 });
 
 describe("option lists", () => {
-  it("offers the harness CLIs a role can run on", () => {
-    const values = agentTunnelHarnessItems("executor").map(
+  it("offers only the installed harness CLIs, plus the role's current pick", () => {
+    const installed = agentTunnelHarnessItems("executor", ["codex"], "codex").map(
       (item) => parseAgentTunnelItem(item.id)?.value,
     );
-    expect(values).toContain("codex");
-    expect(values).toContain("opencode");
-    expect(values).toHaveLength(new Set(values).size);
+    expect(installed).toEqual(["codex"]);
+
+    const withCurrent = agentTunnelHarnessItems("executor", ["codex"], "opencode").map(
+      (item) => parseAgentTunnelItem(item.id)?.value,
+    );
+    expect(withCurrent).toEqual(["codex", "opencode"]);
+    expect(withCurrent).toHaveLength(new Set(withCurrent).size);
   });
 
   it("offers reasoning effort including the harness default", () => {

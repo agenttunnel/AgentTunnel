@@ -594,6 +594,35 @@ export const PiSettings = makeProviderSettingsSchema(
 );
 export type PiSettings = typeof PiSettings.Type;
 
+export const CommandCodeSettings = makeProviderSettingsSchema(
+  {
+    // Off by default (like Cursor, Grok, OpenCode, and Pi): the binding is
+    // opt-in and probed only once a user enables it from Settings.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("command-code").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Command Code CLI binary.",
+        providerSettingsForm: {
+          placeholder: "command-code",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type CommandCodeSettings = typeof CommandCodeSettings.Type;
+
 /**
  * AgentTunnel settings. AgentTunnel is a workflow provider rather than a
  * single model session, so each role gets an independent harness/model pair.
@@ -954,6 +983,7 @@ export const ServerSettings = Schema.Struct({
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     pi: PiSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    commandcode: CommandCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     agenttunnel: AgentTunnelSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
@@ -1114,6 +1144,12 @@ const PiSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const CommandCodeSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const AgentTunnelSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   autoMode: Schema.optionalKey(Schema.Boolean),
@@ -1178,6 +1214,7 @@ export const ServerSettingsPatch = Schema.Struct({
       grok: Schema.optionalKey(GrokSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       pi: Schema.optionalKey(PiSettingsPatch),
+      commandcode: Schema.optionalKey(CommandCodeSettingsPatch),
       agenttunnel: Schema.optionalKey(AgentTunnelSettingsPatch),
     }),
   ),

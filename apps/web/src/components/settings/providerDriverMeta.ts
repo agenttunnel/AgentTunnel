@@ -2,6 +2,7 @@ import {
   AgentTunnelSettings,
   ClaudeSettings,
   CodexSettings,
+  CommandCodeSettings,
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
@@ -11,7 +12,16 @@ import {
 import type * as Schema from "effect/Schema";
 import React from "react";
 import { Bot } from "lucide-react";
-import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon, PiIcon } from "../Icons";
+import {
+  ClaudeAI,
+  CommandCodeIcon,
+  CursorIcon,
+  GrokIcon,
+  type Icon,
+  OpenAI,
+  OpenCodeIcon,
+  PiIcon,
+} from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -84,6 +94,12 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Pi",
     icon: PiIcon,
     settingsSchema: PiSettings,
+  },
+  {
+    value: ProviderDriverKind.make("commandcode"),
+    label: "Command Code",
+    icon: CommandCodeIcon,
+    settingsSchema: CommandCodeSettings,
   },
 ];
 

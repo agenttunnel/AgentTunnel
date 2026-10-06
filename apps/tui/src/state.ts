@@ -790,7 +790,11 @@ function activateAgentTunnel(
     row.kind === "model"
       ? agentTunnelModelItems(state.agentTunnel, state.agentTunnelCatalog, row.role ?? "")
       : row.kind === "harness"
-        ? agentTunnelHarnessItems(row.role ?? "")
+        ? agentTunnelHarnessItems(
+            row.role ?? "",
+            state.providers.map((provider) => provider.driver),
+            row.value,
+          )
         : row.kind === "variant"
           ? agentTunnelVariantItems(row.role ?? "")
           : agentTunnelNumberItems(row.key);
