@@ -325,6 +325,11 @@ const CLAUDE_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
 // so the catalog itself carries no `isLegacy` flags.
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = CLAUDE_MODEL_CATALOG;
 
+/** Parses a `claude --version` style output line into a semver string. */
+export function parseClaudeCliVersion(output: string): string | null {
+  return parseGenericCliVersion(output);
+}
+
 function supportsClaudeOpus5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_5_VERSION) >= 0 : false;
 }
@@ -341,7 +346,7 @@ function supportsClaudeOpus47(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_7_VERSION) >= 0 : false;
 }
 
-function getBuiltInClaudeModelsForVersion(
+export function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   return BUILT_IN_MODELS.filter((model) => {

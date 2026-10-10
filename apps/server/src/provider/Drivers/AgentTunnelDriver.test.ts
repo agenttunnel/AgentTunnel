@@ -41,15 +41,28 @@ describe("AgentTunnelDriver", () => {
     ).toEqual(["opencode", "pi", "/opt/homebrew/bin/pi"]);
   });
 
-  it("skips harnesses without a listing command unless they coordinate the workflow", () => {
+  it("keeps configured claude harnesses now that claude enumerates via --version", () => {
     expect(
       catalogHarnesses(decodeConfig({ orchestratorHarness: "pi", executorHarness: "claude" })),
+    ).toEqual(["pi", "opencode", "claude"]);
+  });
+
+  it("lists catalogs for every recognized harness, not just the coordinator", () => {
+    expect(
+      catalogHarnesses(decodeConfig({ orchestratorHarness: "pi", executorHarness: "grok" })),
+    ).toEqual(["pi", "opencode", "grok"]);
+    expect(
+      catalogHarnesses(decodeConfig({ orchestratorHarness: "codex", executorHarness: "opencode" })),
+    ).toEqual(["codex", "opencode", "pi"]);
+  });
+
+  it("skips harnesses without a listing command unless they coordinate the workflow", () => {
+    expect(
+      catalogHarnesses(decodeConfig({ orchestratorHarness: "pi", executorHarness: "zod" })),
     ).toEqual(["pi", "opencode"]);
     expect(
-      catalogHarnesses(
-        decodeConfig({ orchestratorHarness: "claude", executorHarness: "opencode" }),
-      ),
-    ).toEqual(["claude", "opencode", "pi"]);
+      catalogHarnesses(decodeConfig({ orchestratorHarness: "zod", executorHarness: "opencode" })),
+    ).toEqual(["zod", "opencode", "pi"]);
   });
 });
 

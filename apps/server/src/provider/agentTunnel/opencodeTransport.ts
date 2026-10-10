@@ -29,12 +29,59 @@ export function isPiHarness(harness: string): boolean {
   );
 }
 
-export type AgentTunnelHarnessKind = "opencode" | "pi" | "other";
+export type AgentTunnelHarnessKind =
+  | "opencode"
+  | "pi"
+  | "claude"
+  | "codex"
+  | "grok"
+  | "cursor"
+  | "other";
+
+/** Claude Code's CLI (`claude -p`) is its own transport. */
+export function isClaudeHarness(harness: string): boolean {
+  return (
+    baseName(harness)
+      .replace(/\.exe$/, "")
+      .toLowerCase() === "claude"
+  );
+}
+
+/** Codex's CLI (`codex exec -m <model> <prompt>`) is its own transport. */
+export function isCodexHarness(harness: string): boolean {
+  return (
+    baseName(harness)
+      .replace(/\.exe$/, "")
+      .toLowerCase() === "codex"
+  );
+}
+
+/** Grok Build's CLI (`grok -p`) is its own transport. */
+export function isGrokHarness(harness: string): boolean {
+  return (
+    baseName(harness)
+      .replace(/\.exe$/, "")
+      .toLowerCase() === "grok"
+  );
+}
+
+/** Cursor's agent CLI (`cursor-agent -p`) is its own transport. */
+export function isCursorHarness(harness: string): boolean {
+  return (
+    baseName(harness)
+      .replace(/\.exe$/, "")
+      .toLowerCase() === "cursor-agent"
+  );
+}
 
 /** Which CLI protocol a harness speaks, so spawn args and parsing branch once. */
 export function agentTunnelHarnessKind(harness: string): AgentTunnelHarnessKind {
   if (isOpenCodeHarness(harness)) return "opencode";
   if (isPiHarness(harness)) return "pi";
+  if (isClaudeHarness(harness)) return "claude";
+  if (isCodexHarness(harness)) return "codex";
+  if (isGrokHarness(harness)) return "grok";
+  if (isCursorHarness(harness)) return "cursor";
   return "other";
 }
 
@@ -48,6 +95,30 @@ export function buildAgentTunnelSpawnArgs(spec: AgentTunnelProcessSpec): string[
     if (spec.variant) args.push("--thinking", spec.variant);
     return args;
   }
+  if (isCodexHarness(spec.harness)) {
+    // `codex exec` runs one non-interactive turn; reasoning effort rides the
+    // `-c model_reasoning` config override rather than a dedicated flag.
+    const args = ["exec"];
+    if (spec.model) args.push("-m", spec.model);
+    if (spec.dangerouslySkipPermissions) {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    }
+    if (spec.variant) args.push("-c", `model_reasoning="${spec.variant}"`);
+    args.push(spec.prompt);
+    return args;
+  }
+  if (isClaudeHarness(spec.harness)) {
+    // Claude Code has no `run` subcommand: `-p` + prompt is the non-
+    // interactive form, and the model flag is `--model`, not `-m`.
+    const args = ["-p", spec.prompt];
+    if (spec.model) args.splice(1, 0, "--model", spec.model);
+    if (spec.dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+    if (spec.variant) {
+      const effort = normalizeClaudeHarnessEffort(spec.variant);
+      if (effort) args.push("--effort", effort);
+    }
+    return args;
+  }
   const args = ["run"];
   if (spec.model) args.push("-m", spec.model);
   if (spec.dangerouslySkipPermissions) {
@@ -59,6 +130,19 @@ export function buildAgentTunnelSpawnArgs(spec: AgentTunnelProcessSpec): string[
   }
   args.push(spec.prompt);
   return args;
+}
+
+/** Valid `--effort` values for the Claude Code CLI. */
+const CLAUDE_EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * Maps a workflow reasoning variant onto a Claude Code `--effort` value.
+ * `ultrathink` is a prompt-prefix mode and `ultracode` pairs with `xhigh`;
+ * anything else the CLI does not accept is dropped rather than warned about.
+ */
+function normalizeClaudeHarnessEffort(variant: string): string | undefined {
+  if (variant === "ultracode") return "xhigh";
+  return CLAUDE_EFFORT_VALUES.has(variant) ? variant : undefined;
 }
 
 const TOOL_SUMMARY_MAX = 100;
