@@ -472,6 +472,11 @@ export const ThreadModelConfig = Schema.Struct({
   executorVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   testerVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   reviewerVariant: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  // Auto-mode approval copied from the provider config when the thread's
+  // config was snapshotted, so a thread keeps dispatching the models it was
+  // created with. Absent means the thread never narrowed it: the environment's
+  // list (also absent = every model) applies.
+  approvedModels: Schema.optional(Schema.Array(TrimmedString)),
 });
 export type ThreadModelConfig = typeof ThreadModelConfig.Type;
 

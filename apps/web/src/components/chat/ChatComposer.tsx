@@ -706,6 +706,10 @@ export interface ChatComposerProps {
     variant: string,
   ) => void;
   onAgentTunnelAutoModeChange?: (instanceId: ProviderInstanceId, autoMode: boolean) => void;
+  onAgentTunnelApprovedModelsChange?: (
+    instanceId: ProviderInstanceId,
+    nextConfig: Record<string, unknown> | undefined,
+  ) => void;
   /** Re-snapshots the thread's model config from the environment defaults. */
   onAgentTunnelModelConfigReset?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
@@ -793,6 +797,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onAgentTunnelRoleHarnessSelect,
     onAgentTunnelRoleReasoningSelect,
     onAgentTunnelAutoModeChange,
+    onAgentTunnelApprovedModelsChange,
     onAgentTunnelModelConfigReset,
     getModelDisabledReason,
     toggleInteractionMode,
@@ -4138,6 +4143,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? {
                             onWorkflowAutoModeChange: (autoMode: boolean) =>
                               onAgentTunnelAutoModeChange(selectedInstanceId, autoMode),
+                          }
+                        : {})}
+                      {...(workflowConfig ? { workflowApprovedModelsConfig: workflowConfig } : {})}
+                      {...(onAgentTunnelApprovedModelsChange
+                        ? {
+                            onWorkflowApprovedModelsChange: (
+                              nextConfig: Record<string, unknown> | undefined,
+                            ) => onAgentTunnelApprovedModelsChange(selectedInstanceId, nextConfig),
                           }
                         : {})}
                       {...(onAgentTunnelModelConfigReset

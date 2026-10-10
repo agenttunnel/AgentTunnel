@@ -9,6 +9,7 @@ import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRe
 import { ChevronRightIcon, SearchIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
+import { AgentTunnelApprovedModelsBlock } from "../settings/AgentTunnelApprovedModelsBlock";
 import {
   modelPickerLegacySectionKey,
   modelPickerModelKey,
@@ -153,6 +154,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   workflowAutoMode?: boolean;
   onWorkflowAutoModeChange?: (autoMode: boolean) => void;
+  /**
+   * The thread's workflow model config, when the picker is configuring a
+   * workflow provider. Auto mode curates the models the orchestrator may
+   * dispatch from this config in the approved-models block.
+   */
+  workflowApprovedModelsConfig?: Record<string, unknown> | undefined;
+  onWorkflowApprovedModelsChange?: (nextConfig: Record<string, unknown> | undefined) => void;
   /** Re-snapshots the thread's model config from the environment defaults. */
   onWorkflowModelConfigReset?: () => void;
   workflowReasoningOptions?: ReadonlyArray<{
@@ -177,11 +185,21 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
   const activeWorkflowRole =
     props.workflowRoles?.find((role) => role.id === activeWorkflowRoleId) ?? null;
+  // Auto mode gives non-orchestrator roles to the orchestrator: their chips are
+  // hidden, so a selection left over from before the toggle is treated as none.
+  const effectiveActiveWorkflowRole =
+    activeWorkflowRole !== null &&
+    props.workflowAutoMode === true &&
+    activeWorkflowRole.id !== "orchestrator"
+      ? null
+      : activeWorkflowRole;
   // Harness belongs to a role, but the "Thread model" tab should surface it
   // too. The orchestrator harness runs the coordinator, so it is the harness
   // that backs the thread model.
   const workflowHarnessRole =
-    activeWorkflowRole ?? props.workflowRoles?.find((role) => role.id === "orchestrator") ?? null;
+    effectiveActiveWorkflowRole ??
+    props.workflowRoles?.find((role) => role.id === "orchestrator") ??
+    null;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const modelListRef = useRef<LegendListRef | null>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
@@ -578,7 +596,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (!resolvedModel) {
         return;
       }
-      if (activeWorkflowRoleId !== null && onWorkflowRoleModelSelect) {
+      if (
+        activeWorkflowRoleId !== null &&
+        effectiveActiveWorkflowRole !== null &&
+        onWorkflowRoleModelSelect
+      ) {
         onWorkflowRoleModelSelect(activeWorkflowRoleId, instanceId, resolvedModel);
         return;
       }
@@ -586,6 +608,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     },
     [
       activeWorkflowRoleId,
+      effectiveActiveWorkflowRole,
       entryByInstanceId,
       getModelDisabledReason,
       modelOptionsByInstance,
@@ -827,8 +850,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   className="[&_input]:h-6.5 [&_input]:font-sans [&_input]:leading-6.5"
                   inputClassName="rounded-none bg-transparent text-sm"
                   placeholder={
-                    activeWorkflowRole
-                      ? `Assign a model to ${activeWorkflowRole.label}...`
+                    effectiveActiveWorkflowRole
+                      ? `Assign a model to ${effectiveActiveWorkflowRole.label}...`
                       : "Search models..."
                   }
                   showTrigger={false}
@@ -882,33 +905,35 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 <button
                   type="button"
                   onClick={() => props.onWorkflowRoleChange?.(null)}
-                  aria-pressed={activeWorkflowRole === null}
-                  className={workflowRoleChipClass(activeWorkflowRole === null)}
+                  aria-pressed={effectiveActiveWorkflowRole === null}
+                  className={workflowRoleChipClass(effectiveActiveWorkflowRole === null)}
                 >
                   Thread model
                 </button>
-                {props.workflowRoles.map((role) => (
-                  <button
-                    key={role.id}
-                    type="button"
-                    onClick={() => props.onWorkflowRoleChange?.(role.id)}
-                    aria-pressed={activeWorkflowRole?.id === role.id}
-                    className={workflowRoleChipClass(activeWorkflowRole?.id === role.id)}
-                  >
-                    {role.label}
-                    {role.auto ? (
-                      <span className="text-muted-foreground/70">
-                        {" · auto"}
-                        {role.model ? ` · fallback ${role.model.split("/").pop()}` : ""}
-                      </span>
-                    ) : role.model ? (
-                      <span className="text-muted-foreground/70">
-                        {" · "}
-                        {role.model.split("/").pop()}
-                      </span>
-                    ) : null}
-                  </button>
-                ))}
+                {props.workflowRoles
+                  .filter((role) => props.workflowAutoMode !== true || role.id === "orchestrator")
+                  .map((role) => (
+                    <button
+                      key={role.id}
+                      type="button"
+                      onClick={() => props.onWorkflowRoleChange?.(role.id)}
+                      aria-pressed={effectiveActiveWorkflowRole?.id === role.id}
+                      className={workflowRoleChipClass(effectiveActiveWorkflowRole?.id === role.id)}
+                    >
+                      {role.label}
+                      {role.auto ? (
+                        <span className="text-muted-foreground/70">
+                          {" · auto"}
+                          {role.model ? ` · fallback ${role.model.split("/").pop()}` : ""}
+                        </span>
+                      ) : role.model ? (
+                        <span className="text-muted-foreground/70">
+                          {" · "}
+                          {role.model.split("/").pop()}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
                 {props.onWorkflowModelConfigReset ? (
                   <Tooltip>
                     <TooltipTrigger
@@ -984,7 +1009,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             ) : null}
 
             {/* Workflow role reasoning */}
-            {activeWorkflowRole &&
+            {effectiveActiveWorkflowRole &&
             props.workflowReasoningOptions &&
             props.workflowReasoningOptions.length > 0 ? (
               <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3 pb-2 pt-2">
@@ -992,13 +1017,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   Reasoning
                 </span>
                 {props.workflowReasoningOptions.map((option) => {
-                  const active = (activeWorkflowRole.variant ?? "") === option.value;
+                  const active = (effectiveActiveWorkflowRole.variant ?? "") === option.value;
                   return (
                     <button
                       key={option.value || "default"}
                       type="button"
                       onClick={() =>
-                        props.onWorkflowRoleReasoningSelect?.(activeWorkflowRole.id, option.value)
+                        props.onWorkflowRoleReasoningSelect?.(
+                          effectiveActiveWorkflowRole.id,
+                          option.value,
+                        )
                       }
                       aria-pressed={active}
                       className={workflowRoleChipClass(active)}
@@ -1008,12 +1036,27 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   );
                 })}
                 {props.workflowReasoningOptions.some(
-                  (option) => option.value === (activeWorkflowRole.variant ?? ""),
+                  (option) => option.value === (effectiveActiveWorkflowRole.variant ?? ""),
                 ) ? null : (
                   <span className="font-mono text-[.65rem] text-muted-foreground/70">
-                    {activeWorkflowRole.variant}
+                    {effectiveActiveWorkflowRole.variant}
                   </span>
                 )}
+              </div>
+            ) : null}
+
+            {/* Workflow auto-mode approved models */}
+            {props.workflowAutoMode === true &&
+            props.workflowApprovedModelsConfig !== undefined &&
+            props.onWorkflowApprovedModelsChange ? (
+              <div className="max-h-52 shrink-0 overflow-hidden px-2 pb-2">
+                <AgentTunnelApprovedModelsBlock
+                  config={props.workflowApprovedModelsConfig}
+                  models={modelOptionsByInstance.get(props.activeInstanceId) ?? []}
+                  orchestratorHarness={workflowHarnessRole?.harness ?? "opencode"}
+                  onChange={props.onWorkflowApprovedModelsChange}
+                  className="border-border/40"
+                />
               </div>
             ) : null}
 

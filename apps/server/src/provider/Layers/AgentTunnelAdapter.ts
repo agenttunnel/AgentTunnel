@@ -232,10 +232,13 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         context?.agentLogBytes.set(agentId, written + bytes);
         yield* appendLogFile(threadId, agentId, outputPath, line);
       }
-      if (harnessKind === "other") {
+      if (harnessKind === "other" || harnessKind === "codex") {
         return;
       }
-      // The raw stdout/stderr stream, verbatim, for the "Raw" view.
+      // The raw stdout/stderr stream, verbatim, for the "Raw" view. Claude
+      // Code's `-p` output and codex's exec output are plain text (no
+      // structured frames to parse), so they keep the raw view:
+      // `trackHarnessUsage` has no frames for them either.
       const rawPath = agentLogPath(threadId, agentId, ".raw");
       const writtenRaw = context?.agentRawLogBytes.get(agentId) ?? 0;
       const rawText = `${rawLine}\n`;
@@ -547,7 +550,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
     threadId: ThreadId,
     processId: string,
     line: string,
-    harnessKind: Exclude<AgentTunnelHarnessKind, "other">,
+    harnessKind: Exclude<AgentTunnelHarnessKind, "other" | "claude">,
   ) {
     const context = sessions.get(threadId);
     if (!context) return;
@@ -691,7 +694,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
         );
         const includeReasoning = spec.id.startsWith("orchestrator");
         const usageLines =
-          harnessKind === "other"
+          harnessKind === "other" || harnessKind === "claude"
             ? observedLines
             : observedLines.pipe(
                 Stream.tap((line) =>
@@ -876,17 +879,31 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
       input.modelSelection?.instanceId === options.instanceId
         ? input.modelSelection.model
         : context.session.model;
+    // The thread's own config wins over the instance defaults captured when
+    // this adapter was built: a thread keeps running the roles it was
+    // configured with even after the environment defaults change. Keys the
+    // thread schema does not carry are dropped first, so an explicit
+    // `undefined` from an optional field never overwrites a setting.
+    const { approvedModels: threadApprovedModels, ...threadSettings } = input.modelConfig ?? {};
     const effectiveSettings: AgentTunnelSettings = {
       ...settings,
-      // The thread's own config wins over the instance defaults captured when
-      // this adapter was built: a thread keeps running the roles it was
-      // configured with even after the environment defaults change.
-      ...input.modelConfig,
+      ...threadSettings,
+      ...(threadApprovedModels !== undefined
+        ? { approvedModels: threadApprovedModels }
+        : settings.approvedModels !== undefined
+          ? { approvedModels: settings.approvedModels }
+          : {}),
       dangerouslySkipPermissions:
         settings.dangerouslySkipPermissions ||
         context.approvalPolicy === "never" ||
         context.sandboxMode === "danger-full-access",
     };
+    // Same for auto-mode approval: the thread's snapshot narrows the models
+    // the orchestrator may dispatch before its list reaches the prompt.
+    const effectiveAvailableModels =
+      threadApprovedModels !== undefined
+        ? (options.availableModels ?? []).filter((slug) => threadApprovedModels.includes(slug))
+        : options.availableModels;
     context.activeTurnId = turnId;
     context.workflowTitle = input.input ?? "AgentTunnel workflow";
     context.workflowId = workflowId;
@@ -924,7 +941,7 @@ export const makeAgentTunnelAdapter = Effect.fn("makeAgentTunnelAdapter")(functi
           userTask: input.input ?? "",
           cwd: context.cwd,
           ...(model ? { model } : {}),
-          availableModels: options.availableModels ?? [],
+          availableModels: effectiveAvailableModels ?? [],
           settings: effectiveSettings,
           process: processRunner,
           emit: (event) => emitEvent(input.threadId, turnId, event).pipe(Effect.orDie),

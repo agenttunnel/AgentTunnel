@@ -7134,6 +7134,12 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [updateAgentTunnelModelConfig],
   );
+  const onAgentTunnelApprovedModelsChange = useCallback(
+    (instanceId: ProviderInstanceId, nextConfig: Record<string, unknown> | undefined) => {
+      updateAgentTunnelModelConfig(instanceId, () => nextConfig ?? {});
+    },
+    [updateAgentTunnelModelConfig],
+  );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -7676,6 +7682,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onAgentTunnelRoleHarnessSelect={onAgentTunnelRoleHarnessSelect}
                             onAgentTunnelRoleReasoningSelect={onAgentTunnelRoleReasoningSelect}
                             onAgentTunnelAutoModeChange={onAgentTunnelAutoModeChange}
+                            onAgentTunnelApprovedModelsChange={onAgentTunnelApprovedModelsChange}
                             onAgentTunnelModelConfigReset={onAgentTunnelModelConfigReset}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}

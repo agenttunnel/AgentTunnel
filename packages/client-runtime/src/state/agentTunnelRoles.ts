@@ -232,6 +232,7 @@ export function readAgentTunnelModelConfig(
     const value = source[key];
     return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
   };
+  const approved = readAgentTunnelApprovedModels(source);
   return {
     autoMode: source.autoMode === true,
     orchestratorHarness: read("orchestratorHarness", "opencode"),
@@ -249,6 +250,7 @@ export function readAgentTunnelModelConfig(
     executorVariant: read("executorVariant", ""),
     testerVariant: read("testerVariant", ""),
     reviewerVariant: read("reviewerVariant", ""),
+    ...(approved === null ? {} : { approvedModels: approved }),
   };
 }
 

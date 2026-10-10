@@ -155,6 +155,7 @@ describe("agentTunnelRoles", () => {
         // snapshot, so a thread cannot pin the environment's pass limits.
         maxOrchestratorPasses: 7,
         dangerouslySkipPermissions: false,
+        approvedModels: ["a/b"],
       }),
     ).toEqual({
       autoMode: true,
@@ -173,7 +174,16 @@ describe("agentTunnelRoles", () => {
       executorVariant: "",
       testerVariant: "",
       reviewerVariant: "",
+      approvedModels: ["a/b"],
     });
+  });
+
+  it("carries auto-mode approval into the thread snapshot only when set", () => {
+    expect(readAgentTunnelModelConfig({}).approvedModels).toBeUndefined();
+    expect(readAgentTunnelModelConfig({ approvedModels: ["a/b", "c/d"] }).approvedModels).toEqual([
+      "a/b",
+      "c/d",
+    ]);
   });
 
   it("reads blank role values as unset when snapshotting", () => {

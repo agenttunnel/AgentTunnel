@@ -82,15 +82,55 @@ it("buildAgentTunnelSpawnArgs passes the reasoning variant to opencode", () => {
   );
 });
 
-it("buildAgentTunnelSpawnArgs uses --dangerously-skip-permissions and no json for claude harness", () => {
+it("buildAgentTunnelSpawnArgs uses claude -p with --model and --dangerously-skip-permissions", () => {
   NodeAssert.deepEqual(
     buildAgentTunnelSpawnArgs(spec({ harness: "claude", model: "claude-sonnet-4-5" })),
-    ["run", "-m", "claude-sonnet-4-5", "--dangerously-skip-permissions", "do the thing"],
+    ["-p", "--model", "claude-sonnet-4-5", "do the thing", "--dangerously-skip-permissions"],
   );
 });
 
-it("buildAgentTunnelSpawnArgs preserves --dangerously-skip-permissions for unknown harnesses", () => {
+it("buildAgentTunnelSpawnArgs maps claude variants onto --effort and drops invalid ones", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "claude", variant: "high", dangerouslySkipPermissions: false }),
+    ),
+    ["-p", "do the thing", "--effort", "high"],
+  );
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "claude", variant: "ultracode", dangerouslySkipPermissions: false }),
+    ),
+    ["-p", "do the thing", "--effort", "xhigh"],
+  );
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "claude", variant: "ultrathink", dangerouslySkipPermissions: false }),
+    ),
+    ["-p", "do the thing"],
+  );
+});
+
+it("buildAgentTunnelSpawnArgs uses codex exec flags for codex harnesses", () => {
   NodeAssert.deepEqual(buildAgentTunnelSpawnArgs(spec({ harness: "codex", model: "gpt-5" })), [
+    "exec",
+    "-m",
+    "gpt-5",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "do the thing",
+  ]);
+});
+
+it("buildAgentTunnelSpawnArgs maps codex variants onto model_reasoning", () => {
+  NodeAssert.deepEqual(
+    buildAgentTunnelSpawnArgs(
+      spec({ harness: "codex", variant: "high", dangerouslySkipPermissions: false }),
+    ),
+    ["exec", "-c", 'model_reasoning="high"', "do the thing"],
+  );
+});
+
+it("buildAgentTunnelSpawnArgs preserves run --dangerously-skip-permissions for unknown harnesses", () => {
+  NodeAssert.deepEqual(buildAgentTunnelSpawnArgs(spec({ harness: "zod", model: "gpt-5" })), [
     "run",
     "-m",
     "gpt-5",
@@ -417,7 +457,11 @@ it("detects harness kind by basename including pi", () => {
   NodeAssert.equal(isPiHarness("opencode"), false);
   NodeAssert.equal(agentTunnelHarnessKind("opencode"), "opencode");
   NodeAssert.equal(agentTunnelHarnessKind("/opt/bin/pi"), "pi");
-  NodeAssert.equal(agentTunnelHarnessKind("codex"), "other");
+  NodeAssert.equal(agentTunnelHarnessKind("codex"), "codex");
+  NodeAssert.equal(agentTunnelHarnessKind("claude"), "claude");
+  NodeAssert.equal(agentTunnelHarnessKind("grok"), "grok");
+  NodeAssert.equal(agentTunnelHarnessKind("cursor-agent"), "cursor");
+  NodeAssert.equal(agentTunnelHarnessKind("zod"), "other");
 });
 
 it("buildAgentTunnelSpawnArgs uses pi's json one-shot flags", () => {

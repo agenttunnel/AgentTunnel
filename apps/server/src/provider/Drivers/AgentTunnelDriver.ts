@@ -1,5 +1,6 @@
 import {
   AgentTunnelSettings,
+  ClaudeSettings,
   PiSettings,
   ProviderDriverKind,
   type ServerProvider,
@@ -17,8 +18,10 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { makeAgentTunnelTextGeneration } from "../../textGeneration/AgentTunnelTextGeneration.ts";
+import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { agentTunnelHarnessKind } from "../agentTunnel/opencodeTransport.ts";
+import { getBuiltInHarnessModelsForKind } from "../agentTunnel/harnessCatalogs.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAgentTunnelAdapter } from "../Layers/AgentTunnelAdapter.ts";
 import {
@@ -27,6 +30,10 @@ import {
   piListedModelsToServerModels,
 } from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import {
+  getBuiltInClaudeModelsForVersion,
+  parseClaudeCliVersion,
+} from "../Layers/ClaudeProvider.ts";
 import { OpenCodeRuntime, OpenCodeRuntimeError } from "../opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import {
@@ -54,6 +61,7 @@ export type AgentTunnelDriverEnv =
 
 const decodeSettings = Schema.decodeSync(AgentTunnelSettings);
 const decodePiSettings = Schema.decodeSync(PiSettings);
+const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const maintenanceCapabilities: ProviderMaintenanceCapabilities =
   makeManualOnlyProviderMaintenanceCapabilities({
@@ -103,11 +111,55 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
           }
           return piListedModelsToServerModels(rows);
         });
-      const loadHarnessCatalog = (harness: string) =>
-        (agentTunnelHarnessKind(harness) === "pi"
-          ? loadPiModels(harness)
-          : loadOpenCodeModels(harness)
-        ).pipe(Effect.map((models) => ({ harness, models })));
+      // Static catalogs — claude gates its catalog on CLI version; codex, grok,
+      // and cursor have no cheap listing subcommand (codex's list is behind
+      // the app-server handshake, grok/cursor report over ACP), so the workflow
+      // catalog is the static set the provider snapshots fall back to.
+      // `--version` is the fast, honest liveness probe for all of them (an
+      // unknown subcommand such as `models` would be treated as a prompt).
+      const loadVersionedCatalogHarness = (
+        harness: string,
+        resolve: (version: string | null) => ReadonlyArray<ServerProvider["models"][number]>,
+      ) =>
+        Effect.gen(function* () {
+          const result = yield* openCodeRuntime.runOpenCodeCommand({
+            binaryPath: harness,
+            args: ["--version"],
+            cwd: serverConfig.cwd,
+            environment: processEnvironment,
+          });
+          if (result.code !== 0) {
+            return yield* new OpenCodeRuntimeError({
+              operation: "loadHarnessCatalog",
+              detail: `\`${harness} --version\` exited with code ${result.code}.`,
+            });
+          }
+          return resolve(parseClaudeCliVersion(`${result.stdout}\n${result.stderr}`));
+        });
+      const loadClaudeModels = (harness: string) =>
+        loadVersionedCatalogHarness(harness, getBuiltInClaudeModelsForVersion);
+      const loadHarnessCatalog = (harness: string) => {
+        const kind = agentTunnelHarnessKind(harness);
+        const loader =
+          kind === "pi"
+            ? loadPiModels(harness)
+            : kind === "claude"
+              ? loadClaudeModels(harness)
+              : kind === "codex"
+                ? loadVersionedCatalogHarness(harness, () =>
+                    getBuiltInHarnessModelsForKind("codex"),
+                  )
+                : kind === "grok"
+                  ? loadVersionedCatalogHarness(harness, () =>
+                      getBuiltInHarnessModelsForKind("grok"),
+                    )
+                  : kind === "cursor"
+                    ? loadVersionedCatalogHarness(harness, () =>
+                        getBuiltInHarnessModelsForKind("cursor"),
+                      )
+                    : loadOpenCodeModels(harness);
+        return loader.pipe(Effect.map((models) => ({ harness, models })));
+      };
       // A wedged or interactive harness CLI must never block the registry
       // build; the probe degrades to a readable reason instead of hanging.
       const probeTimeoutFor = (harness: string) =>
@@ -217,16 +269,27 @@ export const AgentTunnelDriver: ProviderDriver<AgentTunnelSettings, AgentTunnelD
               }),
               processEnvironment,
             )
-          : yield* Effect.gen(function* () {
-              const serverOwner = yield* OpenCodeServerOwner.make({
-                binaryPath: orchestratorHarness,
-                directory: serverConfig.cwd,
-                environment: processEnvironment,
+          : agentTunnelHarnessKind(orchestratorHarness) === "claude"
+            ? yield* makeClaudeTextGeneration(
+                decodeClaudeSettings({
+                  enabled,
+                  binaryPath: orchestratorHarness,
+                  customModels: [...config.customModels],
+                }),
+                processEnvironment,
+              )
+            : yield* Effect.gen(function* () {
+                const serverOwner = yield* OpenCodeServerOwner.make({
+                  binaryPath: orchestratorHarness,
+                  directory: serverConfig.cwd,
+                  environment: processEnvironment,
+                });
+                return yield* makeAgentTunnelTextGeneration(config, undefined, {
+                  availableModels: orchestratorModels,
+                }).pipe(
+                  Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
+                );
               });
-              return yield* makeAgentTunnelTextGeneration(config, undefined, {
-                availableModels: orchestratorModels,
-              }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
-            });
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -275,9 +338,12 @@ const ENUMERABLE_HARNESS_PRESETS: ReadonlyArray<string> = ["opencode", "pi"];
  * Configured role harnesses come first so the coordinator's models stay at the
  * top of the list; the enumerable presets follow, so switching a role (or a
  * thread's own model config) to `pi`/`opencode` still finds a catalog even when
- * the environment's role harnesses all point at one CLI. Harnesses with no
- * listing command are left to their own provider instance — except the
- * coordinator, whose probe failure is what marks the provider as limited.
+ * the environment's role harnesses all point at one CLI. Claude, codex, grok,
+ * and cursor are enumerable through their version-probed static catalogs, so a
+ * role (or the coordinator) configured to any of them gets its list too.
+ * Harnesses with no listing command are left to their own provider instance —
+ * except the coordinator, whose probe failure is what marks the provider as
+ * limited.
  */
 export function catalogHarnesses(config: AgentTunnelSettings): ReadonlyArray<string> {
   const harnesses: string[] = [];
