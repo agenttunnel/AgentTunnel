@@ -176,6 +176,19 @@ const PersistedElementContextDraft = Schema.Struct({
 });
 type PersistedElementContextDraft = typeof PersistedElementContextDraft.Type;
 
+/**
+ * Copies a composer draft's workflow config into the persisted, mutable
+ * shape: `approvedModels` arrives as a `readonly` array off the schema type,
+ * so it is re-materialized as a plain array for the persisted record.
+ */
+function toPersistedModelConfig(config: ThreadModelConfig): DeepMutable<ThreadModelConfig> {
+  const { approvedModels, ...rest } = config;
+  return {
+    ...rest,
+    ...(approvedModels !== undefined ? { approvedModels: [...approvedModels] } : {}),
+  };
+}
+
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
@@ -2115,7 +2128,9 @@ function partializeComposerDraftStoreState(
             ...(draft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
           }
         : {}),
-      ...(draft.modelConfig !== null ? { modelConfig: draft.modelConfig } : {}),
+      ...(draft.modelConfig !== null
+        ? { modelConfig: toPersistedModelConfig(draft.modelConfig) }
+        : {}),
       ...(draft.runtimeMode ? { runtimeMode: draft.runtimeMode } : {}),
       ...(draft.interactionMode ? { interactionMode: draft.interactionMode } : {}),
     };

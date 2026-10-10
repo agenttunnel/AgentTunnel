@@ -2,21 +2,17 @@
 
 import type { ServerProviderModel } from "@t3tools/contracts";
 import { ChevronDown } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { cn } from "~/lib/utils";
-import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
-import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Input } from "../ui/input";
+import { AgentTunnelApprovedModelsBlock } from "./AgentTunnelApprovedModelsBlock";
 import {
   AGENT_TUNNEL_HARNESS_OPTIONS as SUPPORTED_HARNESSES,
   AGENT_TUNNEL_REASONING_OPTIONS,
   AGENT_TUNNEL_ROLES,
-  applyAgentTunnelApprovedModelToggle,
-  applyAgentTunnelApprovedModelsDisableAll,
-  applyAgentTunnelApprovedModelsEnableAll,
-  readAgentTunnelApprovedModels,
 } from "@t3tools/client-runtime/state/agentTunnelRoles";
 
 // One row per role, driven by the same list the composer and context panel read.
@@ -214,110 +210,6 @@ function NumberRow({
 }
 
 /**
- * Curates the models auto mode may dispatch. Eligible models come from the
- * orchestrator harness only — the same rule the driver applies — because a
- * model another harness reported is one auto mode can never run. The list is
- * bounded and scrollable so a 200+ model catalog stays cheap to render.
- */
-function ApprovedModelsBlock({
-  config,
-  models,
-  orchestratorHarness,
-  onChange,
-}: {
-  readonly config: Record<string, unknown> | undefined;
-  readonly models: ReadonlyArray<ServerProviderModel>;
-  readonly orchestratorHarness: string;
-  readonly onChange: (nextConfig: Record<string, unknown> | undefined) => void;
-}) {
-  const eligibleModels = useMemo(
-    () =>
-      models.filter(
-        (entry) => entry.harnesses === undefined || entry.harnesses.includes(orchestratorHarness),
-      ),
-    [models, orchestratorHarness],
-  );
-  const allSlugs = useMemo(() => eligibleModels.map((model) => model.slug), [eligibleModels]);
-  const approvedSet = useMemo(() => {
-    const approved = readAgentTunnelApprovedModels(config);
-    return approved === null ? null : new Set(approved);
-  }, [config]);
-  const isApproved = (slug: string) => approvedSet === null || approvedSet.has(slug);
-  const approvedCount = eligibleModels.reduce(
-    (count, model) => count + (isApproved(model.slug) ? 1 : 0),
-    0,
-  );
-  // Mirror `writeConfigValue`: an emptied config is handed back as undefined.
-  const commit = (next: Record<string, unknown>) => {
-    onChange(Object.keys(next).length > 0 ? next : undefined);
-  };
-
-  return (
-    <div className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
-      <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-        <span className="min-w-0">
-          <span className="block text-[.8125rem] font-medium leading-5 text-foreground">
-            Approved models
-          </span>
-          <span className="block text-[.8125rem] leading-5 text-muted-foreground">
-            Auto mode may only dispatch these models ({approvedCount} of {eligibleModels.length}).
-          </span>
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <Button
-            size="compact"
-            variant="outline"
-            onClick={() => commit(applyAgentTunnelApprovedModelsEnableAll(config ?? {}))}
-          >
-            Enable all
-          </Button>
-          <Button
-            size="compact"
-            variant="outline"
-            onClick={() => commit(applyAgentTunnelApprovedModelsDisableAll(config ?? {}))}
-          >
-            Disable all
-          </Button>
-        </span>
-      </div>
-      <div className="max-h-40 overflow-y-auto px-3 py-1">
-        {eligibleModels.length === 0 ? (
-          <p className="py-2 text-xs text-muted-foreground">No models reported for this harness.</p>
-        ) : (
-          eligibleModels.map((model) => (
-            <label
-              key={model.slug}
-              className="flex min-h-7 items-center justify-between gap-3 py-1"
-            >
-              <span className="min-w-0">
-                <span className="block truncate text-xs text-foreground/90">{model.name}</span>
-                <span className="block truncate text-[.625rem] text-muted-foreground">
-                  {model.slug}
-                </span>
-              </span>
-              <Switch
-                checked={isApproved(model.slug)}
-                onCheckedChange={(checked) =>
-                  commit(
-                    applyAgentTunnelApprovedModelToggle(
-                      config ?? {},
-                      model.slug,
-                      checked,
-                      allSlugs,
-                    ),
-                  )
-                }
-                aria-label={`Approve ${model.name}`}
-              />
-            </label>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
  * Interactive role configuration for the AgentTunnel workflow provider.
  *
  * Compact role grid plus a single Advanced disclosure, so the per-role harness,
@@ -346,30 +238,61 @@ export function AgentTunnelSettingsSection({
         Defaults for new threads. A thread keeps the model config it was created with — change it
         per thread from the composer&apos;s model config panel.
       </p>
-      <div className="overflow-hidden rounded-lg border border-border/60">
-        <div
-          className={cn(
-            "hidden gap-2 border-b border-border/50 bg-muted/15 px-3 py-1.5 text-[.6875rem] font-medium text-muted-foreground sm:grid sm:items-center",
-            ROLE_GRID_COLUMNS,
-          )}
-        >
-          <span>Role</span>
-          <span>Harness</span>
-          <span>Model</span>
-          <span>Reasoning</span>
+      {!autoMode ? (
+        <div className="overflow-hidden rounded-lg border border-border/60">
+          <div
+            className={cn(
+              "hidden gap-2 border-b border-border/50 bg-muted/15 px-3 py-1.5 text-[.6875rem] font-medium text-muted-foreground sm:grid sm:items-center",
+              ROLE_GRID_COLUMNS,
+            )}
+          >
+            <span>Role</span>
+            <span>Harness</span>
+            <span>Model</span>
+            <span>Reasoning</span>
+          </div>
+          <div className="divide-y divide-border/50">
+            {ROLES.map((role) => (
+              <RoleRow
+                key={role.key}
+                config={config}
+                models={models}
+                role={role}
+                onChange={onChange}
+              />
+            ))}
+          </div>
         </div>
-        <div className="divide-y divide-border/50">
-          {ROLES.map((role) => (
-            <RoleRow
-              key={role.key}
-              config={config}
-              models={models}
-              role={role}
-              onChange={onChange}
-            />
-          ))}
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-border/60">
+          <div
+            className={cn(
+              "hidden gap-2 border-b border-border/50 bg-muted/15 px-3 py-1.5 text-[.6875rem] font-medium text-muted-foreground sm:grid sm:items-center",
+              ROLE_GRID_COLUMNS,
+            )}
+          >
+            <span>Role</span>
+            <span>Harness</span>
+            <span>Model</span>
+            <span>Reasoning</span>
+          </div>
+          <div className="divide-y divide-border/50">
+            {ROLES.filter((role) => role.key === "orchestrator").map((role) => (
+              <RoleRow
+                key={role.key}
+                config={config}
+                models={models}
+                role={role}
+                onChange={onChange}
+              />
+            ))}
+          </div>
+          <p className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
+            Auto mode is on: the orchestrator picks the models for planner, executor, tester, and
+            reviewer tasks.
+          </p>
         </div>
-      </div>
+      )}
 
       <div className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
         <ToggleRow
@@ -388,7 +311,7 @@ export function AgentTunnelSettingsSection({
         />
       </div>
 
-      <ApprovedModelsBlock
+      <AgentTunnelApprovedModelsBlock
         config={configObject}
         models={models}
         orchestratorHarness={orchestratorHarness}

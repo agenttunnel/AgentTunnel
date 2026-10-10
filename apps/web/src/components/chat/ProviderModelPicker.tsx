@@ -86,6 +86,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   /** Global workflow auto mode for AgentTunnel. */
   workflowAutoMode?: boolean;
   onWorkflowAutoModeChange?: (autoMode: boolean) => void;
+  /** The thread's workflow model config, for auto-mode approved-models curation. */
+  workflowApprovedModelsConfig?: Record<string, unknown> | undefined;
+  onWorkflowApprovedModelsChange?: (nextConfig: Record<string, unknown> | undefined) => void;
   /** Re-snapshots the thread's model config from the environment defaults. */
   onWorkflowModelConfigReset?: () => void;
   workflowReasoningOptions?: ReadonlyArray<{ readonly value: string; readonly label: string }>;
@@ -216,7 +219,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLarge, isMenuOpen]);
 
   const handlePanelPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -307,6 +309,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         : {})}
       {...(props.onWorkflowAutoModeChange
         ? { onWorkflowAutoModeChange: props.onWorkflowAutoModeChange }
+        : {})}
+      {...(props.workflowApprovedModelsConfig !== undefined
+        ? { workflowApprovedModelsConfig: props.workflowApprovedModelsConfig }
+        : {})}
+      {...(props.onWorkflowApprovedModelsChange
+        ? { onWorkflowApprovedModelsChange: props.onWorkflowApprovedModelsChange }
         : {})}
       {...(props.onWorkflowModelConfigReset
         ? { onWorkflowModelConfigReset: props.onWorkflowModelConfigReset }
