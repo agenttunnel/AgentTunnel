@@ -1,0 +1,626 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
+	"github.com/agenttunnel/agenttunnel-go/internal/settings"
+	"github.com/agenttunnel/agenttunnel-go/internal/steering"
+	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
+	"github.com/agenttunnel/agenttunnel-go/internal/usage"
+)
+
+// Config controls how a runner schedules and executes work.
+type Config struct {
+	MaxPasses      int
+	MaxConcurrency int
+}
+
+// Deps are the collaborators a runner needs.
+type Deps struct {
+	Engine    *domain.Engine
+	Registry  *providers.Registry
+	Roles     *contracts.RoleRegistry
+	Logs      *logstore.Store
+	Ledger    *usage.Ledger
+	Notebook  *contextstore.Notebook
+	Mailbox   *contextstore.Mailbox
+	Inherited *contextstore.InheritedContext
+	Settings  *settings.Store
+	Tools     *toolbox.Box
+	Steering  *steering.Box
+	Audit     actionlog.Func
+	ToolPath  string
+	Token     string
+	Endpoint  func() string
+	Clock     domain.Clock
+	Cfg       Config
+}
+
+// Runner executes dispatched tasks with dependency-aware, bounded concurrency,
+// and records status, usage, logs, and findings as it goes.
+type Runner struct {
+	engine    *domain.Engine
+	registry  *providers.Registry
+	roles     *contracts.RoleRegistry
+	logs      *logstore.Store
+	ledger    *usage.Ledger
+	notebook  *contextstore.Notebook
+	mailbox   *contextstore.Mailbox
+	inherited *contextstore.InheritedContext
+	settings  *settings.Store
+	tools     *toolbox.Box
+	steering  *steering.Box
+	audit     actionlog.Func
+	toolPath  string
+	token     string
+	endpoint  func() string
+	clock     domain.Clock
+	cfg       Config
+	seq       atomic.Int64
+}
+
+// NewRunner wires a runner from its dependencies.
+func NewRunner(d Deps) *Runner {
+	if d.Clock == nil {
+		d.Clock = time.Now
+	}
+	return &Runner{
+		engine:    d.Engine,
+		registry:  d.Registry,
+		roles:     d.Roles,
+		logs:      d.Logs,
+		ledger:    d.Ledger,
+		notebook:  d.Notebook,
+		mailbox:   d.Mailbox,
+		inherited: d.Inherited,
+		settings:  d.Settings,
+		tools:     d.Tools,
+		steering:  d.Steering,
+		audit:     d.Audit,
+		toolPath:  d.ToolPath,
+		token:     d.Token,
+		endpoint:  d.Endpoint,
+		clock:     d.Clock,
+		cfg:       d.Cfg,
+	}
+}
+
+// Ledger exposes the environment usage ledger.
+func (r *Runner) Ledger() *usage.Ledger { return r.ledger }
+
+// Notebook exposes the shared notebook.
+func (r *Runner) Notebook() *contextstore.Notebook { return r.notebook }
+
+// Logs exposes the per-agent log store.
+func (r *Runner) Logs() *logstore.Store { return r.logs }
+
+// Dispatch registers each task as an agent in the engine (creating the agent
+// records) before execution.
+func (r *Runner) Dispatch(ctx context.Context, threadID contracts.ThreadID, tasks []contracts.DispatchTask) error {
+	for _, t := range tasks {
+		task := t
+		if err := r.engine.Dispatch(ctx, contracts.Command{
+			ID:       r.nextID(),
+			Type:     contracts.CmdTaskDispatch,
+			ThreadID: threadID,
+			Dispatch: &task,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Run executes the tasks with wave-based dependency scheduling: each wave starts
+// every task whose dependencies have succeeded, runs them with bounded
+// concurrency, and then proceeds. Blocked tasks (dependency cycles) are
+// cancelled.
+func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []contracts.DispatchTask) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	status := make(map[string]contracts.AgentStatus, len(tasks))
+	for _, t := range tasks {
+		status[t.Name] = contracts.AgentPending
+	}
+
+	var mu sync.Mutex
+	for {
+		ready := make([]contracts.DispatchTask, 0, len(tasks))
+		pending := 0
+		for _, t := range tasks {
+			if status[t.Name] != contracts.AgentPending {
+				continue
+			}
+			pending++
+			if depsSucceeded(t.DependsOn, status) {
+				ready = append(ready, t)
+			}
+		}
+		if len(ready) == 0 {
+			if pending > 0 {
+				for _, t := range tasks {
+					if status[t.Name] == contracts.AgentPending {
+						r.setStatus(ctx, threadID, t.AgentID, contracts.AgentCancelled, "unsatisfied dependencies")
+					}
+				}
+			}
+			break
+		}
+		for _, t := range ready {
+			status[t.Name] = contracts.AgentRunning
+		}
+
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, r.concurrency())
+		for _, t := range ready {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(t contracts.DispatchTask) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				err := r.runTask(ctx, threadID, t)
+				mu.Lock()
+				if err != nil {
+					status[t.Name] = contracts.AgentFailed
+					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentFailed, err.Error())
+				} else {
+					status[t.Name] = contracts.AgentSucceeded
+					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentSucceeded, "")
+				}
+				mu.Unlock()
+			}(t)
+		}
+		wg.Wait()
+	}
+	return nil
+}
+
+func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t contracts.DispatchTask) error {
+	role, ok := r.roles.Get(t.Role)
+	if !ok {
+		return fmt.Errorf("unknown role %q", t.Role)
+	}
+	harness, _, variant := r.roleRuntime(role)
+	if !r.harnessAllowed(harness) {
+		return fmt.Errorf("harness %q is disabled", harness)
+	}
+	model := r.resolveModel(role, t.Model)
+	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
+
+	inherited, _ := r.inherited.Render()
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render())
+
+	env := r.toolEnv(threadID, t.AgentID)
+	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
+	spec := providers.SessionSpec{
+		AgentID:  t.AgentID,
+		ThreadID: threadID,
+		Role:     t.Role,
+		Harness:  harness,
+		Model:    model,
+		Variant:  variant,
+		Prompt:   prompt,
+		Workdir:  r.workdirFor(ctx, threadID),
+		Env:      env,
+	}
+	adapter, err := r.registry.NewAdapter(spec)
+	if err != nil {
+		return err
+	}
+	r.auditLog("agent.spawn", map[string]any{
+		"agentId": string(t.AgentID), "role": string(t.Role), "harness": string(harness),
+		"model": model, "workdir": spec.Workdir, "task": t.Task,
+	})
+	if err := adapter.Start(ctx, spec); err != nil {
+		r.auditLog("agent.error", map[string]any{"agentId": string(t.AgentID), "error": err.Error()})
+		return err
+	}
+	events, err := adapter.Stream(ctx)
+	if err != nil {
+		return err
+	}
+
+	var findings []string
+	for ev := range events {
+		_ = r.logs.Append(contracts.LogEntry{AgentID: t.AgentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
+		r.publishOutput(threadID, t.AgentID, ev.Kind, ev.Text)
+		if ev.Usage != nil {
+			r.recordUsage(ctx, threadID, t.AgentID, t.Role, false, *ev.Usage)
+		}
+		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
+			findings = append(findings, ev.Text)
+		}
+	}
+	werr := adapter.Wait(ctx)
+	r.auditLog("agent.exit", map[string]any{
+		"agentId": string(t.AgentID), "status": statusWord(werr), "error": errString(werr),
+	})
+
+	if len(findings) > 0 {
+		key := "result_" + t.Name
+		summary := strings.Join(findings, "\n")
+		r.notebook.Append(key, summary, string(t.AgentID))
+		r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
+	}
+	return werr
+}
+
+// runOrchestratorPass runs one orchestrator process and collects its text output
+// and tool calls. Usage from the orchestrator is attributed as orchestrator.
+func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.ThreadID, agentID contracts.AgentID, role contracts.Role, prompt string, pass int) (string, []ToolCall, error) {
+	harness, _, variant := r.roleRuntime(role)
+	if !r.harnessAllowed(harness) {
+		return "", nil, fmt.Errorf("harness %q is disabled", harness)
+	}
+	env := r.toolEnv(threadID, agentID)
+	env = append(env, "AT_ROLE=orchestrator", "AT_PASS="+strconv.Itoa(pass))
+	spec := providers.SessionSpec{
+		AgentID:  agentID,
+		ThreadID: threadID,
+		Role:     contracts.RoleOrchestrator,
+		Harness:  harness,
+		Model:    r.resolveModel(role, ""),
+		Variant:  variant,
+		Prompt:   prompt,
+		Workdir:  r.workdirFor(ctx, threadID),
+		Env:      env,
+	}
+	adapter, err := r.registry.NewAdapter(spec)
+	if err != nil {
+		return "", nil, err
+	}
+	r.auditLog("agent.spawn", map[string]any{
+		"agentId": string(agentID), "role": "orchestrator", "pass": pass,
+		"harness": string(harness), "model": spec.Model, "workdir": spec.Workdir,
+	})
+	if err := adapter.Start(ctx, spec); err != nil {
+		r.auditLog("agent.error", map[string]any{"agentId": string(agentID), "error": err.Error()})
+		return "", nil, err
+	}
+	events, err := adapter.Stream(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var text []string
+	var calls []ToolCall
+	for ev := range events {
+		if call, ok := ParseToolLine(ev.Text); ok {
+			calls = append(calls, *call)
+			_ = r.logs.Append(contracts.LogEntry{AgentID: agentID, Kind: contracts.LogTool, Text: ev.Text, At: r.clock()})
+			r.publishOutput(threadID, agentID, contracts.LogTool, ev.Text)
+			continue
+		}
+		_ = r.logs.Append(contracts.LogEntry{AgentID: agentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
+		r.publishOutput(threadID, agentID, ev.Kind, ev.Text)
+		if ev.Usage != nil {
+			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
+		}
+		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
+			text = append(text, ev.Text)
+		}
+	}
+	werr := adapter.Wait(ctx)
+	r.auditLog("agent.exit", map[string]any{
+		"agentId": string(agentID), "role": "orchestrator", "pass": pass,
+		"status": statusWord(werr), "error": errString(werr),
+	})
+	return strings.Join(text, "\n"), calls, werr
+}
+
+// auditLog records one action for post-hoc debugging.
+func (r *Runner) auditLog(kind string, fields map[string]any) {
+	if r.audit != nil {
+		r.audit(kind, fields)
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func statusWord(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return "failed"
+}
+
+// Roster renders every subagent in the thread with its status, so the team lead
+// can see what it has already dispatched.
+func (r *Runner) Roster(state *domain.ThreadState) string {
+	var b strings.Builder
+	for _, id := range state.AgentOrder {
+		a := state.Agents[id]
+		if a.IsOrchestrator() {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s (%s): %s [%s]\n", a.Name, a.Role, a.Task, a.Status)
+	}
+	return b.String()
+}
+
+// workdir is the fallback directory handed to agents.
+func (r *Runner) workdir() string {
+	if r.settings == nil {
+		return ""
+	}
+	return r.settings.Workdir()
+}
+
+// workdirFor resolves a thread's working directory: its project's path, falling
+// back to the environment default when the thread has no project.
+func (r *Runner) workdirFor(ctx context.Context, threadID contracts.ThreadID) string {
+	if r.settings == nil {
+		return ""
+	}
+	if st, err := r.engine.State(ctx, threadID); err == nil && st.ProjectID != "" {
+		if project, ok := r.settings.Project(st.ProjectID); ok && project.Path != "" {
+			return project.Path
+		}
+	}
+	return r.settings.Workdir()
+}
+
+// roleRuntime resolves a role's harness/model/variant, preferring a user override
+// from settings over the role's built-in default.
+func (r *Runner) roleRuntime(role contracts.Role) (contracts.Harness, string, string) {
+	harness, model, variant := role.DefaultHarness, role.DefaultModel, role.DefaultVariant
+	if r.settings == nil {
+		return harness, model, variant
+	}
+	cfg, ok := r.settings.RoleConfig(role.ID)
+	if !ok {
+		return harness, model, variant
+	}
+	if cfg.Harness.Valid() {
+		harness = cfg.Harness
+	}
+	if cfg.Model != "" {
+		model = cfg.Model
+	}
+	if cfg.Variant != "" {
+		variant = cfg.Variant
+	}
+	return harness, model, variant
+}
+
+// harnessAllowed reports whether a harness is enabled in settings.
+func (r *Runner) harnessAllowed(h contracts.Harness) bool {
+	return r.settings == nil || r.settings.HarnessEnabled(h)
+}
+
+// resolveModel applies auto mode: the orchestrator's requested model wins only if
+// it is approved; otherwise the role's configured model is used.
+func (r *Runner) resolveModel(role contracts.Role, requested string) string {
+	if r.settings != nil && r.settings.AutoMode() && requested != "" {
+		if _, ok := r.settings.ApprovedModels()[requested]; ok {
+			return requested
+		}
+	}
+	if _, model, _ := r.roleRuntime(role); model != "" {
+		return model
+	}
+	return requested
+}
+
+func (r *Runner) recordUsage(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, role contracts.RoleID, orchestrator bool, u contracts.TokenUsage) {
+	r.ledger.Record(agent, role, orchestrator, u)
+
+	// Stamp the spend with the turn it belongs to, so usage can be read per turn.
+	turn := 0
+	if st, err := r.engine.State(ctx, threadID); err == nil {
+		turn = st.Turn
+	}
+
+	_ = r.engine.Dispatch(ctx, contracts.Command{
+		ID:       r.nextID(),
+		Type:     contracts.CmdUsageRecord,
+		ThreadID: threadID,
+		Usage:    &contracts.UsageRecorded{AgentID: agent, Role: role, Usage: u, Turn: turn},
+	})
+}
+
+func (r *Runner) setStatus(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, status contracts.AgentStatus, reason string) {
+	_ = r.engine.Dispatch(ctx, contracts.Command{
+		ID:       r.nextID(),
+		Type:     contracts.CmdAgentStatusSet,
+		ThreadID: threadID,
+		Status:   &contracts.AgentStatusChanged{AgentID: agent, Status: status, Reason: reason},
+	})
+}
+
+func (r *Runner) setSharedContext(ctx context.Context, threadID contracts.ThreadID, key, value string, author contracts.AgentID) {
+	_ = r.engine.Dispatch(ctx, contracts.Command{
+		ID:            r.nextID(),
+		Type:          contracts.CmdSharedContextSet,
+		ThreadID:      threadID,
+		SharedContext: &contracts.SharedContextSet{Key: key, Value: value, AuthorID: author},
+	})
+}
+
+func (r *Runner) nextID() string { return fmt.Sprintf("cmd-%d", r.seq.Add(1)) }
+
+// publishOutput streams one agent output line to the thread's subscribers. Only
+// human-meaningful kinds are streamed; usage and raw frames stay in the log.
+func (r *Runner) publishOutput(threadID contracts.ThreadID, agent contracts.AgentID, kind contracts.LogKind, text string) {
+	if text == "" {
+		return
+	}
+	switch kind {
+	case contracts.LogText, contracts.LogReasoning, contracts.LogTool, contracts.LogRaw, contracts.LogError:
+	default:
+		return
+	}
+	r.engine.Publish(threadID, contracts.AgentOutput{AgentID: agent, Kind: kind, Text: text})
+}
+
+// toolEnv is the environment that lets an agent call back through `atd tool`.
+func (r *Runner) toolEnv(threadID contracts.ThreadID, agentID contracts.AgentID) []string {
+	env := []string{
+		"AT_THREAD_ID=" + string(threadID),
+		"AT_AGENT_ID=" + string(agentID),
+	}
+	if r.toolPath != "" {
+		env = append(env, "AT_TOOL="+r.toolPath)
+	}
+	if r.endpoint != nil {
+		if url := r.endpoint(); url != "" {
+			env = append(env, "AT_DAEMON_URL="+url)
+		}
+	}
+	if r.token != "" {
+		env = append(env, "AT_TOKEN="+r.token)
+	}
+	return env
+}
+
+// DrainTools returns and clears the tool calls posted for a thread.
+func (r *Runner) DrainTools(threadID contracts.ThreadID) []toolbox.Call {
+	if r.tools == nil {
+		return nil
+	}
+	return r.tools.Drain(threadID)
+}
+
+// DrainSteering returns and clears the user's pending mid-run steering messages.
+func (r *Runner) DrainSteering(threadID contracts.ThreadID) []string {
+	if r.steering == nil {
+		return nil
+	}
+	return r.steering.Drain(threadID)
+}
+
+// HasSteering reports whether steering arrived for a thread.
+func (r *Runner) HasSteering(threadID contracts.ThreadID) bool {
+	return r.steering != nil && r.steering.Has(threadID)
+}
+
+// generateTitle asks the orchestrator's model to name the session, once, after
+// the first exchange. It runs off the turn so it cannot delay the reply.
+func (r *Runner) generateTitle(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, userMessage, summary string) {
+	harness, model, variant := r.roleRuntime(role)
+	if !r.harnessAllowed(harness) {
+		return
+	}
+
+	const orchAgent = contracts.AgentID("agent-orchestrator")
+	spec := providers.SessionSpec{
+		AgentID:  orchAgent,
+		ThreadID: threadID,
+		Role:     contracts.RoleOrchestrator,
+		Harness:  harness,
+		Model:    model,
+		Variant:  variant,
+		Prompt:   BuildTitlePrompt(userMessage, summary),
+		Workdir:  r.workdirFor(ctx, threadID),
+		Env:      r.toolEnv(threadID, orchAgent),
+	}
+
+	adapter, err := r.registry.NewAdapter(spec)
+	if err != nil {
+		return
+	}
+	if err := adapter.Start(ctx, spec); err != nil {
+		return
+	}
+	events, err := adapter.Stream(ctx)
+	if err != nil {
+		return
+	}
+
+	var text []string
+	for ev := range events {
+		if ev.Usage != nil {
+			r.recordUsage(ctx, threadID, orchAgent, contracts.RoleOrchestrator, true, *ev.Usage)
+		}
+		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
+			text = append(text, ev.Text)
+		}
+	}
+	_ = adapter.Wait(ctx)
+
+	title := cleanTitle(strings.Join(text, "\n"))
+	if title == "" || title == contracts.DefaultThreadTitle {
+		return
+	}
+	_ = r.engine.Dispatch(ctx, contracts.Command{
+		ID:       r.nextID(),
+		Type:     contracts.CmdThreadRename,
+		ThreadID: threadID,
+		Title:    title,
+	})
+}
+
+// cleanTitle reduces a model reply to a single short title.
+func cleanTitle(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.Trim(line, "`\"'*#")
+		line = strings.TrimSpace(line)
+		if lower := strings.ToLower(line); strings.HasPrefix(lower, "title:") {
+			line = strings.TrimSpace(line[len("title:"):])
+		}
+		line = strings.Join(strings.Fields(line), " ")
+		if len(line) > 60 {
+			line = strings.TrimSpace(line[:60])
+		}
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// isDefaultTitle reports whether a thread still carries the placeholder name.
+func isDefaultTitle(title string) bool {
+	t := strings.TrimSpace(title)
+	return t == "" || t == contracts.DefaultThreadTitle
+}
+
+// concurrency is the maximum number of tasks run at once.
+func (r *Runner) concurrency() int {
+	if r.cfg.MaxConcurrency > 0 {
+		return r.cfg.MaxConcurrency
+	}
+	return 4
+}
+
+func (r *Runner) maxPasses() int {
+	if r.cfg.MaxPasses > 0 {
+		return r.cfg.MaxPasses
+	}
+	return 3
+}
+
+func depsSucceeded(deps []string, status map[string]contracts.AgentStatus) bool {
+	for _, d := range deps {
+		st, ok := status[d]
+		if !ok {
+			continue
+		}
+		if st != contracts.AgentSucceeded {
+			return false
+		}
+	}
+	return true
+}

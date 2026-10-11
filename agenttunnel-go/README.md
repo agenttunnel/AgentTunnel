@@ -1,0 +1,131 @@
+# AgentTunnel (Go rewrite)
+
+A from-scratch reimplementation of AgentTunnel: a multi-agent coding workflow
+where a planning **orchestrator** breaks a task into jobs and dispatches them to
+**planner / executor / tester / reviewer** subagents, each of which can run on any
+provider CLI (Codex, Claude, Cursor, Grok, OpenCode, Pi, Command Code).
+
+This is the desktop-first rewrite called for on the `rewrite/go-foundation`
+branch. It is a real, running foundation — a daemon plus a native desktop client
+— not a mock.
+
+## Why Go
+
+The daemon supervises N concurrent provider subprocesses and fans their streams
+out over WebSocket. Goroutines plus first-class process control are a natural fit,
+builds are fast, and the result ships as a single static binary. The desktop
+client is Wails v3 (Go + system webview), so the whole app is one language and
+stays light.
+
+## Layout
+
+```
+agenttunnel-go/
+  cmd/atd/            the daemon entrypoint (HTTP + WebSocket server)
+  internal/
+    contracts/        wire types: roles, harnesses, commands, events, usage, logs
+    domain/           event-sourced core: Decider (pure) + Projector + Engine
+    providers/        provider abstraction: Driver + ProcessAdapter + registry
+    orchestrator/     roles, dispatch protocol, auto mode, dependency scheduler
+    contextstore/     shared notebook, per-thread context, inherited context, mailbox
+    usage/            collective token/cost ledger (orchestrator vs subagents)
+    logstore/         per-agent log buffer + JSONL file sink
+    gitdiff/          working-tree diff parser for the review view
+    transport/        JSON-RPC over WebSocket; streamed thread events
+  pkg/daemon/         public assembly (engine + orchestrator + HTTP surface)
+  desktop/            Wails v3 desktop client (embeds the daemon)
+```
+
+## Run it
+
+Daemon (the server any client connects to):
+
+```bash
+go run ./cmd/atd --port 7331 --workdir /path/to/a/repo
+# prints: pairing URL: http://127.0.0.1:7331/?token=...
+```
+
+Desktop app (embeds the daemon and opens a native window):
+
+```bash
+cd desktop
+./build.sh                       # builds the UI, then links bin/agenttunnel
+./bin/agenttunnel
+```
+
+`build.sh` builds the frontend and then always relinks the binary. Plain
+`wails3 build` caches its native link step and does not watch the parent module
+(`../internal`, `../pkg`), so a server-side Go change can leave a stale binary.
+
+Tests:
+
+```bash
+go test ./...                    # daemon + core (root module)
+```
+
+## Architecture
+
+The server is event-sourced:
+
+1. A client sends a typed **command** over WebSocket.
+2. A single worker goroutine drains commands in order, so application is totally
+   ordered.
+3. The pure **decider** turns a command plus current state into **events**.
+4. The **store** appends them and the **projector** folds them into the read model.
+5. Committed events are pushed to subscribers (`thread.event` frames).
+
+The orchestrator drives a turn: it runs the team-lead agent, parses
+`__AGENTTUNNEL_TOOL__` actions off its output, dispatches tasks, runs them with a
+wave-based dependency scheduler, and feeds results back into shared context
+before the next pass.
+
+Providers are behind an adapter boundary: a `Driver` describes a harness (binary,
+argv, line translator) and a `ProcessAdapter` runs it, streaming normalized
+events. Adding a provider means implementing one interface.
+
+## How the requested features map
+
+| Requirement                                                   | Where                                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Roles: orchestrator, planner, executor, tester (QA), reviewer | `contracts/role.go` — a **registry**, so custom roles can be added         |
+| Run any agent                                                 | `providers/` — 7 built-in drivers behind one interface                     |
+| Auto mode (orchestrator picks each task's model)              | `orchestrator/runner.go` `resolveModel`                                    |
+| Collective usage incl. the orchestrator                       | `usage/ledger.go`, `domain/thread.go` (orchestrator vs subagent split)     |
+| Logs for every agent/subagent                                 | `logstore/`, exposed as `agents.logs`                                      |
+| Shared context between agents                                 | `contextstore/notebook.go`                                                 |
+| Global inherited context                                      | `contextstore/inherited.go` (`.orchestrator-context/`)                     |
+| Peer agent-to-agent messaging                                 | `contextstore/mailbox.go` — **off by default**, toggled per thread         |
+| Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; comments flow into the next prompt |
+| GitHub/GitLab awareness                                       | **not yet** — next up                                                      |
+
+## RPC surface
+
+`roles.list`, `harness.list`, `thread.create`, `thread.list`, `thread.get`,
+`thread.subscribe`, `thread.turn.start`, `thread.setAutoMode`,
+`thread.setPeerMailbox`, `agents.list`, `agents.logs`, `usage.get`,
+`review.diff`, `review.comment`.
+
+## Where state lives
+
+Everything the daemon persists sits under `<home>/.agenttunnel` (override with
+`--home-dir`), so a restart does not lose work:
+
+```
+~/.agenttunnel/
+  settings.json           configuration (projects, roles, harnesses, models)
+  threads/<threadId>.jsonl  the append-only event log per thread
+  logs/agent-output/      per-agent log files
+  .orchestrator-context/  the global inherited context
+```
+
+Threads are event-sourced, so the file is the source of truth: the read model is
+rebuilt by replaying it on start. A torn final line from an interrupted write is
+skipped rather than failing the whole thread.
+
+## Next
+
+- A SQLite-backed event store in place of the JSONL log, for larger histories and
+  indexed queries.
+- GitHub / GitLab connection + PR awareness as a `sourceControl` layer.
+- Streaming token deltas from adapters into the thread timeline.
+- Per-role harness/model configuration from the UI.

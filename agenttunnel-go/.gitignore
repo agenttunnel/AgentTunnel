@@ -1,0 +1,16 @@
+# Go build output
+/bin/
+agenttunnel-go/bin/
+
+# Desktop (Wails) build output and generated assets
+desktop/bin/
+desktop/frontend/dist/
+desktop/frontend/node_modules/
+desktop/bindings/
+desktop/package/
+
+# Runtime state (agent context, logs)
+.agenttunnel/
+
+# Editor / OS
+.DS_Store
