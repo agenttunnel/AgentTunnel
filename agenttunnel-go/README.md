@@ -60,8 +60,8 @@ curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/i
   | AGENTTUNNEL_VERSION=v0.7.0 sh
 ```
 
-The Linux desktop build needs GTK 3 and WebKitGTK 4.1 at runtime
-(`libgtk-3-0` and `libwebkit2gtk-4.1-0` on Debian/Ubuntu). `atd` has no GUI
+The Linux desktop build needs GTK 4 and WebKitGTK 6.0 at runtime
+(`libgtk-4-1` and `libwebkitgtk-6.0-4` on Debian/Ubuntu). `atd` has no GUI
 dependencies.
 
 ## Run it
