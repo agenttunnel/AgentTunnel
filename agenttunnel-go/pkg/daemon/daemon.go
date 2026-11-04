@@ -1,0 +1,203 @@
+package daemon
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/models"
+	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
+	"github.com/agenttunnel/agenttunnel-go/internal/settings"
+	"github.com/agenttunnel/agenttunnel-go/internal/steering"
+	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
+	"github.com/agenttunnel/agenttunnel-go/internal/transport"
+	"github.com/agenttunnel/agenttunnel-go/internal/usage"
+)
+
+// Options configure a daemon.
+type Options struct {
+	StateDir string
+	Token    string
+	Workdir  string
+	Registry *providers.Registry
+	Roles    *contracts.RoleRegistry
+	Config   orchestrator.Config
+	// ToolPath is the binary agents run for `tool …`. Defaults to this
+	// executable; tests point it at a built daemon.
+	ToolPath string
+}
+
+// Daemon is the fully assembled AgentTunnel server: engine, orchestrator, usage,
+// logs, and the HTTP/WebSocket surface.
+type Daemon struct {
+	Engine   *domain.Engine
+	Runner   *orchestrator.Runner
+	Orch     *orchestrator.Orchestrator
+	Server   *transport.Server
+	Ledger   *usage.Ledger
+	Logs     *logstore.Store
+	Settings *settings.Store
+	Actions  *actionlog.Logger
+	Token    string
+
+	endpoint *atomic.Value
+}
+
+// New assembles a daemon and starts its engine.
+func New(ctx context.Context, opts Options) (*Daemon, error) {
+	if opts.Registry == nil {
+		opts.Registry = providers.BuiltinRegistry()
+	}
+	if opts.Roles == nil {
+		opts.Roles = contracts.NewRoleRegistry(contracts.BuiltinRoles()...)
+	}
+
+	// Threads are durable: their event logs live under <state>/threads and the
+	// read model is rebuilt by replaying them on start.
+	events, err := domain.NewFileStore(filepath.Join(opts.StateDir, "threads"))
+	if err != nil {
+		return nil, err
+	}
+
+	// Structured record of everything the daemon does, for debugging a run after
+	// the fact. Never written with secrets.
+	actions, err := actionlog.Open(filepath.Join(opts.StateDir, "logs", "actions.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+
+	eng := domain.NewEngine(events, opts.Roles)
+	eng.SetAudit(actions.Func())
+	eng.Start(ctx)
+	actions.Log("daemon.start", map[string]any{"stateDir": opts.StateDir, "workdir": opts.Workdir})
+
+	inherited := contextstore.NewInheritedContext(filepath.Join(opts.StateDir, ".orchestrator-context"))
+	if err := inherited.Ensure(); err != nil {
+		return nil, err
+	}
+	logs := logstore.New(filepath.Join(opts.StateDir, "logs"))
+	ledger := usage.NewLedger()
+	notebook := contextstore.NewNotebook()
+	mailbox := contextstore.NewMailbox()
+	store, err := settings.Open(filepath.Join(opts.StateDir, "settings.json"), opts.Workdir)
+	if err != nil {
+		return nil, err
+	}
+	catalog := models.Default()
+	modelService := models.NewService(catalog, opts.Registry, store)
+
+	// The tool inbox, the steering queue, and the address/path agents use.
+	box := toolbox.New()
+	steerBox := steering.New()
+	toolPath := opts.ToolPath
+	if toolPath == "" {
+		toolPath, _ = os.Executable()
+	}
+	var endpoint atomic.Value
+	endpoint.Store("")
+
+	runner := orchestrator.NewRunner(orchestrator.Deps{
+		Engine:    eng,
+		Registry:  opts.Registry,
+		Roles:     opts.Roles,
+		Logs:      logs,
+		Ledger:    ledger,
+		Notebook:  notebook,
+		Mailbox:   mailbox,
+		Inherited: inherited,
+		Settings:  store,
+		Tools:     box,
+		Steering:  steerBox,
+		Audit:     actions.Func(),
+		ToolPath:  toolPath,
+		Token:     opts.Token,
+		Endpoint: func() string {
+			if v, ok := endpoint.Load().(string); ok {
+				return v
+			}
+			return ""
+		},
+		Cfg: opts.Config,
+	})
+	orch := orchestrator.New(runner)
+
+	disp := transport.NewDispatcher(transport.DispatcherDeps{
+		Engine:       eng,
+		Runner:       runner,
+		Orchestrator: orch,
+		Ledger:       ledger,
+		Logs:         logs,
+		Roles:        opts.Roles,
+		Registry:     opts.Registry,
+		Settings:     store,
+		Models:       modelService,
+		Steering:     steerBox,
+		Audit:        actions.Func(),
+	})
+
+	return &Daemon{
+		Engine:   eng,
+		Runner:   runner,
+		Orch:     orch,
+		Server:   transport.NewServer(disp, eng, opts.Token, box),
+		Ledger:   ledger,
+		Logs:     logs,
+		Settings: store,
+		Actions:  actions,
+		Token:    opts.Token,
+		endpoint: &endpoint,
+	}, nil
+}
+
+// SetEndpoint records the daemon's public base URL so agents can call back.
+func (d *Daemon) SetEndpoint(url string) {
+	if d.endpoint != nil {
+		d.endpoint.Store(url)
+	}
+}
+
+// Close stops the engine and flushes the action log.
+func (d *Daemon) Close() {
+	if d.Actions != nil {
+		d.Actions.Log("daemon.stop", nil)
+		_ = d.Actions.Close()
+	}
+	d.Engine.Close()
+}
+
+// EnrichPATH appends common tool directories to PATH. An app launched from
+// Finder or the Dock inherits a minimal PATH that omits Homebrew and user bin
+// directories, so harness CLIs (and their model probes) would otherwise be
+// unresolvable. Entrypoints call this before starting the daemon.
+func EnrichPATH() {
+	home, _ := os.UserHomeDir()
+	extra := []string{
+		"/opt/homebrew/bin",
+		"/opt/homebrew/sbin",
+		"/usr/local/bin",
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".opencode", "bin"),
+		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, "go", "bin"),
+	}
+
+	parts := filepath.SplitList(os.Getenv("PATH"))
+	have := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		have[p] = true
+	}
+	for _, dir := range extra {
+		if dir != "" && !have[dir] {
+			parts = append(parts, dir)
+		}
+	}
+	_ = os.Setenv("PATH", strings.Join(parts, string(os.PathListSeparator)))
+}
