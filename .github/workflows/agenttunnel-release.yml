@@ -186,16 +186,103 @@ jobs:
           path: release-publish/*
           if-no-files-found: error
 
+  build-go:
+    name: Build Go ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: blacksmith-6vcpu-macos-15
+            platform: darwin
+            arch: arm64
+          - runner: blacksmith-6vcpu-macos-15
+            platform: darwin
+            arch: amd64
+          - runner: blacksmith-4vcpu-ubuntu-2404
+            platform: linux
+            arch: amd64
+          - runner: blacksmith-4vcpu-windows-2025
+            platform: windows
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agenttunnel-go/go.mod
+          cache-dependency-path: |
+            agenttunnel-go/go.sum
+            agenttunnel-go/desktop/go.sum
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: agenttunnel-go/desktop/frontend/package-lock.json
+      - name: Install Linux desktop dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Build frontend
+        working-directory: agenttunnel-go/desktop/frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Build Go binaries
+        working-directory: agenttunnel-go
+        shell: bash
+        env:
+          GOOS: ${{ matrix.platform }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: ${{ matrix.platform == 'windows' && '0' || '1' }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          ext=""
+          desktop_ldflags="-w -s"
+          if [[ "$GOOS" == "windows" ]]; then
+            ext=".exe"
+            desktop_ldflags="-w -s -H windowsgui"
+          fi
+
+          mkdir -p go-dist
+          go build -trimpath -buildvcs=false -ldflags="-w -s" -o "go-dist/atd${ext}" ./cmd/atd
+          (
+            cd desktop
+            go build -tags production -trimpath -buildvcs=false \
+              -ldflags="$desktop_ldflags" -o "../go-dist/agenttunnel${ext}" .
+          )
+
+          printf '%s\n' "$VERSION" > go-dist/VERSION
+          tar -czf "agenttunnel-go-${GOOS}-${GOARCH}.tar.gz" -C go-dist .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: agenttunnel-go-${{ matrix.platform }}-${{ matrix.arch }}
+          path: agenttunnel-go/agenttunnel-go-*.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: [prepare, build]
+    needs: [prepare, build, build-go]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
+      - name: Stage Go installer
+        run: |
+          cp agenttunnel-go/scripts/install.sh release-assets/install-agenttunnel-go.sh
+          chmod +x release-assets/install-agenttunnel-go.sh
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:

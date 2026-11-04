@@ -36,6 +36,34 @@ agenttunnel-go/
   desktop/            Wails v3 desktop client (embeds the daemon)
 ```
 
+## Install from a release
+
+The [AgentTunnel Release workflow](../.github/workflows/agenttunnel-release.yml)
+builds the Go daemon and desktop client for macOS (arm64 and amd64), Linux
+(amd64), and Windows (amd64), and attaches them to every GitHub release. Install
+both binaries with:
+
+```bash
+curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
+```
+
+The installer writes `atd` (the daemon) and `agenttunnel` (the desktop client)
+to `~/.local/bin`. Add that directory to `PATH` if it is not there already.
+
+Install somewhere else, or pin a release:
+
+```bash
+curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh \
+  | AGENTTUNNEL_INSTALL_DIR=/usr/local/bin sh
+
+curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh \
+  | AGENTTUNNEL_VERSION=v0.7.0 sh
+```
+
+The Linux desktop build needs GTK 3 and WebKitGTK 4.1 at runtime
+(`libgtk-3-0` and `libwebkit2gtk-4.1-0` on Debian/Ubuntu). `atd` has no GUI
+dependencies.
+
 ## Run it
 
 Daemon (the server any client connects to):
