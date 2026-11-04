@@ -64,7 +64,8 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 	b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
 	b.WriteString("The task runs as its own agent in this project, and its result comes back to you. ")
 	b.WriteString("Use --depends-on <name> to order tasks, --role planner|executor|tester|reviewer to pick the role, ")
-	b.WriteString("and --model <id> to override the model. Report findings with:\n\n")
+	b.WriteString("--model <id> to override the model, and --harness <id> to override the harness. ")
+	b.WriteString("Model and harness overrides apply when auto mode is on for the thread. Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 	b.WriteString("and progress with `tool progress --text \"<update>\"`. Dispatch the work first, then summarise the outcome.")
 	if pass > 0 {

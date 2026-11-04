@@ -201,9 +201,24 @@ func (e *Engine) State(ctx context.Context, id contracts.ThreadID) (*ThreadState
 	return s.Clone(), nil
 }
 
-// Threads lists every thread with a durable event log.
+// Threads lists every thread with a durable event log, minus tombstoned ones:
+// loading each state is O(n) once and cached thereafter.
 func (e *Engine) Threads(ctx context.Context) ([]contracts.ThreadID, error) {
-	return e.store.Threads(ctx)
+	ids, err := e.store.Threads(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contracts.ThreadID, 0, len(ids))
+	for _, id := range ids {
+		s, err := e.stateFor(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !s.Deleted {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // Publish fans an event out to a thread's subscribers without persisting it. Use

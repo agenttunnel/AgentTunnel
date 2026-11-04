@@ -13,6 +13,8 @@ type Props = {
   onChange: (value: string) => void;
   placeholder?: string;
   searchable?: boolean;
+  /** When true, the trigger is inert (used to park rows the user can't edit). */
+  disabled?: boolean;
   /** When set, offers an "add" row for a query that matches nothing. */
   onAdd?: (value: string) => void;
   addLabel?: string;
@@ -28,6 +30,7 @@ export function Dropdown({
   onChange,
   placeholder = "Select…",
   searchable = false,
+  disabled = false,
   onAdd,
   addLabel = "Add",
   onRefresh,
@@ -110,6 +113,7 @@ export function Dropdown({
       <button
         type="button"
         className={`dd-trigger ${open ? "open" : ""}`}
+        disabled={disabled}
         onClick={() => setOpen((o) => !o)}
       >
         <span className={`dd-label ${selected ? "" : "placeholder"}`}>

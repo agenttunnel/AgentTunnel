@@ -80,6 +80,37 @@ func TestDecideDispatchDefaultsRoleToExecutor(t *testing.T) {
 	}
 }
 
+func TestDecideDispatchRejectsUnknownHarness(t *testing.T) {
+	s := NewThreadState("t1")
+	s.Exists = true
+	_, err := Decide(contracts.Command{
+		Type:     contracts.CmdTaskDispatch,
+		ThreadID: "t1",
+		Dispatch: &contracts.DispatchTask{AgentID: "a1", Task: "do it", Harness: "nope"},
+	}, s)
+	if !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("want ErrInvalidCommand, got %v", err)
+	}
+}
+
+func TestDecideDispatchAcceptsKnownHarness(t *testing.T) {
+	s := NewThreadState("t1")
+	s.Exists = true
+	evs, err := Decide(contracts.Command{
+		Type:     contracts.CmdTaskDispatch,
+		ThreadID: "t1",
+		Dispatch: &contracts.DispatchTask{
+			AgentID: "a1", Task: "do it", Harness: contracts.HarnessClaude,
+		},
+	}, s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if evs[0].(contracts.TaskDispatched).Harness != contracts.HarnessClaude {
+		t.Fatalf("harness not carried: %+v", evs[0])
+	}
+}
+
 func TestDecideDispatchRequiresAgentID(t *testing.T) {
 	s := NewThreadState("t1")
 	s.Exists = true

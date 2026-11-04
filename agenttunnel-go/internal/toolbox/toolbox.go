@@ -35,6 +35,7 @@ type Call struct {
 	Lane      string            `json:"lane,omitempty"`
 	Role      contracts.RoleID  `json:"role"`
 	Task      string            `json:"task,omitempty"`
+	Harness   string            `json:"harness,omitempty"`
 	Model     string            `json:"model,omitempty"`
 	DependsOn []string          `json:"dependsOn,omitempty"`
 	Text      string            `json:"text,omitempty"`

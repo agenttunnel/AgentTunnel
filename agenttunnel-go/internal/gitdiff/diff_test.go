@@ -66,3 +66,19 @@ func TestParseDiffEmpty(t *testing.T) {
 		t.Fatal("empty input should be an empty diff")
 	}
 }
+
+func TestClassifyStatus(t *testing.T) {
+	cases := map[string]StatusCode{
+		" M": StatusModified, "M ": StatusModified, "MM": StatusModified,
+		"A ": StatusAdded, "AM": StatusAdded,
+		" D": StatusDeleted, "D ": StatusDeleted,
+		"??": StatusUntracked,
+		"UU": StatusUnmerged, "AA": StatusUnmerged, "UD": StatusUnmerged,
+		"R ": StatusRenamed,
+	}
+	for xy, want := range cases {
+		if got := classifyStatus(xy); got != want {
+			t.Fatalf("status %q = %q, want %q", xy, got, want)
+		}
+	}
+}

@@ -131,15 +131,15 @@ func TestRunnerAutoModeHonoursApprovedModelsOnly(t *testing.T) {
 	r.settings.SetAutoMode(true)
 	r.settings.SetApprovedModels([]string{"approved-a"})
 
-	if got := r.resolveModel(role, "approved-a"); got != "approved-a" {
+	if got := r.resolveModel(role, "approved-a", true); got != "approved-a" {
 		t.Fatalf("approved model not honoured: %q", got)
 	}
-	if got := r.resolveModel(role, "unapproved"); got != "role-default" {
+	if got := r.resolveModel(role, "unapproved", true); got != "role-default" {
 		t.Fatalf("unapproved model should fall back to role default: %q", got)
 	}
 
 	r.settings.SetAutoMode(false)
-	if got := r.resolveModel(role, "whatever"); got != "role-default" {
+	if got := r.resolveModel(role, "whatever", r.settings.AutoMode()); got != "role-default" {
 		t.Fatalf("auto mode off should use role default: %q", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestRunnerHonoursRoleRuntimeOverride(t *testing.T) {
 	if harness != contracts.HarnessClaude || model != "sonnet" {
 		t.Fatalf("override ignored: harness=%s model=%s", harness, model)
 	}
-	if got := r.resolveModel(role, ""); got != "sonnet" {
+	if got := r.resolveModel(role, "", r.settings.AutoMode()); got != "sonnet" {
 		t.Fatalf("resolveModel should use the override: %q", got)
 	}
 }

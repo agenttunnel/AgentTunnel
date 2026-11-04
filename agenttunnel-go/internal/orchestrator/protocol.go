@@ -20,6 +20,7 @@ type ToolCall struct {
 	TaskID    string   `json:"taskId,omitempty"`
 	Task      string   `json:"task,omitempty"`
 	Role      string   `json:"role,omitempty"`
+	Harness   string   `json:"harness,omitempty"`
 	Model     string   `json:"model,omitempty"`
 	Lane      string   `json:"lane,omitempty"`
 	DependsOn []string `json:"dependsOn,omitempty"`
@@ -82,6 +83,7 @@ func ToDispatchTasks(parentID contracts.AgentID, calls []ToolCall) []contracts.D
 			Name:          name,
 			Role:          contracts.RoleID(c.Role),
 			Task:          c.Task,
+			Harness:       contracts.Harness(c.Harness),
 			Model:         c.Model,
 			Pipeline:      contracts.PipelineID(c.Lane),
 			DependsOn:     c.DependsOn,

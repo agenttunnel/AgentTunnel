@@ -12,6 +12,7 @@ type EventType string
 const (
 	EvtThreadCreated      EventType = "thread.created"
 	EvtThreadRenamed      EventType = "thread.renamed"
+	EvtThreadDeleted      EventType = "thread.deleted"
 	EvtMessageSent        EventType = "thread.message-sent"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
@@ -87,6 +88,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ThreadCreated](data)
 	case EvtThreadRenamed:
 		return decodePayload[ThreadRenamed](data)
+	case EvtThreadDeleted:
+		return decodePayload[ThreadDeleted](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
 	case EvtModelSet:
@@ -137,6 +140,12 @@ type ThreadRenamed struct {
 
 func (ThreadRenamed) eventType() EventType { return EvtThreadRenamed }
 
+// ThreadDeleted tombstones a thread: the log is kept for audit, but the read
+// model marks the thread gone and it disappears from listings.
+type ThreadDeleted struct{}
+
+func (ThreadDeleted) eventType() EventType { return EvtThreadDeleted }
+
 type MessageSent struct {
 	MessageID string `json:"messageId"`
 	Author    string `json:"author"` // "user" | "orchestrator" | agent id
@@ -164,6 +173,7 @@ type TaskDispatched struct {
 	Name          string     `json:"name,omitempty"`
 	Role          RoleID     `json:"role"`
 	Task          string     `json:"task"`
+	Harness       Harness    `json:"harness,omitempty"`
 	Model         string     `json:"model"`
 	PipelineID    PipelineID `json:"pipelineId,omitempty"`
 }

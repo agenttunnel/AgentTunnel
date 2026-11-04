@@ -79,6 +79,7 @@ func (o *Orchestrator) toolTasks(threadID contracts.ThreadID, orchID contracts.A
 				Name:          name,
 				Role:          role,
 				Task:          call.Task,
+				Harness:       contracts.Harness(call.Harness),
 				Model:         call.Model,
 				Pipeline:      contracts.PipelineID(call.Lane),
 				DependsOn:     call.DependsOn,

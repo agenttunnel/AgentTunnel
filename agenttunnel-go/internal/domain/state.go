@@ -33,8 +33,11 @@ type TurnUsage struct {
 // ThreadState is the read model for one thread, derived entirely from its event
 // log by the projector. It is never mutated by clients directly.
 type ThreadState struct {
-	ID          contracts.ThreadID       `json:"id"`
-	Exists      bool                     `json:"exists"`
+	ID     contracts.ThreadID `json:"id"`
+	Exists bool               `json:"exists"`
+	// Deleted marks a tombstoned thread: the event log is retained, but the
+	// thread is gone from listings and refuses further commands.
+	Deleted     bool                     `json:"deleted"`
 	Title       string                   `json:"title"`
 	ProjectID   string                   `json:"projectId,omitempty"`
 	Model       contracts.ModelSelection `json:"model"`

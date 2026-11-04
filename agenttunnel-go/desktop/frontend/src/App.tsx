@@ -1,17 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { discover, pickFolder, Rpc, type Conn } from "./lib/rpc";
+import { bentoTile, useBentoColumns } from "./lib/bento";
+import {
+  addUsage,
+  deriveThreadUsage,
+  fmtCost,
+  fmtTokens,
+  totalTokens,
+  type ThreadUsage,
+  type TurnUsage,
+  type UsageEntry,
+  type UsageStep,
+} from "./lib/usage";
+import { ContextMenu, type MenuItem } from "./components/ContextMenu";
+import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
+import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
+import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 
-type TokenUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedTokens: number;
-  reasoningTokens?: number;
-  costUsd: number;
-  toolUses: number;
-};
 type Role = {
   id: string;
   name: string;
@@ -33,21 +41,6 @@ type Agent = {
   endedAt?: string;
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
-type UsageEntry = { agentId: string; role: string; usage: TokenUsage };
-// TurnUsage is one user turn's spend, per agent, so the orchestrator and each
-// subagent can be read turn by turn.
-type TurnUsage = {
-  turn: number;
-  at?: string;
-  agentOrder: string[] | null;
-  agents: Record<string, TokenUsage> | null;
-};
-type UsageStep = { at: string; usage: TokenUsage };
-type ThreadUsage = {
-  orchestrator: TokenUsage;
-  subagents: TokenUsage;
-  byAgent: UsageEntry[] | null;
-};
 type Message = { id: string; author: string; text: string; at: string };
 type ReviewComment = { id: string; file: string; line: number; body: string };
 type ThreadState = {
@@ -105,25 +98,35 @@ type SettingsView = {
   configPath: string;
 };
 
-const zero: TokenUsage = {
-  inputTokens: 0,
-  outputTokens: 0,
-  cachedTokens: 0,
-  costUsd: 0,
-  toolUses: 0,
+/** Aside panel tabs: agents + usage are pinned; the rest are addable. */
+type AsideTabId = "agents" | "usage" | "context" | "files" | "diff";
+const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
+const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
+  agents: { label: "Agents", key: "A" },
+  usage: { label: "Token usage", key: "U" },
+  context: { label: "Context", key: "C" },
+  files: { label: "Files", key: "F" },
+  diff: { label: "Diff", key: "D" },
 };
-const addUsage = (a: TokenUsage, b: TokenUsage): TokenUsage => ({
-  inputTokens: a.inputTokens + b.inputTokens,
-  outputTokens: a.outputTokens + b.outputTokens,
-  cachedTokens: a.cachedTokens + b.cachedTokens,
-  reasoningTokens: (a.reasoningTokens ?? 0) + (b.reasoningTokens ?? 0),
-  costUsd: a.costUsd + b.costUsd,
-  toolUses: a.toolUses + b.toolUses,
-});
-const totalTokens = (u: TokenUsage) => u.inputTokens + u.outputTokens;
-const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-const fmtCost = (c: number) => `$${c.toFixed(4)}`;
-const lineNumber = (l: DiffLine) => l.new ?? l.old ?? 0;
+function loadAsideTabs(): AsideTabId[] {
+  try {
+    const raw = window.localStorage.getItem("at.asideTabs");
+    if (raw) {
+      const ids = (JSON.parse(raw) as string[]).filter((id): id is AsideTabId => id in ASIDE_META);
+      for (const p of ASIDE_PINNED) if (!ids.includes(p)) ids.unshift(p);
+      if (ids.length > 0) return ids;
+    }
+  } catch {
+    /* private mode or corrupt: fall through to defaults */
+  }
+  return [...ASIDE_PINNED];
+}
+
+type FileTreeState = {
+  root: string;
+  entries: FileEntryLike[];
+  status: Record<string, string>;
+};
 
 /** Elapsed shows how long the running work has been going; it ticks on its own so
  * only this tiny node re-renders. */
@@ -140,20 +143,6 @@ function Elapsed({ since }: { since?: string }) {
   const label =
     secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
   return <span className="act-elapsed">{label}</span>;
-}
-
-function deriveThreadUsage(t: ThreadState | null): ThreadUsage {
-  const out: ThreadUsage = { orchestrator: zero, subagents: zero, byAgent: [] };
-  if (!t?.agentOrder) return out;
-  for (const id of t.agentOrder) {
-    const entry = t.usage?.[id];
-    if (!entry) continue;
-    out.byAgent!.push(entry);
-    const isOrchestrator = !t.agents?.[id]?.parentAgentId;
-    if (isOrchestrator) out.orchestrator = addUsage(out.orchestrator, entry.usage);
-    else out.subagents = addUsage(out.subagents, entry.usage);
-  }
-  return out;
 }
 
 export default function App() {
@@ -175,7 +164,11 @@ export default function App() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [asideTab, setAsideTab] = useState<"agents" | "usage">("agents");
+  // Aside panel tabs: agents + usage are pinned; context, files, and diff can
+  // be added via the "+" menu (or single-letter shortcuts) and closed again.
+  const [asideTabs, setAsideTabs] = useState<AsideTabId[]>(loadAsideTabs);
+  const [asideActive, setAsideActive] = useState<AsideTabId>("agents");
+  const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
 
@@ -184,7 +177,17 @@ export default function App() {
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ file: string; line: number; body: string } | null>(null);
 
+  // File browser state for the aside Files panel.
+  const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
+  const [fileTreeLoading, setFileTreeLoading] = useState(false);
+  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
+  const [fileContentLoading, setFileContentLoading] = useState(false);
+  const [fileContentError, setFileContentError] = useState<string | null>(null);
+
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelConfigOpen, setModelConfigOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [workdirInput, setWorkdirInput] = useState("");
   const [approvedInput, setApprovedInput] = useState("");
@@ -196,6 +199,29 @@ export default function App() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
+
+  // Bento sizing for the projects and threads screens: unequal pseudo-random
+  // spans per card, reflowed against the columns that fit the current width.
+  const projectsGrid = useBentoColumns(240);
+  const threadsGrid = useBentoColumns(280);
+
+  // Thread context-menu flow: the menu itself, plus the three dialogs it can
+  // open (rename, delete confirm, usage/subagent drill-in).
+  const [threadMenu, setThreadMenu] = useState<{
+    thread: ThreadSummary;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ThreadSummary | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
+  const [infoTarget, setInfoTarget] = useState<{ id: string; tab: "usage" | "agents" } | null>(
+    null,
+  );
+  const [infoState, setInfoState] = useState<{ loading: boolean; thread: ThreadState | null }>({
+    loading: false,
+    thread: null,
+  });
 
   const rpcRef = useRef<Rpc | null>(null);
   const debounce = useRef<number | undefined>(undefined);
@@ -213,16 +239,62 @@ export default function App() {
     setGlobalUsage(usage);
   }, []);
 
-  const loadDiff = useCallback(async () => {
+  const loadDiff = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
     try {
-      const d = await rpc.call<Diff>("review.diff", {});
+      // Thread-scoped: the daemon diffs the thread's project directory, not
+      // the global fallback workdir.
+      const d = await rpc.call<Diff>("review.diff", { threadId: id });
       setDiff(d);
       setDiffError(null);
     } catch (e) {
       setDiffError(e instanceof Error ? e.message : String(e));
     }
+  }, []);
+
+  const loadFileTree = useCallback(async (id: string | null) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !id) return;
+    setFileTreeLoading(true);
+    setFileTreeError(null);
+    try {
+      setFileTree(await rpc.call<FileTreeState>("files.tree", { threadId: id }));
+      setSelectedFile(null);
+      setFileContent(null);
+      setFileContentError(null);
+    } catch (e) {
+      setFileTreeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFileTreeLoading(false);
+    }
+  }, []);
+
+  const loadFileContent = useCallback(async (id: string | null, path: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !id) return;
+    setSelectedFile(path);
+    setFileContent(null);
+    setFileContentError(null);
+    setFileContentLoading(true);
+    try {
+      setFileContent(await rpc.call<FileContentLike>("files.read", { threadId: id, path }));
+    } catch (e) {
+      setFileContentError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFileContentLoading(false);
+    }
+  }, []);
+
+  const openPanel = useCallback((id: AsideTabId) => {
+    setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setAsideActive(id);
+  }, []);
+
+  const closePanel = useCallback((id: AsideTabId) => {
+    if (ASIDE_PINNED.includes(id)) return;
+    setAsideTabs((prev) => prev.filter((t) => t !== id));
+    setAsideActive((cur) => (cur === id ? "agents" : cur));
   }, []);
 
   const loadHarnesses = useCallback(async () => {
@@ -263,6 +335,80 @@ export default function App() {
     setProjectId(id);
     setActiveId(null);
   };
+
+  // --- thread context-menu actions ---------------------------------------
+
+  const openThreadMenu = (t: ThreadSummary, e: MouseEvent) => {
+    e.preventDefault();
+    setThreadMenu({ thread: t, x: e.clientX, y: e.clientY });
+  };
+
+  const reloadThreads = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setThreads(await rpc.call<ThreadSummary[]>("thread.list"));
+  };
+
+  const beginRename = (t: ThreadSummary) => {
+    setRenameTarget(t);
+    setRenameValue(t.title);
+  };
+
+  const confirmRename = async () => {
+    const rpc = rpcRef.current;
+    const title = renameValue.trim();
+    if (!rpc || !renameTarget || !title) return;
+    try {
+      await rpc.call("thread.rename", { threadId: renameTarget.id, title });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    const renamed = renameTarget;
+    setRenameTarget(null);
+    await reloadThreads();
+    if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
+  };
+
+  const confirmDeleteThread = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !deleteTarget) return;
+    try {
+      await rpc.call("thread.delete", { threadId: deleteTarget.id });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    const deleted = deleteTarget;
+    setDeleteTarget(null);
+    await reloadThreads();
+    // Deleting the open thread closes back to the thread list.
+    if (activeId === deleted.id) {
+      setActiveId(null);
+      setThread(null);
+    }
+  };
+
+  /** Fetches a thread's state for the info dialog; works for threads that are
+   * not currently open. */
+  useEffect(() => {
+    if (!infoTarget) return;
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    let cancelled = false;
+    setInfoState({ loading: true, thread: null });
+    rpc
+      .call<ThreadState>("thread.get", { threadId: infoTarget.id })
+      .then((st) => {
+        if (!cancelled) setInfoState({ loading: false, thread: st });
+      })
+      .catch(() => {
+        if (!cancelled) setInfoState({ loading: false, thread: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [infoTarget]);
 
   // Adding a project starts with the native folder picker; the chosen path seeds
   // the name, which stays editable. Cancelling still shows the form so a path can
@@ -404,10 +550,47 @@ export default function App() {
     return off;
   }, [activeId, refresh, scheduleRefresh]);
 
-  // Load the working-tree diff whenever the review tab is shown.
+  // The diff backs both the center Review tab and the aside Diff panel.
   useEffect(() => {
-    if (tab === "review") loadDiff();
-  }, [tab, loadDiff]);
+    if (tab === "review" || asideActive === "diff") loadDiff(activeId);
+  }, [tab, asideActive, activeId, loadDiff]);
+
+  // The file tree loads when its panel is shown.
+  useEffect(() => {
+    if (asideActive === "files") loadFileTree(activeId);
+  }, [asideActive, activeId, loadFileTree]);
+
+  // Remember the open panels across restarts.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("at.asideTabs", JSON.stringify(asideTabs));
+    } catch {
+      /* private mode: stay in memory */
+    }
+  }, [asideTabs]);
+
+  // Single-letter panel shortcuts (shown in the "+" menu), inactive while typing.
+  useEffect(() => {
+    if (!activeId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+      const t = e.target;
+      if (
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        t instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      if (t instanceof HTMLElement && t.isContentEditable) return;
+      const id = (Object.keys(ASIDE_META) as AsideTabId[]).find(
+        (k) => ASIDE_META[k].key.toLowerCase() === e.key.toLowerCase(),
+      );
+      if (id) openPanel(id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId, openPanel]);
 
   // While an agent is open in the detail panel, poll its log.
   useEffect(() => {
@@ -440,6 +623,10 @@ export default function App() {
   }, [thread]);
 
   const threadUsage = useMemo(() => deriveThreadUsage(thread), [thread]);
+  const sharedEntries = useMemo(
+    () => Object.entries(thread?.shared ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+    [thread],
+  );
   const turns = thread?.turns ?? [];
   const totals = useMemo(() => {
     const all = addUsage(threadUsage.orchestrator, threadUsage.subagents);
@@ -560,6 +747,23 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
+  const toggleModelConfig = () => {
+    // Role config lives in settings, which is only fetched on demand — load it
+    // the first time the composer panel opens, same trio the settings sheet uses.
+    if (!modelConfigOpen && !settings) {
+      (async () => {
+        try {
+          const [s] = await Promise.all([loadSettings(), loadHarnesses()]);
+          const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
+          await Promise.all(used.map((h) => refreshModels(h)));
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      })();
+    }
+    setModelConfigOpen((v) => !v);
+  };
+
   const openSettings = () => {
     setSettingsOpen(true);
     (async () => {
@@ -646,6 +850,95 @@ export default function App() {
     </div>
   );
 
+  const menuItems: MenuItem[] = threadMenu
+    ? [
+        { label: "Rename…", onSelect: () => beginRename(threadMenu.thread) },
+        {
+          label: "Usage…",
+          onSelect: () => setInfoTarget({ id: threadMenu.thread.id, tab: "usage" }),
+        },
+        {
+          label: "Subagents…",
+          onSelect: () => setInfoTarget({ id: threadMenu.thread.id, tab: "agents" }),
+        },
+        { label: "Delete…", danger: true, onSelect: () => setDeleteTarget(threadMenu.thread) },
+      ]
+    : [];
+
+  // Rendered in every screen that shows threads (the thread list and the chat
+  // sidebar), since App returns early per screen.
+  const threadOverlays = (
+    <>
+      {threadMenu && (
+        <ContextMenu
+          x={threadMenu.x}
+          y={threadMenu.y}
+          items={menuItems}
+          onClose={() => setThreadMenu(null)}
+        />
+      )}
+      {renameTarget && (
+        <div className="overlay" onClick={() => setRenameTarget(null)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-head">
+              <strong>Rename thread</strong>
+              <button onClick={() => setRenameTarget(null)}>Cancel</button>
+            </div>
+            <div className="sheet-body">
+              <input
+                autoFocus
+                value={renameValue}
+                placeholder="Thread title"
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") confirmRename().catch(() => undefined);
+                }}
+              />
+              <div className="sheet-actions">
+                <button className="primary" onClick={() => confirmRename().catch(() => undefined)}>
+                  Rename
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteTarget && (
+        <div className="overlay" onClick={() => setDeleteTarget(null)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-head">
+              <strong>Delete thread</strong>
+              <button onClick={() => setDeleteTarget(null)}>Cancel</button>
+            </div>
+            <div className="sheet-body">
+              <p className="hint">
+                Delete “{deleteTarget.title}”? Its history is kept on disk, but the thread
+                disappears from the app and cannot be reopened.
+              </p>
+              <div className="sheet-actions">
+                <button
+                  className="danger"
+                  onClick={() => confirmDeleteThread().catch(() => undefined)}
+                >
+                  Delete thread
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {infoTarget && (
+        <ThreadInfoDialog
+          thread={infoState.thread}
+          loading={infoState.loading}
+          tab={infoTarget.tab}
+          onTab={(tab) => setInfoTarget({ ...infoTarget, tab })}
+          onClose={() => setInfoTarget(null)}
+        />
+      )}
+    </>
+  );
+
   // Screen 1 — the projects configured in this environment.
   if (!projectId) {
     return (
@@ -677,9 +970,14 @@ export default function App() {
           {projects.length === 0 && !showNewProject && (
             <div className="empty">No projects yet. Add one to get started.</div>
           )}
-          <div className="project-grid">
+          <div className="project-grid" ref={projectsGrid.ref} style={projectsGrid.gridStyle}>
             {projects.map((p) => (
-              <div className="project-card" key={p.id} onClick={() => openProject(p.id)}>
+              <div
+                className="project-card"
+                key={p.id}
+                style={bentoTile(p.id, projectsGrid.columns)}
+                onClick={() => openProject(p.id)}
+              >
                 <div className="pc-name">{p.name}</div>
                 <div className="pc-path">{p.path || "no path set"}</div>
                 <div className="pc-meta">
@@ -721,9 +1019,15 @@ export default function App() {
           {projectThreads.length === 0 && (
             <div className="empty">No threads yet. Start one for this project.</div>
           )}
-          <div className="thread-cards">
+          <div className="thread-cards" ref={threadsGrid.ref} style={threadsGrid.gridStyle}>
             {projectThreads.map((t) => (
-              <div className="thread-card" key={t.id} onClick={() => setActiveId(t.id)}>
+              <div
+                className="thread-card"
+                key={t.id}
+                style={bentoTile(t.id, threadsGrid.columns)}
+                onClick={() => setActiveId(t.id)}
+                onContextMenu={(e) => openThreadMenu(t, e)}
+              >
                 <div className="tc-title">{t.title}</div>
                 <div className="tc-meta">
                   {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
@@ -731,6 +1035,7 @@ export default function App() {
               </div>
             ))}
           </div>
+          {threadOverlays}
         </div>
       </div>
     );
@@ -754,6 +1059,7 @@ export default function App() {
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""}`}
               onClick={() => setActiveId(t.id)}
+              onContextMenu={(e) => openThreadMenu(t, e)}
             >
               <div className="t">{t.title}</div>
               <div className="m">
@@ -795,13 +1101,6 @@ export default function App() {
             </div>
           </div>
           <div className="toggles">
-            <div
-              className={`toggle ${thread?.autoMode ? "on" : ""}`}
-              onClick={() => thread && toggle("autoMode", !thread.autoMode)}
-              title="Auto mode: the orchestrator picks each task's model"
-            >
-              <span className="sw" /> Auto mode
-            </div>
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               onClick={() => thread && toggle("peerMailbox", !thread.peerMailbox)}
@@ -892,89 +1191,188 @@ export default function App() {
                   {running.length > 0 ? "Steer" : "Send"}
                 </button>
               </div>
+              <div className="composer-foot">
+                <button
+                  className={`model-btn${modelConfigOpen ? " open" : ""}`}
+                  onClick={toggleModelConfig}
+                  aria-expanded={modelConfigOpen}
+                  title="Pick the harness and model each role runs on"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <line x1="4" y1="7" x2="20" y2="7" />
+                    <circle cx="9" cy="7" r="2.2" fill="var(--panel)" />
+                    <line x1="4" y1="17" x2="20" y2="17" />
+                    <circle cx="15" cy="17" r="2.2" fill="var(--panel)" />
+                  </svg>
+                  Model config
+                </button>
+                {settings && (
+                  <div className="model-summary">
+                    {thread?.autoMode && <span className="ms-auto">auto</span>}
+                    {settings.roles.map((r) => (
+                      <span key={r.id}>
+                        {r.name} <b>{r.model || "default"}</b> {r.harness}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {modelConfigOpen && (
+                <div className="model-panel">
+                  {!settings && <p className="hint">Loading roles…</p>}
+                  {settings && (
+                    <>
+                      <div
+                        className={`toggle${thread?.autoMode ? " on" : ""}`}
+                        onClick={() => thread && toggle("autoMode", !thread.autoMode)}
+                        title="Auto mode: the orchestrator picks each task's model and harness"
+                      >
+                        <span className="sw" /> Auto mode
+                      </div>
+                      <p className="hint">
+                        {thread?.autoMode
+                          ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
+                          : "Each role runs on its own harness and model. Changes apply to the next turn."}
+                      </p>
+                      {settings.roles.map((r) => {
+                        const parked = !!thread?.autoMode && r.id !== "orchestrator";
+                        return (
+                          <div
+                            className={`role-edit${parked ? " parked" : ""}`}
+                            key={r.id}
+                            title={
+                              parked
+                                ? "Parked while auto mode is on — the orchestrator decides this role's runtime"
+                                : undefined
+                            }
+                          >
+                            <span className="rn">{r.name}</span>
+                            <Dropdown
+                              value={r.harness}
+                              options={harnessOptionsFor(r.harness)}
+                              disabled={parked}
+                              onChange={(v) => {
+                                const row = { ...r, harness: v };
+                                updateRole(r.id, { harness: v });
+                                persistRole(row).catch(() => undefined);
+                                refreshModels(v).catch(() => undefined);
+                              }}
+                            />
+                            <Dropdown
+                              value={r.model}
+                              options={modelOptions(r.harness, r.model)}
+                              searchable
+                              placeholder="model (default)"
+                              disabled={parked}
+                              onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
+                              addLabel="Add model"
+                              onAdd={(m) => {
+                                addModel(r.harness, m)
+                                  .then(() => {
+                                    const row = { ...r, model: m };
+                                    updateRole(r.id, { model: m });
+                                    persistRole(row).catch(() => undefined);
+                                  })
+                                  .catch(() => undefined);
+                              }}
+                              onChange={(v) => {
+                                const row = { ...r, model: v };
+                                updateRole(r.id, { model: v });
+                                persistRole(row).catch(() => undefined);
+                              }}
+                            />
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </>
         ) : (
           <div className="stream">
-            <div className="diff-bar">
-              <span className="chat-title">{thread?.title ?? "Working tree"}</span>
-              <button onClick={loadDiff}>Refresh</button>
-            </div>
             {diffError && <div className="empty err-text">{diffError}</div>}
-            {diff && diff.empty && <div className="empty">No changes in the working tree.</div>}
-            {(diff?.files ?? []).map((f) => (
-              <div className="diff-file" key={f.path}>
-                <div className="diff-head">
-                  <span className="path">{f.path}</span>
-                  <span className="counts">
-                    <span style={{ color: "var(--ok)" }}>+{f.additions}</span>{" "}
-                    <span style={{ color: "var(--err)" }}>-{f.deletions}</span>
-                  </span>
-                </div>
-                {(f.lines ?? []).map((l, i) => {
-                  const n = lineNumber(l);
-                  const commented = comments.some((c) => c.file === f.path && c.line === n);
-                  return (
-                    <div key={i} className={`diff-line ${l.kind}`}>
-                      <span className="ln">{l.old ?? ""}</span>
-                      <span className="ln">{l.new ?? ""}</span>
-                      <span
-                        className="code"
-                        onClick={() =>
-                          l.kind !== "meta" &&
-                          l.kind !== "hunk" &&
-                          setDraft({ file: f.path, line: n, body: "" })
-                        }
-                      >
-                        {l.text || " "}
-                      </span>
-                      {commented && <span className="chip">●</span>}
-                    </div>
-                  );
-                })}
-                {draft && draft.file === f.path && (
-                  <div className="comment-box">
-                    <div className="cb-head">
-                      Commenting on {draft.file}:{draft.line}
-                    </div>
-                    <textarea
-                      rows={2}
-                      autoFocus
-                      placeholder="Leave a review comment for the agents…"
-                      value={draft.body}
-                      onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                    />
-                    <div className="cb-actions">
-                      <button onClick={() => setDraft(null)}>Cancel</button>
-                      <button className="primary" onClick={addComment}>
-                        Add comment
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+            <DiffView
+              diff={diff}
+              idPrefix="review-"
+              title={thread?.title ?? "Working tree"}
+              comments={comments}
+              draft={draft}
+              emptyText="No changes in the working tree."
+              onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+              onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
+              onAddComment={() => addComment().catch(() => undefined)}
+              onCancelDraft={() => setDraft(null)}
+              onRefresh={() => loadDiff(activeId)}
+            />
           </div>
         )}
       </div>
 
       <div className="col aside">
         <div className="aside-tabs">
+          {asideTabs.map((id) => (
+            <div
+              key={id}
+              className={`tab ${asideActive === id ? "on" : ""}`}
+              onClick={() => setAsideActive(id)}
+            >
+              {id === "agents" ? (
+                <>
+                  Agents <span className="pill">{agents.length}</span>
+                </>
+              ) : (
+                ASIDE_META[id].label
+              )}
+              {!ASIDE_PINNED.includes(id) && (
+                <span
+                  className="tab-x"
+                  title={`Close ${ASIDE_META[id].label}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closePanel(id);
+                  }}
+                >
+                  ×
+                </span>
+              )}
+            </div>
+          ))}
           <div
-            className={`tab ${asideTab === "agents" ? "on" : ""}`}
-            onClick={() => setAsideTab("agents")}
+            className="tab tab-add"
+            title="Add panel"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setPanelMenu({ x: r.left, y: r.bottom + 4 });
+            }}
           >
-            Agents <span className="pill">{agents.length}</span>
-          </div>
-          <div
-            className={`tab ${asideTab === "usage" ? "on" : ""}`}
-            onClick={() => setAsideTab("usage")}
-          >
-            Token usage
+            +
           </div>
         </div>
+        {panelMenu && (
+          <ContextMenu
+            x={panelMenu.x}
+            y={panelMenu.y}
+            items={(Object.keys(ASIDE_META) as AsideTabId[]).map((id) => ({
+              label: ASIDE_META[id].label,
+              hint: ASIDE_META[id].key,
+              onSelect: () => openPanel(id),
+            }))}
+            onClose={() => setPanelMenu(null)}
+          />
+        )}
 
-        {asideTab === "agents" ? (
+        {asideActive === "agents" ? (
           <div className="section">
             <h3>
               Workflow{" "}
@@ -1018,7 +1416,7 @@ export default function App() {
               <span>Σ {fmtTokens(totals.total)} tok</span>
             </div>
           </div>
-        ) : (
+        ) : asideActive === "usage" ? (
           <>
             <div className="section">
               <h3>Token usage</h3>
@@ -1160,6 +1558,56 @@ export default function App() {
               </div>
             </div>
           </>
+        ) : asideActive === "context" ? (
+          <div className="section">
+            <h3>Context</h3>
+            {sharedEntries.length === 0 ? (
+              <div style={{ color: "var(--faint)", fontSize: 12 }}>
+                No shared context yet. Agents record findings here as they work.
+              </div>
+            ) : (
+              sharedEntries.map(([key, value]) => (
+                <div className="ctx-entry" key={key}>
+                  <div className="ctx-key">{key}</div>
+                  <div className="ctx-val">{value}</div>
+                </div>
+              ))
+            )}
+          </div>
+        ) : asideActive === "files" ? (
+          <div className="section files-section">
+            <FilesPanel
+              key={activeId ?? "none"}
+              root={fileTree?.root ?? null}
+              entries={fileTree?.entries ?? []}
+              status={fileTree?.status ?? {}}
+              loading={fileTreeLoading}
+              error={fileTreeError}
+              selectedPath={selectedFile}
+              content={fileContent}
+              contentLoading={fileContentLoading}
+              contentError={fileContentError}
+              onSelectFile={(p) => loadFileContent(activeId, p)}
+              onRefresh={() => loadFileTree(activeId)}
+            />
+          </div>
+        ) : (
+          <div className="section diff-section">
+            {diffError && <div className="empty err-text">{diffError}</div>}
+            <DiffView
+              diff={diff}
+              idPrefix="aside-"
+              title={thread?.title ?? "Working tree"}
+              comments={comments}
+              draft={draft}
+              emptyText="No changes in the working tree."
+              onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+              onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
+              onAddComment={() => addComment().catch(() => undefined)}
+              onCancelDraft={() => setDraft(null)}
+              onRefresh={() => loadDiff(activeId)}
+            />
+          </div>
         )}
 
         <div className="section">
@@ -1338,6 +1786,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {threadOverlays}
     </div>
   );
 }

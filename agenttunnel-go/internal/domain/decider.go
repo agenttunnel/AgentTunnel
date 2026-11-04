@@ -39,6 +39,19 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.ThreadRenamed{Title: title}}, nil
 
+	case contracts.CmdThreadDelete:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		// A thread with live agents would keep writing to a tombstoned log;
+		// make the caller stop the turn first.
+		for id, a := range s.Agents {
+			if !a.Status.Terminal() {
+				return nil, fmt.Errorf("%w: agent %q is still %s", ErrInvalidCommand, id, a.Status)
+			}
+		}
+		return []contracts.EventPayload{contracts.ThreadDeleted{}}, nil
+
 	case contracts.CmdTurnStart:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
@@ -92,12 +105,16 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if role == "" {
 			role = contracts.RoleExecutor
 		}
+		if d.Harness != "" && !d.Harness.Valid() {
+			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, d.Harness)
+		}
 		return []contracts.EventPayload{contracts.TaskDispatched{
 			AgentID:       d.AgentID,
 			ParentAgentID: d.ParentAgentID,
 			Name:          d.Name,
 			Role:          role,
 			Task:          d.Task,
+			Harness:       d.Harness,
 			Model:         d.Model,
 			PipelineID:    d.Pipeline,
 		}}, nil

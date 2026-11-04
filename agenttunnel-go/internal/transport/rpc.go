@@ -15,6 +15,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
@@ -306,6 +307,25 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true}, nil
 
+	case "thread.delete":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		st, err := d.engine.State(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Exists {
+			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: p.ThreadID,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
 	case "thread.steer":
 		var p turnParams
 		if err := decode(req.Params, &p); err != nil {
@@ -395,16 +415,55 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 
 	case "review.diff":
 		var p struct {
-			Workdir string `json:"workdir"`
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
 		}
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
 		wd := p.Workdir
-		if wd == "" && d.settings != nil {
-			wd = d.settings.Workdir()
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
 		}
 		return gitdiff.WorkingTreeDiff(ctx, wd)
+
+	case "files.tree":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		wd := p.Workdir
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
+		}
+		entries, err := files.Tree(ctx, wd)
+		if err != nil {
+			return nil, err
+		}
+		status, _ := gitdiff.Status(ctx, wd)
+		byPath := make(map[string]gitdiff.StatusCode, len(status))
+		for _, s := range status {
+			byPath[s.Path] = s.Status
+		}
+		return map[string]any{"root": wd, "entries": entries, "status": byPath}, nil
+
+	case "files.read":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
+			Path     string             `json:"path"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		wd := p.Workdir
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
+		}
+		return files.Read(wd, p.Path)
 
 	case "review.comment":
 		var p struct {
@@ -514,6 +573,22 @@ type ProjectView struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
 	Threads int    `json:"threads"`
+}
+
+// threadWorkdir resolves a thread's working directory: its project's path,
+// falling back to the environment default when the thread has no project.
+// Mirrors the orchestrator's workdirFor so diffs and file trees show the same
+// repo the agents work in.
+func (d *Dispatcher) threadWorkdir(ctx context.Context, id contracts.ThreadID) string {
+	if d.settings == nil {
+		return ""
+	}
+	if st, err := d.engine.State(ctx, id); err == nil && st.ProjectID != "" {
+		if project, ok := d.settings.Project(st.ProjectID); ok && project.Path != "" {
+			return project.Path
+		}
+	}
+	return d.settings.Workdir()
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {

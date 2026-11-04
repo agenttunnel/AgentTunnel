@@ -11,6 +11,7 @@ const DefaultThreadTitle = "New thread"
 const (
 	CmdThreadCreate     CommandType = "thread.create"
 	CmdThreadRename     CommandType = "thread.rename"
+	CmdThreadDelete     CommandType = "thread.delete"
 	CmdTurnStart        CommandType = "thread.turn.start"
 	CmdModelSet         CommandType = "thread.model.set"
 	CmdAutoModeSet      CommandType = "thread.automode.set"
@@ -31,6 +32,7 @@ type DispatchTask struct {
 	Name          string     `json:"name,omitempty"`
 	Role          RoleID     `json:"role"`
 	Task          string     `json:"task"`
+	Harness       Harness    `json:"harness,omitempty"`
 	Model         string     `json:"model,omitempty"`
 	Pipeline      PipelineID `json:"pipelineId,omitempty"`
 	DependsOn     []string   `json:"dependsOn,omitempty"`

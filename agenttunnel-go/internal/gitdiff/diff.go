@@ -59,6 +59,78 @@ func WorkingTreeDiff(ctx context.Context, workdir string) (Diff, error) {
 	return ParseDiff(out), nil
 }
 
+// StatusCode is a file's porcelain status: added, modified, deleted,
+// unmerged, untracked, or renamed. Renames report under their new path.
+type StatusCode string
+
+const (
+	StatusAdded     StatusCode = "added"
+	StatusModified  StatusCode = "modified"
+	StatusDeleted   StatusCode = "deleted"
+	StatusUnmerged  StatusCode = "unmerged"
+	StatusUntracked StatusCode = "untracked"
+	StatusRenamed   StatusCode = "renamed"
+)
+
+// StatusEntry is one path's working-tree status.
+type StatusEntry struct {
+	Path   string     `json:"path"`
+	Status StatusCode `json:"status"`
+}
+
+// Status runs git status --porcelain and maps it to per-path entries, capped
+// so a huge worktree cannot flood the client. Non-git directories yield no
+// entries (and no error) so file trees still render.
+func Status(ctx context.Context, workdir string) ([]StatusEntry, error) {
+	out, err := run(ctx, workdir, "status", "--porcelain=v1", "-uall", "--no-renames")
+	if err != nil {
+		return nil, nil
+	}
+	var entries []StatusEntry
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		xy, path := line[:2], strings.TrimSpace(line[3:])
+		// Porcelain quotes paths with special characters; strip the quotes so
+		// they join back to real filesystem paths.
+		path = strings.Trim(path, `"`)
+		if path == "" {
+			continue
+		}
+		entries = append(entries, StatusEntry{Path: path, Status: classifyStatus(xy)})
+		if len(entries) >= 2000 {
+			break
+		}
+	}
+	return entries, nil
+}
+
+func classifyStatus(xy string) StatusCode {
+	// Unmerged states carry U in either column, or AA/DD pairs.
+	if strings.Contains(xy, "U") || xy == "AA" || xy == "DD" {
+		return StatusUnmerged
+	}
+	x, y := xy[0], xy[1]
+	// Prefer the worktree column: it is what the user sees uncommitted.
+	if y == '?' && x == '?' {
+		return StatusUntracked
+	}
+	if y == 'A' || x == 'A' {
+		return StatusAdded
+	}
+	if y == 'D' || x == 'D' {
+		return StatusDeleted
+	}
+	if y == 'R' || x == 'R' {
+		return StatusRenamed
+	}
+	if y == 'M' || x == 'M' || y == 'T' || x == 'T' {
+		return StatusModified
+	}
+	return StatusModified
+}
+
 func run(ctx context.Context, workdir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workdir}, args...)...)
 	var stderr strings.Builder

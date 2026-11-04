@@ -193,11 +193,18 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	if !ok {
 		return fmt.Errorf("unknown role %q", t.Role)
 	}
+	auto := r.autoModeFor(ctx, threadID)
 	harness, _, variant := r.roleRuntime(role)
+	// In auto mode the orchestrator picks the runtime per task: a requested
+	// harness wins when it is known and enabled, mirroring how resolveModel
+	// treats requested models. Otherwise the role's configured harness stands.
+	if auto && t.Harness.Valid() && r.harnessAllowed(t.Harness) {
+		harness = t.Harness
+	}
 	if !r.harnessAllowed(harness) {
 		return fmt.Errorf("harness %q is disabled", harness)
 	}
-	model := r.resolveModel(role, t.Model)
+	model := r.resolveModel(role, t.Model, auto)
 	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
 
 	inherited, _ := r.inherited.Render()
@@ -272,7 +279,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		ThreadID: threadID,
 		Role:     contracts.RoleOrchestrator,
 		Harness:  harness,
-		Model:    r.resolveModel(role, ""),
+		Model:    r.resolveModel(role, "", r.autoModeFor(ctx, threadID)),
 		Variant:  variant,
 		Prompt:   prompt,
 		Workdir:  r.workdirFor(ctx, threadID),
@@ -406,10 +413,26 @@ func (r *Runner) harnessAllowed(h contracts.Harness) bool {
 	return r.settings == nil || r.settings.HarnessEnabled(h)
 }
 
+// autoModeFor reports whether the orchestrator picks per-task runtimes for a
+// thread: the environment default, or the thread's own toggle.
+func (r *Runner) autoModeFor(ctx context.Context, threadID contracts.ThreadID) bool {
+	if r.settings != nil && r.settings.AutoMode() {
+		return true
+	}
+	if r.engine == nil {
+		return false
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return false
+	}
+	return st.AutoMode
+}
+
 // resolveModel applies auto mode: the orchestrator's requested model wins only if
 // it is approved; otherwise the role's configured model is used.
-func (r *Runner) resolveModel(role contracts.Role, requested string) string {
-	if r.settings != nil && r.settings.AutoMode() && requested != "" {
+func (r *Runner) resolveModel(role contracts.Role, requested string, auto bool) string {
+	if auto && requested != "" && r.settings != nil {
 		if _, ok := r.settings.ApprovedModels()[requested]; ok {
 			return requested
 		}
