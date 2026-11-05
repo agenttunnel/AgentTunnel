@@ -369,6 +369,59 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true}, nil
 
+	case "thread.council.start":
+		var p struct {
+			ThreadID contracts.ThreadID           `json:"threadId"`
+			Topic    string                       `json:"topic"`
+			Rounds   int                          `json:"rounds"`
+			Members  []orchestrator.CouncilMember `json:"members"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Topic) == "" {
+			return nil, errors.New("council topic is required")
+		}
+		st, err := d.engine.State(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Exists {
+			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		if d.orch == nil {
+			return nil, errors.New("orchestrator is unavailable")
+		}
+		// The debate is a turn: the topic lands in the transcript and the turn
+		// gate applies, so a council cannot race a normal turn.
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Topic,
+		}); err != nil {
+			return nil, err
+		}
+		turnCtx, done, err := d.beginTurn(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		defer done()
+		spec := orchestrator.CouncilSpec{Topic: p.Topic, Rounds: p.Rounds, Members: p.Members}
+		consensus, err := d.orch.RunCouncil(turnCtx, p.ThreadID, spec)
+		if err != nil {
+			if turnCtx.Err() != nil {
+				return map[string]any{"ok": true, "stopped": true}, nil
+			}
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID:       d.nextID(),
+			Type:     contracts.CmdMessageAppend,
+			ThreadID: p.ThreadID,
+			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "council", Text: consensus},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "consensus": consensus}, nil
+
 	case "thread.turn.stop":
 		var p threadParams
 		if err := decode(req.Params, &p); err != nil {

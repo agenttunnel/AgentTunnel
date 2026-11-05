@@ -36,6 +36,11 @@ type DispatchTask struct {
 	Model         string     `json:"model,omitempty"`
 	Pipeline      PipelineID `json:"pipelineId,omitempty"`
 	DependsOn     []string   `json:"dependsOn,omitempty"`
+
+	// Override honors Harness/Model even outside auto mode. It marks an
+	// explicit user choice (council membership) rather than an orchestrator
+	// pick, so it does not persist and never crosses a client boundary.
+	Override bool `json:"-"`
 }
 
 // Command is a request to change thread state. Exactly one payload field is

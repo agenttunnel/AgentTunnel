@@ -15,6 +15,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
@@ -39,6 +40,7 @@ type Deps struct {
 	Mailbox   *contextstore.Mailbox
 	Inherited *contextstore.InheritedContext
 	Settings  *settings.Store
+	Models    *models.Service
 	Tools     *toolbox.Box
 	Steering  *steering.Box
 	Audit     actionlog.Func
@@ -61,6 +63,7 @@ type Runner struct {
 	mailbox   *contextstore.Mailbox
 	inherited *contextstore.InheritedContext
 	settings  *settings.Store
+	models    *models.Service
 	tools     *toolbox.Box
 	steering  *steering.Box
 	audit     actionlog.Func
@@ -92,6 +95,7 @@ func NewRunner(d Deps) *Runner {
 		mailbox:   d.Mailbox,
 		inherited: d.Inherited,
 		settings:  d.Settings,
+		models:    d.Models,
 		tools:     d.Tools,
 		steering:  d.Steering,
 		audit:     d.Audit,
@@ -133,9 +137,20 @@ func (r *Runner) Dispatch(ctx context.Context, threadID contracts.ThreadID, task
 // every task whose dependencies have succeeded, runs them with bounded
 // concurrency, and then proceeds. Blocked tasks (dependency cycles) are
 // cancelled.
+// Run executes dispatched tasks and reports error only. Collect results with
+// RunCollect when the caller needs what each agent produced.
 func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []contracts.DispatchTask) error {
+	_, err := r.RunCollect(ctx, threadID, tasks)
+	return err
+}
+
+// RunCollect executes waved tasks with bounded concurrency and returns each
+// task's final text, keyed by task name. Tasks whose agent produced no text
+// are absent from the map.
+func (r *Runner) RunCollect(ctx context.Context, threadID contracts.ThreadID, tasks []contracts.DispatchTask) (map[string]string, error) {
+	results := map[string]string{}
 	if len(tasks) == 0 {
-		return nil
+		return results, nil
 	}
 	status := make(map[string]contracts.AgentStatus, len(tasks))
 	for _, t := range tasks {
@@ -152,7 +167,7 @@ func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []c
 					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentCancelled, "turn stopped")
 				}
 			}
-			return ctx.Err()
+			return results, ctx.Err()
 		}
 		ready := make([]contracts.DispatchTask, 0, len(tasks))
 		pending := 0
@@ -187,7 +202,7 @@ func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []c
 			go func(t contracts.DispatchTask) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				err := r.runTask(ctx, threadID, t)
+				findings, err := r.runTask(ctx, threadID, t)
 				mu.Lock()
 				if errors.Is(err, context.Canceled) {
 					status[t.Name] = contracts.AgentCancelled
@@ -198,13 +213,16 @@ func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []c
 				} else {
 					status[t.Name] = contracts.AgentSucceeded
 					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentSucceeded, "")
+					if findings != "" {
+						results[t.Name] = findings
+					}
 				}
 				mu.Unlock()
 			}(t)
 		}
 		wg.Wait()
 	}
-	return nil
+	return results, nil
 }
 
 // trackedCancel is heap-allocated per registration so identity survives the
@@ -244,7 +262,8 @@ func (r *Runner) StopAgent(id contracts.AgentID) bool {
 	return ok
 }
 
-func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t contracts.DispatchTask) error {
+// runTask executes one dispatched agent and returns its final text output.
+func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t contracts.DispatchTask) (string, error) {
 	// A cancellation here targets only this agent: either the turn ended or
 	// the user stopped the agent specifically. Both map to a cancelled status.
 	ctx, cancel := context.WithCancel(ctx)
@@ -253,20 +272,23 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 
 	role, ok := r.roles.Get(t.Role)
 	if !ok {
-		return fmt.Errorf("unknown role %q", t.Role)
+		return "", fmt.Errorf("unknown role %q", t.Role)
 	}
 	auto := r.autoModeFor(ctx, threadID)
+	// An explicit user choice (council membership) is honored regardless of
+	// auto mode; an orchestrator pick still needs auto mode to override.
+	overrideRuntime := auto || t.Override
 	harness, _, variant := r.roleRuntime(role)
 	// In auto mode the orchestrator picks the runtime per task: a requested
 	// harness wins when it is known and enabled, mirroring how resolveModel
 	// treats requested models. Otherwise the role's configured harness stands.
-	if auto && t.Harness.Valid() && r.harnessAllowed(t.Harness) {
+	if overrideRuntime && t.Harness.Valid() && r.harnessAllowed(t.Harness) {
 		harness = t.Harness
 	}
 	if !r.harnessAllowed(harness) {
-		return fmt.Errorf("harness %q is disabled", harness)
+		return "", fmt.Errorf("harness %q is disabled", harness)
 	}
-	model := r.resolveModel(role, t.Model, auto)
+	model := r.resolveModel(role, harness, t.Model, auto, t.Override)
 	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
 
 	inherited, _ := r.inherited.Render()
@@ -287,7 +309,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	}
 	adapter, err := r.registry.NewAdapter(spec)
 	if err != nil {
-		return err
+		return "", err
 	}
 	r.auditLog("agent.spawn", map[string]any{
 		"agentId": string(t.AgentID), "role": string(t.Role), "harness": string(harness),
@@ -295,15 +317,17 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	})
 	if err := adapter.Start(ctx, spec); err != nil {
 		r.auditLog("agent.error", map[string]any{"agentId": string(t.AgentID), "error": err.Error()})
-		return err
+		return "", err
 	}
 	events, err := adapter.Stream(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var findings []string
+	emitted := false
 	for ev := range events {
+		emitted = true
 		_ = r.logs.Append(contracts.LogEntry{AgentID: t.AgentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
 		r.publishOutput(threadID, t.AgentID, ev.Kind, ev.Text)
 		if ev.Usage != nil {
@@ -318,13 +342,23 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		"agentId": string(t.AgentID), "status": statusWord(werr), "error": errString(werr),
 	})
 
+	// A harness that exits cleanly but emitted nothing is a silent failure —
+	// a dead API key, a swallowed quota error — and must not read as success.
+	// Surface it as an error instead of an empty, green agent.
+	if werr == nil && !emitted {
+		msg := "harness exited without any output (check its auth or quota)"
+		_ = r.logs.Append(contracts.LogEntry{AgentID: t.AgentID, Kind: contracts.LogError, Text: msg, At: r.clock()})
+		r.publishOutput(threadID, t.AgentID, contracts.LogError, msg)
+		return "", errors.New(msg)
+	}
+
 	if len(findings) > 0 {
 		key := "result_" + t.Name
 		summary := strings.Join(findings, "\n")
 		r.notebook.Append(key, summary, string(t.AgentID))
 		r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
 	}
-	return werr
+	return strings.Join(findings, "\n"), werr
 }
 
 // runOrchestratorPass runs one orchestrator process and collects its text output
@@ -345,7 +379,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		ThreadID: threadID,
 		Role:     contracts.RoleOrchestrator,
 		Harness:  harness,
-		Model:    r.resolveModel(role, "", r.autoModeFor(ctx, threadID)),
+		Model:    r.resolveModel(role, harness, "", r.autoModeFor(ctx, threadID), false),
 		Variant:  variant,
 		Prompt:   prompt,
 		Workdir:  r.workdirFor(ctx, threadID),
@@ -521,16 +555,52 @@ func (r *Runner) autoModeFor(ctx context.Context, threadID contracts.ThreadID) b
 
 // resolveModel applies auto mode: the orchestrator's requested model wins only if
 // it is approved; otherwise the role's configured model is used.
-func (r *Runner) resolveModel(role contracts.Role, requested string, auto bool) string {
-	if auto && requested != "" && r.settings != nil {
-		if _, ok := r.settings.ApprovedModels()[requested]; ok {
-			return requested
-		}
+// resolveModel picks the model a role runs on. Priority:
+//
+//  1. No request: the role's configured model.
+//  2. A role with no configured model trusts the request (the settings UI
+//     feeds per-role models through here).
+//  3. An explicit user override (council membership) runs exactly what was
+//     asked for.
+//  4. Auto mode may pick another model, bounded by the approved list when one
+//     is configured. With no list, any model the harness actually reports is
+//     allowed — enabling auto mode is the opt-in.
+//
+// Anything else falls back to the role's model.
+func (r *Runner) resolveModel(role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
+	_, model, _ := r.roleRuntime(role)
+	if requested == "" {
+		return model
 	}
-	if _, model, _ := r.roleRuntime(role); model != "" {
+	if model == "" || override {
+		return requested
+	}
+	if !auto || !r.autoAllowed(harness, requested) {
 		return model
 	}
 	return requested
+}
+
+// autoAllowed reports whether a model may run in auto mode: inside the
+// approved list when one exists, otherwise any model the chosen harness
+// actually reports.
+func (r *Runner) autoAllowed(harness contracts.Harness, requested string) bool {
+	if r.settings == nil {
+		return true
+	}
+	if approved := r.settings.ApprovedModels(); len(approved) > 0 {
+		_, ok := approved[requested]
+		return ok
+	}
+	if r.models == nil {
+		return true
+	}
+	for _, m := range r.models.List(harness) {
+		if m == requested {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) recordUsage(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, role contracts.RoleID, orchestrator bool, u contracts.TokenUsage) {

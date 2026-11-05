@@ -2024,3 +2024,64 @@ table.grid tr.rowlink:hover td {
 .act-head .stop-btn {
   margin-left: auto;
 }
+
+/* --- council sheet ------------------------------------------------------ */
+.council-sheet {
+  max-width: 640px;
+  width: min(640px, calc(100vw - 48px));
+}
+.council-members {
+  margin-top: 14px;
+}
+.field-label {
+  display: block;
+  font-size: 11.5px;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+.council-member {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.cm-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cm-name {
+  width: 110px;
+}
+.cm-perspective {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.cm-remove {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--faint);
+  cursor: pointer;
+}
+.cm-remove:hover {
+  color: hsl(5 75% 68%);
+  border-color: hsl(5 60% 34% / 0.8);
+}
+.cm-add {
+  border: 1px dashed var(--border-soft);
+  background: none;
+  color: var(--faint);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.cm-add:hover {
+  color: var(--fg);
+}

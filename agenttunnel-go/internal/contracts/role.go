@@ -15,6 +15,7 @@ const (
 	RoleExecutor     RoleID = "executor"
 	RoleTester       RoleID = "tester"
 	RoleReviewer     RoleID = "reviewer"
+	RoleFacilitator  RoleID = "facilitator"
 )
 
 // Role describes an agent role: its identity, system prompt, and default runtime.
@@ -28,8 +29,8 @@ type Role struct {
 	Builtin        bool    `json:"builtin"`
 }
 
-// BuiltinRoles returns the five roles AgentTunnel ships: orchestrator, planner,
-// executor, tester (QA), reviewer.
+// BuiltinRoles returns the six roles AgentTunnel ships: orchestrator, planner,
+// executor, tester (QA), reviewer, and the council facilitator.
 func BuiltinRoles() []Role {
 	return []Role{
 		{
@@ -73,6 +74,15 @@ func BuiltinRoles() []Role {
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are a reviewer. Inspect the diff the executors produced for correctness, style, and risk. " +
 				"Return findings and an explicit approve/request-changes verdict.",
+		},
+		{
+			ID:             RoleFacilitator,
+			Name:           "Facilitator",
+			Builtin:        true,
+			DefaultHarness: HarnessOpenCode,
+			SystemPrompt: "You are a neutral council facilitator. Read the members' positions, surface where they agree " +
+				"and where they split, and state one decisive recommendation with the dissent recorded. Do not add " +
+				"arguments of your own or invent agreement that is not there.",
 		},
 	}
 }

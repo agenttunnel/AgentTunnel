@@ -29,7 +29,7 @@ func TestThreadAutoModeDrivesModelResolution(t *testing.T) {
 	if r.autoModeFor(ctx, "t1") {
 		t.Fatal("autoModeFor should be false with everything off")
 	}
-	if got := r.resolveModel(role, "approved-a", r.autoModeFor(ctx, "t1")); got != "role-default" {
+	if got := r.resolveModel(role, contracts.HarnessOpenCode, "approved-a", r.autoModeFor(ctx, "t1"), false); got != "role-default" {
 		t.Fatalf("auto off should use role default: %q", got)
 	}
 
@@ -41,10 +41,10 @@ func TestThreadAutoModeDrivesModelResolution(t *testing.T) {
 	if !r.autoModeFor(ctx, "t1") {
 		t.Fatal("autoModeFor should be true after the thread toggle")
 	}
-	if got := r.resolveModel(role, "approved-a", r.autoModeFor(ctx, "t1")); got != "approved-a" {
+	if got := r.resolveModel(role, contracts.HarnessOpenCode, "approved-a", r.autoModeFor(ctx, "t1"), false); got != "approved-a" {
 		t.Fatalf("thread auto mode should honour the approved request: %q", got)
 	}
-	if got := r.resolveModel(role, "unapproved", r.autoModeFor(ctx, "t1")); got != "role-default" {
+	if got := r.resolveModel(role, contracts.HarnessOpenCode, "unapproved", r.autoModeFor(ctx, "t1"), false); got != "role-default" {
 		t.Fatalf("unapproved request should fall back: %q", got)
 	}
 }

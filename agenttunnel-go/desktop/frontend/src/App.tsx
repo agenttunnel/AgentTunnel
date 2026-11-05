@@ -71,6 +71,15 @@ type ThreadSummary = {
   stale?: boolean;
 };
 type Project = { id: string; name: string; path: string; threads: number };
+
+/** One editable seat in the council sheet before it is convened. */
+type CouncilMemberRow = {
+  name: string;
+  role: string;
+  harness: string;
+  model: string;
+  perspective: string;
+};
 type DiffLine = { old?: number; new?: number; kind: string; text: string };
 type DiffFile = {
   path: string;
@@ -240,6 +249,35 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelConfigOpen, setModelConfigOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsView | null>(null);
+
+  // Council of agents: convene several perspectives on one question and let
+  // them debate to a synthesized outcome.
+  const [councilOpen, setCouncilOpen] = useState(false);
+  const [councilTopic, setCouncilTopic] = useState("");
+  const [councilRounds, setCouncilRounds] = useState(2);
+  const [councilMembers, setCouncilMembers] = useState<CouncilMemberRow[]>([
+    {
+      name: "planner",
+      role: "planner",
+      harness: "",
+      model: "",
+      perspective: "weigh architecture and long-term maintainability",
+    },
+    {
+      name: "executor",
+      role: "executor",
+      harness: "",
+      model: "",
+      perspective: "prize the simplest thing that actually ships",
+    },
+    {
+      name: "reviewer",
+      role: "reviewer",
+      harness: "",
+      model: "",
+      perspective: "hunt risk, edge cases, and hidden cost",
+    },
+  ]);
   const [workdirInput, setWorkdirInput] = useState("");
   const [approvedInput, setApprovedInput] = useState("");
   const [staleAfterInput, setStaleAfterInput] = useState("30");
@@ -811,6 +849,46 @@ export default function App() {
     if (activeId) refresh(activeId).catch(() => undefined);
   };
 
+  /** Opens the council sheet, seeding the topic from the composer draft. */
+  const openCouncil = () => {
+    if (input.trim()) setCouncilTopic(input.trim());
+    setCouncilOpen(true);
+  };
+
+  const updateCouncilMember = (idx: number, patch: Partial<CouncilMemberRow>) => {
+    setCouncilMembers((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
+  };
+
+  /** Convenes the council: members debate in parallel rounds, then a
+   *  facilitator synthesizes the outcome into the thread. */
+  const startCouncil = async () => {
+    const rpc = rpcRef.current;
+    const topic = councilTopic.trim();
+    if (!rpc || !activeId || !topic) return;
+    setCouncilOpen(false);
+    setInput("");
+    setBusy(true);
+    try {
+      await rpc.call("thread.council.start", {
+        threadId: activeId,
+        topic,
+        rounds: councilRounds,
+        members: councilMembers.map((m) => ({
+          name: (m.name || m.role).trim() || m.role,
+          role: m.role,
+          harness: m.harness,
+          model: m.model,
+          perspective: m.perspective,
+        })),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      refresh(activeId).catch(() => undefined);
+    }
+  };
+
   const addComment = async () => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId || !draft || !draft.body.trim()) return;
@@ -1314,6 +1392,29 @@ export default function App() {
                   </svg>
                   Model config
                 </button>
+                <button
+                  className="model-btn"
+                  onClick={openCouncil}
+                  title="Convene a council: several agents debate one question in parallel rounds and reach a synthesized outcome"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="7" r="2.4" />
+                    <circle cx="5" cy="17" r="2.4" />
+                    <circle cx="19" cy="17" r="2.4" />
+                    <path d="M10.2 8.9 6.7 14.8M13.8 8.9l3.5 5.9M7.4 17h9.2" />
+                  </svg>
+                  Council
+                </button>
                 {settings && (
                   <div className="model-summary">
                     {thread?.autoMode && <span className="ms-auto">auto</span>}
@@ -1779,6 +1880,131 @@ export default function App() {
           roleName={rolesById[detailAgent.role] || detailAgent.role}
           onClose={() => setDetailId(null)}
         />
+      )}
+
+      {councilOpen && activeId && (
+        <div className="overlay" onClick={() => setCouncilOpen(false)}>
+          <div className="sheet council-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-head">
+              <strong>Convene a council</strong>
+              <div className="sheet-head-right">
+                <button onClick={() => setCouncilOpen(false)}>Close</button>
+              </div>
+            </div>
+            <div className="sheet-body">
+              <label className="field">
+                <span>The question to debate</span>
+                <textarea
+                  rows={2}
+                  value={councilTopic}
+                  onChange={(e) => setCouncilTopic(e.target.value)}
+                  placeholder="e.g. Which approach should we take for the parser rewrite?"
+                />
+              </label>
+              <label className="field">
+                <span>
+                  Debate rounds — every member answers, then sees and challenges the table
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={4}
+                  value={councilRounds}
+                  onChange={(e) =>
+                    setCouncilRounds(Math.max(1, Math.min(4, Number(e.target.value) || 2)))
+                  }
+                  style={{ maxWidth: 100 }}
+                />
+              </label>
+              <div className="council-members">
+                <span className="field-label">Members</span>
+                {councilMembers.map((m, idx) => (
+                  <div className="council-member" key={idx}>
+                    <div className="cm-row">
+                      <input
+                        className="cm-name"
+                        value={m.name}
+                        onChange={(e) => updateCouncilMember(idx, { name: e.target.value })}
+                        placeholder="name"
+                        title="Seat name — how this member shows up in the debate"
+                      />
+                      <Dropdown
+                        value={m.role}
+                        options={roles.map((r) => ({ value: r.id, label: r.name }))}
+                        onChange={(v) => updateCouncilMember(idx, { role: v })}
+                      />
+                      <Dropdown
+                        value={m.harness}
+                        options={harnessOptionsFor(m.harness)}
+                        onChange={(v) => {
+                          updateCouncilMember(idx, { harness: v, model: "" });
+                          if (v) refreshModels(v).catch(() => undefined);
+                        }}
+                      />
+                      <Dropdown
+                        value={m.model}
+                        options={modelOptions(m.harness, m.model)}
+                        searchable
+                        placeholder="model (role default)"
+                        onRefresh={() => refreshModels(m.harness).catch(() => undefined)}
+                        onChange={(v) => updateCouncilMember(idx, { model: v })}
+                      />
+                      {councilMembers.length > 2 && (
+                        <button
+                          className="cm-remove"
+                          title="Remove this seat"
+                          onClick={() =>
+                            setCouncilMembers((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      className="cm-perspective"
+                      value={m.perspective}
+                      onChange={(e) => updateCouncilMember(idx, { perspective: e.target.value })}
+                      placeholder="Perspective this member argues from (optional)"
+                    />
+                  </div>
+                ))}
+                {councilMembers.length < 6 && (
+                  <button
+                    className="cm-add"
+                    onClick={() =>
+                      setCouncilMembers((prev) => [
+                        ...prev,
+                        {
+                          name: roles[prev.length % Math.max(1, roles.length)]?.id ?? "member",
+                          role: roles[prev.length % Math.max(1, roles.length)]?.id ?? "executor",
+                          harness: "",
+                          model: "",
+                          perspective: "",
+                        },
+                      ])
+                    }
+                  >
+                    + Add seat
+                  </button>
+                )}
+              </div>
+              <p className="hint">
+                Members run in parallel each round. A facilitator — who was not part of the debate —
+                writes the final consensus into this thread, with dissent recorded.
+              </p>
+              <div className="sheet-actions">
+                <button
+                  className="primary"
+                  disabled={!councilTopic.trim() || councilMembers.length < 2 || busy}
+                  onClick={startCouncil}
+                >
+                  Convene council
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {settingsOpen && settings && (
