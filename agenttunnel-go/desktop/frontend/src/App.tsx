@@ -66,6 +66,9 @@ type ThreadSummary = {
   messages: number;
   agents: number;
   autoMode: boolean;
+  runningAgents?: number;
+  staleAfterSeconds?: number;
+  stale?: boolean;
 };
 type Project = { id: string; name: string; path: string; threads: number };
 type DiffLine = { old?: number; new?: number; kind: string; text: string };
@@ -97,6 +100,7 @@ type SettingsView = {
   approvedModels: string[] | null;
   roles: RoleConfigView[];
   configPath: string;
+  staleAfterMinutes?: number;
 };
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable. */
@@ -154,6 +158,44 @@ function fmtUpdated(at?: string): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** fmtIdleDuration renders an age as "45s" / "12m" / "3h 05m" / "4d". */
+function fmtIdleDuration(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return `${Math.max(0, Math.round(ms / 1000))}s`;
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${String(mins % 60).padStart(2, "0")}m`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * ThreadClock shows a thread's activity state as a live pill: "Working" while
+ * agents run, "Stale" once the thread has been idle past the configured
+ * threshold, or a countdown to staleness otherwise. It owns a coarse interval
+ * (30s) and re-renders only itself, so a full board of timers costs almost
+ * nothing.
+ */
+function ThreadClock({ t }: { t: ThreadSummary }) {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => bump((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if ((t.runningAgents ?? 0) > 0) {
+    return <span className="pill run">● Working</span>;
+  }
+  const at = t.updatedAt ? Date.parse(t.updatedAt) : NaN;
+  if (Number.isNaN(at)) return null;
+  const idleMs = Date.now() - at;
+  const afterMs = (t.staleAfterSeconds ?? 0) * 1000;
+  if (afterMs <= 0) return null;
+  if (idleMs >= afterMs) {
+    return <span className="pill stale">◌ Stale · {fmtIdleDuration(idleMs)}</span>;
+  }
+  return <span className="pill live">○ Stale in {fmtIdleDuration(afterMs - idleMs)}</span>;
+}
+
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +242,7 @@ export default function App() {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [workdirInput, setWorkdirInput] = useState("");
   const [approvedInput, setApprovedInput] = useState("");
+  const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
 
@@ -468,6 +511,7 @@ export default function App() {
     setSettings(s);
     setWorkdirInput(s.workdir ?? "");
     setApprovedInput((s.approvedModels ?? []).join(", "));
+    setStaleAfterInput(String(s.staleAfterMinutes ?? 30));
     return s;
   }, []);
 
@@ -801,6 +845,7 @@ export default function App() {
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean),
+      staleAfterMinutes: staleAfterInput,
     });
     setSettings(s);
     flashSaved();
@@ -1031,7 +1076,7 @@ export default function App() {
           <div className="thread-cards" ref={threadsGrid.ref} style={threadsGrid.gridStyle}>
             {projectThreads.map((t) => (
               <div
-                className="thread-card"
+                className={`thread-card ${t.stale ? "stale" : ""}`}
                 key={t.id}
                 style={bentoTile(t.id, threadsGrid.columns)}
                 onClick={() => setActiveId(t.id)}
@@ -1045,6 +1090,9 @@ export default function App() {
                 </div>
                 <div className="tc-meta">
                   {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
+                </div>
+                <div className="tc-clock">
+                  <ThreadClock t={t} />
                 </div>
               </div>
             ))}
@@ -1071,7 +1119,7 @@ export default function App() {
           {projectThreads.map((t) => (
             <div
               key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""}`}
+              className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
               onClick={() => setActiveId(t.id)}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
@@ -1082,6 +1130,9 @@ export default function App() {
               {fmtUpdated(t.updatedAt) && (
                 <div className="u">Updated {fmtUpdated(t.updatedAt)}</div>
               )}
+              <div className="u row-clock">
+                <ThreadClock t={t} />
+              </div>
             </div>
           ))}
         </div>
@@ -1721,6 +1772,16 @@ export default function App() {
                     value={approvedInput}
                     onChange={(e) => setApprovedInput(e.target.value)}
                     placeholder="gpt-5, sonnet, …"
+                  />
+                </label>
+                <label className="field" style={{ marginTop: 12 }}>
+                  <span>Mark threads stale after this many minutes of inactivity</span>
+                  <input
+                    value={staleAfterInput}
+                    onChange={(e) => setStaleAfterInput(e.target.value)}
+                    inputMode="numeric"
+                    placeholder="30"
+                    style={{ maxWidth: 120 }}
                   />
                 </label>
                 {settings.configPath && (

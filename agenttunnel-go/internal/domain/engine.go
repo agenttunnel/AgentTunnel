@@ -70,6 +70,10 @@ func NewEngine(store EventStore, roles *contracts.RoleRegistry) *Engine {
 // SetClock overrides the engine clock (used by tests).
 func (e *Engine) SetClock(c Clock) { e.clock = c }
 
+// Now reads the engine clock, so derived views (like thread staleness) agree
+// with event timestamps even in tests.
+func (e *Engine) Now() time.Time { return e.clock() }
+
 // Roles exposes the engine's role registry.
 func (e *Engine) Roles() *contracts.RoleRegistry { return e.roles }
 

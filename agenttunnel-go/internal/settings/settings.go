@@ -33,16 +33,23 @@ type Project struct {
 
 // Store is safe for concurrent use.
 type Store struct {
-	mu       sync.RWMutex
-	path     string
-	workdir  string
-	autoMode bool
-	approved map[string]struct{}
-	roles    map[contracts.RoleID]RoleConfig
-	disabled map[contracts.Harness]bool
-	custom   map[contracts.Harness][]string
-	projects []Project
+	mu            sync.RWMutex
+	path          string
+	workdir       string
+	autoMode      bool
+	approved      map[string]struct{}
+	roles         map[contracts.RoleID]RoleConfig
+	disabled      map[contracts.Harness]bool
+	custom        map[contracts.Harness][]string
+	projects      []Project
+	staleAfterMin int
 }
+
+const (
+	defaultStaleAfterMinutes = 30
+	minStaleAfterMinutes     = 1
+	maxStaleAfterMinutes     = 30 * 24 * 60
+)
 
 type fileConfig struct {
 	Workdir           string                    `json:"workdir"`
@@ -52,6 +59,7 @@ type fileConfig struct {
 	DisabledHarnesses []string                  `json:"disabledHarnesses"`
 	CustomModels      map[string][]string       `json:"customModels"`
 	Projects          []Project                 `json:"projects"`
+	StaleAfterMinutes int                       `json:"staleAfterMinutes"`
 }
 
 type fileRoleConfig struct {
@@ -64,11 +72,12 @@ type fileRoleConfig struct {
 // not persist; use Open for a file-backed store.
 func New(workdir string) *Store {
 	return &Store{
-		workdir:  workdir,
-		approved: map[string]struct{}{},
-		roles:    map[contracts.RoleID]RoleConfig{},
-		disabled: map[contracts.Harness]bool{},
-		custom:   map[contracts.Harness][]string{},
+		workdir:       workdir,
+		approved:      map[string]struct{}{},
+		roles:         map[contracts.RoleID]RoleConfig{},
+		disabled:      map[contracts.Harness]bool{},
+		custom:        map[contracts.Harness][]string{},
+		staleAfterMin: defaultStaleAfterMinutes,
 	}
 }
 
@@ -105,6 +114,10 @@ func (s *Store) apply(fc fileConfig) {
 		s.workdir = wd
 	}
 	s.autoMode = fc.AutoMode
+	// A missing or zero value keeps the default; only explicit values persist.
+	if fc.StaleAfterMinutes != 0 {
+		s.staleAfterMin = clampStaleMinutes(fc.StaleAfterMinutes)
+	}
 
 	s.approved = make(map[string]struct{}, len(fc.ApprovedModels))
 	for _, m := range fc.ApprovedModels {
@@ -183,6 +196,36 @@ func (s *Store) CustomModels(h contracts.Harness) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.custom[h]...)
+}
+
+// StaleAfterMinutes is how long a thread can sit idle before the UI marks it
+// stale. A thread with running agents never goes stale.
+func (s *Store) StaleAfterMinutes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.staleAfterMin == 0 {
+		return defaultStaleAfterMinutes
+	}
+	return s.staleAfterMin
+}
+
+// SetStaleAfterMinutes updates the staleness threshold, clamped to one minute
+// and thirty days.
+func (s *Store) SetStaleAfterMinutes(minutes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staleAfterMin = clampStaleMinutes(minutes)
+	s.persistLocked()
+}
+
+func clampStaleMinutes(minutes int) int {
+	if minutes < minStaleAfterMinutes {
+		return minStaleAfterMinutes
+	}
+	if minutes > maxStaleAfterMinutes {
+		return maxStaleAfterMinutes
+	}
+	return minutes
 }
 
 // Projects returns the configured projects.
@@ -319,6 +362,7 @@ func (s *Store) snapshotLocked() fileConfig {
 		DisabledHarnesses: make([]string, 0, len(s.disabled)),
 		CustomModels:      make(map[string][]string, len(s.custom)),
 		Projects:          append([]Project(nil), s.projects...),
+		StaleAfterMinutes: s.staleAfterMin,
 	}
 	for m := range s.approved {
 		fc.ApprovedModels = append(fc.ApprovedModels, m)

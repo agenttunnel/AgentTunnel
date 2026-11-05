@@ -105,6 +105,11 @@ type ThreadSummary struct {
 	Messages  int                `json:"messages"`
 	Agents    int                `json:"agents"`
 	AutoMode  bool               `json:"autoMode"`
+
+	// Staleness is derived: a thread with running agents never goes stale.
+	RunningAgents     int  `json:"runningAgents"`
+	StaleAfterSeconds int  `json:"staleAfterSeconds"`
+	Stale             bool `json:"stale"`
 }
 
 // AgentView pairs an agent with its accumulated usage.
@@ -133,6 +138,8 @@ type (
 		AgentID contracts.AgentID `json:"agentId"`
 	}
 )
+
+const defaultStaleAfterSeconds = 30 * 60
 
 // Handle executes one RPC method, recording it in the action log.
 func (d *Dispatcher) Handle(ctx context.Context, req Request) (any, error) {
@@ -243,14 +250,30 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		out := make([]ThreadSummary, 0, len(ids))
+		staleAfter := defaultStaleAfterSeconds
+		if d.settings != nil {
+			staleAfter = d.settings.StaleAfterMinutes() * 60
+		}
+		now := time.Now()
+		if d.engine != nil {
+			now = d.engine.Now()
+		}
 		for _, id := range ids {
 			st, err := d.engine.State(ctx, id)
 			if err != nil {
 				return nil, err
 			}
+			running := 0
+			for _, a := range st.Agents {
+				if a.Status == contracts.AgentRunning || a.Status == contracts.AgentPending {
+					running++
+				}
+			}
+			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
+				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
 		}
 		// The thread list is a recency list: newest activity first. Event stores
@@ -522,6 +545,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if p.ApprovedModels != nil {
 			d.settings.SetApprovedModels(*p.ApprovedModels)
 		}
+		if p.StaleAfterMinutes != nil {
+			d.settings.SetStaleAfterMinutes(*p.StaleAfterMinutes)
+		}
 		if p.Role != nil {
 			d.settings.SetRoleConfig(contracts.RoleID(p.Role.ID), settings.RoleConfig{
 				Harness: contracts.Harness(p.Role.Harness),
@@ -654,18 +680,20 @@ type RoleConfigView struct {
 
 // SettingsView is the settings screen's payload.
 type SettingsView struct {
-	Workdir        string           `json:"workdir"`
-	AutoMode       bool             `json:"autoMode"`
-	ApprovedModels []string         `json:"approvedModels"`
-	Roles          []RoleConfigView `json:"roles"`
-	ConfigPath     string           `json:"configPath"`
+	Workdir           string           `json:"workdir"`
+	AutoMode          bool             `json:"autoMode"`
+	ApprovedModels    []string         `json:"approvedModels"`
+	Roles             []RoleConfigView `json:"roles"`
+	ConfigPath        string           `json:"configPath"`
+	StaleAfterMinutes int              `json:"staleAfterMinutes"`
 }
 
 type settingsPatch struct {
-	Workdir        *string   `json:"workdir"`
-	AutoMode       *bool     `json:"autoMode"`
-	ApprovedModels *[]string `json:"approvedModels"`
-	Role           *struct {
+	Workdir           *string   `json:"workdir"`
+	AutoMode          *bool     `json:"autoMode"`
+	ApprovedModels    *[]string `json:"approvedModels"`
+	StaleAfterMinutes *int      `json:"staleAfterMinutes"`
+	Role              *struct {
 		ID      string `json:"id"`
 		Harness string `json:"harness"`
 		Model   string `json:"model"`
@@ -683,6 +711,7 @@ func (d *Dispatcher) settingsView() SettingsView {
 		view.Workdir = d.settings.Workdir()
 		view.AutoMode = d.settings.AutoMode()
 		view.ConfigPath = d.settings.Path()
+		view.StaleAfterMinutes = d.settings.StaleAfterMinutes()
 		for m := range d.settings.ApprovedModels() {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}

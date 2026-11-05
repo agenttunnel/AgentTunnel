@@ -1952,3 +1952,50 @@ table.grid tr.rowlink:hover td {
   max-height: 300px;
   overflow: auto;
 }
+
+/* --- thread activity pills --------------------------------------------- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--faint);
+  background: var(--panel);
+  white-space: nowrap;
+}
+.pill.run {
+  color: hsl(150 60% 62%);
+  border-color: hsl(150 50% 30% / 0.8);
+  background: hsl(150 50% 18% / 0.35);
+}
+.pill.stale {
+  color: hsl(35 70% 62%);
+  border-color: hsl(35 60% 32% / 0.8);
+  background: hsl(35 60% 16% / 0.35);
+}
+.pill.live {
+  color: var(--faint);
+}
+.tc-clock {
+  margin-top: 8px;
+}
+.thread-row .row-clock {
+  margin-top: 3px;
+}
+
+/* Stale threads visually recede until they're touched again. */
+.thread-card.stale {
+  opacity: 0.55;
+  filter: saturate(0.6);
+}
+.thread-card.stale:hover {
+  opacity: 0.85;
+}
+.thread-row.stale .t {
+  color: var(--faint);
+}
