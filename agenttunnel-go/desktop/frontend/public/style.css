@@ -89,7 +89,7 @@ textarea:focus {
 }
 .titlebar {
   grid-column: 1 / -1;
-  -webkit-app-region: drag;
+  --wails-draggable: drag;
   display: flex;
   align-items: center;
   justify-content: space-between;
