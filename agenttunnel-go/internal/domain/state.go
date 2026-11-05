@@ -40,6 +40,7 @@ type ThreadState struct {
 	Deleted     bool                     `json:"deleted"`
 	Title       string                   `json:"title"`
 	ProjectID   string                   `json:"projectId,omitempty"`
+	UpdatedAt   time.Time                `json:"updatedAt"`
 	Model       contracts.ModelSelection `json:"model"`
 	AutoMode    bool                     `json:"autoMode"`
 	PeerMailbox bool                     `json:"peerMailbox"`

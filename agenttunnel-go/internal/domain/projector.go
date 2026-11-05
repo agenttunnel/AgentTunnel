@@ -105,6 +105,7 @@ func Project(s *ThreadState, e contracts.Event) error {
 	default:
 		return fmt.Errorf("project: unknown event payload %T", e.Payload)
 	}
+	s.UpdatedAt = e.At
 	s.Version = e.Seq
 	return nil
 }

@@ -182,6 +182,11 @@ textarea:focus {
   font-size: 11.5px;
   margin-top: 2px;
 }
+.thread-row .u {
+  color: var(--faint);
+  font-size: 11px;
+  margin-top: 1px;
+}
 
 /* --- chat -------------------------------------------------------------- */
 .chat-head {
@@ -1366,6 +1371,15 @@ textarea:focus {
   border-color: hsl(var(--tile-h) 45% 45% / 0.7);
   background: linear-gradient(155deg, hsl(var(--tile-h) 32% 19%), hsl(var(--tile-h) 22% 11%) 70%);
 }
+.tc-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.tc-head .tc-title {
+  flex: 1;
+  min-width: 0;
+}
 .tc-title {
   font-weight: 550;
   overflow: hidden;
@@ -1373,6 +1387,13 @@ textarea:focus {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+.tc-updated {
+  flex: none;
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  padding-top: 1px;
 }
 .tc-meta {
   color: var(--faint);

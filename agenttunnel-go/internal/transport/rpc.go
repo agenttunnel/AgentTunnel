@@ -101,6 +101,7 @@ type ThreadSummary struct {
 	ID        contracts.ThreadID `json:"id"`
 	Title     string             `json:"title"`
 	ProjectID string             `json:"projectId,omitempty"`
+	UpdatedAt time.Time          `json:"updatedAt"`
 	Messages  int                `json:"messages"`
 	Agents    int                `json:"agents"`
 	AutoMode  bool               `json:"autoMode"`
@@ -248,10 +249,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				return nil, err
 			}
 			out = append(out, ThreadSummary{
-				ID: id, Title: st.Title, ProjectID: st.ProjectID, Messages: len(st.Messages),
-				Agents: len(st.Agents), AutoMode: st.AutoMode,
+				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
+				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
 			})
 		}
+		// The thread list is a recency list: newest activity first. Event stores
+		// may enumerate files in any order, so sort explicitly.
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+				return out[i].ID < out[j].ID
+			}
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		})
 		return out, nil
 
 	case "thread.get":

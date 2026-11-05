@@ -62,6 +62,7 @@ type ThreadSummary = {
   id: string;
   title: string;
   projectId?: string;
+  updatedAt?: string;
   messages: number;
   agents: number;
   autoMode: boolean;
@@ -143,6 +144,14 @@ function Elapsed({ since }: { since?: string }) {
   const label =
     secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
   return <span className="act-elapsed">{label}</span>;
+}
+
+/** fmtUpdated renders a thread's last activity as a short local date. */
+function fmtUpdated(at?: string): string {
+  if (!at) return "";
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime()) || date.getFullYear() < 1970) return "";
+  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
 export default function App() {
@@ -1028,7 +1037,12 @@ export default function App() {
                 onClick={() => setActiveId(t.id)}
                 onContextMenu={(e) => openThreadMenu(t, e)}
               >
-                <div className="tc-title">{t.title}</div>
+                <div className="tc-head">
+                  <div className="tc-title">{t.title}</div>
+                  {fmtUpdated(t.updatedAt) && (
+                    <div className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</div>
+                  )}
+                </div>
                 <div className="tc-meta">
                   {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
                 </div>
@@ -1065,6 +1079,9 @@ export default function App() {
               <div className="m">
                 {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
               </div>
+              {fmtUpdated(t.updatedAt) && (
+                <div className="u">Updated {fmtUpdated(t.updatedAt)}</div>
+              )}
             </div>
           ))}
         </div>
