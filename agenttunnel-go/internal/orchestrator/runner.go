@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -69,6 +70,11 @@ type Runner struct {
 	clock     domain.Clock
 	cfg       Config
 	seq       atomic.Int64
+
+	// cancels tracks the live cancel func of every running agent so a single
+	// agent can be stopped from the UI without touching its siblings.
+	cancelMu sync.Mutex
+	cancels  map[contracts.AgentID]*trackedCancel
 }
 
 // NewRunner wires a runner from its dependencies.
@@ -138,6 +144,16 @@ func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []c
 
 	var mu sync.Mutex
 	for {
+		// A stopped turn must not start new waves; mark the rest cancelled.
+		if ctx.Err() != nil {
+			for _, t := range tasks {
+				if status[t.Name] == contracts.AgentPending {
+					status[t.Name] = contracts.AgentCancelled
+					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentCancelled, "turn stopped")
+				}
+			}
+			return ctx.Err()
+		}
 		ready := make([]contracts.DispatchTask, 0, len(tasks))
 		pending := 0
 		for _, t := range tasks {
@@ -173,7 +189,10 @@ func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []c
 				defer func() { <-sem }()
 				err := r.runTask(ctx, threadID, t)
 				mu.Lock()
-				if err != nil {
+				if errors.Is(err, context.Canceled) {
+					status[t.Name] = contracts.AgentCancelled
+					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentCancelled, "stopped")
+				} else if err != nil {
 					status[t.Name] = contracts.AgentFailed
 					r.setStatus(ctx, threadID, t.AgentID, contracts.AgentFailed, err.Error())
 				} else {
@@ -188,7 +207,50 @@ func (r *Runner) Run(ctx context.Context, threadID contracts.ThreadID, tasks []c
 	return nil
 }
 
+// trackedCancel is heap-allocated per registration so identity survives the
+// func-comparison restriction: an old unregister must never drop a newer one.
+type trackedCancel struct{ cancel context.CancelFunc }
+
+// trackCancel remembers an agent's cancel func so StopAgent can target it.
+func (r *Runner) trackCancel(id contracts.AgentID, cancel context.CancelFunc) *trackedCancel {
+	tc := &trackedCancel{cancel: cancel}
+	r.cancelMu.Lock()
+	defer r.cancelMu.Unlock()
+	if r.cancels == nil {
+		r.cancels = map[contracts.AgentID]*trackedCancel{}
+	}
+	r.cancels[id] = tc
+	return tc
+}
+
+// untrackCancel forgets a registration if it is still the live one.
+func (r *Runner) untrackCancel(id contracts.AgentID, tc *trackedCancel) {
+	r.cancelMu.Lock()
+	defer r.cancelMu.Unlock()
+	if r.cancels[id] == tc {
+		delete(r.cancels, id)
+	}
+}
+
+// StopAgent cancels one running agent and reports whether it was found. The
+// agent records a cancelled status; the rest of the turn continues.
+func (r *Runner) StopAgent(id contracts.AgentID) bool {
+	r.cancelMu.Lock()
+	tc, ok := r.cancels[id]
+	r.cancelMu.Unlock()
+	if ok && tc != nil {
+		tc.cancel()
+	}
+	return ok
+}
+
 func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t contracts.DispatchTask) error {
+	// A cancellation here targets only this agent: either the turn ended or
+	// the user stopped the agent specifically. Both map to a cancelled status.
+	ctx, cancel := context.WithCancel(ctx)
+	tc := r.trackCancel(t.AgentID, cancel)
+	defer r.untrackCancel(t.AgentID, tc)
+
 	role, ok := r.roles.Get(t.Role)
 	if !ok {
 		return fmt.Errorf("unknown role %q", t.Role)
@@ -268,6 +330,10 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 // runOrchestratorPass runs one orchestrator process and collects its text output
 // and tool calls. Usage from the orchestrator is attributed as orchestrator.
 func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.ThreadID, agentID contracts.AgentID, role contracts.Role, prompt string, pass int) (string, []ToolCall, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	tc := r.trackCancel(agentID, cancel)
+	defer r.untrackCancel(agentID, tc)
+
 	harness, _, variant := r.roleRuntime(role)
 	if !r.harnessAllowed(harness) {
 		return "", nil, fmt.Errorf("harness %q is disabled", harness)
@@ -485,7 +551,9 @@ func (r *Runner) recordUsage(ctx context.Context, threadID contracts.ThreadID, a
 }
 
 func (r *Runner) setStatus(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, status contracts.AgentStatus, reason string) {
-	_ = r.engine.Dispatch(ctx, contracts.Command{
+	// Status writes must survive the turn ending: a cancelled turn still owes
+	// the thread its terminal status, so detach from the caller's context.
+	_ = r.engine.Dispatch(context.WithoutCancel(ctx), contracts.Command{
 		ID:       r.nextID(),
 		Type:     contracts.CmdAgentStatusSet,
 		ThreadID: threadID,

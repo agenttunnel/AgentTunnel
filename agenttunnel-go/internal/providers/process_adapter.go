@@ -54,6 +54,10 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, inv.Binary, inv.Args...)
+	setProcessGroup(cmd)
+	// Context cancellation must reap the whole process group, or an orphaned
+	// grandchild keeps the stdout pipe open and blocks streaming forever.
+	cmd.Cancel = func() error { killProcessGroup(cmd); return nil }
 	if spec.Workdir != "" {
 		cmd.Dir = spec.Workdir
 	}
@@ -152,7 +156,8 @@ func (p *ProcessAdapter) Stop(_ context.Context) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	return cmd.Process.Kill()
+	killProcessGroup(cmd)
+	return nil
 }
 
 // Wait blocks until the process has exited and returns its exit error.

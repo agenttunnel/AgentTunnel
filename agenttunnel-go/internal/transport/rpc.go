@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -77,6 +78,10 @@ type Dispatcher struct {
 	steering *steering.Box
 	audit    actionlog.Func
 	seq      atomic.Int64
+
+	// turns gates one running turn per thread and lets clients stop it.
+	turnsMu sync.Mutex
+	turns   map[contracts.ThreadID]context.CancelFunc
 }
 
 // NewDispatcher constructs a dispatcher.
@@ -140,6 +145,43 @@ type (
 )
 
 const defaultStaleAfterSeconds = 30 * 60
+
+// beginTurn claims a thread's turn slot, returning a context that ends when the
+// turn is stopped. The second call for the same thread fails; turns are serial
+// per thread.
+func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID) (context.Context, func(), error) {
+	d.turnsMu.Lock()
+	defer d.turnsMu.Unlock()
+	if d.turns == nil {
+		d.turns = map[contracts.ThreadID]context.CancelFunc{}
+	}
+	if _, running := d.turns[threadID]; running {
+		return nil, nil, fmt.Errorf("a turn is already running on thread %s", threadID)
+	}
+	turnCtx, cancel := context.WithCancel(ctx)
+	d.turns[threadID] = cancel
+	return turnCtx, func() {
+		cancel()
+		d.turnsMu.Lock()
+		defer d.turnsMu.Unlock()
+		// The slot is released only here, never in stopTurn: a stopped turn
+		// holds the slot until it actually exits, so a new turn cannot begin
+		// while the old one is winding down.
+		delete(d.turns, threadID)
+	}, nil
+}
+
+// stopTurn cancels a running turn and reports whether one was found. The
+// thread's turn slot stays taken until the turn finishes unwinding.
+func (d *Dispatcher) stopTurn(threadID contracts.ThreadID) bool {
+	d.turnsMu.Lock()
+	cancel, running := d.turns[threadID]
+	d.turnsMu.Unlock()
+	if running {
+		cancel()
+	}
+	return running
+}
 
 // Handle executes one RPC method, recording it in the action log.
 func (d *Dispatcher) Handle(ctx context.Context, req Request) (any, error) {
@@ -313,10 +355,42 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}); err != nil {
 			return nil, err
 		}
-		if err := d.orch.RunTurn(ctx, p.ThreadID, p.Text); err != nil {
+		turnCtx, done, err := d.beginTurn(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		defer done()
+		if err := d.orch.RunTurn(turnCtx, p.ThreadID, p.Text); err != nil {
+			if turnCtx.Err() != nil {
+				// Stopped from the client: not an error, but say what happened.
+				return map[string]any{"ok": true, "stopped": true}, nil
+			}
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
+
+	case "thread.turn.stop":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.ThreadID == "" {
+			return nil, errors.New("threadId is required")
+		}
+		return map[string]any{"ok": true, "stopped": d.stopTurn(p.ThreadID)}, nil
+
+	case "agents.stop":
+		var p agentParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.AgentID == "" {
+			return nil, errors.New("agentId is required")
+		}
+		if d.runner == nil {
+			return nil, errors.New("runner is unavailable")
+		}
+		return map[string]any{"ok": true, "stopped": d.runner.StopAgent(p.AgentID)}, nil
 
 	case "thread.rename":
 		var p struct {

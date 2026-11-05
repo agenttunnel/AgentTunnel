@@ -114,7 +114,7 @@ func toolCallKey(call toolbox.Call) string {
 }
 
 // RunTurn executes one user turn end to end.
-func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) error {
+func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) (err error) {
 	role, ok := o.runner.roles.Get(contracts.RoleOrchestrator)
 	if !ok {
 		return errors.New("orchestrator role is not registered")
@@ -131,6 +131,22 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		return err
 	}
 	o.runner.setStatus(ctx, threadID, orchID, contracts.AgentRunning, "")
+
+	// Whatever goes wrong mid-turn — failure, engine errors, or a stop landing
+	// between passes — the orchestrator owes the thread a terminal status.
+	// setStatus detaches from the turn context so a cancelled turn can still
+	// record it.
+	defer func() {
+		if err == nil {
+			return
+		}
+		finishCtx := context.WithoutCancel(ctx)
+		if ctx.Err() != nil {
+			o.runner.setStatus(finishCtx, threadID, orchID, contracts.AgentCancelled, "turn stopped")
+		} else {
+			o.runner.setStatus(finishCtx, threadID, orchID, contracts.AgentFailed, err.Error())
+		}
+	}()
 
 	var finalText string
 	var dispatched []contracts.DispatchTask
@@ -150,7 +166,6 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 
 		text, calls, err := o.runner.runOrchestratorPass(ctx, threadID, orchID, role, prompt, pass)
 		if err != nil {
-			o.runner.setStatus(ctx, threadID, orchID, contracts.AgentFailed, err.Error())
 			return err
 		}
 		if strings.TrimSpace(text) != "" {

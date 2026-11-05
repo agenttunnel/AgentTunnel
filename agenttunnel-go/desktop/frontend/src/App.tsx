@@ -787,6 +787,30 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
+  /** Stops the turn running on the active thread, if any. */
+  const stopTurn = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.turn.stop", { threadId: activeId });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    refresh(activeId).catch(() => undefined);
+  };
+
+  /** Stops a single agent; its turn-mates keep running. */
+  const stopAgent = async (agentId: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      await rpc.call("agents.stop", { agentId });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    if (activeId) refresh(activeId).catch(() => undefined);
+  };
+
   const addComment = async () => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId || !draft || !draft.body.trim()) return;
@@ -1217,6 +1241,13 @@ export default function App() {
                       {running.map((a) => a.name || rolesById[a.role] || a.role).join(", ")}
                     </span>
                     <Elapsed since={running[0]?.startedAt} />
+                    <button
+                      className="stop-btn"
+                      onClick={stopTurn}
+                      title="Stop this turn — running agents are cancelled"
+                    >
+                      Stop
+                    </button>
                   </div>
                   <div className="act-body">
                     {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
@@ -1473,6 +1504,18 @@ export default function App() {
                         <div className="wf-meta">
                           {entry ? `${fmtTokens(totalTokens(entry.usage))} tok` : a.status}
                         </div>
+                        {a.status === "running" && (
+                          <button
+                            className="stop-btn mini"
+                            title="Stop this agent — the rest of the turn keeps running"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              stopAgent(a.id);
+                            }}
+                          >
+                            Stop
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

@@ -1999,3 +1999,28 @@ table.grid tr.rowlink:hover td {
 .thread-row.stale .t {
   color: var(--faint);
 }
+
+/* --- stop controls ------------------------------------------------------ */
+.stop-btn {
+  flex: none;
+  margin-left: 8px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(5 75% 68%);
+  background: hsl(5 60% 18% / 0.5);
+  border: 1px solid hsl(5 60% 34% / 0.8);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.stop-btn:hover {
+  background: hsl(5 65% 24% / 0.7);
+}
+.stop-btn.mini {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 10px;
+}
+.act-head .stop-btn {
+  margin-left: auto;
+}
