@@ -2085,3 +2085,34 @@ table.grid tr.rowlink:hover td {
 .cm-add:hover {
   color: var(--fg);
 }
+
+/* --- inherited context panel -------------------------------------------- */
+.inherited-section {
+  display: flex;
+  flex-direction: column;
+}
+.inh-block {
+  margin-top: 10px;
+}
+.inh-edit {
+  width: 100%;
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  line-height: 1.45;
+  resize: vertical;
+}
+.inh-rule {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+.inh-rule .inh-rule-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  flex: 1;
+}
+.inh-rule .cm-row {
+  margin-bottom: 4px;
+}

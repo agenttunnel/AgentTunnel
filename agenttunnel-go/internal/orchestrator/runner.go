@@ -110,6 +110,9 @@ func NewRunner(d Deps) *Runner {
 // Ledger exposes the environment usage ledger.
 func (r *Runner) Ledger() *usage.Ledger { return r.ledger }
 
+// Inherited exposes the environment's inherited context store.
+func (r *Runner) Inherited() *contextstore.InheritedContext { return r.inherited }
+
 // Notebook exposes the shared notebook.
 func (r *Runner) Notebook() *contextstore.Notebook { return r.notebook }
 

@@ -26,7 +26,7 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string) st
 	}
 	b.WriteString("\n\nDo not spawn more agents. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
-	b.WriteString(" lines.\n")
+	b.WriteString(" lines. Record durable, project-agnostic learnings (conventions, gotchas worth keeping) with: \"$AT_TOOL\" tool learn --text \"...\"\n")
 	return b.String()
 }
 

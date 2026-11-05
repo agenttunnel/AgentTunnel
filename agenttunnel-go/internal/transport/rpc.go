@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
@@ -687,6 +688,90 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.settingsView(), nil
 
+	case "context.inherited.get":
+		inh := d.inherited()
+		if inh == nil {
+			return nil, errors.New("inherited context is unavailable")
+		}
+		guide, err := inh.Guide()
+		if err != nil {
+			return nil, err
+		}
+		logText, err := inh.Log()
+		if err != nil {
+			return nil, err
+		}
+		rules, err := inh.Rules()
+		if err != nil {
+			return nil, err
+		}
+		rendered, _ := inh.Render()
+		return map[string]any{
+			"dir": inh.Dir(), "guide": guide, "log": logText,
+			"rules": rules, "rendered": rendered,
+		}, nil
+
+	case "context.inherited.save":
+		var p struct {
+			Guide *string `json:"guide"`
+			Log   *string `json:"log"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		inh := d.inherited()
+		if inh == nil {
+			return nil, errors.New("inherited context is unavailable")
+		}
+		if p.Guide != nil {
+			if err := inh.SetGuide(*p.Guide); err != nil {
+				return nil, err
+			}
+		}
+		if p.Log != nil {
+			if err := inh.SetLog(*p.Log); err != nil {
+				return nil, err
+			}
+		}
+		d.auditLog("context.save", map[string]any{"guideSet": p.Guide != nil, "logSet": p.Log != nil})
+		return map[string]any{"ok": true}, nil
+
+	case "context.inherited.rule.save":
+		var p struct {
+			Name string `json:"name"`
+			Body string `json:"body"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Name) == "" {
+			return nil, errors.New("rule name is required")
+		}
+		inh := d.inherited()
+		if inh == nil {
+			return nil, errors.New("inherited context is unavailable")
+		}
+		if err := inh.SetRule(p.Name, p.Body); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "context.inherited.rule.delete":
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		inh := d.inherited()
+		if inh == nil {
+			return nil, errors.New("inherited context is unavailable")
+		}
+		if err := inh.DeleteRule(p.Name); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
 	case "project.list":
 		return d.projectList(ctx), nil
 
@@ -787,6 +872,14 @@ func (d *Dispatcher) newThreadID() contracts.ThreadID {
 }
 
 func (d *Dispatcher) nextID() string { return fmt.Sprintf("rpc-%d", d.seq.Add(1)) }
+
+// inherited returns the runner's inherited-context store, if wired.
+func (d *Dispatcher) inherited() *contextstore.InheritedContext {
+	if d.runner == nil {
+		return nil
+	}
+	return d.runner.Inherited()
+}
 
 func decode(raw json.RawMessage, v any) error {
 	if len(raw) == 0 {

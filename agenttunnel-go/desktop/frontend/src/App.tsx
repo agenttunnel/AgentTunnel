@@ -72,6 +72,15 @@ type ThreadSummary = {
 };
 type Project = { id: string; name: string; path: string; threads: number };
 
+/** The environment's cross-project memory: guide, learnings log, rules. */
+type InheritedView = {
+  dir: string;
+  guide: string;
+  log: string;
+  rules: { name: string; body: string }[] | null;
+  rendered: string;
+};
+
 /** One editable seat in the council sheet before it is convened. */
 type CouncilMemberRow = {
   name: string;
@@ -113,12 +122,13 @@ type SettingsView = {
 };
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable. */
-type AsideTabId = "agents" | "usage" | "context" | "files" | "diff";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
   usage: { label: "Token usage", key: "U" },
   context: { label: "Context", key: "C" },
+  inherited: { label: "Inherited", key: "M" },
   files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
 };
@@ -240,6 +250,14 @@ export default function App() {
   // File browser state for the aside Files panel.
   const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
   const [fileTreeLoading, setFileTreeLoading] = useState(false);
+
+  // Inherited context panel state: the environment's shared memory.
+  const [inherited, setInherited] = useState<InheritedView | null>(null);
+  const [inheritedGuide, setInheritedGuide] = useState("");
+  const [inheritedLog, setInheritedLog] = useState("");
+  const [inheritedDirty, setInheritedDirty] = useState(false);
+  const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
+  const [newRuleName, setNewRuleName] = useState("");
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
@@ -529,6 +547,60 @@ export default function App() {
     }
   }, []);
 
+  /** Loads the inherited-context panel: guide, log, and rules. */
+  const loadInherited = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      const view = await rpc.call<InheritedView>("context.inherited.get");
+      setInherited(view);
+      setInheritedGuide(view.guide);
+      setInheritedLog(view.log);
+      setInheritedRules(view.rules ?? []);
+      setInheritedDirty(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  /** Saves the guide and log drafts. */
+  const saveInherited = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      await rpc.call("context.inherited.save", {
+        guide: inheritedGuide,
+        log: inheritedLog,
+      });
+      setInheritedDirty(false);
+      await loadInherited();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const saveInheritedRule = async (name: string, body: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      await rpc.call("context.inherited.rule.save", { name, body });
+      await loadInherited();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const deleteInheritedRule = async (name: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      await rpc.call("context.inherited.rule.delete", { name });
+      await loadInherited();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const addModel = useCallback(async (harness: string, model: string) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -650,6 +722,12 @@ export default function App() {
   useEffect(() => {
     if (asideActive === "files") loadFileTree(activeId);
   }, [asideActive, activeId, loadFileTree]);
+
+  // Inherited context loads when its panel is opened, and stays fresh on
+  // thread changes since agents can record learnings mid-turn.
+  useEffect(() => {
+    if (asideActive === "inherited") loadInherited();
+  }, [asideActive, activeId, loadInherited]);
 
   // Remember the open panels across restarts.
   useEffect(() => {
@@ -1784,6 +1862,92 @@ export default function App() {
                   <div className="ctx-val">{value}</div>
                 </div>
               ))
+            )}
+          </div>
+        ) : asideActive === "inherited" ? (
+          <div className="section inherited-section">
+            <h3>Inherited context</h3>
+            <p className="hint">
+              Cross-project memory injected into every agent prompt. Agents append learnings with{" "}
+              <code>tool learn</code>; everything here is yours to edit.
+            </p>
+            {!inherited ? (
+              <div style={{ color: "var(--faint)", fontSize: 12 }}>Loading…</div>
+            ) : (
+              <>
+                <div className="inh-block">
+                  <span className="field-label">GUIDE.md — standing guidance</span>
+                  <textarea
+                    className="inh-edit"
+                    rows={6}
+                    value={inheritedGuide}
+                    onChange={(e) => {
+                      setInheritedGuide(e.target.value);
+                      setInheritedDirty(true);
+                    }}
+                  />
+                </div>
+                <div className="inh-block">
+                  <span className="field-label">LOG.md — learnings log</span>
+                  <textarea
+                    className="inh-edit"
+                    rows={6}
+                    value={inheritedLog}
+                    onChange={(e) => {
+                      setInheritedLog(e.target.value);
+                      setInheritedDirty(true);
+                    }}
+                  />
+                </div>
+                <button className="primary" disabled={!inheritedDirty} onClick={saveInherited}>
+                  Save guide &amp; log
+                </button>
+                <div className="inh-block" style={{ marginTop: 14 }}>
+                  <span className="field-label">Rules (rules/*.md)</span>
+                  {inheritedRules.map((rule, idx) => (
+                    <div className="inh-rule" key={rule.name}>
+                      <div className="cm-row">
+                        <span className="inh-rule-name">{rule.name}</span>
+                        <button
+                          className="cm-remove"
+                          title="Delete this rule"
+                          onClick={() => deleteInheritedRule(rule.name)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <textarea
+                        className="inh-edit"
+                        rows={4}
+                        defaultValue={rule.body}
+                        onBlur={(e) => {
+                          if (e.target.value !== rule.body) {
+                            saveInheritedRule(rule.name, e.target.value);
+                          }
+                        }}
+                      />
+                    </div>
+                  ))}
+                  <div className="cm-row">
+                    <input
+                      className="cm-name"
+                      placeholder="new rule name"
+                      value={newRuleName}
+                      onChange={(e) => setNewRuleName(e.target.value)}
+                    />
+                    <button
+                      className="cm-add"
+                      disabled={!newRuleName.trim()}
+                      onClick={() => {
+                        if (!newRuleName.trim()) return;
+                        saveInheritedRule(newRuleName.trim(), "").then(() => setNewRuleName(""));
+                      }}
+                    >
+                      + Add rule
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
         ) : asideActive === "files" ? (

@@ -92,3 +92,105 @@ func (c *InheritedContext) Record(learning string) error {
 	_, err = f.WriteString(line)
 	return err
 }
+
+// Rule is one rules/*.md file, by file base name.
+type Rule struct {
+	Name string `json:"name"`
+	Body string `json:"body"`
+}
+
+// Guide returns GUIDE.md.
+func (c *InheritedContext) Guide() (string, error) {
+	data, err := os.ReadFile(filepath.Join(c.dir, "GUIDE.md"))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	return string(data), err
+}
+
+// Log returns LOG.md.
+func (c *InheritedContext) Log() (string, error) {
+	data, err := os.ReadFile(filepath.Join(c.dir, "LOG.md"))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	return string(data), err
+}
+
+// Rules returns the rules/*.md files sorted by name.
+func (c *InheritedContext) Rules() ([]Rule, error) {
+	paths, _ := filepath.Glob(filepath.Join(c.dir, "rules", "*.md"))
+	sort.Strings(paths)
+	out := make([]Rule, 0, len(paths))
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, Rule{Name: strings.TrimSuffix(filepath.Base(p), ".md"), Body: string(data)})
+	}
+	return out, nil
+}
+
+// SetGuide overwrites GUIDE.md.
+func (c *InheritedContext) SetGuide(body string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.Ensure(); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(c.dir, "GUIDE.md"), []byte(body), 0o644)
+}
+
+// SetLog overwrites LOG.md.
+func (c *InheritedContext) SetLog(body string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.Ensure(); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(c.dir, "LOG.md"), []byte(body), 0o644)
+}
+
+// ruleName keeps a rule's file name safe: letters, digits, dashes, underscores.
+func ruleName(name string) (string, error) {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "", os.ErrInvalid
+	}
+	return out, nil
+}
+
+// SetRule writes one rules/<name>.md file.
+func (c *InheritedContext) SetRule(name, body string) error {
+	safe, err := ruleName(name)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.Ensure(); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(c.dir, "rules", safe+".md"), []byte(body), 0o644)
+}
+
+// DeleteRule removes one rules/<name>.md file.
+func (c *InheritedContext) DeleteRule(name string) error {
+	safe, err := ruleName(name)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return os.Remove(filepath.Join(c.dir, "rules", safe+".md"))
+}
