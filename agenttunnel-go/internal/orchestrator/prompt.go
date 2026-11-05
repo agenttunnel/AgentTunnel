@@ -33,7 +33,7 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string) st
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including the
 // agents already dispatched so a later pass does not repeat work, and any
 // steering the user sent mid-run.
-func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string) string {
+func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, runtimeChoices string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	if strings.TrimSpace(inherited) != "" {
@@ -67,7 +67,15 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 	b.WriteString("--model <id> to override the model, and --harness <id> to override the harness. ")
 	b.WriteString("Model and harness overrides apply when auto mode is on for the thread. Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
-	b.WriteString("and progress with `tool progress --text \"<update>\"`. Dispatch the work first, then summarise the outcome.")
+	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+	if strings.TrimSpace(runtimeChoices) != "" {
+		b.WriteString("\n\n## Runtime choices\n")
+		b.WriteString("Auto mode is ON for this thread. ")
+		b.WriteString("You may pick each task's harness and model. Available runtimes:\n")
+		b.WriteString(runtimeChoices)
+		b.WriteString("\nOmit --model/--harness to use the role's default. Only dispatch harnesses from this list.")
+	}
+	b.WriteString("\n\nDispatch the work first, then summarise the outcome.")
 	if pass > 0 {
 		b.WriteString("\n\nThis is pass ")
 		b.WriteString(strconv.Itoa(pass + 1))

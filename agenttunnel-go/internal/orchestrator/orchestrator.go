@@ -162,7 +162,13 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 		// Steering the user sent while this turn was running is weighed here.
 		steering := o.runner.DrainSteering(threadID)
-		prompt := BuildOrchestratorPrompt(role, userMessage, inherited, o.runner.notebook.Render(), o.runner.Roster(state), pass, steering)
+		// Auto mode gets the menu it may pick from; otherwise the prompt stays
+		// as before.
+		runtimeChoices := ""
+		if o.runner.autoModeFor(ctx, threadID) {
+			runtimeChoices = o.runner.runtimeChoices()
+		}
+		prompt := BuildOrchestratorPrompt(role, userMessage, inherited, o.runner.notebook.Render(), o.runner.Roster(state), pass, steering, runtimeChoices)
 
 		text, calls, err := o.runner.runOrchestratorPass(ctx, threadID, orchID, role, prompt, pass)
 		if err != nil {

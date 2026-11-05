@@ -540,6 +540,49 @@ func (r *Runner) harnessAllowed(h contracts.Harness) bool {
 	return r.settings == nil || r.settings.HarnessEnabled(h)
 }
 
+// runtimeChoices renders the harness/model options the orchestrator may pick
+// from in auto mode: enabled harnesses that are actually installed, with the
+// models each reports. Capped per harness so the prompt stays small; the role
+// defaults are always listed.
+func (r *Runner) runtimeChoices() string {
+	if r.registry == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, harness := range r.harnessList() {
+		if r.settings != nil && !r.settings.HarnessEnabled(harness) {
+			continue
+		}
+		models := []string{}
+		if r.models != nil {
+			models = r.models.List(harness)
+		}
+		if len(models) > 8 {
+			models = models[:8]
+			models = append(models, "…")
+		}
+		fmt.Fprintf(&b, "- %s", harness)
+		if len(models) > 0 {
+			b.WriteString(": " + strings.Join(models, ", "))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// harnessList returns the harnesses worth offering: known to the registry.
+func (r *Runner) harnessList() []contracts.Harness {
+	return []contracts.Harness{
+		contracts.HarnessOpenCode,
+		contracts.HarnessClaude,
+		contracts.HarnessCodex,
+		contracts.HarnessCursor,
+		contracts.HarnessGrok,
+		contracts.HarnessPi,
+		contracts.HarnessCommandCode,
+	}
+}
+
 // autoModeFor reports whether the orchestrator picks per-task runtimes for a
 // thread: the environment default, or the thread's own toggle.
 func (r *Runner) autoModeFor(ctx context.Context, threadID contracts.ThreadID) bool {

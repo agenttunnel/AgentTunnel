@@ -2116,3 +2116,31 @@ table.grid tr.rowlink:hover td {
 .inh-rule .cm-row {
   margin-bottom: 4px;
 }
+
+/* --- composer/threads polish --------------------------------------------- */
+.thread-filter {
+  width: 220px;
+  margin-right: auto;
+}
+.mic-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--faint);
+  cursor: pointer;
+}
+.mic-btn.on {
+  color: hsl(5 75% 68%);
+  border-color: hsl(5 60% 34% / 0.9);
+  background: hsl(5 60% 16% / 0.4);
+}
+.mic-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

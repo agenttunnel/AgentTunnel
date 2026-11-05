@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -155,5 +156,26 @@ func TestHarnessOverrideIgnoredWithoutAutoMode(t *testing.T) {
 	v, _ := seen.Load("agent-h1")
 	if v != string(contracts.HarnessOpenCode) {
 		t.Fatalf("auto off should use role default opencode, got %v", v)
+	}
+}
+
+// TestRuntimeChoicesListsEnabledHarnesses pins what the orchestrator's runtime
+// menu looks like in auto mode: enabled harnesses with their discovered models,
+// capped so the prompt stays small.
+func TestRuntimeChoicesListsEnabledHarnesses(t *testing.T) {
+	r, _, _ := newHarness(t, `printf '{"type":"text","text":"x"}\n'`)
+
+	choices := r.runtimeChoices()
+	if !strings.Contains(choices, "- opencode\n") {
+		t.Fatalf("choices missing opencode: %q", choices)
+	}
+	if !strings.Contains(choices, "- claude\n") {
+		t.Fatalf("choices missing claude: %q", choices)
+	}
+
+	r.settings.SetHarnessEnabled(contracts.HarnessClaude, false)
+	choices = r.runtimeChoices()
+	if strings.Contains(choices, "- claude") {
+		t.Fatalf("disabled harness still offered: %q", choices)
 	}
 }

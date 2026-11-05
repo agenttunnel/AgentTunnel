@@ -59,6 +59,7 @@ func TestOrchestratorPromptCarriesContext(t *testing.T) {
 		"- explore (planner): x [succeeded]\n",
 		0,
 		nil,
+		"",
 	)
 	for _, want := range []string{"GUIDE-MARKER", "Shared context", "Agents already dispatched", "do the thing", "$AT_TOOL"} {
 		if !strings.Contains(prompt, want) {
@@ -69,7 +70,7 @@ func TestOrchestratorPromptCarriesContext(t *testing.T) {
 
 func TestOrchestratorPromptWarnsOnLaterPasses(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
-	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "- explore (planner): x [succeeded]\n", 1, nil)
+	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "- explore (planner): x [succeeded]\n", 1, nil, "")
 	if !strings.Contains(prompt, "pass 2") || !strings.Contains(prompt, "do not dispatch the same work again") {
 		t.Fatalf("later pass should warn against re-dispatching:\n%s", prompt)
 	}
@@ -77,7 +78,7 @@ func TestOrchestratorPromptWarnsOnLaterPasses(t *testing.T) {
 
 func TestOrchestratorPromptCarriesSteering(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
-	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "", 1, []string{"stop and fix the tests first"})
+	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "", 1, []string{"stop and fix the tests first"}, "")
 	if !strings.Contains(prompt, "## Steering") || !strings.Contains(prompt, "stop and fix the tests first") {
 		t.Fatalf("steering missing from the prompt:\n%s", prompt)
 	}

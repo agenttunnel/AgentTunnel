@@ -177,6 +177,118 @@ function fmtUpdated(at?: string): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** Minimal typings for the Web Speech API (nonstandard, prefixed in WebKit). */
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start(): void;
+  stop(): void;
+  onresult:
+    | ((e: {
+        resultIndex: number;
+        results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
+      }) => void)
+    | null;
+  onerror: ((e: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
+function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
+  const w = window as unknown as Record<string, unknown>;
+  return (w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null) as
+    | (new () => SpeechRecognitionLike)
+    | null;
+}
+
+/**
+ * MicButton dictates into a text callback using the Web Speech API when the
+ * webview provides it. When it does not (Wails' WebKit on macOS, for one), the
+ * button degrades to a pointer at the OS dictation shortcut instead of a lying
+ * control.
+ */
+function MicButton({
+  onText,
+  disabled,
+  onUnavailable,
+}: {
+  onText: (text: string) => void;
+  disabled?: boolean;
+  onUnavailable?: (msg: string) => void;
+}) {
+  const [listening, setListening] = useState(false);
+  const recRef = useRef<SpeechRecognitionLike | null>(null);
+
+  const stop = () => {
+    recRef.current?.stop();
+    recRef.current = null;
+    setListening(false);
+  };
+
+  const toggle = () => {
+    if (listening) {
+      stop();
+      return;
+    }
+    const Ctor = getSpeechRecognition();
+    if (!Ctor) {
+      onUnavailable?.(
+        "Dictation is not available in this webview. Use your OS dictation instead (macOS: Edit ▸ Start Dictation, or press Fn Fn).",
+      );
+      return;
+    }
+    const rec = new Ctor();
+    rec.lang = navigator.language || "en-US";
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) onText(res[0].transcript);
+      }
+    };
+    rec.onerror = () => stop();
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+    };
+    recRef.current = rec;
+    rec.start();
+    setListening(true);
+  };
+
+  useEffect(() => () => recRef.current?.stop(), []);
+
+  return (
+    <button
+      className={`mic-btn${listening ? " on" : ""}`}
+      onClick={toggle}
+      disabled={disabled}
+      title={
+        listening
+          ? "Stop dictation"
+          : "Dictate your message (falls back to OS dictation when unavailable)"
+      }
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="14"
+        height="14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+      </svg>
+      {listening ? "Stop" : "Dictate"}
+    </button>
+  );
+}
+
 /** fmtIdleDuration renders an age as "45s" / "12m" / "3h 05m" / "4d". */
 function fmtIdleDuration(ms: number): string {
   const mins = Math.floor(ms / 60_000);
@@ -333,6 +445,17 @@ export default function App() {
 
   const rpcRef = useRef<Rpc | null>(null);
   const debounce = useRef<number | undefined>(undefined);
+  // Chat stream auto-scroll: pinned to bottom while the user is already there.
+  const streamRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    // Follow the stream only when the user is near the bottom; reading history
+    // wins over jumping.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [thread?.messages?.length, thread?.messages?.[thread.messages.length - 1]?.text, live.length]);
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -837,9 +960,15 @@ export default function App() {
   const comments = thread?.reviewComments ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
+  const [threadFilter, setThreadFilter] = useState("");
+  const needle = threadFilter.trim().toLowerCase();
   const projectThreads = useMemo(
-    () => threads.filter((t) => t.projectId === projectId),
-    [threads, projectId],
+    () =>
+      threads.filter(
+        (t) =>
+          t.projectId === projectId && (needle === "" || t.title.toLowerCase().includes(needle)),
+      ),
+    [threads, projectId, needle],
   );
   const enabledHarnesses = harnesses.enabled ?? harnesses.all;
   const isHarnessEnabled = (h: string) => enabledHarnesses.includes(h);
@@ -1245,13 +1374,23 @@ export default function App() {
               ← Projects
             </button>
             <h2>{selectedProject?.name ?? "Threads"}</h2>
+            <input
+              className="thread-filter"
+              placeholder="Filter threads…"
+              value={threadFilter}
+              onChange={(e) => setThreadFilter(e.target.value)}
+            />
             <button className="primary" onClick={newThread}>
               New thread
             </button>
           </div>
           {selectedProject?.path && <div className="screen-sub">{selectedProject.path}</div>}
           {projectThreads.length === 0 && (
-            <div className="empty">No threads yet. Start one for this project.</div>
+            <div className="empty">
+              {needle
+                ? "No threads match that filter."
+                : "No threads yet. Start one for this project."}
+            </div>
           )}
           <div className="thread-cards" ref={threadsGrid.ref} style={threadsGrid.gridStyle}>
             {projectThreads.map((t) => (
@@ -1361,7 +1500,7 @@ export default function App() {
 
         {tab === "chat" ? (
           <>
-            <div className="stream">
+            <div className="stream" ref={streamRef}>
               {(!thread || (thread.messages?.length ?? 0) === 0) && (
                 <div className="empty">
                   Describe the task. The orchestrator will plan it and dispatch your team.
@@ -1441,6 +1580,11 @@ export default function App() {
                       send();
                     }
                   }}
+                />
+                <MicButton
+                  onText={(t) => setInput(t)}
+                  disabled={!activeId}
+                  onUnavailable={(msg) => setError(msg)}
                 />
                 <button className="primary" onClick={send} disabled={busy || !activeId}>
                   {running.length > 0 ? "Steer" : "Send"}
