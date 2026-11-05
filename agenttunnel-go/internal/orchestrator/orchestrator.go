@@ -50,11 +50,25 @@ func safeName(name string) string {
 // folding notes into the shared notebook.
 func (o *Orchestrator) toolTasks(threadID contracts.ThreadID, orchID contracts.AgentID) []contracts.DispatchTask {
 	var tasks []contracts.DispatchTask
+	seen := map[string]bool{}
 	for i, call := range o.runner.DrainTools(threadID) {
+		// A command can arrive twice when an agent executes it and also prints
+		// the command text. The parser posts the printed form; ignore the echo.
+		key := toolCallKey(call)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		switch call.Kind {
 		case toolbox.KindNote, toolbox.KindProgress, toolbox.KindDone:
 			if strings.TrimSpace(call.Text) != "" {
 				o.runner.notebook.Append("notes", call.Text, string(call.AgentID))
+			}
+
+		case toolbox.KindLearn:
+			if text := strings.TrimSpace(call.Text); text != "" && o.runner.inherited != nil {
+				_ = o.runner.inherited.Record(text)
+				o.runner.auditLog("context.learn", map[string]any{"agentId": string(call.AgentID), "text": text})
 			}
 
 		case toolbox.KindDispatch:
@@ -89,6 +103,16 @@ func (o *Orchestrator) toolTasks(threadID contracts.ThreadID, orchID contracts.A
 	return tasks
 }
 
+// toolCallKey identifies a call for deduplication within one pass. Agent id is
+// intentionally excluded: a printed echo and the real call may carry different
+// attribution but represent the same work.
+func toolCallKey(call toolbox.Call) string {
+	return strings.Join([]string{
+		string(call.Kind), call.Name, call.Task, call.Text, call.Harness,
+		call.Model, call.Lane, strings.Join(call.DependsOn, ","),
+	}, "\x00")
+}
+
 // RunTurn executes one user turn end to end.
 func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) error {
 	role, ok := o.runner.roles.Get(contracts.RoleOrchestrator)
@@ -109,6 +133,7 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	o.runner.setStatus(ctx, threadID, orchID, contracts.AgentRunning, "")
 
 	var finalText string
+	var dispatched []contracts.DispatchTask
 	for pass := 0; pass < o.runner.maxPasses(); pass++ {
 		inherited, _ := o.runner.inherited.Render()
 		state, err := o.runner.engine.State(ctx, threadID)
@@ -144,11 +169,28 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		if len(tasks) == 0 {
 			continue
 		}
+		dispatched = append(dispatched, tasks...)
 		if err := o.runner.Dispatch(ctx, threadID, tasks); err != nil {
 			return err
 		}
 		if err := o.runner.Run(ctx, threadID, tasks); err != nil {
 			return err
+		}
+	}
+
+	// A harness that only printed its dispatch commands leaves no prose. Give the
+	// user a concrete receipt instead of an empty final message.
+	if strings.TrimSpace(finalText) == "" && len(dispatched) > 0 {
+		names := make([]string, 0, len(dispatched))
+		for _, t := range dispatched {
+			if t.Name != "" {
+				names = append(names, t.Name)
+			}
+		}
+		if len(names) == 0 {
+			finalText = fmt.Sprintf("Dispatched %d task(s).", len(dispatched))
+		} else {
+			finalText = fmt.Sprintf("Dispatched %d task(s): %s.", len(dispatched), strings.Join(names, ", "))
 		}
 	}
 

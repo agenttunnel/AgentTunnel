@@ -25,6 +25,9 @@ const (
 	KindNote     Kind = "note"
 	KindProgress Kind = "progress"
 	KindDone     Kind = "done"
+	// KindLearn appends a durable learning to the environment's inherited
+	// context, so later threads start with what this one discovered.
+	KindLearn Kind = "learn"
 )
 
 // Call is one recorded tool invocation.

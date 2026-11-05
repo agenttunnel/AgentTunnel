@@ -325,7 +325,31 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		"agentId": string(agentID), "role": "orchestrator", "pass": pass,
 		"status": statusWord(werr), "error": errString(werr),
 	})
-	return strings.Join(text, "\n"), calls, werr
+
+	// Some harnesses print the `$AT_TOOL tool …` command instead of executing it
+	// with their shell tool. Treat those lines as real calls so dispatch still
+	// works, and keep them out of the user-facing summary. The inbox dedupes a
+	// call that was both executed and printed.
+	// Text deltas are arbitrary chunks, so a command can straddle two events.
+	// Join without adding separators; real newlines are already in the deltas.
+	raw := strings.Join(text, "")
+	var kept []string
+	for _, line := range strings.Split(raw, "\n") {
+		if call, ok := toolbox.ParseCommandLine(line); ok {
+			call.AgentID = agentID
+			if r.tools != nil {
+				r.tools.Post(threadID, call)
+			}
+			_ = r.logs.Append(contracts.LogEntry{
+				AgentID: agentID, Kind: contracts.LogTool,
+				Text: "tool " + string(call.Kind), At: r.clock(),
+			})
+			r.publishOutput(threadID, agentID, contracts.LogTool, "tool "+string(call.Kind))
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), calls, werr
 }
 
 // auditLog records one action for post-hoc debugging.

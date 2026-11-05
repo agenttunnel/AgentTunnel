@@ -59,18 +59,49 @@ func (JSONLineTranslator) Translate(line string) []Event {
 		scope = part
 	}
 
+	frameType := strings.ToLower(firstString(raw, "type", "role", "kind"))
+
+	// Pi streams assistant output as deltas inside message_update and reports
+	// token accounting once on the assistant's message_end. Handle those shapes
+	// before the generic usage probe: every delta carries cumulative usage, so
+	// treating it as a usage frame would both hide the text and overcount spend.
+	if frameType == "message_update" {
+		delta, _ := raw["assistantMessageEvent"].(map[string]any)
+		switch strings.ToLower(firstString(delta, "type")) {
+		case "text_delta":
+			return singleText(contracts.LogText, firstString(delta, "delta"))
+		case "thinking_delta":
+			return singleText(contracts.LogReasoning, firstString(delta, "delta"))
+		}
+		return nil
+	}
+	if frameType == "message_end" {
+		if msg, ok := raw["message"].(map[string]any); ok && firstString(msg, "role") == "assistant" {
+			if usage := usageFromValue(msg["usage"]); usage != nil {
+				return []Event{{Kind: contracts.LogUsage, Usage: usage}}
+			}
+		}
+		return nil
+	}
+	if frameType == "tool_execution_start" {
+		return executionStart(raw)
+	}
+	if frameType == "tool_execution_end" {
+		return executionEnd(raw)
+	}
+
 	if usage := usageFromFrame(raw, scope); usage != nil {
 		return []Event{{Kind: contracts.LogUsage, Usage: usage}}
 	}
 
-	frameType := strings.ToLower(firstString(raw, "type", "role", "kind"))
 	switch frameType {
 	case "tool", "tool_use", "tool_call":
 		return toolEvents(scope)
 	case "error":
 		return singleText(contracts.LogError, firstString(scope, "text", "message", "error"))
-	case "step_start", "step-start", "step_finish", "step-finish",
-		"message_start", "message_started", "message_update":
+	case "stream_event", "message_start", "message_started", "turn_start", "turn_end",
+		"agent_start", "agent_end", "session", "step_start", "step-start",
+		"step_finish", "step-finish":
 		return nil // structural frames with no user-visible text
 	}
 
@@ -118,6 +149,62 @@ func toolEvents(scope map[string]any) []Event {
 		out = append(out, Event{Kind: contracts.LogRaw, Text: truncate(strings.TrimRight(output, "\n"), 4000)})
 	}
 	return out
+}
+
+// executionStart summarizes a Pi tool call. Pi reports the call before it runs,
+// with the tool name and its arguments at the top level.
+func executionStart(raw map[string]any) []Event {
+	name := firstString(raw, "toolName", "tool")
+	args, _ := raw["args"].(map[string]any)
+	summary := ""
+	switch {
+	case firstString(args, "command", "cmd") != "":
+		summary = "$ " + firstString(args, "command", "cmd")
+	case firstString(args, "filePath", "path", "file", "pattern", "query", "url") != "":
+		summary = "→ " + titleFirst(name) + " " + firstString(args, "filePath", "path", "file", "pattern", "query", "url")
+	case name != "":
+		summary = "→ " + titleFirst(name)
+	}
+	if summary == "" {
+		return nil
+	}
+	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name}}
+}
+
+// executionEnd emits the tool's result. Pi puts the readable output under
+// result.structuredContent.output, with a content-block fallback.
+func executionEnd(raw map[string]any) []Event {
+	result, _ := raw["result"].(map[string]any)
+	output := ""
+	if structured, ok := result["structuredContent"].(map[string]any); ok {
+		output = firstString(structured, "output", "result")
+	}
+	if output == "" {
+		output = contentText(result["content"])
+	}
+	if strings.TrimSpace(output) == "" {
+		return nil
+	}
+	return []Event{{Kind: contracts.LogRaw, Text: truncate(strings.TrimRight(output, "\n"), 4000)}}
+}
+
+// contentText joins the text blocks of a Pi/Anthropic-style content array.
+func contentText(v any) string {
+	blocks, ok := v.([]any)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	for _, block := range blocks {
+		m, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text := firstString(m, "text"); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func singleText(kind contracts.LogKind, text string) []Event {
@@ -173,16 +260,32 @@ func usageFromFrame(raw, scope map[string]any) *contracts.TokenUsage {
 }
 
 func usageFromMap(m map[string]any) *contracts.TokenUsage {
-	u, ok := m["usage"].(map[string]any)
+	return usageFromValue(m["usage"])
+}
+
+// usageFromValue parses the common usage object shapes. Pi reports short keys
+// (input/output/cacheRead/cacheWrite/reasoning) and a nested cost object; other
+// harnesses use *_tokens keys with a flat cost.
+func usageFromValue(v any) *contracts.TokenUsage {
+	u, ok := v.(map[string]any)
 	if !ok {
 		return nil
 	}
 	usage := contracts.TokenUsage{
-		InputTokens:  intField(u, "input_tokens", "inputTokens", "prompt_tokens"),
-		OutputTokens: intField(u, "output_tokens", "outputTokens", "completion_tokens"),
-		CachedTokens: intField(u, "cached_tokens", "cachedTokens", "cache_read_input_tokens"),
-		CostUSD:      floatField(u, "cost_usd", "costUsd", "total_cost_usd"),
-		ToolUses:     intField(u, "tool_uses", "toolUses"),
+		InputTokens:     intField(u, "input", "input_tokens", "inputTokens", "prompt_tokens"),
+		OutputTokens:    intField(u, "output", "output_tokens", "outputTokens", "completion_tokens"),
+		ReasoningTokens: intField(u, "reasoning", "reasoning_tokens"),
+		CachedTokens:    intField(u, "cached", "cached_tokens", "cachedTokens", "cache_read_input_tokens"),
+		ToolUses:        intField(u, "tool_uses", "toolUses"),
+	}
+	if cache, ok := u["cache"].(map[string]any); ok {
+		usage.CachedTokens += intField(cache, "read") + intField(cache, "write")
+	}
+	usage.CachedTokens += intField(u, "cacheRead", "cache_read") + intField(u, "cacheWrite", "cache_write")
+	if cost, ok := u["cost"].(map[string]any); ok {
+		usage.CostUSD = floatField(cost, "total", "cost", "usd")
+	} else {
+		usage.CostUSD = floatField(u, "cost_usd", "costUsd", "total_cost_usd")
 	}
 	if usage == (contracts.TokenUsage{}) {
 		return nil
