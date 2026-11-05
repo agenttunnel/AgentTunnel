@@ -63,6 +63,16 @@ yay -S t3code-nightly-bin
 
 The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
 
+### Go rewrite (preview)
+
+The Go implementation lives in [`agenttunnel-go`](./agenttunnel-go). Release builds of the daemon (`atd`) and Wails desktop client (`agenttunnel`) are attached to every GitHub release:
+
+```bash
+curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
+```
+
+The installer puts both binaries in `~/.local/bin`. See [`agenttunnel-go/README.md`](./agenttunnel-go/README.md) for runtime requirements and version pinning.
+
 ## Some notes
 
 We are very very early in this project. Expect bugs.
