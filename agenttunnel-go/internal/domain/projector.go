@@ -53,6 +53,7 @@ func Project(s *ThreadState, e contracts.Event) error {
 			Task:          p.Task,
 			Model:         p.Model,
 			PipelineID:    p.PipelineID,
+			DependsOn:     p.DependsOn,
 			Status:        contracts.AgentPending,
 			StartedAt:     e.At,
 		}

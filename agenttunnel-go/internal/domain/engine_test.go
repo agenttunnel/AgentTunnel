@@ -2,6 +2,9 @@ package domain
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -144,6 +147,71 @@ func TestEngineAutoModeToggle(t *testing.T) {
 	state, _ := e.State(ctx, "t1")
 	if !state.AutoMode {
 		t.Fatal("auto mode should be on")
+	}
+}
+
+func TestEngineDispatchPersistsDependsOn(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+
+	mustDispatch(t, e, ctx, contracts.Command{
+		ID:       "d1",
+		Type:     contracts.CmdTaskDispatch,
+		ThreadID: "t1",
+		Dispatch: &contracts.DispatchTask{
+			AgentID:   "a1",
+			Role:      contracts.RoleExecutor,
+			Task:      "work",
+			DependsOn: []string{"plan", "review"},
+		},
+	})
+
+	state, err := e.State(ctx, "t1")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	agent, ok := state.Agents["a1"]
+	if !ok {
+		t.Fatal("agent a1 missing from read model")
+	}
+	if !reflect.DeepEqual(agent.DependsOn, []string{"plan", "review"}) {
+		t.Fatalf("dependsOn = %v, want [plan review]", agent.DependsOn)
+	}
+}
+
+func TestEngineReplaysLegacyDispatchWithoutDependsOn(t *testing.T) {
+	// An event log written before dependsOn existed: the payload has no
+	// dependsOn key, which must decode as nil and still project.
+	dir := t.TempDir()
+	log := `{"seq":1,"threadId":"t1","type":"thread.created","at":"2024-01-01T00:00:00Z","payload":{"title":"legacy"}}
+{"seq":2,"threadId":"t1","type":"agent.task-dispatched","at":"2024-01-01T00:00:01Z","payload":{"agentId":"a1","role":"executor","task":"old work","model":""}}
+`
+	if err := os.WriteFile(filepath.Join(dir, "t1.jsonl"), []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ctx := context.Background()
+	e := NewEngine(store, nil)
+	e.Start(ctx)
+	t.Cleanup(e.Close)
+
+	state, err := e.State(ctx, "t1")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	agent, ok := state.Agents["a1"]
+	if !ok {
+		t.Fatal("legacy dispatch did not project")
+	}
+	if agent.DependsOn != nil {
+		t.Fatalf("dependsOn = %v, want nil for legacy event", agent.DependsOn)
+	}
+	if agent.Task != "old work" {
+		t.Fatalf("task = %q", agent.Task)
 	}
 }
 

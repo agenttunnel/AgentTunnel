@@ -117,6 +117,7 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			Harness:       d.Harness,
 			Model:         d.Model,
 			PipelineID:    d.Pipeline,
+			DependsOn:     d.DependsOn,
 		}}, nil
 
 	case contracts.CmdAgentStatusSet:

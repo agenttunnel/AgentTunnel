@@ -176,6 +176,7 @@ type TaskDispatched struct {
 	Harness       Harness    `json:"harness,omitempty"`
 	Model         string     `json:"model"`
 	PipelineID    PipelineID `json:"pipelineId,omitempty"`
+	DependsOn     []string   `json:"dependsOn,omitempty"`
 }
 
 func (TaskDispatched) eventType() EventType { return EvtTaskDispatched }
