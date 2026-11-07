@@ -162,7 +162,8 @@ type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
 
-// PeerMailboxSet toggles peer-to-peer agent messaging for a thread. Off by default.
+// PeerMailboxSet toggles peer-to-peer agent messaging for a thread. On by
+// default: thread creation records it enabled.
 type PeerMailboxSet struct{ Enabled bool }
 
 func (PeerMailboxSet) eventType() EventType { return EvtPeerMailboxSet }

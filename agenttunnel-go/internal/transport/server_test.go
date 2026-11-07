@@ -55,7 +55,14 @@ func TestHandleToolCallMessage(t *testing.T) {
 		t.Fatalf("dispatch hub: %v", err)
 	}
 
-	// The peer mailbox is off: rejected with 400, nothing recorded.
+	// The thread's peer-mailbox toggle is off (new threads start on; opting
+	// out is what the desktop "Peer chat" toggle does): rejected with 400,
+	// nothing recorded. The runtime box also stays off in this fixture, so the
+	// durable gate is the one being exercised.
+	off := false
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c0b", Type: contracts.CmdPeerMailboxSet, ThreadID: "t1", PeerMailbox: &off}); err != nil {
+		t.Fatalf("disable peer mailbox: %v", err)
+	}
 	rec := postToolCall(t, srv, `{"threadId":"t1","agentId":"agent-orchestrator","kind":"message","to":"hub","text":"hi"}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "peer mailbox is disabled for this thread") {
 		t.Fatalf("gate off: status=%d body=%q", rec.Code, rec.Body.String())
@@ -104,5 +111,45 @@ func TestHandleToolCallMessageRequiresToAndText(t *testing.T) {
 		if rec := postToolCall(t, srv, body); rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status=%d body=%q", body, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestHandleToolCallMessageDefersToPendingDispatch(t *testing.T) {
+	ctx := context.Background()
+	eng, runner, srv := newMessageFixture(t)
+
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c0", Type: contracts.CmdThreadCreate, ThreadID: "t1"}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	runner.Mailbox().SetEnabled(true)
+
+	// The lead dispatched an agent earlier in its pass: the call sits in the
+	// tool inbox, not yet recorded in the thread state the resolver reads.
+	srv.box.Post("t1", toolbox.Call{
+		Kind: toolbox.KindDispatch, AgentID: "agent-orchestrator",
+		Name: "worker", Role: contracts.RoleExecutor, Task: "work",
+	})
+
+	// A message to that not-yet-dispatched agent is accepted and queued beside
+	// its dispatch; the orchestrator delivers both once the pass ends.
+	rec := postToolCall(t, srv, `{"threadId":"t1","agentId":"agent-orchestrator","kind":"message","to":"worker","text":"bring the config"}`)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
+		t.Fatalf("deferred post: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	calls := srv.box.Drain("t1")
+	var deferred *toolbox.Call
+	for i, c := range calls {
+		if c.Kind == toolbox.KindMessage {
+			deferred = &calls[i]
+		}
+	}
+	if deferred == nil || deferred.To != "worker" || deferred.Text != "bring the config" || deferred.AgentID != "agent-orchestrator" {
+		t.Fatalf("deferred message missing from the inbox: %+v", calls)
+	}
+
+	// With the dispatch gone, the same name is a genuine unknown recipient.
+	rec = postToolCall(t, srv, `{"threadId":"t1","agentId":"agent-orchestrator","kind":"message","to":"worker","text":"anyone?"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown agent worker") {
+		t.Fatalf("after drain: status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }

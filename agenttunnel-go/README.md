@@ -122,7 +122,7 @@ events. Adding a provider means implementing one interface.
 | Logs for every agent/subagent                                 | `logstore/`, exposed as `agents.logs`                                      |
 | Shared context between agents                                 | `contextstore/notebook.go`                                                 |
 | Global inherited context                                      | `contextstore/inherited.go` (`.orchestrator-context/`)                     |
-| Peer agent-to-agent messaging                                 | `contextstore/mailbox.go` — **off by default**, toggled per thread         |
+| Peer agent-to-agent messaging                                 | `contextstore/mailbox.go` — **on by default**, toggled per thread          |
 | Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; comments flow into the next prompt |
 | GitHub/GitLab awareness                                       | **not yet** — next up                                                      |
 

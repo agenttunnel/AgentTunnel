@@ -298,7 +298,8 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
 
 	inherited, _ := r.inherited.Render()
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render(), r.peerMailboxFor(ctx, threadID))
+	peerMailbox := r.peerMailboxFor(ctx, threadID)
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render(), peerMailbox, r.teammateMessages(t.AgentID, peerMailbox))
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -613,6 +614,17 @@ func (r *Runner) peerMailboxFor(ctx context.Context, threadID contracts.ThreadID
 		return false
 	}
 	return st.PeerMailbox
+}
+
+// teammateMessages drains the agent's runtime inbox at the moment its prompt is
+// built. An agent waiting behind a dependency receives the peer traffic that
+// arrived while it waited directly in its first prompt; draining keeps the
+// lead's next-pass relay from repeating what was already delivered here.
+func (r *Runner) teammateMessages(id contracts.AgentID, peerMailbox bool) []contracts.MailboxPosted {
+	if !peerMailbox || r.mailbox == nil {
+		return nil
+	}
+	return r.mailbox.Drain(id)
 }
 
 // resolveModel applies auto mode: the orchestrator's requested model wins only if

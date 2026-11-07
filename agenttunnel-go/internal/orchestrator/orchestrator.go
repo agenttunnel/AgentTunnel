@@ -75,7 +75,10 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 		case toolbox.KindMessage:
 			// A rejection (peer mailbox off, unknown recipient) is already
 			// audited inside PostMessage; there is no task to make of it.
-			_ = o.runner.PostMessage(ctx, threadID, call.AgentID, call.To, call.Text)
+			// The dispatches minted earlier in this same drain act as extra
+			// resolution candidates, so a lead can dispatch an agent and then
+			// message it while it still waits on dependencies.
+			_ = o.runner.postMessage(ctx, threadID, call.AgentID, call.To, call.Text, tasks)
 
 		case toolbox.KindDispatch:
 			if strings.TrimSpace(call.Task) == "" {
@@ -123,6 +126,12 @@ func toolCallKey(call toolbox.Call) string {
 // messages to the lead arrive as their own, messages to subagents become relay
 // lines so the lead can pass them on. Draining keeps a prompt from repeating
 // messages a previous pass already saw.
+//
+// An agent that has not started yet does not come through here: its inbox is
+// drained straight into its prompt when it starts (runTask), so waiting agents
+// hear from peers directly. A message to an agent that is *running* has no
+// channel into a one-shot harness process — it waits here for the next pass and
+// is relayed by the lead, by design.
 func (o *Orchestrator) drainPeerMessages(state *domain.ThreadState) string {
 	if o.runner.Mailbox() == nil {
 		return ""
@@ -202,7 +211,7 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		if o.runner.autoModeFor(ctx, threadID) {
 			runtimeChoices = o.runner.runtimeChoices()
 		}
-		prompt := BuildOrchestratorPrompt(role, userMessage, inherited, o.runner.notebook.Render(), o.runner.Roster(state), pass, steering, peerMessages, runtimeChoices)
+		prompt := BuildOrchestratorPrompt(role, userMessage, inherited, o.runner.notebook.Render(), o.runner.Roster(state), pass, steering, peerMessages, o.runner.peerMailboxFor(ctx, threadID), runtimeChoices)
 
 		text, calls, err := o.runner.runOrchestratorPass(ctx, threadID, orchID, role, prompt, pass)
 		if err != nil {

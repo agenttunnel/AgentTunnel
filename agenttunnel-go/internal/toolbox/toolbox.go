@@ -77,3 +77,20 @@ func (b *Box) Drain(threadID contracts.ThreadID) []Call {
 	delete(b.pending, threadID)
 	return calls
 }
+
+// HasDispatchNamed reports whether the thread holds a pending dispatch call
+// under a roster name, so a peer message addressed to an agent that has not been
+// dispatched yet can be deferred beside it instead of rejected.
+func (b *Box) HasDispatchNamed(threadID contracts.ThreadID, name string) bool {
+	if threadID == "" || name == "" {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, c := range b.pending[threadID] {
+		if c.Kind == KindDispatch && c.Name == name {
+			return true
+		}
+	}
+	return false
+}

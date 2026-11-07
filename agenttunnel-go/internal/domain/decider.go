@@ -27,7 +27,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if title == "" {
 			title = contracts.DefaultThreadTitle
 		}
-		return []contracts.EventPayload{contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID}}, nil
+		// Peer messaging ships on for new threads: agent coordination and the
+		// graph view both rely on the traffic it records. Existing threads stay
+		// as they were, and `thread.setPeerMailbox` remains the override.
+		return []contracts.EventPayload{
+			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID},
+			contracts.PeerMailboxSet{Enabled: true},
+		}, nil
 
 	case contracts.CmdThreadRename:
 		if !s.Exists {

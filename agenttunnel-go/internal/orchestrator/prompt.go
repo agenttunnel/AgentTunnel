@@ -11,8 +11,9 @@ import (
 // BuildSubagentPrompt assembles a subagent's prompt from its role prompt, its
 // task, the inherited context, and the shared notebook, so every subagent starts
 // informed by what the others have done. The peer message tool is documented only
-// when the thread has the peer mailbox enabled.
-func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, peerMailbox bool) string {
+// when the thread has the peer mailbox enabled, and messages teammates sent while
+// this agent was waiting are carried in their own section.
+func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, peerMailbox bool, teammates []contracts.MailboxPosted) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	b.WriteString("\n\n## Task\n")
@@ -24,6 +25,13 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 	if strings.TrimSpace(shared) != "" {
 		b.WriteString("\n\n")
 		b.WriteString(shared)
+	}
+	if len(teammates) > 0 {
+		b.WriteString("\n\n## Messages from teammates\n")
+		b.WriteString("These arrived while you were waiting. Weigh them alongside your task:\n\n")
+		for _, m := range teammates {
+			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
+		}
 	}
 	b.WriteString("\n\nDo not spawn more agents. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
@@ -38,7 +46,9 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including the
 // agents already dispatched so a later pass does not repeat work, any steering
 // the user sent mid-run, and any peer messages that arrived since the last pass.
-func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, peerMessages, runtimeChoices string) string {
+// The peer message tool is documented only when the thread has the peer mailbox
+// enabled.
+func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, peerMessages string, peerMailbox bool, runtimeChoices string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	if strings.TrimSpace(inherited) != "" {
@@ -78,6 +88,11 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 	b.WriteString("Model and harness overrides apply when auto mode is on for the thread. Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+	if peerMailbox {
+		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
+		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
+	}
 	if strings.TrimSpace(runtimeChoices) != "" {
 		b.WriteString("\n\n## Runtime choices\n")
 		b.WriteString("Auto mode is ON for this thread. ")

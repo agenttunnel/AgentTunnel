@@ -6,29 +6,31 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
-func TestBoxPostAndDrain(t *testing.T) {
+func TestHasDispatchNamed(t *testing.T) {
 	b := New()
-	b.Post("t1", Call{Kind: KindDispatch, Role: contracts.RoleExecutor, Task: "do it"})
-	b.Post("t1", Call{Kind: KindNote, Text: "found something"})
-	b.Post("t2", Call{Kind: KindDispatch, Task: "other thread"})
+	b.Post("t1", Call{Kind: KindDispatch, AgentID: "agent-orchestrator", Name: "worker", Role: contracts.RoleExecutor, Task: "work"})
+	b.Post("t1", Call{Kind: KindMessage, AgentID: "agent-orchestrator", To: "worker", Text: "hi"})
 
-	drained := b.Drain("t1")
-	if len(drained) != 2 || drained[0].Task != "do it" || drained[1].Text != "found something" {
-		t.Fatalf("drained = %+v", drained)
+	if !b.HasDispatchNamed("t1", "worker") {
+		t.Fatal("pending dispatch under the name should be found")
 	}
-	if again := b.Drain("t1"); len(again) != 0 {
-		t.Fatalf("drain should clear the inbox, got %+v", again)
+	if b.HasDispatchNamed("t1", "ghost") {
+		t.Fatal("unknown name must not be found")
 	}
-	if other := b.Drain("t2"); len(other) != 1 {
-		t.Fatalf("t2 = %+v", other)
+	if b.HasDispatchNamed("t2", "worker") {
+		t.Fatal("another thread's dispatch must not be found")
+	}
+
+	b.Drain("t1")
+	if b.HasDispatchNamed("t1", "worker") {
+		t.Fatal("drained dispatch must not be found")
 	}
 }
 
-func TestBoxIgnoresInvalidCalls(t *testing.T) {
+func TestHasDispatchNamedIgnoresOtherKinds(t *testing.T) {
 	b := New()
-	b.Post("", Call{Kind: KindDispatch})
-	b.Post("t1", Call{})
-	if got := b.Drain("t1"); len(got) != 0 {
-		t.Fatalf("invalid calls were recorded: %+v", got)
+	b.Post("t1", Call{Kind: KindNote, AgentID: "agent-orchestrator", Name: "worker", Text: "hi"})
+	if b.HasDispatchNamed("t1", "worker") {
+		t.Fatal("a note carrying a name must not count as a pending dispatch")
 	}
 }

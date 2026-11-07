@@ -47,8 +47,8 @@ func TestEngineCreateTurnAndProject(t *testing.T) {
 	if len(state.Messages) != 1 || state.Messages[0].Text != "hello world" {
 		t.Fatalf("messages = %+v", state.Messages)
 	}
-	if state.Version != 2 {
-		t.Fatalf("version = %d, want 2", state.Version)
+	if state.Version != 3 {
+		t.Fatalf("version = %d, want 3", state.Version)
 	}
 }
 
@@ -122,17 +122,23 @@ func TestEngineUsageRollupSplitsOrchestratorAndSubagents(t *testing.T) {
 	}
 }
 
-func TestEnginePeerMailboxDefaultsOffAndToggles(t *testing.T) {
+func TestEnginePeerMailboxOnByDefaultAndToggles(t *testing.T) {
 	e, ctx := newTestEngine(t)
 	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
 
 	state, _ := e.State(ctx, "t1")
-	if state.PeerMailbox {
-		t.Fatal("peer mailbox must default to off")
+	if !state.PeerMailbox {
+		t.Fatal("peer mailbox must default to on")
 	}
 
+	off := false
+	mustDispatch(t, e, ctx, contracts.Command{ID: "p1", Type: contracts.CmdPeerMailboxSet, ThreadID: "t1", PeerMailbox: &off})
+	state, _ = e.State(ctx, "t1")
+	if state.PeerMailbox {
+		t.Fatal("peer mailbox should be off after toggle")
+	}
 	on := true
-	mustDispatch(t, e, ctx, contracts.Command{ID: "p1", Type: contracts.CmdPeerMailboxSet, ThreadID: "t1", PeerMailbox: &on})
+	mustDispatch(t, e, ctx, contracts.Command{ID: "p2", Type: contracts.CmdPeerMailboxSet, ThreadID: "t1", PeerMailbox: &on})
 	state, _ = e.State(ctx, "t1")
 	if !state.PeerMailbox {
 		t.Fatal("peer mailbox should be on after toggle")

@@ -25,6 +25,14 @@ var (
 // records the durable MailboxPosted event, and leaves a trail on the sender's
 // log. Both the HTTP tool endpoint and the printed-line fallback go through it.
 func (r *Runner) PostMessage(ctx context.Context, threadID contracts.ThreadID, from contracts.AgentID, to, body string) error {
+	return r.postMessage(ctx, threadID, from, to, body, nil)
+}
+
+// postMessage resolves the recipient against the thread roster and then against
+// `pending` — dispatches minted in the pass being processed but not yet recorded
+// in the thread state — so a lead can message an agent it dispatched moments
+// ago, while that agent still waits on its dependencies.
+func (r *Runner) postMessage(ctx context.Context, threadID contracts.ThreadID, from contracts.AgentID, to, body string, pending []contracts.DispatchTask) error {
 	st, err := r.engine.State(ctx, threadID)
 	if err != nil {
 		return err
@@ -36,11 +44,19 @@ func (r *Runner) PostMessage(ctx context.Context, threadID contracts.ThreadID, f
 		return ErrPeerMailboxDisabled
 	}
 	resolved, ok := resolveRecipient(st, to)
-	if !ok {
-		r.auditLog("mailbox.reject", map[string]any{
-			"threadId": string(threadID), "from": string(from), "to": to, "reason": "unknown agent",
-		})
-		return fmt.Errorf("%w %s", ErrUnknownRecipient, to)
+	display := ""
+	if ok {
+		display = recipientName(st, resolved)
+	} else {
+		// Not in the roster (yet): a dispatch minted in this same pass names it.
+		task, pendingOk := pendingRecipient(pending, to)
+		if !pendingOk {
+			r.auditLog("mailbox.reject", map[string]any{
+				"threadId": string(threadID), "from": string(from), "to": to, "reason": "unknown agent",
+			})
+			return fmt.Errorf("%w %s", ErrUnknownRecipient, to)
+		}
+		resolved, display = task.AgentID, task.Name
 	}
 
 	msg := contracts.MailboxPosted{From: from, To: resolved, Kind: "message", Body: body}
@@ -61,10 +77,20 @@ func (r *Runner) PostMessage(ctx context.Context, threadID contracts.ThreadID, f
 	r.auditLog("mailbox.post", map[string]any{
 		"threadId": string(threadID), "from": string(from), "to": string(resolved), "body": body,
 	})
-	line := "→ " + recipientName(st, resolved) + ": " + body
+	line := "→ " + display + ": " + body
 	_ = r.logs.Append(contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
 	r.publishOutput(threadID, from, contracts.LogTool, line)
 	return nil
+}
+
+// pendingRecipient finds a dispatch minted in the current pass by roster name.
+func pendingRecipient(pending []contracts.DispatchTask, to string) (contracts.DispatchTask, bool) {
+	for _, t := range pending {
+		if t.Name == to {
+			return t, true
+		}
+	}
+	return contracts.DispatchTask{}, false
 }
 
 // resolveRecipient maps a `--to` value to an agent id: "orchestrator" names the

@@ -96,6 +96,21 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.runner.PostMessage(r.Context(), req.ThreadID, req.AgentID, req.To, req.Text); err != nil {
+			if errors.Is(err, orchestrator.ErrUnknownRecipient) && s.box.HasDispatchNamed(req.ThreadID, req.To) {
+				// The sender — typically the lead mid-pass — named an agent whose
+				// dispatch is still sitting in the inbox, not yet recorded in the
+				// thread state. Defer the message beside it; the orchestrator
+				// delivers both once the pass ends and the dispatch is minted.
+				s.box.Post(req.ThreadID, toolbox.Call{
+					Kind:    toolbox.KindMessage,
+					AgentID: req.AgentID,
+					To:      req.To,
+					Text:    req.Text,
+				})
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true}`))
+				return
+			}
 			if errors.Is(err, orchestrator.ErrPeerMailboxDisabled) || errors.Is(err, orchestrator.ErrUnknownRecipient) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return

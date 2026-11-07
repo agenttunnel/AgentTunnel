@@ -13,11 +13,16 @@ func TestDecideThreadCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(evs) != 1 {
-		t.Fatalf("want 1 event, got %d", len(evs))
+	if len(evs) != 2 {
+		t.Fatalf("want 2 events, got %d", len(evs))
 	}
 	if _, ok := evs[0].(contracts.ThreadCreated); !ok {
 		t.Fatalf("want ThreadCreated, got %T", evs[0])
+	}
+	// Creation also records the peer mailbox on, so new threads carry agent
+	// traffic (and graph arrows) without a separate opt-in.
+	if on, ok := evs[1].(contracts.PeerMailboxSet); !ok || !on.Enabled {
+		t.Fatalf("want PeerMailboxSet{true}, got %#v", evs[1])
 	}
 }
 

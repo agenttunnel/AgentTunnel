@@ -29,6 +29,19 @@ func enablePeerMailbox(t *testing.T, r *Runner, ctx context.Context) {
 	r.Mailbox().SetEnabled(true)
 }
 
+// disablePeerMailbox turns the durable gate off. New threads start with peer
+// messaging on, so gate-off behavior is asserted by opting out explicitly —
+// exactly what the desktop "Peer chat" toggle does.
+func disablePeerMailbox(t *testing.T, r *Runner, ctx context.Context) {
+	t.Helper()
+	off := false
+	if err := r.engine.Dispatch(ctx, contracts.Command{
+		ID: "ungate", Type: contracts.CmdPeerMailboxSet, ThreadID: "t1", PeerMailbox: &off,
+	}); err != nil {
+		t.Fatalf("disable peer mailbox: %v", err)
+	}
+}
+
 // newPromptHarness is newHarness with the prompt passed as the script's first
 // argument instead of stdin, so the fake harness can knowingly assert on what
 // the pass prompt contains.
@@ -126,7 +139,9 @@ func TestPostMessageRecordsAndDelivers(t *testing.T) {
 func TestPostMessageRejectsCleanly(t *testing.T) {
 	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 
-	// Gate off: rejected with nothing recorded.
+	// Gate off (the thread's toggle, not the create default): rejected with
+	// nothing recorded.
+	disablePeerMailbox(t, r, ctx)
 	err := r.PostMessage(ctx, "t1", "agent-orchestrator", "researcher", "psst")
 	if !errors.Is(err, ErrPeerMailboxDisabled) {
 		t.Fatalf("want ErrPeerMailboxDisabled, got %v", err)
@@ -242,5 +257,72 @@ esac`
 	if strings.Count(final, "Peer messages received after the final pass") != 1 ||
 		!strings.Contains(final, "for researcher from agent-orchestrator: watch the retry logic") {
 		t.Fatalf("final message = %q", final)
+	}
+}
+
+func TestRunTurnMessageReachesWaitingAgent(t *testing.T) {
+	// Pass 0 dispatches two agents — the second waits on the first — and then
+	// messages the second by name. The message must land in that agent's own
+	// prompt when its work starts, not be relayed back to the lead.
+	// The commands ride JSON text events with trailing newlines: consecutive
+	// plain lines are merged without separators before command-line parsing.
+	script := `case "$AT_ROLE" in
+orchestrator)
+  case "$AT_PASS" in
+    0)
+      printf '{"type":"text","text":"tool dispatch --role executor --name first --task \\"do the first thing\\"\\n"}\n'
+      printf '{"type":"text","text":"tool dispatch --role executor --name second --depends-on first --task \\"do the second thing\\"\\n"}\n'
+      printf '{"type":"text","text":"tool message --to second --text \\"use the config from the first step\\"\\n"}\n'
+      printf '{"type":"text","text":"dispatched two agents"}\n'
+      ;;
+    *)
+      case "$1" in *"for second from agent-orchestrator"*)
+        printf '{"type":"error","text":"teammate message was relayed to the lead twice: %s"}\n' "$1"
+        exit 1 ;;
+      esac
+      printf '{"type":"text","text":"all done"}\n'
+      ;;
+  esac ;;
+*)
+  case "$AT_TASK" in
+    *first*) printf '{"type":"text","text":"first finished"}\n' ;;
+    *second*)
+      fail=0
+      case "$1" in *"## Messages from teammates"*) ;; *) fail=1 ;; esac
+      case "$1" in *"from agent-orchestrator: use the config from the first step"*) ;; *) fail=1 ;; esac
+      if [ "$fail" = 1 ]; then
+        printf '{"type":"error","text":"second prompt lacked teammate messages: %s"}\n' "$1"
+        exit 1
+      fi
+      printf '{"type":"text","text":"second finished"}\n'
+      ;;
+  esac ;;
+esac`
+
+	r, eng, ctx := newPromptHarness(t, script)
+	enablePeerMailbox(t, r, ctx)
+
+	if err := New(r).RunTurn(ctx, "t1", "map the repository"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 {
+		t.Fatalf("mailbox = %+v, agents = %+v", state.Mailbox, state.Agents)
+	}
+	msg := state.Mailbox[0]
+	if msg.From != "agent-orchestrator" || msg.Kind != "message" || msg.Body != "use the config from the first step" {
+		t.Fatalf("message = %+v", msg)
+	}
+	if state.Agents[msg.To].Name != "second" {
+		t.Fatalf("message went to %s (%+v), want the second agent", msg.To, state.Agents[msg.To])
+	}
+	if state.Agents[msg.To].Status != contracts.AgentSucceeded {
+		t.Fatalf("second agent status = %s (%+v)", state.Agents[msg.To].Status, state.Agents[msg.To])
+	}
+
+	// The waiting agent consumed its inbox: nothing re-delivers.
+	if inbox := r.Mailbox().Inbox(msg.To); len(inbox) != 0 {
+		t.Fatalf("second inbox should be empty after the turn: %+v", inbox)
 	}
 }
