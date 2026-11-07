@@ -19,6 +19,7 @@ import { FilesPanel, type FileContentLike, type FileEntryLike } from "./componen
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
+import { GraphView } from "./components/GraphView";
 
 type Role = {
   id: string;
@@ -35,6 +36,7 @@ type Agent = {
   harness: string;
   model: string;
   task: string;
+  dependsOn?: string[];
   status: string;
   pipelineId?: string;
   startedAt?: string;
@@ -42,6 +44,7 @@ type Agent = {
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
 type Message = { id: string; author: string; text: string; at: string };
+type MailboxMessage = { from: string; to: string; kind: string; body: string; at?: string };
 type ReviewComment = { id: string; file: string; line: number; body: string };
 type ThreadState = {
   id: string;
@@ -49,6 +52,7 @@ type ThreadState = {
   autoMode: boolean;
   peerMailbox: boolean;
   messages: Message[] | null;
+  mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
   agentOrder: string[] | null;
   usage: Record<string, UsageEntry> | null;
@@ -122,7 +126,7 @@ type SettingsView = {
 };
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable. */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "graph";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -131,6 +135,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   inherited: { label: "Inherited", key: "M" },
   files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
+  graph: { label: "Graph", key: "G" },
 };
 function loadAsideTabs(): AsideTabId[] {
   try {
@@ -2109,6 +2114,17 @@ export default function App() {
               contentError={fileContentError}
               onSelectFile={(p) => loadFileContent(activeId, p)}
               onRefresh={() => loadFileTree(activeId)}
+            />
+          </div>
+        ) : asideActive === "graph" ? (
+          <div className="section">
+            <h3>Team graph</h3>
+            <GraphView
+              agents={thread?.agents ?? null}
+              agentOrder={thread?.agentOrder ?? null}
+              mailbox={thread?.mailbox ?? []}
+              usage={thread?.usage ?? null}
+              onNodeClick={setDetailId}
             />
           </div>
         ) : (

@@ -2144,3 +2144,164 @@ table.grid tr.rowlink:hover td {
   opacity: 0.5;
   cursor: default;
 }
+
+/* --- agent team graph (aside) --------------------------------------------- */
+/* Prefixed gv- (not graph-) so this panel's styles stay independent from the
+ * center Graph tab's classes in the same file. */
+.gv-canvas {
+  overflow-x: auto;
+}
+.gv-svg {
+  display: block;
+}
+.gv-legend {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  color: var(--faint);
+  align-items: center;
+  white-space: nowrap;
+}
+.gv-lg {
+  display: inline-block;
+  width: 16px;
+  height: 0;
+  border-top: 1.5px solid var(--faint);
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.gv-lg.depends {
+  border-top-style: dashed;
+}
+.gv-lg.message {
+  border-top-color: var(--accent);
+}
+.gv-node {
+  cursor: pointer;
+}
+.gv-node rect {
+  fill: var(--panel);
+  stroke: var(--border);
+}
+.gv-node:hover rect {
+  stroke: var(--accent);
+}
+.gv-node.dim,
+.gv-pair.dim {
+  opacity: 0.45;
+}
+.gv-dot {
+  fill: var(--faint);
+}
+.gv-dot.running {
+  fill: var(--warn);
+}
+.gv-dot.succeeded {
+  fill: var(--ok);
+}
+.gv-dot.failed {
+  fill: var(--err);
+}
+.gv-dot.pending,
+.gv-dot.cancelled {
+  fill: var(--faint);
+}
+.gv-name {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 550;
+}
+.gv-role {
+  fill: var(--muted);
+  font-size: 10px;
+  font-family: var(--mono);
+}
+.gv-tok {
+  fill: var(--faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.gv-edge {
+  fill: none;
+  stroke: var(--faint);
+  stroke-width: 1.4;
+  opacity: 0.75;
+}
+.gv-edge.spawn {
+  stroke: var(--border);
+}
+.gv-edge.depends {
+  stroke-dasharray: 5 4;
+}
+.gv-edge.message {
+  stroke: var(--muted);
+}
+.gv-edge.message.on {
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  opacity: 1;
+}
+.gv-edge.dim {
+  opacity: 0.25;
+}
+/* Wide invisible twin of a message edge: an easy click target. */
+.gv-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+.gv-badge circle {
+  fill: var(--panel-2);
+  stroke: var(--border);
+}
+.gv-badge text {
+  fill: var(--muted);
+  font-size: 9.5px;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+.gv-msgs {
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  margin-top: 12px;
+  background: var(--panel);
+}
+.gv-msgs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.gv-msgs-head button {
+  margin-left: auto;
+}
+.gv-msg {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.gv-msg:last-child {
+  border-bottom: none;
+}
+.gv-msg-meta {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 4px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.gv-msg-kind {
+  color: var(--accent);
+  font-weight: 600;
+}
+.gv-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: var(--text);
+}
