@@ -51,9 +51,12 @@ func safeName(name string) string {
 // folding notes into the shared notebook and forwarding peer messages.
 // `pending` lists dispatches already minted for this pass (e.g. protocol
 // dispatches) that a message may address before the state knows them.
-func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadID, orchID contracts.AgentID, pending []contracts.DispatchTask) []contracts.DispatchTask {
-	var tasks []contracts.DispatchTask
-	pending = append append placeholder
+func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadID, orchID contracts.AgentID, minted []contracts.DispatchTask) []contracts.DispatchTask {
+	// `minted` are the pass's protocol dispatches: they join the task list the
+	// caller dispatches and act as resolution candidates a message can name,
+	// so a lead can message an agent it dispatched in the same pass while the
+	// agent still waits on its dependencies.
+	tasks := append([]contracts.DispatchTask(nil), minted...)
 	seen := map[string]bool{}
 	for i, call := range o.runner.DrainTools(threadID) {
 		// A command can arrive twice when an agent executes it and also prints
@@ -232,9 +235,10 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 
 		// Work can arrive two ways: the tool command the agent runs, or the
-		// legacy text protocol.
-		tasks := ToDispatchTasks(orchID, Dispatches(calls))
-		tasks = append(tasks, o.toolTasks(ctx, threadID, orchID)...)
+		// legacy text protocol. toolTasks seeds its result with the protocol
+		// dispatches so a same-pass message can address them; the returned
+		// list is therefore the whole pass's task set.
+		tasks := o.toolTasks(ctx, threadID, orchID, ToDispatchTasks(orchID, Dispatches(calls)))
 		// A pass that dispatched nothing still earns another pass if the user
 		// steered while it was running.
 		if len(tasks) == 0 && !o.runner.HasSteering(threadID) {
