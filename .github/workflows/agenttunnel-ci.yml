@@ -1,8 +1,8 @@
 name: AgentTunnel CI
 
-# Builds the web client and server bundle on every push and pull request so a
-# broken build is caught before release. The desktop installers are built by
-# the AgentTunnel Release workflow.
+# Builds and tests the Go app on every push and pull request so a broken build
+# is caught before release. The installers are built by the AgentTunnel Release
+# workflow.
 on:
   push:
     branches:
@@ -19,22 +19,56 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build web and server
+  go:
+    name: Build and test
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: agenttunnel-go
     steps:
       - name: Checkout
-        uses: useblacksmith/checkout@v1
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          fetch-depth: 0
-      - name: Setup vp
-        uses: voidzero-dev/setup-vp@v1
+          go-version-file: agenttunnel-go/go.mod
+          cache-dependency-path: |
+            agenttunnel-go/go.sum
+            agenttunnel-go/desktop/go.sum
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Format
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:" $unformatted
+            exit 1
+          fi
+      - name: Test
+        run: go test ./... -count=1
+      - name: Test (race)
+        run: go test -race ./internal/orchestrator/ ./internal/toolbox/ ./pkg/daemon/ -count=1
+
+  frontend:
+    name: Build desktop frontend
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agenttunnel-go/desktop/frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version-file: package.json
-      - name: Install dependencies
-        run: vp install
-      - name: Build server bundle
-        run: vp run --filter t3 build:bundle
-      - name: Build web client
-        run: vp run --filter @t3tools/web build
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: agenttunnel-go/desktop/frontend/package-lock.json
+      - name: Build
+        run: |
+          npm ci
+          npm run build

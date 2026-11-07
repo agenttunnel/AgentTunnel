@@ -1,8 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "types": ["node", "bun"],
-    "lib": ["ESNext", "DOM", "DOM.Iterable", "esnext.disposable"]
-  },
-  "include": ["src", "vite.config.ts"]
-}

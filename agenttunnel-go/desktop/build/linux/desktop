@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=AgentTunnel
+Comment=Multi-agent coding workflow
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/agenttunnel %u
+Terminal=false
+Type=Application
+Icon=agenttunnel
+Categories=Utility;
+StartupWMClass=agenttunnel
+
+ 

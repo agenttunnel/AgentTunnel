@@ -1,41 +1,14 @@
-node_modules
-.bun
-.turbo
+# Untracked local tool state
+.commandcode/
+.macroscope/
+
+# Agent state and worktrees
+.agenttunnel/
+
+# Node (desktop frontend uses its own lockfile under agenttunnel-go/desktop/frontend)
+node_modules/
+
+# OS / editor
 .DS_Store
 *.log
-*.tsbuildinfo
-apps/*/dist
-infra/*/dist
-.astro
-packages/*/dist
-.env
-.env.local
-build/
-.logs/
-release/
-release-mock/
-.t3
-.agenttunnel
 .idea/
-apps/web/.playwright
-apps/web/playwright-report
-apps/web/src/components/__screenshots__
-.vitest-*
-__screenshots__/
-.tanstack
-squashfs-root/
-.vercel
-.gstack/
-.plans/
-dist-electron/
-.electron-runtime/
-.showcase/
-apps/mobile/.showcase/
-artifacts/app-store/screenshots/
-.github/pr-assets/
-native/**/target/
-node_modules/
-.alchemy/
-*.log
-.env*
-!.env.example
