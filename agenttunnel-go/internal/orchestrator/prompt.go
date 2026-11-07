@@ -24,16 +24,19 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string) st
 		b.WriteString("\n\n")
 		b.WriteString(shared)
 	}
-	b.WriteString("\n\nDo not spawn more agents. Report progress and findings with ")
+	b.WriteString("\n\nIf your task splits into smaller pieces you may propose your own subagents with:\n")
+	b.WriteString("  \"$AT_TOOL\" tool spawn --role executor --name <short-name> --task \"<what it should do>\"\n")
+	b.WriteString("A proposal only runs after the team lead approves it; keep working on your own task while you wait. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
 	b.WriteString(" lines. Record durable, project-agnostic learnings (conventions, gotchas worth keeping) with: \"$AT_TOOL\" tool learn --text \"...\"\n")
 	return b.String()
 }
 
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including the
-// agents already dispatched so a later pass does not repeat work, and any
-// steering the user sent mid-run.
-func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, runtimeChoices string) string {
+// agents already dispatched so a later pass does not repeat work, any pending
+// spawn requests awaiting the lead's decision, and any steering the user sent
+// mid-run.
+func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster, pending string, pass int, steering []string, runtimeChoices string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	if strings.TrimSpace(inherited) != "" {
@@ -47,6 +50,10 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 	if strings.TrimSpace(roster) != "" {
 		b.WriteString("\n\n## Agents already dispatched\n")
 		b.WriteString(roster)
+	}
+	if strings.TrimSpace(pending) != "" {
+		b.WriteString("\n\n")
+		b.WriteString(pending)
 	}
 	b.WriteString("\n\n## User request\n")
 	b.WriteString(userMessage)

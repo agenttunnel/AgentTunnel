@@ -28,6 +28,13 @@ const (
 	// KindLearn appends a durable learning to the environment's inherited
 	// context, so later threads start with what this one discovered.
 	KindLearn Kind = "learn"
+	// KindSpawn proposes a subagent of the caller's own; it only runs once the
+	// team lead approves it.
+	KindSpawn Kind = "spawn"
+	// KindApprove and KindReject are the lead's decision on a pending spawn
+	// request, selected by --name.
+	KindApprove Kind = "approve"
+	KindReject  Kind = "reject"
 )
 
 // Call is one recorded tool invocation.

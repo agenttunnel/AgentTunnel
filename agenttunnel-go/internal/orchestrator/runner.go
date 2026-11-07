@@ -78,6 +78,8 @@ type Runner struct {
 	// agent can be stopped from the UI without touching its siblings.
 	cancelMu sync.Mutex
 	cancels  map[contracts.AgentID]*trackedCancel
+
+	spawns *spawnStore
 }
 
 // NewRunner wires a runner from its dependencies.
@@ -104,6 +106,7 @@ func NewRunner(d Deps) *Runner {
 		endpoint:  d.Endpoint,
 		clock:     d.Clock,
 		cfg:       d.Cfg,
+		spawns:    newSpawnStore(),
 	}
 }
 
