@@ -2145,163 +2145,191 @@ table.grid tr.rowlink:hover td {
   cursor: default;
 }
 
-/* --- agent team graph (aside) --------------------------------------------- */
-/* Prefixed gv- (not graph-) so this panel's styles stay independent from the
- * center Graph tab's classes in the same file. */
-.gv-canvas {
-  overflow-x: auto;
+
+/* --- agent graph --------------------------------------------------------- */
+.graph-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 18px 22px 30px;
 }
-.gv-svg {
-  display: block;
+.graph-hint {
+  color: var(--faint);
+  font-size: 12px;
+  margin: 0 0 14px;
+  max-width: 720px;
 }
-.gv-legend {
+.graph-hint b {
+  color: var(--muted);
+  font-weight: 600;
+}
+.graph-hint code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 5px;
+  word-break: break-all;
+}
+.graph-legend {
   display: flex;
-  gap: 12px;
-  margin: 0 0 8px;
+  gap: 14px;
+  margin: 0 0 14px;
   font-size: 10.5px;
   color: var(--faint);
   align-items: center;
   white-space: nowrap;
 }
-.gv-lg {
+.graph-lg {
   display: inline-block;
-  width: 16px;
+  width: 18px;
   height: 0;
-  border-top: 1.5px solid var(--faint);
+  border-top: 2px solid var(--border);
   margin-right: 5px;
   vertical-align: middle;
 }
-.gv-lg.depends {
+.graph-lg.depends {
   border-top-style: dashed;
 }
-.gv-lg.message {
-  border-top-color: var(--accent);
+.graph-lg.message {
+  border-color: var(--accent);
 }
-.gv-node {
-  cursor: pointer;
+.graph-canvas {
+  position: relative;
 }
-.gv-node rect {
-  fill: var(--panel);
+.graph-edges {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.graph-spawn {
   stroke: var(--border);
-}
-.gv-node:hover rect {
-  stroke: var(--accent);
-}
-.gv-node.dim,
-.gv-pair.dim {
-  opacity: 0.45;
-}
-.gv-dot {
-  fill: var(--faint);
-}
-.gv-dot.running {
-  fill: var(--warn);
-}
-.gv-dot.succeeded {
-  fill: var(--ok);
-}
-.gv-dot.failed {
-  fill: var(--err);
-}
-.gv-dot.pending,
-.gv-dot.cancelled {
-  fill: var(--faint);
-}
-.gv-name {
-  fill: var(--text);
-  font-size: 11px;
-  font-weight: 550;
-}
-.gv-role {
-  fill: var(--muted);
-  font-size: 10px;
-  font-family: var(--mono);
-}
-.gv-tok {
-  fill: var(--faint);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.gv-edge {
+  stroke-width: 1.5;
   fill: none;
-  stroke: var(--faint);
-  stroke-width: 1.4;
-  opacity: 0.75;
 }
-.gv-edge.spawn {
+.graph-depends {
   stroke: var(--border);
-}
-.gv-edge.depends {
-  stroke-dasharray: 5 4;
-}
-.gv-edge.message {
-  stroke: var(--muted);
-}
-.gv-edge.message.on {
-  stroke: var(--accent);
-  stroke-width: 1.8;
-  opacity: 1;
-}
-.gv-edge.dim {
-  opacity: 0.25;
-}
-/* Wide invisible twin of a message edge: an easy click target. */
-.gv-hit {
+  stroke-width: 1.25;
+  stroke-dasharray: 4 4;
   fill: none;
+  opacity: 0.8;
+}
+.graph-msg {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  fill: none;
+  opacity: 0.9;
+}
+.graph-pair.on .graph-msg {
+  stroke-width: 2.25;
+}
+.graph-msg-count {
+  fill: var(--accent);
+  font-size: 10px;
+  font-family: var(--sans);
+  pointer-events: none;
+  user-select: none;
+}
+.graph-arrow-head {
+  fill: var(--accent);
+}
+/* Fat transparent stroke over each message arc: the click target. */
+.graph-hit {
   stroke: transparent;
-  stroke-width: 14;
-  cursor: pointer;
+  stroke-width: 18;
+  fill: none;
   pointer-events: stroke;
+  cursor: pointer;
 }
-.gv-badge circle {
-  fill: var(--panel-2);
-  stroke: var(--border);
-}
-.gv-badge text {
-  fill: var(--muted);
-  font-size: 9.5px;
-  text-anchor: middle;
-  font-variant-numeric: tabular-nums;
-}
-.gv-msgs {
-  border: 1px solid var(--border-soft);
-  border-radius: 9px;
-  margin-top: 12px;
+.graph-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 11px;
   background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
 }
-.gv-msgs-head {
+.graph-node:hover {
+  border-color: var(--accent-soft);
+  background: var(--panel-2);
+}
+.graph-node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.graph-node-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.graph-node-tokens {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.graph-node-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 20px;
+  padding: 0 7px;
+  align-self: flex-start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+/* Conversation sheet entries */
+.graph-msg-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.graph-msg-item:last-child {
+  border-bottom: none;
+}
+.graph-msg-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-soft);
-  font-size: 12px;
+  margin-bottom: 6px;
 }
-.gv-msgs-head button {
-  margin-left: auto;
-}
-.gv-msg {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.gv-msg:last-child {
-  border-bottom: none;
-}
-.gv-msg-meta {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 4px;
-  color: var(--faint);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-}
-.gv-msg-kind {
+.graph-msg-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   color: var(--accent);
-  font-weight: 600;
+  background: var(--accent-soft);
+  border-radius: 20px;
+  padding: 1px 7px;
 }
-.gv-msg-body {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  color: var(--text);
+.graph-msg-from {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.graph-msg-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+.graph-msg-body {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 11px 13px;
 }
