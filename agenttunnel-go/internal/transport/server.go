@@ -111,7 +111,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"ok":true}`))
 				return
 			}
-			if errors.Is(err, orchestrator.ErrPeerMailboxDisabled) || errors.Is(err, orchestrator.ErrUnknownRecipient) {
+			if errors.Is(err, orchestrator.ErrPeerMailboxDisabled) || errors.Is(err, orchestrator.ErrUnknownRecipient) || errors.Is(err, orchestrator.ErrEmptyMessage) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}

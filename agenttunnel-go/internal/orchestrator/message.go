@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -18,6 +19,7 @@ const orchestratorAgentID = contracts.AgentID("agent-orchestrator")
 var (
 	ErrPeerMailboxDisabled = errors.New("peer mailbox is disabled for this thread")
 	ErrUnknownRecipient    = errors.New("unknown agent")
+	ErrEmptyMessage        = errors.New("message text is required")
 )
 
 // PostMessage delivers one peer message end to end: it resolves the recipient,
@@ -33,6 +35,9 @@ func (r *Runner) PostMessage(ctx context.Context, threadID contracts.ThreadID, f
 // in the thread state — so a lead can message an agent it dispatched moments
 // ago, while that agent still waits on its dependencies.
 func (r *Runner) postMessage(ctx context.Context, threadID contracts.ThreadID, from contracts.AgentID, to, body string, pending []contracts.DispatchTask) error {
+	if strings.TrimSpace(body) == "" {
+		return ErrEmptyMessage
+	}
 	st, err := r.engine.State(ctx, threadID)
 	if err != nil {
 		return err

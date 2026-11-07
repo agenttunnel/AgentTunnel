@@ -49,8 +49,11 @@ func safeName(name string) string {
 
 // toolTasks turns the tool calls an agent posted during a pass into work items,
 // folding notes into the shared notebook and forwarding peer messages.
-func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadID, orchID contracts.AgentID) []contracts.DispatchTask {
+// `pending` lists dispatches already minted for this pass (e.g. protocol
+// dispatches) that a message may address before the state knows them.
+func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadID, orchID contracts.AgentID, pending []contracts.DispatchTask) []contracts.DispatchTask {
 	var tasks []contracts.DispatchTask
+	pending = append append placeholder
 	seen := map[string]bool{}
 	for i, call := range o.runner.DrainTools(threadID) {
 		// A command can arrive twice when an agent executes it and also prints
@@ -74,11 +77,18 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 
 		case toolbox.KindMessage:
 			// A rejection (peer mailbox off, unknown recipient) is already
-			// audited inside PostMessage; there is no task to make of it.
-			// The dispatches minted earlier in this same drain act as extra
+			// audited inside PostMessage; there is no task to make of it. The
+			// dispatches minted earlier in this same drain act as extra
 			// resolution candidates, so a lead can dispatch an agent and then
 			// message it while it still waits on dependencies.
-			_ = o.runner.postMessage(ctx, threadID, call.AgentID, call.To, call.Text, tasks)
+			if err := o.runner.postMessage(ctx, threadID, call.AgentID, call.To, call.Text, tasks); err != nil {
+				// The turn survives a rejected message, but the sender — and
+				// the model behind it — must see why, or it will assume the
+				// message arrived.
+				line := "tool message failed: " + err.Error()
+				_ = o.runner.logs.Append(contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+				o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
+			}
 
 		case toolbox.KindDispatch:
 			if strings.TrimSpace(call.Task) == "" {
