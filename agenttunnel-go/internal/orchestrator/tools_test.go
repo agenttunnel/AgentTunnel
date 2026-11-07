@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -16,7 +17,7 @@ func TestToolDispatchFromInboxBecomesATask(t *testing.T) {
 		Task: "map the repository",
 	})
 
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator")
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
@@ -28,7 +29,7 @@ func TestToolDispatchFromInboxBecomesATask(t *testing.T) {
 		t.Fatalf("parent = %q", got.ParentAgentID)
 	}
 	// The inbox is drained, so a second pass sees nothing.
-	if again := New(r).toolTasks("t1", "agent-orchestrator"); len(again) != 0 {
+	if again := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator"); len(again) != 0 {
 		t.Fatalf("inbox was not drained: %+v", again)
 	}
 }
@@ -37,7 +38,7 @@ func TestToolDispatchDefaultsRoleToExecutor(t *testing.T) {
 	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindDispatch, Task: "do it"})
 
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator")
 	if len(tasks) != 1 || tasks[0].Role != contracts.RoleExecutor {
 		t.Fatalf("tasks = %+v", tasks)
 	}
@@ -50,7 +51,7 @@ func TestToolNoteLandsInTheNotebook(t *testing.T) {
 	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindNote, AgentID: "agent-x", Text: "the config lives in ~/.agenttunnel"})
 
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator")
 
 	notes := r.notebook.Get("notes")
 	if len(notes) != 1 || notes[0].Value != "the config lives in ~/.agenttunnel" {

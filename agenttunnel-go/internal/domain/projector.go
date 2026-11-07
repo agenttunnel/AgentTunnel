@@ -97,7 +97,7 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Shared[p.Key] = p.Value
 
 	case contracts.MailboxPosted:
-		s.Mailbox = append(s.Mailbox, p)
+		s.Mailbox = append(s.Mailbox, MailboxMessage{From: p.From, To: p.To, Kind: p.Kind, Body: p.Body, At: e.At})
 
 	case contracts.ReviewCommentAdded:
 		s.ReviewComments = append(s.ReviewComments, p)

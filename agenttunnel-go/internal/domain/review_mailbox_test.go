@@ -3,9 +3,29 @@ package domain
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
+
+func TestMailboxProjectionCarriesEventTime(t *testing.T) {
+	s := NewThreadState("t1")
+	at := time.Unix(1700000000, 0).UTC()
+	ev := contracts.Event{
+		Seq: 1, ThreadID: "t1", At: at,
+		Payload: contracts.MailboxPosted{From: "a", To: "b", Kind: "message", Body: "hi"},
+	}
+	if err := Project(s, ev); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if len(s.Mailbox) != 1 {
+		t.Fatalf("mailbox = %+v", s.Mailbox)
+	}
+	got := s.Mailbox[0]
+	if got.From != "a" || got.To != "b" || got.Kind != "message" || got.Body != "hi" || !got.At.Equal(at) {
+		t.Fatalf("entry = %+v", got)
+	}
+}
 
 func TestDecideMailboxPostIsGatedByPeerMailbox(t *testing.T) {
 	s := NewThreadState("t1")

@@ -3,7 +3,9 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
@@ -19,13 +22,14 @@ import (
 type Server struct {
 	disp   *Dispatcher
 	engine *domain.Engine
+	runner *orchestrator.Runner
 	token  string
 	box    *toolbox.Box
 }
 
 // NewServer builds the HTTP surface. An empty token disables auth (dev only).
-func NewServer(disp *Dispatcher, engine *domain.Engine, token string, box *toolbox.Box) *Server {
-	return &Server{disp: disp, engine: engine, token: token, box: box}
+func NewServer(disp *Dispatcher, engine *domain.Engine, runner *orchestrator.Runner, token string, box *toolbox.Box) *Server {
+	return &Server{disp: disp, engine: engine, runner: runner, token: token, box: box}
 }
 
 // Handler returns the HTTP handler.
@@ -68,6 +72,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		Model     string             `json:"model"`
 		DependsOn []string           `json:"dependsOn"`
 		Text      string             `json:"text"`
+		To        string             `json:"to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -75,6 +80,35 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ThreadID == "" || req.Kind == "" {
 		http.Error(w, "threadId and kind are required", http.StatusBadRequest)
+		return
+	}
+
+	// Peer messages are delivered immediately rather than queued in the tool
+	// inbox: their recipients are running now, and the orchestrator would only
+	// relay them anyway.
+	if req.Kind == "message" {
+		if s.runner == nil {
+			http.Error(w, "peer messaging is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if strings.TrimSpace(req.To) == "" || strings.TrimSpace(req.Text) == "" {
+			http.Error(w, "to and text are required for a message", http.StatusBadRequest)
+			return
+		}
+		if err := s.runner.PostMessage(r.Context(), req.ThreadID, req.AgentID, req.To, req.Text); err != nil {
+			if errors.Is(err, orchestrator.ErrPeerMailboxDisabled) || errors.Is(err, orchestrator.ErrUnknownRecipient) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.disp.auditLog("tool", map[string]any{
+			"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+			"to": req.To,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
 		return
 	}
 

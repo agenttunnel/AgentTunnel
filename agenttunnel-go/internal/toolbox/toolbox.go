@@ -28,6 +28,9 @@ const (
 	// KindLearn appends a durable learning to the environment's inherited
 	// context, so later threads start with what this one discovered.
 	KindLearn Kind = "learn"
+	// KindMessage sends a peer message to another agent (or the orchestrator)
+	// through the thread's mailbox. It requires the peer mailbox to be enabled.
+	KindMessage Kind = "message"
 )
 
 // Call is one recorded tool invocation.
@@ -42,6 +45,7 @@ type Call struct {
 	Model     string            `json:"model,omitempty"`
 	DependsOn []string          `json:"dependsOn,omitempty"`
 	Text      string            `json:"text,omitempty"`
+	To        string            `json:"to,omitempty"`
 }
 
 // Box holds pending tool calls, partitioned by thread.

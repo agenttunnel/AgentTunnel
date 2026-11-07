@@ -86,3 +86,24 @@ func TestMailboxDisabledByDefault(t *testing.T) {
 		t.Fatalf("inbox = %+v", inbox)
 	}
 }
+
+func TestMailboxDrainReturnsOnceAndClears(t *testing.T) {
+	m := NewMailbox()
+	m.SetEnabled(true)
+	for _, body := range []string{"one", "two"} {
+		if err := m.Post(contracts.MailboxPosted{From: "a", To: "b", Body: body}); err != nil {
+			t.Fatalf("post %q: %v", body, err)
+		}
+	}
+
+	got := m.Drain("b")
+	if len(got) != 2 || got[0].Body != "one" || got[1].Body != "two" {
+		t.Fatalf("drain = %+v", got)
+	}
+	if again := m.Drain("b"); len(again) != 0 {
+		t.Fatalf("drain should clear the inbox: %+v", again)
+	}
+	if inbox := m.Inbox("b"); len(inbox) != 0 {
+		t.Fatalf("inbox should be empty after a drain: %+v", inbox)
+	}
+}

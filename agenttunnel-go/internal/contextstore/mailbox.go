@@ -54,3 +54,13 @@ func (m *Mailbox) Inbox(agent contracts.AgentID) []contracts.MailboxPosted {
 	defer m.mu.RUnlock()
 	return append([]contracts.MailboxPosted(nil), m.inboxes[agent]...)
 }
+
+// Drain returns the messages addressed to an agent and clears its inbox, so a
+// prompt never re-delivers what a previous pass already saw.
+func (m *Mailbox) Drain(agent contracts.AgentID) []contracts.MailboxPosted {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msgs := m.inboxes[agent]
+	delete(m.inboxes, agent)
+	return msgs
+}

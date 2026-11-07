@@ -116,6 +116,9 @@ func (r *Runner) Inherited() *contextstore.InheritedContext { return r.inherited
 // Notebook exposes the shared notebook.
 func (r *Runner) Notebook() *contextstore.Notebook { return r.notebook }
 
+// Mailbox exposes the runtime peer mailbox.
+func (r *Runner) Mailbox() *contextstore.Mailbox { return r.mailbox }
+
 // Logs exposes the per-agent log store.
 func (r *Runner) Logs() *logstore.Store { return r.logs }
 
@@ -295,7 +298,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
 
 	inherited, _ := r.inherited.Render()
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render())
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render(), r.peerMailboxFor(ctx, threadID))
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -597,6 +600,19 @@ func (r *Runner) autoModeFor(ctx context.Context, threadID contracts.ThreadID) b
 		return false
 	}
 	return st.AutoMode
+}
+
+// peerMailboxFor reports whether peer messaging is on for a thread, reading the
+// durable thread state the same way auto mode is read.
+func (r *Runner) peerMailboxFor(ctx context.Context, threadID contracts.ThreadID) bool {
+	if r.engine == nil {
+		return false
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return false
+	}
+	return st.PeerMailbox
 }
 
 // resolveModel applies auto mode: the orchestrator's requested model wins only if

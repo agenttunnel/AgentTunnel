@@ -67,6 +67,8 @@ func ParseCommandLine(line string) (Call, bool) {
 			call.Text = value
 		case "--summary":
 			call.Text = value
+		case "--to":
+			call.To = value
 		case "--depends-on":
 			for _, dep := range strings.Split(value, ",") {
 				if dep = strings.TrimSpace(dep); dep != "" {
@@ -83,6 +85,8 @@ func ParseCommandLine(line string) (Call, bool) {
 		return call, strings.TrimSpace(call.Task) != ""
 	case KindNote, KindProgress, KindDone, KindLearn:
 		return call, strings.TrimSpace(call.Text) != ""
+	case KindMessage:
+		return call, strings.TrimSpace(call.Text) != "" && strings.TrimSpace(call.To) != ""
 	default:
 		return Call{}, false
 	}
@@ -90,7 +94,7 @@ func ParseCommandLine(line string) (Call, bool) {
 
 func knownKind(s string) bool {
 	switch Kind(s) {
-	case KindDispatch, KindNote, KindProgress, KindDone, KindLearn:
+	case KindDispatch, KindNote, KindProgress, KindDone, KindLearn, KindMessage:
 		return true
 	default:
 		return false
