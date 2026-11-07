@@ -160,7 +160,13 @@ export function AgentGraph({
               <path
                 className="graph-hit"
                 d={e.path}
+                role="button"
+                tabIndex={0}
+                aria-label={`${nameOf(e.from)} to ${nameOf(e.to)}, ${e.count} message${e.count === 1 ? "" : "s"}`}
                 onClick={() => setConversation({ a: e.from, b: e.to })}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") setConversation({ a: e.from, b: e.to })
+                }}
               />
             </g>
           ))}
@@ -195,9 +201,9 @@ export function AgentGraph({
             </div>
             <div className="sheet-body">
               {talk.map((m, i) => (
-                <div className="graph-msg-item" key={i}>
+                <div className="graph-msg-item" key={`${m.at}-${m.from}-${i}`}>
                   <div className="graph-msg-meta">
-                    <span className="graph-msg-kind">{m.kind}</span>
+                    <span className="graph-msg-kind">{m.kind || "message"}</span>
                     <span className="graph-msg-from">
                       {nameOf(m.from)} → {nameOf(m.to)}
                     </span>

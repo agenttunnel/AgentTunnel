@@ -2242,6 +2242,11 @@ table.grid tr.rowlink:hover td {
   pointer-events: stroke;
   cursor: pointer;
 }
+.graph-hit:focus-visible {
+  stroke: var(--accent);
+  stroke-width: 14;
+  outline: none;
+}
 .graph-node {
   position: absolute;
   display: flex;

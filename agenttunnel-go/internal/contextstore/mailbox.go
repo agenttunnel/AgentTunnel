@@ -12,6 +12,11 @@ var ErrMailboxDisabled = errors.New("peer mailbox is disabled")
 
 // Mailbox is an opt-in peer-to-peer message bus between a thread's agents. It is
 // disabled by default: every Post is rejected until SetEnabled(true).
+//
+// The enabled flag is not authoritative: production always enables the runtime
+// box and gates on the durable ThreadState.PeerMailbox flag instead, so a
+// restart cannot desync delivery from what the event log recorded. The flag
+// remains so tests can exercise the error path.
 type Mailbox struct {
 	mu      sync.RWMutex
 	enabled bool
