@@ -143,7 +143,6 @@ printf '{"type":"text","text":"report-%s"}\n' "$AT_PASS"`
 	}
 }
 
-
 // The subagent prompt offers gated spawn proposals instead of forbidding
 // nesting outright: the proposal wording and the approval gate are both pinned.
 func TestSubagentPromptOffersSpawnProposals(t *testing.T) {

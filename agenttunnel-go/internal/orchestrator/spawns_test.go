@@ -116,7 +116,7 @@ func TestLeadSpawnCallBehavesAsDispatch(t *testing.T) {
 		Kind: toolbox.KindSpawn, Name: "direct", Task: "run me now",
 	})
 	r.tools.Post("t1", toolbox.Call{
-		Kind:    toolbox.KindSpawn, AgentID: "agent-orchestrator",
+		Kind: toolbox.KindSpawn, AgentID: "agent-orchestrator",
 		Name: "direct", Task: "run me again",
 	})
 
