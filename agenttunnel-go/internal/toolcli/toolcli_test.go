@@ -62,7 +62,7 @@ func TestToolMessageCLI(t *testing.T) {
 		state.Mailbox[0].Kind != "message" || state.Mailbox[0].Body != "ping the lead" {
 		t.Fatalf("mailbox = %+v", state.Mailbox)
 	}
-	if inbox := runner.Mailbox().Inbox("agent-orchestrator"); len(inbox) != 1 {
+	if inbox := runner.Mailbox().Inbox("t1", "agent-orchestrator"); len(inbox) != 1 {
 		t.Fatalf("lead inbox = %+v", inbox)
 	}
 

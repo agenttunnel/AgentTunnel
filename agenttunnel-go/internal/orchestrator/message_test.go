@@ -107,7 +107,7 @@ func TestPostMessageRecordsAndDelivers(t *testing.T) {
 		t.Fatalf("entry carries the event time, got %v", got.At)
 	}
 
-	inbox := r.Mailbox().Inbox("agent-researcher")
+	inbox := r.Mailbox().Inbox("t1", "agent-researcher")
 	if len(inbox) != 1 || inbox[0].Body != "watch the flaky test" {
 		t.Fatalf("runtime inbox = %+v", inbox)
 	}
@@ -202,7 +202,7 @@ printf '{"type":"text","text":"pass prompt carried the messages"}\n'`
 	// The drain consumed everything: no inbox re-delivers, and the durable
 	// log holds exactly the two messages posted.
 	for _, agent := range []contracts.AgentID{"agent-orchestrator", "agent-researcher"} {
-		if inbox := r.Mailbox().Inbox(agent); len(inbox) != 0 {
+		if inbox := r.Mailbox().Inbox("t1", agent); len(inbox) != 0 {
 			t.Fatalf("%s inbox should be empty after the turn: %+v", agent, inbox)
 		}
 	}
@@ -322,7 +322,7 @@ esac`
 	}
 
 	// The waiting agent consumed its inbox: nothing re-delivers.
-	if inbox := r.Mailbox().Inbox(msg.To); len(inbox) != 0 {
+	if inbox := r.Mailbox().Inbox("t1", msg.To); len(inbox) != 0 {
 		t.Fatalf("second inbox should be empty after the turn: %+v", inbox)
 	}
 }
@@ -507,5 +507,47 @@ esac`
 	}
 	if got := state.Usage["agent-worker"].Usage.InputTokens; got != 3 {
 		t.Fatalf("worker ran %d time(s)-worth of tokens, want exactly one run", got/3)
+	}
+}
+
+func TestPeerMailboxDoesNotLeakAcrossThreads(t *testing.T) {
+	// Every thread's lead shares the fixed agent-orchestrator id, and turns
+	// run concurrently per thread over one Runner-wide runtime mailbox. A
+	// drain in t1's turn must not consume t2's lead inbox.
+	script := `fail=0
+case "$1" in *"## Peer messages"*) ;; *) fail=1 ;; esac
+case "$1" in *"from agent-researcher: t1 only"*) ;; *) fail=1 ;; esac
+case "$1" in *"belongs to t2"*) fail=1 ;; esac
+if [ "$fail" = 1 ]; then
+  printf '{"type":"error","text":"pass prompt carried the wrong peer messages"}\n'
+  exit 1
+fi
+printf '{"type":"text","text":"done"}\n'`
+	r, eng, ctx := newPromptHarness(t, script)
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c2", Type: contracts.CmdThreadCreate, ThreadID: "t2"}); err != nil {
+		t.Fatalf("create t2: %v", err)
+	}
+	r.Mailbox().SetEnabled(true)
+
+	if err := r.PostMessage(ctx, "t1", "agent-researcher", "orchestrator", "t1 only"); err != nil {
+		t.Fatalf("post t1: %v", err)
+	}
+	if err := r.PostMessage(ctx, "t2", "agent-researcher", "orchestrator", "belongs to t2"); err != nil {
+		t.Fatalf("post t2: %v", err)
+	}
+
+	if err := New(r).RunTurn(ctx, "t1", "go"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+
+	if inbox := r.Mailbox().Inbox("t1", "agent-orchestrator"); len(inbox) != 0 {
+		t.Fatalf("t1 lead inbox should be drained by its turn: %+v", inbox)
+	}
+	if inbox := r.Mailbox().Inbox("t2", "agent-orchestrator"); len(inbox) != 1 || inbox[0].Body != "belongs to t2" {
+		t.Fatalf("t2 lead inbox must survive t1's turn: %+v", inbox)
+	}
+	state, _ := eng.State(ctx, "t2")
+	if len(state.Mailbox) != 1 || state.Mailbox[0].Body != "belongs to t2" {
+		t.Fatalf("t2 durable mailbox = %+v", state.Mailbox)
 	}
 }

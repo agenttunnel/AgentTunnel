@@ -152,7 +152,7 @@ func (o *Orchestrator) drainPeerMessages(state *domain.ThreadState) string {
 	var b strings.Builder
 	for _, id := range state.AgentOrder {
 		agent := state.Agents[id]
-		for _, msg := range o.runner.Mailbox().Drain(id) {
+		for _, msg := range o.runner.Mailbox().Drain(state.ID, id) {
 			// Compare against the lead's id rather than IsOrchestrator():
 			// parentage marks the team lead, and the roster can hold agents
 			// dispatched without one.

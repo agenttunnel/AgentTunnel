@@ -66,7 +66,7 @@ func (r *Runner) postMessage(ctx context.Context, threadID contracts.ThreadID, f
 
 	msg := contracts.MailboxPosted{From: from, To: resolved, Kind: "message", Body: body}
 	if r.mailbox != nil {
-		if err := r.mailbox.Post(msg); err != nil {
+		if err := r.mailbox.Post(threadID, msg); err != nil {
 			return err
 		}
 	}

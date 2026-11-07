@@ -20,12 +20,21 @@ var ErrMailboxDisabled = errors.New("peer mailbox is disabled")
 type Mailbox struct {
 	mu      sync.RWMutex
 	enabled bool
-	inboxes map[contracts.AgentID][]contracts.MailboxPosted
+	inboxes map[inboxKey][]contracts.MailboxPosted
+}
+
+// inboxKey partitions a runtime inbox by thread and agent. Agent ids repeat
+// across threads — every thread's lead is the fixed agent-orchestrator — so
+// keying by agent alone would let one thread's pass drain another thread's
+// messages when turns run concurrently.
+type inboxKey struct {
+	thread contracts.ThreadID
+	agent  contracts.AgentID
 }
 
 // NewMailbox returns a disabled mailbox.
 func NewMailbox() *Mailbox {
-	return &Mailbox{inboxes: map[contracts.AgentID][]contracts.MailboxPosted{}}
+	return &Mailbox{inboxes: map[inboxKey][]contracts.MailboxPosted{}}
 }
 
 // SetEnabled turns peer messaging on or off.
@@ -42,30 +51,32 @@ func (m *Mailbox) Enabled() bool {
 	return m.enabled
 }
 
-// Post delivers a message to its recipient, or fails if the mailbox is disabled.
-func (m *Mailbox) Post(msg contracts.MailboxPosted) error {
+// Post delivers a message to its recipient within the sender's thread, or
+// fails if the mailbox is disabled.
+func (m *Mailbox) Post(thread contracts.ThreadID, msg contracts.MailboxPosted) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.enabled {
 		return ErrMailboxDisabled
 	}
-	m.inboxes[msg.To] = append(m.inboxes[msg.To], msg)
+	m.inboxes[inboxKey{thread: thread, agent: msg.To}] = append(m.inboxes[inboxKey{thread: thread, agent: msg.To}], msg)
 	return nil
 }
 
-// Inbox returns the messages addressed to an agent.
-func (m *Mailbox) Inbox(agent contracts.AgentID) []contracts.MailboxPosted {
+// Inbox returns the messages addressed to an agent in a thread.
+func (m *Mailbox) Inbox(thread contracts.ThreadID, agent contracts.AgentID) []contracts.MailboxPosted {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]contracts.MailboxPosted(nil), m.inboxes[agent]...)
+	return append([]contracts.MailboxPosted(nil), m.inboxes[inboxKey{thread: thread, agent: agent}]...)
 }
 
-// Drain returns the messages addressed to an agent and clears its inbox, so a
-// prompt never re-delivers what a previous pass already saw.
-func (m *Mailbox) Drain(agent contracts.AgentID) []contracts.MailboxPosted {
+// Drain returns the messages addressed to an agent in a thread and clears that
+// inbox, so a prompt never re-delivers what a previous pass already saw.
+func (m *Mailbox) Drain(thread contracts.ThreadID, agent contracts.AgentID) []contracts.MailboxPosted {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	msgs := m.inboxes[agent]
-	delete(m.inboxes, agent)
+	key := inboxKey{thread: thread, agent: agent}
+	msgs := m.inboxes[key]
+	delete(m.inboxes, key)
 	return msgs
 }

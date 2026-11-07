@@ -75,14 +75,14 @@ func TestMailboxDisabledByDefault(t *testing.T) {
 	if m.Enabled() {
 		t.Fatal("mailbox must start disabled")
 	}
-	if err := m.Post(contracts.MailboxPosted{From: "a", To: "b", Body: "hi"}); err != ErrMailboxDisabled {
+	if err := m.Post("t1", contracts.MailboxPosted{From: "a", To: "b", Body: "hi"}); err != ErrMailboxDisabled {
 		t.Fatalf("want ErrMailboxDisabled, got %v", err)
 	}
 	m.SetEnabled(true)
-	if err := m.Post(contracts.MailboxPosted{From: "a", To: "b", Body: "hi"}); err != nil {
+	if err := m.Post("t1", contracts.MailboxPosted{From: "a", To: "b", Body: "hi"}); err != nil {
 		t.Fatalf("post after enable: %v", err)
 	}
-	if inbox := m.Inbox("b"); len(inbox) != 1 || inbox[0].Body != "hi" {
+	if inbox := m.Inbox("t1", "b"); len(inbox) != 1 || inbox[0].Body != "hi" {
 		t.Fatalf("inbox = %+v", inbox)
 	}
 }
@@ -91,19 +91,40 @@ func TestMailboxDrainReturnsOnceAndClears(t *testing.T) {
 	m := NewMailbox()
 	m.SetEnabled(true)
 	for _, body := range []string{"one", "two"} {
-		if err := m.Post(contracts.MailboxPosted{From: "a", To: "b", Body: body}); err != nil {
+		if err := m.Post("t1", contracts.MailboxPosted{From: "a", To: "b", Body: body}); err != nil {
 			t.Fatalf("post %q: %v", body, err)
 		}
 	}
 
-	got := m.Drain("b")
+	got := m.Drain("t1", "b")
 	if len(got) != 2 || got[0].Body != "one" || got[1].Body != "two" {
 		t.Fatalf("drain = %+v", got)
 	}
-	if again := m.Drain("b"); len(again) != 0 {
+	if again := m.Drain("t1", "b"); len(again) != 0 {
 		t.Fatalf("drain should clear the inbox: %+v", again)
 	}
-	if inbox := m.Inbox("b"); len(inbox) != 0 {
+	if inbox := m.Inbox("t1", "b"); len(inbox) != 0 {
 		t.Fatalf("inbox should be empty after a drain: %+v", inbox)
+	}
+}
+
+func TestMailboxPartitionsInboxesByThread(t *testing.T) {
+	m := NewMailbox()
+	m.SetEnabled(true)
+	if err := m.Post("t1", contracts.MailboxPosted{From: "a", To: "agent-orchestrator", Body: "for t1"}); err != nil {
+		t.Fatalf("post t1: %v", err)
+	}
+	if err := m.Post("t2", contracts.MailboxPosted{From: "a", To: "agent-orchestrator", Body: "for t2"}); err != nil {
+		t.Fatalf("post t2: %v", err)
+	}
+
+	// Draining one thread's lead must not touch another thread's lead, whose
+	// agent id is the same fixed agent-orchestrator.
+	got := m.Drain("t1", "agent-orchestrator")
+	if len(got) != 1 || got[0].Body != "for t1" {
+		t.Fatalf("t1 drain = %+v", got)
+	}
+	if inbox := m.Inbox("t2", "agent-orchestrator"); len(inbox) != 1 || inbox[0].Body != "for t2" {
+		t.Fatalf("t2 inbox after t1 drain = %+v", inbox)
 	}
 }

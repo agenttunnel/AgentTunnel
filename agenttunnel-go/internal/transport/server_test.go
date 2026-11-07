@@ -97,7 +97,7 @@ func TestHandleToolCallMessage(t *testing.T) {
 	if len(state.Mailbox) != 1 || state.Mailbox[0].To != "agent-hub" || state.Mailbox[0].Body != "ping the hub" {
 		t.Fatalf("mailbox = %+v", state.Mailbox)
 	}
-	if inbox := runner.Mailbox().Inbox("agent-hub"); len(inbox) != 1 {
+	if inbox := runner.Mailbox().Inbox("t1", "agent-hub"); len(inbox) != 1 {
 		t.Fatalf("hub inbox = %+v", inbox)
 	}
 }
