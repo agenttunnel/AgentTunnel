@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -230,4 +231,32 @@ func TestEngineStateIsIsolatedFromWorker(t *testing.T) {
 	if again.Title != contracts.DefaultThreadTitle {
 		t.Fatalf("snapshot mutation leaked: %q", again.Title)
 	}
+}
+
+// Unsubscribing must never panic a concurrent publish: senders snapshot the
+// listener set under the lock and deliver after releasing it, so unsubscribe
+// removes the channel without closing it. This hammers both sides at once; a
+// close-on-unsubscribe send panics under the race detector.
+func TestEngineUnsubscribeConcurrentWithDispatch(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c0", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			mustDispatch(t, e, ctx, contracts.Command{
+				ID: fmt.Sprintf("c-%d", i), Type: contracts.CmdMessageAppend, ThreadID: "t1",
+				Message: &contracts.MessageSent{MessageID: fmt.Sprintf("m-%d", i), Author: "user", Text: "hi"},
+			})
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		_, unsub := e.Subscribe("t1")
+		e.Publish("t1", contracts.AgentOutput{AgentID: "a1", Kind: contracts.LogText, Text: "tick"})
+		// Overlap the in-flight listener snapshot: unsubscribe while events
+		// are still being delivered to the set this subscription was part of.
+		unsub()
+	}
+	<-done
 }

@@ -247,7 +247,11 @@ func (e *Engine) Publish(threadID contracts.ThreadID, payload contracts.EventPay
 }
 
 // Subscribe returns a channel of committed events for a thread, plus an
-// unsubscribe function. The channel is closed when unsubscribed.
+// unsubscribe function. Unsubscribing removes the channel from the engine; it
+// is NOT closed — senders snapshot the listener set under the engine lock and
+// deliver after releasing it, so closing here could panic a concurrent send.
+// Consumers stop via their own context, the way the transport does; the
+// channel and any undelivered events are garbage once unsubscribed.
 func (e *Engine) Subscribe(id contracts.ThreadID) (<-chan contracts.Event, func()) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -262,10 +266,7 @@ func (e *Engine) Subscribe(id contracts.ThreadID) (<-chan contracts.Event, func(
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		if m := e.subs[id]; m != nil {
-			if c, ok := m[key]; ok {
-				delete(m, key)
-				close(c)
-			}
+			delete(m, key)
 		}
 	}
 }
