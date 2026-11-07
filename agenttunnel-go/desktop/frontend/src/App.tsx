@@ -1502,7 +1502,7 @@ export default function App() {
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               onClick={() => thread && toggle("peerMailbox", !thread.peerMailbox)}
-              title="Let subagents message each other"
+              aria-label="Let subagents message each other"
             >
               <span className="sw" /> Peer chat
             </div>

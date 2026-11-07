@@ -179,7 +179,7 @@ export function AgentGraph({
             className="graph-node"
             style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
             onClick={() => onOpenAgent(n.id)}
-            title={`${n.name} (${n.role}) — open details`}
+            aria-label={`${n.name} (${n.role}) — open details`}
           >
             <div className="graph-node-head">
               <span className={`dot ${n.status}`} />
@@ -210,7 +210,7 @@ export function AgentGraph({
                       {nameOf(m.from)} → {nameOf(m.to)}
                     </span>
                     {fullTime(m.at) && (
-                      <span className="graph-msg-time" title={fullTime(m.at)}>
+                      <span className="graph-msg-time" aria-label={fullTime(m.at)}>
                         {fmtTime(m.at)}
                       </span>
                     )}
