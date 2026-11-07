@@ -326,3 +326,186 @@ esac`
 		t.Fatalf("second inbox should be empty after the turn: %+v", inbox)
 	}
 }
+
+func TestPostMessageRejectsEmptyBody(t *testing.T) {
+	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	enablePeerMailbox(t, r, ctx)
+
+	if err := r.PostMessage(ctx, "t1", "agent-orchestrator", "orchestrator", "   "); !errors.Is(err, ErrEmptyMessage) {
+		t.Fatalf("want ErrEmptyMessage, got %v", err)
+	}
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 0 {
+		t.Fatalf("empty message was recorded: %+v", state.Mailbox)
+	}
+}
+
+func TestResolveRecipientPrefersNonTerminalAgent(t *testing.T) {
+	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	enablePeerMailbox(t, r, ctx)
+	for _, id := range []contracts.AgentID{"agent-r1", "agent-r2"} {
+		if err := r.Dispatch(ctx, "t1", []contracts.DispatchTask{{
+			AgentID: id, Name: "researcher", Role: contracts.RoleExecutor, Task: "research",
+		}}); err != nil {
+			t.Fatalf("dispatch %s: %v", id, err)
+		}
+	}
+	r.setStatus(ctx, "t1", "agent-r2", contracts.AgentSucceeded, "")
+
+	// Two agents share the name; the one still running is addressed.
+	if err := r.PostMessage(ctx, "t1", "agent-orchestrator", "researcher", "first"); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	state, _ := eng.State(ctx, "t1")
+	if state.Mailbox[0].To != "agent-r1" {
+		t.Fatalf("resolved to %s, want the non-terminal agent-r1: %+v", state.Mailbox[0].To, state.Mailbox)
+	}
+
+	// With all of them finished, the newest with that name wins.
+	r.setStatus(ctx, "t1", "agent-r1", contracts.AgentSucceeded, "")
+	if err := r.PostMessage(ctx, "t1", "agent-orchestrator", "researcher", "second"); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	state, _ = eng.State(ctx, "t1")
+	if state.Mailbox[1].To != "agent-r2" {
+		t.Fatalf("resolved to %s, want the newest agent-r2: %+v", state.Mailbox[1].To, state.Mailbox)
+	}
+}
+
+func TestSubagentPrintedMessageRoutesThroughToolInbox(t *testing.T) {
+	// The tool line is printed, not executed, and is followed by more output:
+	// the two must stay separate lines or the message body is corrupted.
+	script := `case "$AT_ROLE" in
+orchestrator) printf '{"type":"text","text":"leading"}\n' ;;
+*)
+  printf '%s\n' 'tool message --to orchestrator --text "the build is broken"'
+  printf '%s\n' 'summary line follows'
+  ;;
+esac`
+
+	r, eng, ctx := newHarness(t, script)
+	enablePeerMailbox(t, r, ctx)
+	tasks := []contracts.DispatchTask{{AgentID: "agent-worker", Name: "worker", Role: contracts.RoleExecutor, Task: "work"}}
+	if err := r.Dispatch(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+
+	// The printed line became a message call attributed to the subagent.
+	calls := r.DrainTools("t1")
+	if len(calls) != 1 ||
+		calls[0].Kind != toolbox.KindMessage || calls[0].AgentID != "agent-worker" ||
+		calls[0].To != "orchestrator" || calls[0].Text != "the build is broken" {
+		t.Fatalf("inbox calls = %+v", calls)
+	}
+	// Findings kept the prose, not the tool line.
+	result := r.Notebook().Get("result_worker")
+	if len(result) != 1 || result[0].Value != "summary line follows" {
+		t.Fatalf("worker result = %+v", result)
+	}
+
+	// The drain delivers it as a durable message from the subagent. The box
+	// was drained for the assertion above, so put the call back.
+	r.tools.Post("t1", calls[0])
+	if tasks := New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil); len(tasks) != 0 {
+		t.Fatalf("a message is not a task: %+v", tasks)
+	}
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 ||
+		state.Mailbox[0].From != "agent-worker" || state.Mailbox[0].To != "agent-orchestrator" ||
+		state.Mailbox[0].Body != "the build is broken" {
+		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+}
+
+func TestSubagentProtocolMessageFrameRoutesThroughToolInbox(t *testing.T) {
+	script := `case "$AT_ROLE" in
+orchestrator) printf '{"type":"text","text":"leading"}\n' ;;
+*) printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"message","to":"orchestrator","body":"protocol ping"}' ;;
+esac`
+
+	r, eng, ctx := newHarness(t, script)
+	enablePeerMailbox(t, r, ctx)
+	tasks := []contracts.DispatchTask{{AgentID: "agent-worker", Name: "worker", Role: contracts.RoleExecutor, Task: "work"}}
+	if err := r.Dispatch(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := r.DrainTools("t1")
+	if len(calls) != 1 ||
+		calls[0].Kind != toolbox.KindMessage || calls[0].AgentID != "agent-worker" ||
+		calls[0].To != "orchestrator" || calls[0].Text != "protocol ping" {
+		t.Fatalf("inbox calls = %+v", calls)
+	}
+	r.tools.Post("t1", calls[0])
+	New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil)
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 || state.Mailbox[0].Body != "protocol ping" || state.Mailbox[0].From != "agent-worker" {
+		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+}
+
+func TestOrchestratorProtocolMessageReachesSamePassDispatch(t *testing.T) {
+	// Pass 0 dispatches an agent over the protocol and messages it in the same
+	// breath: the dispatch has not reached the thread state yet, so the message
+	// must resolve against the pass's pending dispatch.
+	script := `case "$AT_ROLE" in
+orchestrator)
+  if [ "$AT_PASS" = "0" ]; then
+    printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","taskId":"worker","task":"work","role":"executor"}'
+    printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"message","to":"worker","body":"bring the config"}'
+  fi
+  printf '{"type":"text","text":"pass-%s"}\n' "$AT_PASS"
+  ;;
+*) printf '{"type":"text","text":"worked"}\n' ;;
+esac`
+
+	r, eng, ctx := newHarness(t, script)
+	enablePeerMailbox(t, r, ctx)
+
+	if err := New(r).RunTurn(ctx, "t1", "run the job"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 {
+		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+	msg := state.Mailbox[0]
+	if msg.From != "agent-orchestrator" || msg.To != "agent-worker" || msg.Body != "bring the config" {
+		t.Fatalf("message = %+v", msg)
+	}
+}
+
+func TestRunTurnProtocolDispatchRunsOnce(t *testing.T) {
+	// A protocol dispatch and a box-minted one must not both end up in the
+	// task list, or the agent runs twice. The worker reports usage per run,
+	// so a double run doubles the ledger.
+	script := `case "$AT_ROLE" in
+orchestrator)
+  if [ "$AT_PASS" = "0" ]; then
+    printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","taskId":"worker","task":"work","role":"executor"}'
+  fi
+  printf '{"type":"text","text":"done"}\n' ;;
+*)
+  printf '{"type":"text","text":"worked"}\n'
+  printf '{"usage":{"input_tokens":3,"output_tokens":2}}\n' ;;
+esac`
+
+	r, eng, ctx := newHarness(t, script)
+	if err := New(r).RunTurn(ctx, "t1", "run the job"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+	state, _ := eng.State(ctx, "t1")
+	if state.Agents["agent-worker"].Status != contracts.AgentSucceeded {
+		t.Fatalf("worker status = %s", state.Agents["agent-worker"].Status)
+	}
+	if got := state.Usage["agent-worker"].Usage.InputTokens; got != 3 {
+		t.Fatalf("worker ran %d time(s)-worth of tokens, want exactly one run", got/3)
+	}
+}

@@ -49,7 +49,7 @@ func safeName(name string) string {
 
 // toolTasks turns the tool calls an agent posted during a pass into work items,
 // folding notes into the shared notebook and forwarding peer messages.
-// `pending` lists dispatches already minted for this pass (e.g. protocol
+// `minted` lists dispatches already minted for this pass (e.g. protocol
 // dispatches) that a message may address before the state knows them.
 func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadID, orchID contracts.AgentID, minted []contracts.DispatchTask) []contracts.DispatchTask {
 	// `minted` are the pass's protocol dispatches: they join the task list the

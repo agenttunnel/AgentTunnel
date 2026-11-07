@@ -1,0 +1,86 @@
+package toolcli
+
+import (
+	"context"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
+	"github.com/agenttunnel/agenttunnel-go/internal/transport"
+)
+
+// newCLIServer assembles a real daemon HTTP surface for the tool CLI to post
+// against, so the flags the CLI defines are the ones the server reads.
+func newCLIServer(t *testing.T) (*domain.Engine, *orchestrator.Runner) {
+	t.Helper()
+	ctx := context.Background()
+	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
+	eng.Start(ctx)
+	t.Cleanup(eng.Close)
+
+	runner := orchestrator.NewRunner(orchestrator.Deps{
+		Engine:  eng,
+		Logs:    logstore.New(t.TempDir()),
+		Mailbox: contextstore.NewMailbox(),
+	})
+	runner.Mailbox().SetEnabled(true)
+	disp := transport.NewDispatcher(transport.DispatcherDeps{Engine: eng, Runner: runner})
+	srv := transport.NewServer(disp, eng, runner, "secret", toolbox.New())
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	t.Setenv("AT_DAEMON_URL", httpSrv.URL)
+	t.Setenv("AT_TOKEN", "secret")
+	t.Setenv("AT_THREAD_ID", "t1")
+	t.Setenv("AT_AGENT_ID", "agent-hub")
+	return eng, runner
+}
+
+func TestToolMessageCLI(t *testing.T) {
+	eng, runner := newCLIServer(t)
+	ctx := context.Background()
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c", Type: contracts.CmdThreadCreate, ThreadID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Dispatch(ctx, "t1", []contracts.DispatchTask{{
+		AgentID: "agent-hub", Name: "hub", Role: contracts.RoleExecutor, Task: "hub work",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := Run([]string{"message", "--to", "orchestrator", "--text", "ping the lead"}); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 ||
+		state.Mailbox[0].From != "agent-hub" || state.Mailbox[0].To != "agent-orchestrator" ||
+		state.Mailbox[0].Kind != "message" || state.Mailbox[0].Body != "ping the lead" {
+		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+	if inbox := runner.Mailbox().Inbox("agent-orchestrator"); len(inbox) != 1 {
+		t.Fatalf("lead inbox = %+v", inbox)
+	}
+
+	// A message without --to is rejected by the server and reported as a
+	// failed command, so the model behind the CLI sees why. Nothing durable
+	// is recorded for the rejection.
+	if code := Run([]string{"message", "--text", "no recipient"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	state, _ = eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 {
+		t.Fatalf("rejected message was recorded: %+v", state.Mailbox)
+	}
+}
+
+func TestToolRequiresThreadID(t *testing.T) {
+	t.Setenv("AT_THREAD_ID", "")
+	if code := Run([]string{"note", "--text", "hi"}); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+}
