@@ -181,6 +181,14 @@ printf '{"type":"text","text":"pass prompt carried the messages"}\n'`
 	}}); err != nil {
 		t.Fatalf("dispatch researcher: %v", err)
 	}
+	// A dispatch alone leaves the agent pending — the state of one waiting on
+	// a dependency, whose messages belong in its own first prompt, not the
+	// lead's. The relay under test is for a RUNNING teammate, so the fixture
+	// starts it.
+	running := contracts.AgentRunning
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "run", Type: contracts.CmdAgentStatusSet, ThreadID: "t1", Status: &contracts.AgentStatusChanged{AgentID: "agent-researcher", Status: running}}); err != nil {
+		t.Fatalf("start researcher: %v", err)
+	}
 	enablePeerMailbox(t, r, ctx)
 
 	// Messages a running subagent posted before the next pass starts: one to
@@ -209,6 +217,80 @@ printf '{"type":"text","text":"pass prompt carried the messages"}\n'`
 	state, _ := eng.State(ctx, "t1")
 	if len(state.Mailbox) != 2 {
 		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+}
+
+func TestPostMessageAbsorbsEchoedDuplicate(t *testing.T) {
+	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	if err := r.Dispatch(ctx, "t1", []contracts.DispatchTask{{
+		AgentID: "agent-researcher", Name: "researcher", Role: contracts.RoleExecutor, Task: "research the flaky test",
+	}}); err != nil {
+		t.Fatalf("dispatch researcher: %v", err)
+	}
+	enablePeerMailbox(t, r, ctx)
+
+	// The mid-pass HTTP delivery lands first; the printed-line drain then
+	// offers the same message again — a harness that executes the command
+	// and echoes the line. One record, one runtime delivery.
+	if err := r.PostMessage(ctx, "t1", "agent-orchestrator", "researcher", "watch the flaky test"); err != nil {
+		t.Fatalf("post message: %v", err)
+	}
+	if err := r.PostMessage(ctx, "t1", "agent-orchestrator", "researcher", "watch the flaky test"); err != nil {
+		t.Fatalf("echoed duplicate should succeed as a no-op: %v", err)
+	}
+	state, _ := eng.State(ctx, "t1")
+	if len(state.Mailbox) != 1 {
+		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+	if inbox := r.Mailbox().Inbox("t1", "agent-researcher"); len(inbox) != 1 {
+		t.Fatalf("runtime inbox = %+v", inbox)
+	}
+
+	// A genuinely new message in the same turn still lands.
+	if err := r.PostMessage(ctx, "t1", "agent-orchestrator", "researcher", "it was the retry loop"); err != nil {
+		t.Fatalf("post second message: %v", err)
+	}
+	state, _ = eng.State(ctx, "t1")
+	if len(state.Mailbox) != 2 {
+		t.Fatalf("mailbox = %+v", state.Mailbox)
+	}
+}
+
+func TestDrainPeerMessagesSkipsPendingAgents(t *testing.T) {
+	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	enablePeerMailbox(t, r, ctx)
+	// Dispatched but never run: the agent is pending, the way one waiting on
+	// a dependency is between waves. Its messages must stay in its inbox for
+	// its first prompt, not relay to the lead's pass.
+	if err := r.Dispatch(ctx, "t1", []contracts.DispatchTask{{
+		AgentID: "agent-waiter", Name: "waiter", Role: contracts.RoleExecutor, Task: "wait for work",
+	}}); err != nil {
+		t.Fatalf("dispatch waiter: %v", err)
+	}
+	if err := r.Mailbox().Post("t1", contracts.MailboxPosted{From: "agent-orchestrator", To: "agent-waiter", Kind: "message", Body: "start when ready"}); err != nil {
+		t.Fatalf("post to runtime inbox: %v", err)
+	}
+
+	state, err := eng.State(ctx, "t1")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	o := New(r)
+	if got := o.drainPeerMessages(state); got != "" {
+		t.Fatalf("a pending agent's inbox must not drain into the lead's pass: %q", got)
+	}
+	if inbox := r.Mailbox().Inbox("t1", "agent-waiter"); len(inbox) != 1 {
+		t.Fatalf("message left the pending agent's inbox: %+v", inbox)
+	}
+
+	// Once started, the agent's messages relay like any running teammate's.
+	running := contracts.AgentRunning
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "s", Type: contracts.CmdAgentStatusSet, ThreadID: "t1", Status: &contracts.AgentStatusChanged{AgentID: "agent-waiter", Status: running}}); err != nil {
+		t.Fatalf("start agent: %v", err)
+	}
+	state, _ = eng.State(ctx, "t1")
+	if got := o.drainPeerMessages(state); !strings.Contains(got, "for waiter from agent-orchestrator: start when ready") {
+		t.Fatalf("a started agent's message should relay to the lead: %q", got)
 	}
 }
 

@@ -152,6 +152,15 @@ func (o *Orchestrator) drainPeerMessages(state *domain.ThreadState) string {
 	var b strings.Builder
 	for _, id := range state.AgentOrder {
 		agent := state.Agents[id]
+		// A pending agent has not started: its inbox is drained straight
+		// into its first prompt when its work starts (teammateMessages in
+		// runTask), so draining it here would steal that delivery. This
+		// makes the skip local rather than relying on Dispatch and Run being
+		// adjacent: Run ends every dispatched agent terminal before the next
+		// pass, so no turn ends with a pending agent holding messages.
+		if agent.Status == contracts.AgentPending {
+			continue
+		}
 		for _, msg := range o.runner.Mailbox().Drain(state.ID, id) {
 			// Compare against the lead's id rather than IsOrchestrator():
 			// parentage marks the team lead, and the roster can hold agents

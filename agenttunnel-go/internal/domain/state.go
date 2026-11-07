@@ -31,14 +31,23 @@ type TurnUsage struct {
 }
 
 // MailboxMessage is one peer message in a thread's read model: the durable
-// MailboxPosted payload stamped with the time it was recorded.
+// MailboxPosted payload stamped with the time it was recorded and the turn it
+// belongs to. The turn is the dedupe window for harnesses that both execute
+// the message command and echo the same line as text.
 type MailboxMessage struct {
 	From contracts.AgentID `json:"from"`
 	To   contracts.AgentID `json:"to"`
 	Kind string            `json:"kind"`
 	Body string            `json:"body"`
 	At   time.Time         `json:"at"`
+	Turn int               `json:"turn"`
 }
+
+// maxMailboxEntries bounds the mailbox read model, the way usage steps are
+// bounded: agent traffic is machine-generated and thread.get ships the whole
+// list, so without a cap the snapshot grows for the life of the thread. The
+// durable event log keeps everything; only the read model truncates.
+const maxMailboxEntries = 200
 
 // ThreadState is the read model for one thread, derived entirely from its event
 // log by the projector. It is never mutated by clients directly.

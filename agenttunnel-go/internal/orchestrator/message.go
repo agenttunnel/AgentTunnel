@@ -65,6 +65,19 @@ func (r *Runner) postMessage(ctx context.Context, threadID contracts.ThreadID, f
 	}
 
 	msg := contracts.MailboxPosted{From: from, To: resolved, Kind: "message", Body: body}
+	// A harness that executes the message command AND echoes the same line
+	// into its text output delivers the message twice: once over `/tool/call`
+	// mid-pass, once through the printed-line drain. The durable record is
+	// the truth — an identical from/to/body already posted this turn is the
+	// echo, not a new message, so absorb it instead of duplicating it.
+	for _, m := range st.Mailbox {
+		if m.Turn == st.Turn && m.From == from && m.To == resolved && m.Body == body {
+			r.auditLog("mailbox.duplicate", map[string]any{
+				"threadId": string(threadID), "from": string(from), "to": string(resolved),
+			})
+			return nil
+		}
+	}
 	if r.mailbox != nil {
 		if err := r.mailbox.Post(threadID, msg); err != nil {
 			return err
