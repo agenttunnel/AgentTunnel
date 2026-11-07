@@ -68,10 +68,54 @@ func TestParseCommandLineIgnoresProse(t *testing.T) {
 		"I will use the tool dispatch flow.",
 		"tool dispatch needs a task",
 		"$AT_TOOL tool dispatch",
+		"$AT_TOOL tool spawn",
 		"$AT_TOOL tool unknown --text x",
+		"tool approve something",
 	} {
 		if call, ok := ParseCommandLine(line); ok {
 			t.Fatalf("%q parsed as %+v", line, call)
 		}
+	}
+}
+
+func TestParseCommandLineSpawn(t *testing.T) {
+	call, ok := ParseCommandLine(`"$AT_TOOL" tool spawn --role executor --name inner --task "write the inner tests" --depends-on outer`)
+	if !ok {
+		t.Fatal("expected a spawn call")
+	}
+	if call.Kind != KindSpawn || call.Name != "inner" || call.Role != contracts.RoleExecutor {
+		t.Fatalf("call = %+v", call)
+	}
+	if call.Task != "write the inner tests" {
+		t.Fatalf("task = %q", call.Task)
+	}
+	if !reflect.DeepEqual(call.DependsOn, []string{"outer"}) {
+		t.Fatalf("dependsOn = %v", call.DependsOn)
+	}
+}
+
+func TestParseCommandLineSpawnRequiresTask(t *testing.T) {
+	if call, ok := ParseCommandLine(`$AT_TOOL tool spawn --name inner`); ok {
+		t.Fatalf("spawn without a task parsed as %+v", call)
+	}
+}
+
+func TestParseCommandLineApproveAndRejectRequireName(t *testing.T) {
+	call, ok := ParseCommandLine(`$AT_TOOL tool approve --name inner`)
+	if !ok || call.Kind != KindApprove || call.Name != "inner" {
+		t.Fatalf("call = %+v ok=%v", call, ok)
+	}
+	if call.Role != "" {
+		t.Fatalf("approve should not carry a role: %+v", call)
+	}
+	call, ok = ParseCommandLine(`$AT_TOOL tool reject --name inner`)
+	if !ok || call.Kind != KindReject || call.Name != "inner" {
+		t.Fatalf("call = %+v ok=%v", call, ok)
+	}
+	if call, ok := ParseCommandLine(`$AT_TOOL tool approve`); ok {
+		t.Fatalf("approve without a name parsed as %+v", call)
+	}
+	if call, ok := ParseCommandLine(`$AT_TOOL tool reject`); ok {
+		t.Fatalf("reject without a name parsed as %+v", call)
 	}
 }

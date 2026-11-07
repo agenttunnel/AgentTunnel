@@ -77,16 +77,20 @@ func ParseCommandLine(line string) (Call, bool) {
 			}
 		}
 	}
-	if call.Role == "" {
+	// Only task-carrying kinds get a role default; approve and reject name no
+	// role and carrying one would be meaningless.
+	if (call.Kind == KindDispatch || call.Kind == KindSpawn) && call.Role == "" {
 		call.Role = contracts.RoleExecutor
 	}
 	switch call.Kind {
-	case KindDispatch:
+	case KindDispatch, KindSpawn:
 		return call, strings.TrimSpace(call.Task) != ""
 	case KindNote, KindProgress, KindDone, KindLearn:
 		return call, strings.TrimSpace(call.Text) != ""
 	case KindMessage:
 		return call, strings.TrimSpace(call.Text) != "" && strings.TrimSpace(call.To) != ""
+	case KindApprove, KindReject:
+		return call, strings.TrimSpace(call.Name) != ""
 	default:
 		return Call{}, false
 	}
@@ -94,7 +98,8 @@ func ParseCommandLine(line string) (Call, bool) {
 
 func knownKind(s string) bool {
 	switch Kind(s) {
-	case KindDispatch, KindNote, KindProgress, KindDone, KindLearn, KindMessage:
+	case KindDispatch, KindNote, KindProgress, KindDone, KindLearn, KindMessage,
+		KindSpawn, KindApprove, KindReject:
 		return true
 	default:
 		return false

@@ -131,9 +131,9 @@ func TestSetPeerMailboxRPCGatesMessages(t *testing.T) {
 
 // graphScript drives one turn whose traffic the agent graph read model must
 // expose: the lead dispatches a researcher, the researcher spends tokens and
-// reports to the lead with a printed `tool message` line. The report is
-// drained by toolTasks only after the next pass, so it surfaces in the final
-// summary's late-peer-messages section (mid-run HTTP delivery is covered by
+// reports to the lead with a printed `tool message` line. The report is posted
+// by the pass-end stream scan and drained by the next pass's pre-drain, so it
+// lands in that pass's prompt (mid-run HTTP delivery is covered by
 // TestPeerMessageFlowThroughARealTurn). Commands ride JSON text events with
 // trailing newlines: consecutive plain lines are merged before parsing.
 const graphScript = `case "$AT_ROLE" in
@@ -144,6 +144,12 @@ orchestrator)
       printf '{"type":"text","text":"dispatched"}\n'
       ;;
     *)
+      # The researcher's printed report is drained into this pass's prompt
+      # (the pre-pass drain), the same pass the HTTP path delivers in.
+      case "$1" in
+        *"## Peer messages"*"mapped the repo"*) ;;
+        *) printf '{"type":"error","text":"pass prompt lacked the peer report"}\n'; exit 1 ;;
+      esac
       printf '{"type":"text","text":"all done"}\n'
       ;;
   esac
@@ -235,17 +241,17 @@ func TestThreadGetExposesGraphReadModel(t *testing.T) {
 	}
 	json.Unmarshal(call(t, c, "poll", "thread.get", map[string]any{"threadId": created.ThreadID}), &state)
 
-	// The report reached the lead: the final orchestrator message carries the
-	// late peer-message section.
+	// The report reached the lead: the researcher's printed message is
+	// delivered into the lead's final pass prompt (asserted inside the
+	// script), and the lead's last message shows the turn completed.
 	var final string
 	for _, m := range state.Messages {
 		if m.Author == "orchestrator" {
 			final = m.Text
 		}
 	}
-	if !strings.Contains(final, "Peer messages received after the final pass") ||
-		!strings.Contains(final, "mapped the repo") {
-		t.Fatalf("final message = %q, want the late peer report", final)
+	if final != "all done" {
+		t.Fatalf("final message = %q, want %q", final, "all done")
 	}
 
 	// Spawn edges: the lead has no parent; the researcher hangs off the lead

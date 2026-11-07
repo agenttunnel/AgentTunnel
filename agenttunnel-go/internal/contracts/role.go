@@ -57,7 +57,8 @@ func BuiltinRoles() []Role {
 			Builtin:        true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are an executor. Implement the assigned task in the working tree, run the relevant checks, " +
-				"and report what you changed. Do not spawn more agents.",
+				"and report what you changed. If the task splits into smaller pieces you may propose subagents with " +
+				"\"$AT_TOOL\" tool spawn; they only run once the team lead approves.",
 		},
 		{
 			ID:             RoleTester,

@@ -491,7 +491,7 @@ esac`
 	// The drain delivers it as a durable message from the subagent. The box
 	// was drained for the assertion above, so put the call back.
 	r.tools.Post("t1", calls[0])
-	if tasks := New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil); len(tasks) != 0 {
+	if tasks := New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("a message is not a task: %+v", tasks)
 	}
 	state, _ := eng.State(ctx, "t1")
@@ -525,7 +525,7 @@ esac`
 		t.Fatalf("inbox calls = %+v", calls)
 	}
 	r.tools.Post("t1", calls[0])
-	New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil)
+	New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil, nil)
 	state, _ := eng.State(ctx, "t1")
 	if len(state.Mailbox) != 1 || state.Mailbox[0].Body != "protocol ping" || state.Mailbox[0].From != "agent-worker" {
 		t.Fatalf("mailbox = %+v", state.Mailbox)

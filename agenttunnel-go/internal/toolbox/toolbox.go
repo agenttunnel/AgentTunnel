@@ -31,6 +31,13 @@ const (
 	// KindMessage sends a peer message to another agent (or the orchestrator)
 	// through the thread's mailbox. It requires the peer mailbox to be enabled.
 	KindMessage Kind = "message"
+	// KindSpawn proposes a subagent of the caller's own; it only runs once the
+	// team lead approves it.
+	KindSpawn Kind = "spawn"
+	// KindApprove and KindReject are the lead's decision on a pending spawn
+	// request, selected by --name.
+	KindApprove Kind = "approve"
+	KindReject  Kind = "reject"
 )
 
 // Call is one recorded tool invocation.

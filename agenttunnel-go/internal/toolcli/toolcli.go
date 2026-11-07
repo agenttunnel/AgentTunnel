@@ -18,7 +18,7 @@ import (
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -27,9 +27,9 @@ func Run(args []string) int {
 	role := fs.String("role", "executor", "role that should run the task")
 	name := fs.String("name", "", "short task name, used by --depends-on")
 	lane := fs.String("lane", "", "pipeline this task belongs to (for the agents view)")
-	task := fs.String("task", "", "task description (for dispatch)")
-	harness := fs.String("harness", "", "harness override (for dispatch)")
-	model := fs.String("model", "", "model override (for dispatch)")
+	task := fs.String("task", "", "task description (for dispatch and spawn)")
+	harness := fs.String("harness", "", "harness override (for dispatch and spawn)")
+	model := fs.String("model", "", "model override (for dispatch and spawn)")
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
 	text := fs.String("text", "", "text for a note or progress update")
 	summary := fs.String("summary", "", "summary for done")

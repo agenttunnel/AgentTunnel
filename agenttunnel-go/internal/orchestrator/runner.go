@@ -78,6 +78,8 @@ type Runner struct {
 	// agent can be stopped from the UI without touching its siblings.
 	cancelMu sync.Mutex
 	cancels  map[contracts.AgentID]*trackedCancel
+
+	spawns *spawnStore
 }
 
 // NewRunner wires a runner from its dependencies.
@@ -104,6 +106,7 @@ func NewRunner(d Deps) *Runner {
 		endpoint:  d.Endpoint,
 		clock:     d.Clock,
 		cfg:       d.Cfg,
+		spawns:    newSpawnStore(),
 	}
 }
 
@@ -341,11 +344,13 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 			r.recordUsage(ctx, threadID, t.AgentID, t.Role, false, *ev.Usage)
 		}
 		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
-			// A protocol message frame is a tool action, not a finding.
-			if call, ok := ParseToolLine(ev.Text); ok && call.Name == "message" &&
-				strings.TrimSpace(call.To) != "" && strings.TrimSpace(call.Body) != "" {
-				r.postMessageCall(threadID, t.AgentID, call.To, call.Body)
-				continue
+			// A protocol action frame is a tool call, not a finding: routes
+			// through the inbox like a printed command line.
+			if frame, ok := ParseToolLine(ev.Text); ok {
+				if call, ok := frameCall(frame); ok {
+					r.postAgentCall(threadID, t.AgentID, call)
+					continue
+				}
 			}
 			text = append(text, ev.Text)
 		}
@@ -365,17 +370,17 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		return "", errors.New(msg)
 	}
 
-	// Some harnesses print the `$AT_TOOL tool message …` command instead of
-	// executing it. Route those lines through the tool inbox, attributed to
-	// this agent, so the next pass delivers them like a real call; everything
-	// else stays the agent's findings. Text deltas are arbitrary chunks, so a
-	// printed command can straddle two events — join without separators, the
-	// real newlines are already in the deltas.
+	// Some harnesses print the `$AT_TOOL tool …` command instead of executing
+	// it with their shell. Route the action kinds through the tool inbox,
+	// attributed to this agent, so the next pass handles them like a real
+	// call; everything else stays the agent's findings. Text deltas are
+	// arbitrary chunks, so a printed command can straddle two events — join
+	// without separators, the real newlines are already in the deltas.
 	raw := strings.Join(text, "")
 	var findings []string
 	for _, line := range strings.Split(raw, "\n") {
-		if call, ok := toolbox.ParseCommandLine(line); ok && call.Kind == toolbox.KindMessage {
-			r.postMessageCall(threadID, t.AgentID, call.To, call.Text)
+		if call, ok := toolbox.ParseCommandLine(line); ok && routedPrintedKind(call.Kind) {
+			r.postAgentCall(threadID, t.AgentID, call)
 			continue
 		}
 		findings = append(findings, line)
@@ -392,16 +397,34 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	return summary, werr
 }
 
-// postMessageCall queues one peer message pulled out of an agent's stream — a
-// printed command line or a protocol frame — as a tool call attributed to that
-// agent, so the next toolTasks drain delivers it through PostMessage.
-func (r *Runner) postMessageCall(threadID contracts.ThreadID, from contracts.AgentID, to, body string) {
+// postAgentCall queues one tool call pulled out of an agent's stream — a
+// printed command line or a protocol frame — attributed to that agent, so the
+// next toolTasks drain handles it like a real call: a message forwards through
+// the mailbox, a subagent's dispatch or spawn becomes a gated spawn request,
+// and the lead's spawn or decision runs directly.
+func (r *Runner) postAgentCall(threadID contracts.ThreadID, from contracts.AgentID, call toolbox.Call) {
+	call.AgentID = from
 	if r.tools == nil {
 		return
 	}
-	r.tools.Post(threadID, toolbox.Call{Kind: toolbox.KindMessage, AgentID: from, To: to, Text: body})
-	_ = r.logs.Append(contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: "tool message", At: r.clock()})
-	r.publishOutput(threadID, from, contracts.LogTool, "tool message")
+	r.tools.Post(threadID, call)
+	line := "tool " + string(call.Kind)
+	_ = r.logs.Append(contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
+	r.publishOutput(threadID, from, contracts.LogTool, line)
+}
+
+// routedPrintedKind reports whether a printed tool command from a subagent is
+// an action to route rather than findings. Dispatch and spawn become gated
+// spawn requests in the drain, and approve/reject from a non-lead are ignored
+// with an audit; message forwards through the mailbox. Every other kind a
+// subagent prints stays its findings.
+func routedPrintedKind(k toolbox.Kind) bool {
+	switch k {
+	case toolbox.KindMessage, toolbox.KindDispatch, toolbox.KindSpawn, toolbox.KindApprove, toolbox.KindReject:
+		return true
+	default:
+		return false
+	}
 }
 
 // runOrchestratorPass runs one orchestrator process and collects its text output
@@ -449,11 +472,11 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 	var calls []ToolCall
 	for ev := range events {
 		if call, ok := ParseToolLine(ev.Text); ok {
-			// A protocol message frame is delivered through the same inbox
-			// drain as a printed command line; only dispatch actions can be
-			// acted on directly here.
-			if call.Name == "message" && strings.TrimSpace(call.To) != "" && strings.TrimSpace(call.Body) != "" {
-				r.postMessageCall(threadID, agentID, call.To, call.Body)
+			// A protocol action frame is delivered through the same inbox
+			// drain as a printed command line; only dispatch frames are
+			// minted directly into the pass's task set here.
+			if routed, ok := frameCall(call); ok && call.Name != "dispatch_task" {
+				r.postAgentCall(threadID, agentID, routed)
 				continue
 			}
 			calls = append(calls, *call)

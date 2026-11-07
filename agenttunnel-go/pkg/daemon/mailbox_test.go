@@ -18,19 +18,31 @@ import (
 // mailboxScript drives one full turn of peer messaging without a real model:
 // the lead dispatches a researcher on pass 0; the researcher reports back with
 // a printed `tool message` line (exactly once, via a marker file, so a second
-// turn proves no re-delivery). Any pass prompt that already carries the
-// researcher's message fails the harness, pinning delivery to the late drain.
+// turn proves no re-delivery). The report must reach the lead's next pass
+// prompt — the same pass the mid-run HTTP path delivers in — and must not be
+// delivered again in a later turn.
 const mailboxScript = `case "$AT_ROLE" in
 orchestrator)
   if [ "$AT_PASS" = "0" ]; then
     printf '%s\n' 'tool dispatch --role executor --name researcher --task "find the flaky test"'
+  else
+    seen="${TMPDIR:-/tmp}/at-e2e-lead-$AT_THREAD_ID"
+    case "$1" in
+      *"the flaky test is payment.e2e"*)
+        if [ -e "$seen" ]; then
+          printf '{"type":"error","text":"the report was re-delivered"}\n'
+          exit 1
+        fi
+        : > "$seen"
+        ;;
+      *)
+        if [ ! -e "$seen" ]; then
+          printf '{"type":"error","text":"pass prompt lacked the researcher report"}\n'
+          exit 1
+        fi
+        ;;
+    esac
   fi
-  case "$1" in
-    *"the flaky test is payment.e2e"*)
-      printf '{"type":"error","text":"peer message leaked into a pass prompt early"}\n'
-      exit 1
-      ;;
-  esac
   printf '{"type":"text","text":"pass-%s"}\n' "$AT_PASS"
   ;;
 *)
@@ -164,16 +176,15 @@ func TestPeerMailboxEndToEnd(t *testing.T) {
 		t.Fatalf("mailbox entry has no timestamp: %+v", state.Mailbox[0])
 	}
 
-	// (c) the message arrived after the last pass, so it surfaces once in the
-	// orchestrator's final message instead of being lost.
+	// (c) the report reached the lead's final pass prompt (the script fails
+	// the harness otherwise), so the turn's last message is plain prose.
 	final := ""
 	for _, m := range state.Messages {
 		if m.Author == "orchestrator" {
 			final = m.Text
 		}
 	}
-	if !strings.Contains(final, "Peer messages received after the final pass:") ||
-		!strings.Contains(final, "from agent-researcher-1: the flaky test is payment.e2e") {
+	if final != "pass-1" {
 		t.Fatalf("final message = %q", final)
 	}
 
@@ -193,8 +204,10 @@ func TestPeerMailboxEndToEnd(t *testing.T) {
 			final = m.Text
 		}
 	}
-	if sawBody != 1 {
-		t.Fatalf("message body appeared %d times in the transcript, want 1", sawBody)
+	// The report lives in the durable mailbox and the prompts it was drained
+	// into — it must never spill into the lead's summary prose.
+	if sawBody != 0 {
+		t.Fatalf("message body appeared %d times in the transcript, want 0", sawBody)
 	}
 	if strings.Contains(final, "Peer messages") {
 		t.Fatalf("second turn re-delivered the message: %q", final)

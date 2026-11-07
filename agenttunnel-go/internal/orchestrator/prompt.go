@@ -33,7 +33,9 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
 		}
 	}
-	b.WriteString("\n\nDo not spawn more agents. Report progress and findings with ")
+	b.WriteString("\n\nIf your task splits into smaller pieces you may propose your own subagents with:\n")
+	b.WriteString("  \"$AT_TOOL\" tool spawn --role executor --name <short-name> --task \"<what it should do>\"\n")
+	b.WriteString("A proposal only runs after the team lead approves it; keep working on your own task while you wait. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
 	b.WriteString(" lines. Record durable, project-agnostic learnings (conventions, gotchas worth keeping) with: \"$AT_TOOL\" tool learn --text \"...\"\n")
 	if peerMailbox {
@@ -43,12 +45,31 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 	return b.String()
 }
 
-// BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including the
-// agents already dispatched so a later pass does not repeat work, any steering
-// the user sent mid-run, and any peer messages that arrived since the last pass.
-// The peer message tool is documented only when the thread has the peer mailbox
-// enabled.
-func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, peerMessages string, peerMailbox bool, runtimeChoices string) string {
+// OrchestratorPrompt is everything the lead's pass prompt can carry. It exists
+// so BuildOrchestratorPrompt's signature stays readable as sections are added;
+// zero values render no section.
+type OrchestratorPrompt struct {
+	Role           contracts.Role
+	UserMessage    string
+	Inherited      string
+	Shared         string
+	Roster         string
+	PendingSpawns  string
+	PeerMessages   string
+	PeerMailbox    bool
+	Pass           int
+	Steering       []string
+	RuntimeChoices string
+}
+
+// BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including
+// the agents already dispatched so a later pass does not repeat work, any pending
+// spawn requests awaiting the lead's decision, any peer messages that arrived
+// since the last pass, and any steering the user sent mid-run. The peer message
+// tool is documented only when the thread has the peer mailbox enabled.
+func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
+	role, userMessage, inherited, shared, roster, pass := in.Role, in.UserMessage, in.Inherited, in.Shared, in.Roster, in.Pass
+	steering, pending, peerMessages, peerMailbox, runtimeChoices := in.Steering, in.PendingSpawns, in.PeerMessages, in.PeerMailbox, in.RuntimeChoices
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	if strings.TrimSpace(inherited) != "" {
@@ -62,6 +83,10 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 	if strings.TrimSpace(roster) != "" {
 		b.WriteString("\n\n## Agents already dispatched\n")
 		b.WriteString(roster)
+	}
+	if strings.TrimSpace(pending) != "" {
+		b.WriteString("\n\n")
+		b.WriteString(pending)
 	}
 	b.WriteString("\n\n## User request\n")
 	b.WriteString(userMessage)

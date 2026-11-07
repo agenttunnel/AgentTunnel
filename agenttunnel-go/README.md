@@ -129,6 +129,7 @@ subagents. Messages are durable (`mailbox.posted` events, visible in
 | Shared context between agents                                 | `contextstore/notebook.go`                                                 |
 | Global inherited context                                      | `contextstore/inherited.go` (`.orchestrator-context/`)                     |
 | Peer agent-to-agent messaging                                 | `contextstore/mailbox.go` — **on by default**, toggled per thread          |
+| Gated subagent sub-spawns                                     | `orchestrator/spawns.go` — proposals pend until the lead approves          |
 | Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; comments flow into the next prompt |
 | GitHub/GitLab awareness                                       | **not yet** — next up                                                      |
 
