@@ -116,7 +116,7 @@ printf '{"type":"text","text":"ok"}\n'`
 		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 		Name: "inner", Task: "inner work",
 	})
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
 	if err := New(r).RunTurn(ctx, "t2", "unrelated work"); err != nil {
 		t.Fatalf("run turn t2: %v", err)
@@ -177,7 +177,7 @@ printf '{"type":"text","text":"ok"}\n'`
 			Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 			Name: "inner", Task: "undecided work",
 		})
-		New(r).toolTasks(thread, "agent-orchestrator")
+		New(r).toolTasks(context.Background(), thread, "agent-orchestrator", nil, nil)
 	}
 
 	if err := New(r).RunTurn(ctx, "t1", "do the thing"); err == nil {
@@ -199,7 +199,7 @@ func TestNonLeadRejectIsIgnored(t *testing.T) {
 		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 		Name: "inner", Task: "x",
 	})
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
 	var mu sync.Mutex
 	var decisions []map[string]any
@@ -211,7 +211,7 @@ func TestNonLeadRejectIsIgnored(t *testing.T) {
 		}
 	}
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindReject, AgentID: "agent-outer-2", Name: "inner"})
-	if tasks := New(r).toolTasks("t1", "agent-orchestrator"); len(tasks) != 0 {
+	if tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("a non-lead reject must not run or alter anything: %+v", tasks)
 	}
 	if got := r.spawns.list("t1"); len(got) != 1 || got[0].Name != "inner" {
@@ -224,5 +224,89 @@ func TestNonLeadRejectIsIgnored(t *testing.T) {
 	}
 	if decisions[0]["kind"] != "reject" || decisions[0]["agentId"] != "agent-outer-2" {
 		t.Fatalf("decision audit entry = %+v", decisions[0])
+	}
+}
+
+// A harness that prints the `tool spawn` command instead of executing it must
+// get the same gated loop as one that goes through the binary: the printed
+// line routes through the agent's stream scan, pends as a request, surfaces in
+// the lead's next pass prompt, and the printed approve runs it parented on the
+// proposer.
+func TestPrintedSpawnProposalRunsTheGatedLoop(t *testing.T) {
+	script := `case "$AT_ROLE" in
+orchestrator)
+  case "$AT_PASS" in
+  0) printf '%s\n' 'tool dispatch --role executor --name outer --task "outer work"' ;;
+  1)
+    case "$1" in
+      *"Pending spawn requests"*"inner"*"inner work"*) ;;
+      *) printf '{"type":"error","text":"pass prompt lacked the pending request"}\n'; exit 1 ;;
+    esac
+    printf '%s\n' 'tool approve --name inner'
+    ;;
+  esac
+  printf '{"type":"text","text":"report-%s"}\n' "$AT_PASS"
+  ;;
+*)
+  printf '%s\n' 'tool spawn --role executor --name inner --task "inner work"'
+  printf '{"type":"text","text":"outer findings"}\n'
+  ;;
+esac`
+
+	r, eng, ctx := newPromptHarness(t, script)
+	if err := New(r).RunTurn(ctx, "t1", "please build the feature"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	inner := state.Agents["agent-inner-2"]
+	if inner.Status != contracts.AgentSucceeded {
+		t.Fatalf("inner status = %s, agents = %+v", inner.Status, state.Agents)
+	}
+	if inner.ParentAgentID != "agent-outer-1" {
+		t.Fatalf("inner parent = %q, want the proposer agent-outer-1", inner.ParentAgentID)
+	}
+	if inner.Task != "inner work" {
+		t.Fatalf("approved request not preserved: %+v", inner)
+	}
+	// The printed proposal line left the executor's findings: the request is
+	// the action, not a result.
+	shared := state.Shared["result_outer"]
+	if strings.Contains(shared, "tool spawn") {
+		t.Fatalf("printed spawn line leaked into findings: %q", shared)
+	}
+}
+
+// A harness that speaks protocol frames gets the same routing: a spawn frame
+// from a subagent pends as a request and runs only after the lead approves.
+func TestSpawnFrameRunsTheGatedLoop(t *testing.T) {
+	script := `case "$AT_ROLE" in
+orchestrator)
+  case "$AT_PASS" in
+  0) printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"dispatch_task","taskId":"outer","task":"outer work","role":"executor"}' ;;
+  1) printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"approve","taskId":"inner"}' ;;
+  esac
+  printf '{"type":"text","text":"report-%s"}\n' "$AT_PASS"
+  ;;
+*)
+  printf '%s\n' '__AGENTTUNNEL_TOOL__ {"name":"spawn","taskId":"inner","task":"inner work","role":"executor"}'
+  printf '{"type":"text","text":"outer findings"}\n'
+  ;;
+esac`
+
+	r, eng, ctx := newPromptHarness(t, script)
+	if err := New(r).RunTurn(ctx, "t1", "please build the feature"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	// Protocol dispatches mint plain agent-<taskId> ids; the approved request
+	// is parented on that id.
+	inner := state.Agents["agent-inner-1"]
+	if inner.Status != contracts.AgentSucceeded {
+		t.Fatalf("inner status = %s, agents = %+v", inner.Status, state.Agents)
+	}
+	if inner.ParentAgentID != "agent-outer" || inner.Task != "inner work" {
+		t.Fatalf("approved frame request not preserved: %+v", inner)
 	}
 }

@@ -2144,3 +2144,196 @@ table.grid tr.rowlink:hover td {
   opacity: 0.5;
   cursor: default;
 }
+
+/* --- agent graph --------------------------------------------------------- */
+.graph-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 18px 22px 30px;
+}
+.graph-hint {
+  color: var(--faint);
+  font-size: 12px;
+  margin: 0 0 14px;
+  max-width: 720px;
+}
+.graph-hint b {
+  color: var(--muted);
+  font-weight: 600;
+}
+.graph-hint code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 5px;
+  word-break: break-all;
+}
+.graph-legend {
+  display: flex;
+  gap: 14px;
+  margin: 0 0 14px;
+  font-size: 10.5px;
+  color: var(--faint);
+  align-items: center;
+  white-space: nowrap;
+}
+.graph-lg {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--border);
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.graph-lg.depends {
+  border-top-style: dashed;
+}
+.graph-lg.message {
+  border-color: var(--accent);
+}
+.graph-canvas {
+  position: relative;
+}
+.graph-edges {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.graph-spawn {
+  stroke: var(--border);
+  stroke-width: 1.5;
+  fill: none;
+}
+.graph-depends {
+  stroke: var(--border);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 4;
+  fill: none;
+  opacity: 0.8;
+}
+.graph-msg {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  fill: none;
+  opacity: 0.9;
+}
+.graph-pair.on .graph-msg {
+  stroke-width: 2.25;
+}
+.graph-msg-count {
+  fill: var(--accent);
+  font-size: 10px;
+  font-family: var(--sans);
+  pointer-events: none;
+  user-select: none;
+}
+.graph-arrow-head {
+  fill: var(--accent);
+}
+/* Fat transparent stroke over each message arc: the click target. */
+.graph-hit {
+  stroke: transparent;
+  stroke-width: 18;
+  fill: none;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.graph-hit:focus-visible {
+  stroke: var(--accent);
+  stroke-width: 14;
+  outline: none;
+}
+.graph-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 11px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.graph-node:hover {
+  border-color: var(--accent-soft);
+  background: var(--panel-2);
+}
+.graph-node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.graph-node-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.graph-node-tokens {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.graph-node-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 20px;
+  padding: 0 7px;
+  align-self: flex-start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+/* Conversation sheet entries */
+.graph-msg-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.graph-msg-item:last-child {
+  border-bottom: none;
+}
+.graph-msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.graph-msg-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 20px;
+  padding: 1px 7px;
+}
+.graph-msg-from {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.graph-msg-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+.graph-msg-body {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 11px 13px;
+}

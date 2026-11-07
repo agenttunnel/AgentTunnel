@@ -37,6 +37,32 @@ func TestParseCommandLineFromAtdPath(t *testing.T) {
 	}
 }
 
+func TestParseCommandLineMessage(t *testing.T) {
+	call, ok := ParseCommandLine(`$AT_TOOL tool message --to researcher --text "the build is broken"`)
+	if !ok {
+		t.Fatal("expected a message call")
+	}
+	if call.Kind != KindMessage || call.To != "researcher" || call.Text != "the build is broken" {
+		t.Fatalf("call = %+v", call)
+	}
+
+	// The bare form a model prints when it never had the $AT_TOOL path.
+	bare, ok := ParseCommandLine(`tool message --to orchestrator --text "shipping now"`)
+	if !ok || bare.Kind != KindMessage || bare.To != "orchestrator" || bare.Text != "shipping now" {
+		t.Fatalf("bare call = %+v ok=%v", bare, ok)
+	}
+
+	for _, line := range []string{
+		`tool message --to researcher`,
+		`tool message --text "no recipient"`,
+		`$AT_TOOL tool message`,
+	} {
+		if call, ok := ParseCommandLine(line); ok {
+			t.Fatalf("%q parsed as %+v", line, call)
+		}
+	}
+}
+
 func TestParseCommandLineIgnoresProse(t *testing.T) {
 	for _, line := range []string{
 		"I will use the tool dispatch flow.",

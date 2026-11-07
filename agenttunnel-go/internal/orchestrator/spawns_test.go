@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -69,7 +70,7 @@ func TestSubagentSpawnCallBecomesPendingRequest(t *testing.T) {
 		Task:    "write the inner tests",
 	})
 
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 	if len(tasks) != 0 {
 		t.Fatalf("an unapproved spawn must not become a task: %+v", tasks)
 	}
@@ -99,7 +100,7 @@ func TestSubagentDispatchCallBecomesPendingRequest(t *testing.T) {
 		Task:    "do the sibling work",
 	})
 
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 	if len(tasks) != 0 {
 		t.Fatalf("subagent dispatch must not run unapproved: %+v", tasks)
 	}
@@ -120,7 +121,7 @@ func TestLeadSpawnCallBehavesAsDispatch(t *testing.T) {
 		Name: "direct", Task: "run me again",
 	})
 
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 	if len(tasks) != 2 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
@@ -141,7 +142,7 @@ func TestSpawnRequestForOrchestratorRoleRefused(t *testing.T) {
 		Role: contracts.RoleOrchestrator, Name: "usurper", Task: "orchestrate everything",
 	})
 
-	if tasks := New(r).toolTasks("t1", "agent-orchestrator"); len(tasks) != 0 {
+	if tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
 	if got := r.spawns.list("t1"); len(got) != 0 {
@@ -159,7 +160,7 @@ func TestSpawnRequestForUnknownRoleRefused(t *testing.T) {
 		Role: "wizard", Name: "gandalf", Task: "cast spells",
 	})
 
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 	if got := r.spawns.list("t1"); len(got) != 0 {
 		t.Fatalf("an unknown role must not pend: %+v", got)
 	}
@@ -174,10 +175,10 @@ func TestLeadApproveConvertsRequestToTaskWithRequesterParent(t *testing.T) {
 		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 		Name: "inner", Role: contracts.RoleTester, Task: "test the feature",
 	})
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindApprove, AgentID: "agent-orchestrator", Name: "inner"})
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
@@ -200,7 +201,7 @@ func TestLeadApproveUnknownNameLeavesNote(t *testing.T) {
 	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindApprove, AgentID: "agent-orchestrator", Name: "ghost"})
 
-	if tasks := New(r).toolTasks("t1", "agent-orchestrator"); len(tasks) != 0 {
+	if tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
 	notes := r.notebook.Get("notes")
@@ -215,7 +216,7 @@ func TestNonLeadDecisionIgnored(t *testing.T) {
 		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 		Name: "inner", Task: "x",
 	})
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
 	var mu sync.Mutex
 	var audit []string
@@ -225,7 +226,7 @@ func TestNonLeadDecisionIgnored(t *testing.T) {
 		mu.Unlock()
 	}
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindApprove, AgentID: "agent-outer-2", Name: "inner"})
-	if tasks := New(r).toolTasks("t1", "agent-orchestrator"); len(tasks) != 0 {
+	if tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("a non-lead approve must not run anything: %+v", tasks)
 	}
 	if got := r.spawns.list("t1"); len(got) != 1 {
@@ -250,10 +251,10 @@ func TestLeadRejectRemovesRequestAndNotes(t *testing.T) {
 		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 		Name: "inner", Task: "x",
 	})
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
 	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindReject, AgentID: "agent-orchestrator", Name: "inner"})
-	if tasks := New(r).toolTasks("t1", "agent-orchestrator"); len(tasks) != 0 {
+	if tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
 	if got := r.spawns.list("t1"); len(got) != 0 {
@@ -276,7 +277,7 @@ func TestPendingRequestsNeverLeakAcrossThreads(t *testing.T) {
 		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
 		Name: "inner", Task: "t1 only",
 	})
-	New(r).toolTasks("t1", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
 	t1State, _ := eng.State(ctx, "t1")
 	prompt := renderPendingSpawns(t1State, r.spawns.list("t1"))
@@ -305,7 +306,7 @@ func TestPendingRequestsClearedWhenTurnEnds(t *testing.T) {
 		Kind: toolbox.KindSpawn, AgentID: "agent-other-1",
 		Name: "other", Task: "other thread",
 	})
-	New(r).toolTasks("t2", "agent-orchestrator")
+	New(r).toolTasks(context.Background(), "t2", "agent-orchestrator", nil, nil)
 
 	if err := New(r).RunTurn(ctx, "t1", "do the thing"); err != nil {
 		t.Fatalf("run turn: %v", err)
@@ -347,5 +348,78 @@ func TestRenderPendingSpawnsUsesRequesterName(t *testing.T) {
 	}
 	if renderPendingSpawns(&domain.ThreadState{}, nil) != "" {
 		t.Fatal("no requests should render no section")
+	}
+}
+
+// An approve must not silently collide with names the pass already used: wave
+// bookkeeping (status, results, dependency resolution) is name-keyed, so an
+// approved request is renamed beside the minted protocol dispatches and the
+// carried tasks that already claimed its name.
+func TestApprovedRequestCannotCollideWithMintedOrCarriedNames(t *testing.T) {
+	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	r.tools.Post("t1", toolbox.Call{
+		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
+		Name: "inner", Task: "test the feature",
+	})
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
+
+	r.tools.Post("t1", toolbox.Call{Kind: toolbox.KindApprove, AgentID: "agent-orchestrator", Name: "inner"})
+	minted := []contracts.DispatchTask{{AgentID: "agent-inner-9", Name: "inner", Role: contracts.RoleExecutor, Task: "protocol-dispatched"}}
+	claimed := map[string]bool{"carried": true}
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", minted, claimed)
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %+v", tasks)
+	}
+	names := map[string]bool{}
+	for _, task := range tasks {
+		if names[task.Name] {
+			t.Fatalf("task name %q appears twice: %+v", task.Name, tasks)
+		}
+		names[task.Name] = true
+	}
+	// The approved request is the newcomer: it takes the suffixed name.
+	approved := tasks[1]
+	if approved.Name != "inner-2" || approved.ParentAgentID != "agent-outer-1" || approved.Task != "test the feature" {
+		t.Fatalf("approved task = %+v", approved)
+	}
+}
+
+// A re-proposal identical to a pending request is dropped — an echoed command,
+// not new work — but leaves the same audit trail the other swallow paths do.
+func TestDroppedDuplicateRequestLeavesAuditTrail(t *testing.T) {
+	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	r.tools.Post("t1", toolbox.Call{
+		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
+		Name: "inner", Task: "write the inner tests",
+	})
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
+
+	var mu sync.Mutex
+	var audit []string
+	r.audit = func(kind string, _ map[string]any) {
+		mu.Lock()
+		audit = append(audit, kind)
+		mu.Unlock()
+	}
+	// The echo: same requester, name, role, and task.
+	r.tools.Post("t1", toolbox.Call{
+		Kind: toolbox.KindSpawn, AgentID: "agent-outer-1",
+		Name: "inner", Task: "write the inner tests",
+	})
+	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
+
+	if got := r.spawns.list("t1"); len(got) != 1 {
+		t.Fatalf("echoed request recorded twice: %+v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, kind := range audit {
+		if kind == "spawn.duplicate" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dropped duplicate left no audit trail: %v", audit)
 	}
 }

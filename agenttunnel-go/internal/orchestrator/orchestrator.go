@@ -48,12 +48,26 @@ func safeName(name string) string {
 }
 
 // toolTasks turns the tool calls posted for a thread into work items: notes
-// fold into the shared notebook, a lead's dispatch or spawn becomes a task, and
-// a subagent's proposal pends until the lead decides it.
-func (o *Orchestrator) toolTasks(threadID contracts.ThreadID, orchID contracts.AgentID) []contracts.DispatchTask {
-	var tasks []contracts.DispatchTask
-	seen := map[string]bool{}
+// fold into the shared notebook, peer messages forward through the mailbox, a
+// lead's dispatch or spawn becomes a task, and a subagent's proposal pends
+// until the lead decides it.
+//
+// `minted` lists dispatches already built for this pass (protocol dispatches;
+// tasks carried in from the pre-pass drain) that join the returned set and act
+// as resolution candidates a peer message can name; `claimed` adds further
+// names the surrounding batch has already taken. Wave bookkeeping — status,
+// results, dependency resolution — is name-keyed, so names stay unique across
+// the whole pass batch.
+func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadID, orchID contracts.AgentID, minted []contracts.DispatchTask, claimed map[string]bool) []contracts.DispatchTask {
+	tasks := append([]contracts.DispatchTask(nil), minted...)
 	names := map[string]bool{}
+	for name := range claimed {
+		names[name] = true
+	}
+	for _, t := range minted {
+		names[t.Name] = true
+	}
+	seen := map[string]bool{}
 	for i, call := range o.runner.DrainTools(threadID) {
 		// A command can arrive twice when an agent executes it and also prints
 		// the command text. The parser posts the printed form; ignore the echo.
@@ -65,6 +79,11 @@ func (o *Orchestrator) toolTasks(threadID contracts.ThreadID, orchID contracts.A
 		// An empty agent id arrives from printed lines only after the lead's
 		// id was stamped on, and from curls outside an agent session, which
 		// have always been lead-equivalent; both count as the lead here.
+		// This is an honesty gate, not a security boundary: the tool endpoint
+		// authenticates a shared daemon token, so any process holding it —
+		// including a subagent's harness — could self-attest the lead's id.
+		// It confines well-meaning agents, like the rest of the endpoint's
+		// surface already does.
 		fromLead := call.AgentID == "" || call.AgentID == orchID
 		switch call.Kind {
 		case toolbox.KindNote, toolbox.KindProgress, toolbox.KindDone:
@@ -76,6 +95,22 @@ func (o *Orchestrator) toolTasks(threadID contracts.ThreadID, orchID contracts.A
 			if text := strings.TrimSpace(call.Text); text != "" && o.runner.inherited != nil {
 				_ = o.runner.inherited.Record(text)
 				o.runner.auditLog("context.learn", map[string]any{"agentId": string(call.AgentID), "text": text})
+			}
+
+		case toolbox.KindMessage:
+			// A rejection (peer mailbox off, unknown recipient) is already
+			// audited inside PostMessage; there is no task to make of it. The
+			// tasks minted so far — the seeds plus anything built earlier in
+			// this drain — act as resolution candidates, so a lead can
+			// dispatch an agent and then message it while the agent still
+			// waits on dependencies.
+			if err := o.runner.postMessage(ctx, threadID, call.AgentID, call.To, call.Text, tasks); err != nil {
+				// The turn survives a rejected message, but the sender — and
+				// the model behind it — must see why, or it will assume the
+				// message arrived.
+				line := "tool message failed: " + err.Error()
+				_ = o.runner.logs.Append(contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+				o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
 			}
 
 		case toolbox.KindDispatch, toolbox.KindSpawn:
@@ -187,6 +222,13 @@ func (o *Orchestrator) recordSpawnRequest(threadID contracts.ThreadID, call tool
 			"threadId": string(threadID), "requester": string(call.AgentID),
 			"name": name, "role": string(role), "task": call.Task,
 		})
+	} else {
+		// An identical request is already pending — usually a command that was
+		// both executed and printed. Dropping it is right, but the other
+		// swallowed-request paths leave a trail, so this one does too.
+		o.runner.auditLog("spawn.duplicate", map[string]any{
+			"threadId": string(threadID), "requester": string(call.AgentID), "name": name,
+		})
 	}
 }
 
@@ -244,7 +286,7 @@ func (o *Orchestrator) decideSpawnRequest(threadID contracts.ThreadID, call tool
 func toolCallKey(call toolbox.Call) string {
 	return strings.Join([]string{
 		string(call.Kind), call.Name, call.Task, call.Text, call.Harness,
-		call.Model, call.Lane, strings.Join(call.DependsOn, ","),
+		call.Model, call.Lane, call.To, strings.Join(call.DependsOn, ","),
 	}, "\x00")
 }
 
@@ -266,6 +308,46 @@ func renderPendingSpawns(state *domain.ThreadState, reqs []spawnRequest) string 
 	}
 	b.WriteString("Run it with \"$AT_TOOL\" tool approve --name <name>, decline with \"$AT_TOOL\" tool reject --name <name>.\n")
 	b.WriteString("Requests left undecided when this turn ends are dropped.")
+	return b.String()
+}
+
+// drainPeerMessages empties every agent's runtime inbox into prompt lines:
+// messages to the lead arrive as their own, messages to subagents become relay
+// lines so the lead can pass them on. Draining keeps a prompt from repeating
+// messages a previous pass already saw.
+//
+// An agent that has not started yet does not come through here: its inbox is
+// drained straight into its prompt when it starts (runTask), so waiting agents
+// hear from peers directly. A message to an agent that is *running* has no
+// channel into a one-shot harness process — it waits here for the next pass and
+// is relayed by the lead, by design.
+func (o *Orchestrator) drainPeerMessages(state *domain.ThreadState) string {
+	if o.runner.Mailbox() == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, id := range state.AgentOrder {
+		agent := state.Agents[id]
+		// A pending agent has not started: its inbox is drained straight
+		// into its first prompt when its work starts (teammateMessages in
+		// runTask), so draining it here would steal that delivery. This
+		// makes the skip local rather than relying on Dispatch and Run being
+		// adjacent: Run ends every dispatched agent terminal before the next
+		// pass, so no turn ends with a pending agent holding messages.
+		if agent.Status == contracts.AgentPending {
+			continue
+		}
+		for _, msg := range o.runner.Mailbox().Drain(state.ID, id) {
+			// Compare against the lead's id rather than IsOrchestrator():
+			// parentage marks the team lead, and the roster can hold agents
+			// dispatched without one.
+			if id == orchestratorAgentID {
+				fmt.Fprintf(&b, "- from %s: %s\n", msg.From, msg.Body)
+			} else {
+				fmt.Fprintf(&b, "- for %s from %s: %s\n", agent.Name, msg.From, msg.Body)
+			}
+		}
+	}
 	return b.String()
 }
 
@@ -311,9 +393,9 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	var dispatched []contracts.DispatchTask
 	for pass := 0; pass < o.runner.maxPasses(); pass++ {
 		// Calls that arrived while the previous wave ran — a subagent proposing
-		// a spawn, a late note — fold in before the prompt is built so the
-		// lead sees them this pass rather than the next.
-		carried := o.toolTasks(threadID, orchID)
+		// a spawn, a late note, a printed peer message — fold in before the
+		// prompt is built so the lead sees them this pass rather than the next.
+		carried := o.toolTasks(ctx, threadID, orchID, nil, nil)
 		inherited, _ := o.runner.inherited.Render()
 		state, err := o.runner.engine.State(ctx, threadID)
 		if err != nil {
@@ -325,13 +407,28 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 		// Steering the user sent while this turn was running is weighed here.
 		steering := o.runner.DrainSteering(threadID)
+		// Peer messages that arrived while work was running are weighed here
+		// too: the lead's own arrive directly, the rest as relay lines.
+		peerMessages := o.drainPeerMessages(state)
 		// Auto mode gets the menu it may pick from; otherwise the prompt stays
 		// as before.
 		runtimeChoices := ""
 		if o.runner.autoModeFor(ctx, threadID) {
 			runtimeChoices = o.runner.runtimeChoices()
 		}
-		prompt := BuildOrchestratorPrompt(role, userMessage, inherited, o.runner.notebook.Render(), o.runner.Roster(state), renderPendingSpawns(state, o.runner.spawns.list(threadID)), pass, steering, runtimeChoices)
+		prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+			Role:           role,
+			UserMessage:    userMessage,
+			Inherited:      inherited,
+			Shared:         o.runner.notebook.Render(),
+			Roster:         o.runner.Roster(state),
+			PendingSpawns:  renderPendingSpawns(state, o.runner.spawns.list(threadID)),
+			PeerMessages:   peerMessages,
+			PeerMailbox:    o.runner.peerMailboxFor(ctx, threadID),
+			Pass:           pass,
+			Steering:       steering,
+			RuntimeChoices: runtimeChoices,
+		})
 
 		text, calls, err := o.runner.runOrchestratorPass(ctx, threadID, orchID, role, prompt, pass)
 		if err != nil {
@@ -342,9 +439,15 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 
 		// Work can arrive two ways: the tool command the agent runs, or the
-		// legacy text protocol.
-		tasks := ToDispatchTasks(orchID, Dispatches(calls))
-		tasks = append(tasks, o.toolTasks(threadID, orchID)...)
+		// legacy text protocol. toolTasks seeds its result with the protocol
+		// dispatches so a same-pass message can address them; the returned
+		// list is therefore the whole pass's task set, and the carried tasks
+		// join it under names the drain was told are already taken.
+		claimed := make(map[string]bool, len(carried))
+		for _, t := range carried {
+			claimed[t.Name] = true
+		}
+		tasks := o.toolTasks(ctx, threadID, orchID, ToDispatchTasks(orchID, Dispatches(calls)), claimed)
 		tasks = append(tasks, carried...)
 		// A pass that dispatched nothing still earns another pass if the user
 		// steered while it was running or a spawn request is still undecided.
@@ -360,6 +463,17 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 		if err := o.runner.Run(ctx, threadID, tasks); err != nil {
 			return err
+		}
+	}
+
+	// Late peer messages have no next pass to land in. Drain once more so they
+	// surface in the final summary instead of being lost.
+	if state, err := o.runner.engine.State(ctx, threadID); err == nil {
+		if late := o.drainPeerMessages(state); late != "" {
+			if strings.TrimSpace(finalText) != "" {
+				finalText += "\n\n"
+			}
+			finalText += "Peer messages received after the final pass:\n" + late
 		}
 	}
 

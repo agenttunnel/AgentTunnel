@@ -18,7 +18,7 @@ import (
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|spawn|approve|reject> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -33,6 +33,7 @@ func Run(args []string) int {
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
 	text := fs.String("text", "", "text for a note or progress update")
 	summary := fs.String("summary", "", "summary for done")
+	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -48,6 +49,7 @@ func Run(args []string) int {
 		"harness":  *harness,
 		"model":    *model,
 		"text":     *text,
+		"to":       *to,
 	}
 	if *summary != "" {
 		payload["text"] = *summary

@@ -42,6 +42,7 @@ type Agent struct {
 	Model         string      `json:"model"`
 	PipelineID    PipelineID  `json:"pipelineId,omitempty"`
 	Task          string      `json:"task"`
+	DependsOn     []string    `json:"dependsOn,omitempty"`
 	Status        AgentStatus `json:"status"`
 	StartedAt     time.Time   `json:"startedAt"`
 	EndedAt       *time.Time  `json:"endedAt,omitempty"`

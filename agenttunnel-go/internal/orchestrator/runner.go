@@ -119,6 +119,9 @@ func (r *Runner) Inherited() *contextstore.InheritedContext { return r.inherited
 // Notebook exposes the shared notebook.
 func (r *Runner) Notebook() *contextstore.Notebook { return r.notebook }
 
+// Mailbox exposes the runtime peer mailbox.
+func (r *Runner) Mailbox() *contextstore.Mailbox { return r.mailbox }
+
 // Logs exposes the per-agent log store.
 func (r *Runner) Logs() *logstore.Store { return r.logs }
 
@@ -298,7 +301,8 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
 
 	inherited, _ := r.inherited.Render()
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render())
+	peerMailbox := r.peerMailboxFor(ctx, threadID)
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render(), peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -330,7 +334,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		return "", err
 	}
 
-	var findings []string
+	var text []string
 	emitted := false
 	for ev := range events {
 		emitted = true
@@ -340,7 +344,15 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 			r.recordUsage(ctx, threadID, t.AgentID, t.Role, false, *ev.Usage)
 		}
 		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
-			findings = append(findings, ev.Text)
+			// A protocol action frame is a tool call, not a finding: routes
+			// through the inbox like a printed command line.
+			if frame, ok := ParseToolLine(ev.Text); ok {
+				if call, ok := frameCall(frame); ok {
+					r.postAgentCall(threadID, t.AgentID, call)
+					continue
+				}
+			}
+			text = append(text, ev.Text)
 		}
 	}
 	werr := adapter.Wait(ctx)
@@ -358,13 +370,61 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		return "", errors.New(msg)
 	}
 
-	if len(findings) > 0 {
+	// Some harnesses print the `$AT_TOOL tool …` command instead of executing
+	// it with their shell. Route the action kinds through the tool inbox,
+	// attributed to this agent, so the next pass handles them like a real
+	// call; everything else stays the agent's findings. Text deltas are
+	// arbitrary chunks, so a printed command can straddle two events — join
+	// without separators, the real newlines are already in the deltas.
+	raw := strings.Join(text, "")
+	var findings []string
+	for _, line := range strings.Split(raw, "\n") {
+		if call, ok := toolbox.ParseCommandLine(line); ok && routedPrintedKind(call.Kind) {
+			r.postAgentCall(threadID, t.AgentID, call)
+			continue
+		}
+		findings = append(findings, line)
+	}
+
+	// A summary of only whitespace is no result at all; the trailing split of
+	// a stream ending in a newline must not become one either.
+	summary := strings.TrimSpace(strings.Join(findings, "\n"))
+	if summary != "" {
 		key := "result_" + t.Name
-		summary := strings.Join(findings, "\n")
 		r.notebook.Append(key, summary, string(t.AgentID))
 		r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
 	}
-	return strings.Join(findings, "\n"), werr
+	return summary, werr
+}
+
+// postAgentCall queues one tool call pulled out of an agent's stream — a
+// printed command line or a protocol frame — attributed to that agent, so the
+// next toolTasks drain handles it like a real call: a message forwards through
+// the mailbox, a subagent's dispatch or spawn becomes a gated spawn request,
+// and the lead's spawn or decision runs directly.
+func (r *Runner) postAgentCall(threadID contracts.ThreadID, from contracts.AgentID, call toolbox.Call) {
+	call.AgentID = from
+	if r.tools == nil {
+		return
+	}
+	r.tools.Post(threadID, call)
+	line := "tool " + string(call.Kind)
+	_ = r.logs.Append(contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
+	r.publishOutput(threadID, from, contracts.LogTool, line)
+}
+
+// routedPrintedKind reports whether a printed tool command from a subagent is
+// an action to route rather than findings. Dispatch and spawn become gated
+// spawn requests in the drain, and approve/reject from a non-lead are ignored
+// with an audit; message forwards through the mailbox. Every other kind a
+// subagent prints stays its findings.
+func routedPrintedKind(k toolbox.Kind) bool {
+	switch k {
+	case toolbox.KindMessage, toolbox.KindDispatch, toolbox.KindSpawn, toolbox.KindApprove, toolbox.KindReject:
+		return true
+	default:
+		return false
+	}
 }
 
 // runOrchestratorPass runs one orchestrator process and collects its text output
@@ -412,6 +472,13 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 	var calls []ToolCall
 	for ev := range events {
 		if call, ok := ParseToolLine(ev.Text); ok {
+			// A protocol action frame is delivered through the same inbox
+			// drain as a printed command line; only dispatch frames are
+			// minted directly into the pass's task set here.
+			if routed, ok := frameCall(call); ok && call.Name != "dispatch_task" {
+				r.postAgentCall(threadID, agentID, routed)
+				continue
+			}
 			calls = append(calls, *call)
 			_ = r.logs.Append(contracts.LogEntry{AgentID: agentID, Kind: contracts.LogTool, Text: ev.Text, At: r.clock()})
 			r.publishOutput(threadID, agentID, contracts.LogTool, ev.Text)
@@ -600,6 +667,30 @@ func (r *Runner) autoModeFor(ctx context.Context, threadID contracts.ThreadID) b
 		return false
 	}
 	return st.AutoMode
+}
+
+// peerMailboxFor reports whether peer messaging is on for a thread, reading the
+// durable thread state the same way auto mode is read.
+func (r *Runner) peerMailboxFor(ctx context.Context, threadID contracts.ThreadID) bool {
+	if r.engine == nil {
+		return false
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return false
+	}
+	return st.PeerMailbox
+}
+
+// teammateMessages drains the agent's runtime inbox at the moment its prompt is
+// built. An agent waiting behind a dependency receives the peer traffic that
+// arrived while it waited directly in its first prompt; draining keeps the
+// lead's next-pass relay from repeating what was already delivered here.
+func (r *Runner) teammateMessages(threadID contracts.ThreadID, id contracts.AgentID, peerMailbox bool) []contracts.MailboxPosted {
+	if !peerMailbox || r.mailbox == nil {
+		return nil
+	}
+	return r.mailbox.Drain(threadID, id)
 }
 
 // resolveModel applies auto mode: the orchestrator's requested model wins only if

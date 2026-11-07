@@ -52,17 +52,14 @@ func TestOrchestratorPromptCarriesContext(t *testing.T) {
 	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	role, _ := r.roles.Get(contracts.RoleOrchestrator)
 
-	prompt := BuildOrchestratorPrompt(
-		role,
-		"do the thing",
-		"GUIDE-MARKER",
-		"## Shared context\n### k\n- [a] v\n",
-		"- explore (planner): x [succeeded]\n",
-		"",
-		0,
-		nil,
-		"",
-	)
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		Role:        role,
+		UserMessage: "do the thing",
+		Inherited:   "GUIDE-MARKER",
+		Shared:      "## Shared context\n### k\n- [a] v\n",
+		Roster:      "- explore (planner): x [succeeded]\n",
+		Pass:        0,
+	})
 	for _, want := range []string{"GUIDE-MARKER", "Shared context", "Agents already dispatched", "do the thing", "$AT_TOOL"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -72,7 +69,12 @@ func TestOrchestratorPromptCarriesContext(t *testing.T) {
 
 func TestOrchestratorPromptWarnsOnLaterPasses(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
-	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "- explore (planner): x [succeeded]\n", "", 1, nil, "")
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		Role:        role,
+		UserMessage: "do the thing",
+		Roster:      "- explore (planner): x [succeeded]\n",
+		Pass:        1,
+	})
 	if !strings.Contains(prompt, "pass 2") || !strings.Contains(prompt, "do not dispatch the same work again") {
 		t.Fatalf("later pass should warn against re-dispatching:\n%s", prompt)
 	}
@@ -80,7 +82,12 @@ func TestOrchestratorPromptWarnsOnLaterPasses(t *testing.T) {
 
 func TestOrchestratorPromptCarriesSteering(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
-	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "", "", 1, []string{"stop and fix the tests first"}, "")
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		Role:        role,
+		UserMessage: "do the thing",
+		Pass:        1,
+		Steering:    []string{"stop and fix the tests first"},
+	})
 	if !strings.Contains(prompt, "## Steering") || !strings.Contains(prompt, "stop and fix the tests first") {
 		t.Fatalf("steering missing from the prompt:\n%s", prompt)
 	}
@@ -89,12 +96,16 @@ func TestOrchestratorPromptCarriesSteering(t *testing.T) {
 func TestOrchestratorPromptListsPendingSpawnRequests(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
 	pending := "## Pending spawn requests\n- inner — from outer (agent-outer-1): executor — \"inner work\"\n"
-	prompt := BuildOrchestratorPrompt(role, "do the thing", "", "", "", pending, 0, nil, "")
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		Role:          role,
+		UserMessage:   "do the thing",
+		PendingSpawns: pending,
+	})
 	if !strings.Contains(prompt, "## Pending spawn requests") || !strings.Contains(prompt, "inner") {
 		t.Fatalf("pending requests missing from the prompt:\n%s", prompt)
 	}
 
-	bare := BuildOrchestratorPrompt(role, "do the thing", "", "", "", "", 0, nil, "")
+	bare := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "do the thing"})
 	if strings.Contains(bare, "Pending spawn") {
 		t.Fatalf("no requests should render no section:\n%s", bare)
 	}
@@ -147,7 +158,7 @@ printf '{"type":"text","text":"report-%s"}\n' "$AT_PASS"`
 // nesting outright: the proposal wording and the approval gate are both pinned.
 func TestSubagentPromptOffersSpawnProposals(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleExecutor)
-	prompt := BuildSubagentPrompt(role, "implement X", "", "")
+	prompt := BuildSubagentPrompt(role, "implement X", "", "", false, nil)
 	for _, want := range []string{
 		`"$AT_TOOL" tool spawn --role executor --name <short-name>`,
 		"only runs after the team lead approves",
@@ -171,5 +182,60 @@ func TestExecutorRolePromptOffersSpawnProposals(t *testing.T) {
 	if !strings.Contains(role.SystemPrompt, "tool spawn") ||
 		!strings.Contains(role.SystemPrompt, "team lead approves") {
 		t.Fatalf("executor role prompt should offer gated spawns:\n%s", role.SystemPrompt)
+	}
+}
+
+func TestSubagentPromptDocumentsMessageToolOnlyWhenEnabled(t *testing.T) {
+	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleExecutor)
+	if prompt := BuildSubagentPrompt(role, "implement X", "", "", false, nil); strings.Contains(prompt, "tool message") {
+		t.Fatalf("message tool must stay undocumented while the peer mailbox is off:\n%s", prompt)
+	}
+	prompt := BuildSubagentPrompt(role, "implement X", "", "", true, nil)
+	if !strings.Contains(prompt, `tool message --to <agent name or 'orchestrator'>`) {
+		t.Fatalf("message tool missing from the prompt:\n%s", prompt)
+	}
+}
+
+func TestSubagentPromptCarriesTeammateMessages(t *testing.T) {
+	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleExecutor)
+	prompt := BuildSubagentPrompt(role, "implement X", "", "", true, []contracts.MailboxPosted{
+		{From: "agent-researcher", To: "agent-impl", Kind: "message", Body: "the flaky test is payment.e2e"},
+	})
+	if !strings.Contains(prompt, "## Messages from teammates") ||
+		!strings.Contains(prompt, "from agent-researcher: the flaky test is payment.e2e") {
+		t.Fatalf("teammate messages missing from the prompt:\n%s", prompt)
+	}
+	if plain := BuildSubagentPrompt(role, "implement X", "", "", true, nil); strings.Contains(plain, "Messages from teammates") {
+		t.Fatalf("no teammates should render no section:\n%s", plain)
+	}
+}
+
+func TestOrchestratorPromptDocumentsMessageToolOnlyWhenEnabled(t *testing.T) {
+	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
+	if prompt := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "do the thing", Pass: 1}); strings.Contains(prompt, "tool message") {
+		t.Fatalf("message tool must stay undocumented while the peer mailbox is off:\n%s", prompt)
+	}
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "do the thing", Pass: 1, PeerMailbox: true})
+	if !strings.Contains(prompt, `tool message --to <agent name>`) {
+		t.Fatalf("message tool missing from the prompt:\n%s", prompt)
+	}
+}
+
+func TestOrchestratorPromptCarriesPeerMessages(t *testing.T) {
+	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		Role:         role,
+		UserMessage:  "do the thing",
+		Pass:         1,
+		PeerMessages: "- from agent-researcher: the flaky test is payment.e2e\n- for reviewer from agent-researcher: check the retry loop\n",
+		PeerMailbox:  true,
+	})
+	if !strings.Contains(prompt, "## Peer messages") ||
+		!strings.Contains(prompt, "- from agent-researcher: the flaky test is payment.e2e") ||
+		!strings.Contains(prompt, "- for reviewer from agent-researcher: check the retry loop") {
+		t.Fatalf("peer messages missing from the prompt:\n%s", prompt)
+	}
+	if plain := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "do the thing", Pass: 1}); strings.Contains(plain, "Peer messages") {
+		t.Fatalf("empty peer messages should render no section:\n%s", plain)
 	}
 }
