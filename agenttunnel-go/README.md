@@ -111,6 +111,12 @@ Providers are behind an adapter boundary: a `Driver` describes a harness (binary
 argv, line translator) and a `ProcessAdapter` runs it, streaming normalized
 events. Adding a provider means implementing one interface.
 
+Agents can talk to each other, not just to the user: a running subagent sends a
+message to the lead or to a peer with `"$AT_TOOL" tool message --to <agent name
+or 'orchestrator'> --text "..."`, and the lead relays messages meant for its
+subagents. Messages are durable (`mailbox.posted` events, visible in
+`thread.get`) and show up as arrows between agents in the desktop's graph tab.
+
 ## How the requested features map
 
 | Requirement                                                   | Where                                                                      |
