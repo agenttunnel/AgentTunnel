@@ -1,13 +1,14 @@
-# AgentTunnel (Go rewrite)
+# AgentTunnel
 
-A from-scratch reimplementation of AgentTunnel: a multi-agent coding workflow
+AgentTunnel is a minimal GUI for coding agents: a multi-agent coding workflow
 where a planning **orchestrator** breaks a task into jobs and dispatches them to
-**planner / executor / tester / reviewer** subagents, each of which can run on any
-provider CLI (Codex, Claude, Cursor, Grok, OpenCode, Pi, Command Code).
+**planner / executor / tester / reviewer** subagents, each of which can run on
+any provider CLI (Codex, Claude, Cursor, Grok, OpenCode, Pi, Command Code).
 
-This is the desktop-first rewrite called for on the `rewrite/go-foundation`
-branch. It is a real, running foundation — a daemon plus a native desktop client
-— not a mock.
+The app is a daemon plus a native desktop client, both in Go. This directory is
+the whole product; the repository root holds only CI, issue templates, and repo
+docs. (The earlier TypeScript implementation was removed when this one became
+the main app — git history retains it.)
 
 ## Why Go
 
@@ -26,7 +27,8 @@ agenttunnel-go/
     contracts/        wire types: roles, harnesses, commands, events, usage, logs
     domain/           event-sourced core: Decider (pure) + Projector + Engine
     providers/        provider abstraction: Driver + ProcessAdapter + registry
-    orchestrator/     roles, dispatch protocol, auto mode, dependency scheduler
+    orchestrator/     roles, dispatch protocol, auto mode, dependency scheduler,
+                      spawn gating, peer mailbox, council
     contextstore/     shared notebook, per-thread context, inherited context, mailbox
     usage/            collective token/cost ledger (orchestrator vs subagents)
     logstore/         per-agent log buffer + JSONL file sink
@@ -57,7 +59,7 @@ curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/i
   | AGENTTUNNEL_INSTALL_DIR=/usr/local/bin sh
 
 curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh \
-  | AGENTTUNNEL_VERSION=v0.7.0 sh
+  | AGENTTUNNEL_VERSION=v0.10.0 sh
 ```
 
 The Linux desktop build needs GTK 4 and WebKitGTK 6.0 at runtime
@@ -111,15 +113,22 @@ Providers are behind an adapter boundary: a `Driver` describes a harness (binary
 argv, line translator) and a `ProcessAdapter` runs it, streaming normalized
 events. Adding a provider means implementing one interface.
 
-Agents can talk to each other, not just to the user: a running subagent sends a
-message to the lead or to a peer with `"$AT_TOOL" tool message --to <agent name
-or 'orchestrator'> --text "..."`, and the lead relays messages meant for its
-subagents. Messages are durable (`mailbox.posted` events, visible in
-`thread.get`) and show up as arrows between agents in the desktop's graph tab.
+Agents coordinate beyond the turn loop:
 
-## How the requested features map
+- **Peer messages** — a running subagent messages the lead or a peer with
+  `"$AT_TOOL" tool message --to <agent name or 'orchestrator'> --text "..."`.
+  Messages are durable (`mailbox.posted` events, visible in `thread.get`) and
+  show up as arrows between agents in the desktop's graph tab.
+- **Gated sub-spawns** — a subagent that wants help proposes it with
+  `"$AT_TOOL" tool spawn --role executor --name <short-name> --task "..."`.
+  The proposal pends until the lead runs `tool approve`/`tool reject`; an
+  approved child runs parented on its proposer (visible in the graph).
+- **Council** — `thread.council.start` runs a set of roles through parallel
+  rounds of debate and synthesizes an outcome.
 
-| Requirement                                                   | Where                                                                      |
+## Where features live
+
+| Feature                                                       | Where                                                                      |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Roles: orchestrator, planner, executor, tester (QA), reviewer | `contracts/role.go` — a **registry**, so custom roles can be added         |
 | Run any agent                                                 | `providers/` — 7 built-in drivers behind one interface                     |
@@ -129,16 +138,33 @@ subagents. Messages are durable (`mailbox.posted` events, visible in
 | Shared context between agents                                 | `contextstore/notebook.go`                                                 |
 | Global inherited context                                      | `contextstore/inherited.go` (`.orchestrator-context/`)                     |
 | Peer agent-to-agent messaging                                 | `contextstore/mailbox.go` — **on by default**, toggled per thread          |
-| Gated subagent sub-spawns                                     | `orchestrator/spawns.go` — proposals pend until the lead approves          |
+| Subagent sub-spawns gated by the lead                         | `orchestrator/spawns.go` — proposals pend until approved                   |
+| Council (parallel debate to a synthesized outcome)            | `orchestrator/council.go`                                                  |
+| Agent graph (spawn tree, dependencies, message arcs)          | `desktop/frontend/src/lib/graph.ts`                                        |
+| Steering a running turn                                       | `thread.steer`; consumed by the lead's next pass                           |
 | Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; comments flow into the next prompt |
+| Stoppable turns and agents                                    | `thread.turn.stop`, `agents.stop` — real process-group teardown            |
 | GitHub/GitLab awareness                                       | **not yet** — next up                                                      |
 
 ## RPC surface
 
-`roles.list`, `harness.list`, `thread.create`, `thread.list`, `thread.get`,
-`thread.subscribe`, `thread.turn.start`, `thread.setAutoMode`,
-`thread.setPeerMailbox`, `agents.list`, `agents.logs`, `usage.get`,
-`review.diff`, `review.comment`.
+Threads: `thread.create`, `thread.list`, `thread.get`, `thread.rename`,
+`thread.delete`, `thread.subscribe`, `thread.turn.start`, `thread.turn.stop`,
+`thread.steer`, `thread.setAutoMode`, `thread.setPeerMailbox`,
+`thread.council.start`.
+
+Agents and usage: `agents.list`, `agents.logs`, `agents.stop`, `usage.get`.
+
+Review: `review.diff`, `review.comment`.
+
+Context: `context.save`, `context.inherited.get`, `context.inherited.save`,
+`context.inherited.rule.save`, `context.inherited.rule.delete`.
+
+Files: `files.tree`, `files.read`.
+
+Registry and settings: `roles.list`, `harness.list`, `models.refresh`,
+`models.add`, `project.create`, `project.list`, `project.delete`,
+`settings.get`, `settings.set`.
 
 ## Where state lives
 
