@@ -2145,7 +2145,6 @@ table.grid tr.rowlink:hover td {
   cursor: default;
 }
 
-
 /* --- agent graph --------------------------------------------------------- */
 .graph-scroll {
   flex: 1;

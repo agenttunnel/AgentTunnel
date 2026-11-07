@@ -91,7 +91,9 @@ export function AgentGraph({
   if (agents.length === 0) {
     return (
       <div className="graph-scroll">
-        <div className="empty">No agents yet. Describe a task in Chat and the team appears here.</div>
+        <div className="empty">
+          No agents yet. Describe a task in Chat and the team appears here.
+        </div>
       </div>
     );
   }
@@ -165,7 +167,7 @@ export function AgentGraph({
                 aria-label={`${nameOf(e.from)} to ${nameOf(e.to)}, ${e.count} message${e.count === 1 ? "" : "s"}`}
                 onClick={() => setConversation({ a: e.from, b: e.to })}
                 onKeyDown={(ev) => {
-                  if (ev.key === "Enter" || ev.key === " ") setConversation({ a: e.from, b: e.to })
+                  if (ev.key === "Enter" || ev.key === " ") setConversation({ a: e.from, b: e.to });
                 }}
               />
             </g>

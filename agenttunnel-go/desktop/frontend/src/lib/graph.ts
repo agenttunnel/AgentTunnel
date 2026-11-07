@@ -290,7 +290,10 @@ export function computeGraph(input: {
   }
   messageEdges.sort((a, b) => timeOf(a.last) - timeOf(b.last) || a.key.localeCompare(b.key));
 
-  const width = [...rects.values()].reduce((m, r) => Math.max(m, r.x + r.w + PAD), PAD * 2 + NODE_W);
+  const width = [...rects.values()].reduce(
+    (m, r) => Math.max(m, r.x + r.w + PAD),
+    PAD * 2 + NODE_W,
+  );
   const height = [...rects.values()].reduce(
     (m, r) => Math.max(m, r.y + r.h + PAD),
     PAD_TOP + NODE_H + PAD,
