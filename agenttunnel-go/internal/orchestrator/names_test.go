@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -32,7 +33,7 @@ func TestToolDispatchUsesOnlySafeAgentIDs(t *testing.T) {
 		Task: "do it",
 	})
 
-	tasks := New(r).toolTasks("t1", "agent-orchestrator")
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil)
 	if len(tasks) != 1 {
 		t.Fatalf("tasks = %+v", tasks)
 	}

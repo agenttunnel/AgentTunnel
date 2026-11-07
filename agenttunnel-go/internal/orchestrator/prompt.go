@@ -10,8 +10,10 @@ import (
 
 // BuildSubagentPrompt assembles a subagent's prompt from its role prompt, its
 // task, the inherited context, and the shared notebook, so every subagent starts
-// informed by what the others have done.
-func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string) string {
+// informed by what the others have done. The peer message tool is documented only
+// when the thread has the peer mailbox enabled, and messages teammates sent while
+// this agent was waiting are carried in their own section.
+func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, peerMailbox bool, teammates []contracts.MailboxPosted) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	b.WriteString("\n\n## Task\n")
@@ -24,16 +26,29 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string) st
 		b.WriteString("\n\n")
 		b.WriteString(shared)
 	}
+	if len(teammates) > 0 {
+		b.WriteString("\n\n## Messages from teammates\n")
+		b.WriteString("These arrived while you were waiting. Weigh them alongside your task:\n\n")
+		for _, m := range teammates {
+			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
+		}
+	}
 	b.WriteString("\n\nDo not spawn more agents. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
 	b.WriteString(" lines. Record durable, project-agnostic learnings (conventions, gotchas worth keeping) with: \"$AT_TOOL\" tool learn --text \"...\"\n")
+	if peerMailbox {
+		b.WriteString("\nYou can also message another agent (or the team lead) while work is running:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name or 'orchestrator'> --text \"<what to tell them>\"\n")
+	}
 	return b.String()
 }
 
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including the
-// agents already dispatched so a later pass does not repeat work, and any
-// steering the user sent mid-run.
-func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, runtimeChoices string) string {
+// agents already dispatched so a later pass does not repeat work, any steering
+// the user sent mid-run, and any peer messages that arrived since the last pass.
+// The peer message tool is documented only when the thread has the peer mailbox
+// enabled.
+func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared, roster string, pass int, steering []string, peerMessages string, peerMailbox bool, runtimeChoices string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	if strings.TrimSpace(inherited) != "" {
@@ -59,6 +74,11 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 		}
 		b.WriteString("\nWeigh this now and adjust what you dispatch. If a change must land after work that is already running, dispatch a task with --depends-on <name>. Do not repeat work that is already done.")
 	}
+	if strings.TrimSpace(peerMessages) != "" {
+		b.WriteString("\n\n## Peer messages\n")
+		b.WriteString(peerMessages)
+		b.WriteString("\nWeigh these now. Messages to you are yours to act on; relay the ones marked for a subagent when you dispatch or reply to it.")
+	}
 	b.WriteString("\n\n## Dispatching work\n")
 	b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
@@ -68,6 +88,11 @@ func BuildOrchestratorPrompt(role contracts.Role, userMessage, inherited, shared
 	b.WriteString("Model and harness overrides apply when auto mode is on for the thread. Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+	if peerMailbox {
+		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
+		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
+	}
 	if strings.TrimSpace(runtimeChoices) != "" {
 		b.WriteString("\n\n## Runtime choices\n")
 		b.WriteString("Auto mode is ON for this thread. ")

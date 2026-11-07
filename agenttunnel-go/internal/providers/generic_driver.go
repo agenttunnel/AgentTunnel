@@ -51,7 +51,11 @@ func (JSONLineTranslator) Translate(line string) []Event {
 	}
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
-		return []Event{{Kind: contracts.LogText, Text: line}}
+		// A non-JSON line is still one complete output line: the scanner
+		// stripped its terminator, so restore it. Without it, two adjacent
+		// prose lines merge when consumers reassemble the stream, which
+		// corrupts printed tool commands next to other output.
+		return []Event{{Kind: contracts.LogText, Text: line + "\n"}}
 	}
 
 	scope := raw

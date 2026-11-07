@@ -13,12 +13,14 @@ import {
   type UsageStep,
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
+import { AgentGraph } from "./components/AgentGraph";
 import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
+import type { MailboxMessage } from "./lib/graph";
 
 type Role = {
   id: string;
@@ -35,6 +37,7 @@ type Agent = {
   harness: string;
   model: string;
   task: string;
+  dependsOn?: string[];
   status: string;
   pipelineId?: string;
   startedAt?: string;
@@ -49,6 +52,7 @@ type ThreadState = {
   autoMode: boolean;
   peerMailbox: boolean;
   messages: Message[] | null;
+  mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
   agentOrder: string[] | null;
   usage: Record<string, UsageEntry> | null;
@@ -121,7 +125,8 @@ type SettingsView = {
   staleAfterMinutes?: number;
 };
 
-/** Aside panel tabs: agents + usage are pinned; the rest are addable. */
+/** Aside panel tabs: agents + usage are pinned; the rest are addable.
+ * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
 type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
@@ -354,7 +359,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
 
-  const [tab, setTab] = useState<"chat" | "review">("chat");
+  const [tab, setTab] = useState<"chat" | "review" | "graph">("chat");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ file: string; line: number; body: string } | null>(null);
@@ -1486,12 +1491,18 @@ export default function App() {
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
             </div>
+            <div className={`tab ${tab === "graph" ? "on" : ""}`} onClick={() => setTab("graph")}>
+              Graph
+              {(thread?.mailbox?.length ?? 0) > 0 && (
+                <span className="pill">{thread?.mailbox?.length}</span>
+              )}
+            </div>
           </div>
           <div className="toggles">
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               onClick={() => thread && toggle("peerMailbox", !thread.peerMailbox)}
-              title="Let subagents message each other (off by default)"
+              aria-label="Let subagents message each other"
             >
               <span className="sw" /> Peer chat
             </div>
@@ -1721,7 +1732,7 @@ export default function App() {
               )}
             </div>
           </>
-        ) : (
+        ) : tab === "review" ? (
           <div className="stream">
             {diffError && <div className="empty err-text">{diffError}</div>}
             <DiffView
@@ -1738,6 +1749,15 @@ export default function App() {
               onRefresh={() => loadDiff(activeId)}
             />
           </div>
+        ) : (
+          <AgentGraph
+            agents={agents}
+            roleNames={rolesById}
+            usage={thread?.usage ?? null}
+            mailbox={thread?.mailbox ?? null}
+            peerMailbox={thread?.peerMailbox ?? false}
+            onOpenAgent={setDetailId}
+          />
         )}
       </div>
 

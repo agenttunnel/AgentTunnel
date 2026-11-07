@@ -87,6 +87,11 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	ledger := usage.NewLedger()
 	notebook := contextstore.NewNotebook()
 	mailbox := contextstore.NewMailbox()
+	// The runtime box is a drained-once delivery buffer, not the gate: the
+	// authoritative switch is the durable thread's peerMailbox state, enforced
+	// by the decider. Keeping the runtime box always on also avoids a restart
+	// desync where the durable flag persisted but this one reset.
+	mailbox.SetEnabled(true)
 	store, err := settings.Open(filepath.Join(opts.StateDir, "settings.json"), opts.Workdir)
 	if err != nil {
 		return nil, err
@@ -147,7 +152,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Engine:   eng,
 		Runner:   runner,
 		Orch:     orch,
-		Server:   transport.NewServer(disp, eng, opts.Token, box),
+		Server:   transport.NewServer(disp, eng, runner, opts.Token, box),
 		Ledger:   ledger,
 		Logs:     logs,
 		Settings: store,

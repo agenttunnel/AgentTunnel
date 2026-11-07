@@ -53,6 +53,7 @@ func Project(s *ThreadState, e contracts.Event) error {
 			Task:          p.Task,
 			Model:         p.Model,
 			PipelineID:    p.PipelineID,
+			DependsOn:     p.DependsOn,
 			Status:        contracts.AgentPending,
 			StartedAt:     e.At,
 		}
@@ -97,7 +98,10 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Shared[p.Key] = p.Value
 
 	case contracts.MailboxPosted:
-		s.Mailbox = append(s.Mailbox, p)
+		s.Mailbox = append(s.Mailbox, MailboxMessage{From: p.From, To: p.To, Kind: p.Kind, Body: p.Body, At: e.At, Turn: s.Turn})
+		if overflow := len(s.Mailbox) - maxMailboxEntries; overflow > 0 {
+			s.Mailbox = append([]MailboxMessage(nil), s.Mailbox[overflow:]...)
+		}
 
 	case contracts.ReviewCommentAdded:
 		s.ReviewComments = append(s.ReviewComments, p)

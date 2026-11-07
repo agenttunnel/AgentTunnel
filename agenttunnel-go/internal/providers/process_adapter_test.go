@@ -60,7 +60,22 @@ func TestProcessAdapterNonJSONFallsBackToText(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := collect(t, a)
-	if len(events) != 1 || events[0].Text != "plain output" || events[0].Kind != contracts.LogText {
+	// The line's terminator is part of the event: consumers reassemble the
+	// stream by joining text deltas, so losing it would merge adjacent lines.
+	if len(events) != 1 || events[0].Text != "plain output\n" || events[0].Kind != contracts.LogText {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestProcessAdapterNonJSONLinesStaySeparate(t *testing.T) {
+	// Two printed command lines must survive as distinct events; merged they
+	// would no longer parse as tool invocations.
+	a := NewProcessAdapter(scriptDriver(`printf 'tool note --text "a"\ntool note --text "b"\n'`))
+	if err := a.Start(context.Background(), SessionSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	events := collect(t, a)
+	if len(events) != 2 || events[0].Text != "tool note --text \"a\"\n" || events[1].Text != "tool note --text \"b\"\n" {
 		t.Fatalf("events = %+v", events)
 	}
 }

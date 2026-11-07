@@ -30,6 +30,25 @@ type TurnUsage struct {
 	Agents     map[contracts.AgentID]contracts.TokenUsage `json:"agents"`
 }
 
+// MailboxMessage is one peer message in a thread's read model: the durable
+// MailboxPosted payload stamped with the time it was recorded and the turn it
+// belongs to. The turn is the dedupe window for harnesses that both execute
+// the message command and echo the same line as text.
+type MailboxMessage struct {
+	From contracts.AgentID `json:"from"`
+	To   contracts.AgentID `json:"to"`
+	Kind string            `json:"kind"`
+	Body string            `json:"body"`
+	At   time.Time         `json:"at"`
+	Turn int               `json:"turn"`
+}
+
+// maxMailboxEntries bounds the mailbox read model, the way usage steps are
+// bounded: agent traffic is machine-generated and thread.get ships the whole
+// list, so without a cap the snapshot grows for the life of the thread. The
+// durable event log keeps everything; only the read model truncates.
+const maxMailboxEntries = 200
+
 // ThreadState is the read model for one thread, derived entirely from its event
 // log by the projector. It is never mutated by clients directly.
 type ThreadState struct {
@@ -55,7 +74,7 @@ type ThreadState struct {
 	Usage      map[contracts.AgentID]contracts.AgentUsage `json:"usage"`
 	// Steps is every model step's spend per agent, newest last (bounded).
 	Steps   map[contracts.AgentID][]UsageStep `json:"steps"`
-	Mailbox []contracts.MailboxPosted         `json:"mailbox"`
+	Mailbox []MailboxMessage                  `json:"mailbox"`
 
 	ReviewComments []contracts.ReviewCommentAdded `json:"reviewComments"`
 
@@ -112,7 +131,7 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.Messages = append([]Message(nil), s.Messages...)
 	c.AgentOrder = append([]contracts.AgentID(nil), s.AgentOrder...)
 	c.SharedOrder = append([]string(nil), s.SharedOrder...)
-	c.Mailbox = append([]contracts.MailboxPosted(nil), s.Mailbox...)
+	c.Mailbox = append([]MailboxMessage(nil), s.Mailbox...)
 	c.ReviewComments = append([]contracts.ReviewCommentAdded(nil), s.ReviewComments...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {
