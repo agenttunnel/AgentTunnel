@@ -202,8 +202,8 @@ export function AgentGraph({
               <button onClick={() => setConversation(null)}>Close</button>
             </div>
             <div className="sheet-body">
-              {talk.map((m, i) => (
-                <div className="graph-msg-item" key={`${m.at}-${m.from}-${i}`}>
+              {talk.map((m) => (
+                <div className="graph-msg-item" key={`${m.at}-${m.from}-${m.body}`}>
                   <div className="graph-msg-meta">
                     <span className="graph-msg-kind">{m.kind || "message"}</span>
                     <span className="graph-msg-from">
