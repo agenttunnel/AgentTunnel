@@ -381,13 +381,15 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		findings = append(findings, line)
 	}
 
-	if len(findings) > 0 {
+	// A summary of only whitespace is no result at all; the trailing split of
+	// a stream ending in a newline must not become one either.
+	summary := strings.TrimSpace(strings.Join(findings, "\n"))
+	if summary != "" {
 		key := "result_" + t.Name
-		summary := strings.Join(findings, "\n")
 		r.notebook.Append(key, summary, string(t.AgentID))
 		r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
 	}
-	return strings.Join(findings, "\n"), werr
+	return summary, werr
 }
 
 // postMessageCall queues one peer message pulled out of an agent's stream — a
