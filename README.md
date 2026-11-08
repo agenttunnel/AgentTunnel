@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="agenttunnel-go/desktop/frontend/public/brand-mark.svg" width="56" alt="AgentTunnel" />
+</p>
+
 # AgentTunnel
 
 AgentTunnel is a minimal GUI for coding agents: a multi-agent coding workflow
