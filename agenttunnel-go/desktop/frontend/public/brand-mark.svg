@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" role="img" aria-label="AgentTunnel">
+  <defs>
+    <linearGradient id="at-mark" x1="5.5" y1="5" x2="26.5" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C9D5FF" />
+      <stop offset="1" stop-color="#809BFF" />
+    </linearGradient>
+  </defs>
+  <path d="M5.5 27.5V15.8a10.5 10.5 0 0 1 21 0v11.7" stroke="url(#at-mark)" stroke-width="3.1" stroke-linecap="round" />
+  <path d="M12.1 27.5V19.4a3.9 3.9 0 0 1 7.8 0v8.1" stroke="#DDE4FF" stroke-width="2.3" stroke-linecap="round" />
+</svg>

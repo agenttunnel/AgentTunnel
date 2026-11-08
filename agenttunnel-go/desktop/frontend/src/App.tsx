@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { Window } from "@wailsio/runtime";
 import { discover, pickFolder, Rpc, type Conn } from "./lib/rpc";
-import { bentoTile, useBentoColumns } from "./lib/bento";
 import {
   addUsage,
   deriveThreadUsage,
@@ -181,6 +188,59 @@ function fmtUpdated(at?: string): string {
   const date = new Date(at);
   if (Number.isNaN(date.getTime()) || date.getFullYear() < 1970) return "";
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** Tab strips stay divs so they can hold a close control, which a button may
+ * not. They get the keyboard behavior a button would otherwise provide. */
+function tabProps(selected: boolean, onSelect: () => void) {
+  return {
+    role: "tab" as const,
+    "aria-selected": selected,
+    tabIndex: 0,
+    onClick: onSelect,
+    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onSelect();
+      }
+    },
+  };
+}
+
+/** Same treatment for the pill switches. */
+function switchProps(on: boolean, onToggle: () => void) {
+  return {
+    role: "switch" as const,
+    "aria-checked": on,
+    tabIndex: 0,
+    onClick: onToggle,
+    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onToggle();
+      }
+    },
+  };
+}
+
+/** Clickable cards and rows are divs, so give them the button contract and
+ * leave clicks on nested controls to those controls. */
+function clickable(onActivate: () => void) {
+  return {
+    role: "button" as const,
+    tabIndex: 0,
+    onClick: (e: MouseEvent<HTMLElement>) => {
+      if (e.target !== e.currentTarget) return;
+      onActivate();
+    },
+    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onActivate();
+      }
+    },
+  };
 }
 
 /** Minimal typings for the Web Speech API (nonstandard, prefixed in WebKit). */
@@ -425,11 +485,6 @@ export default function App() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
-
-  // Bento sizing for the projects and threads screens: unequal pseudo-random
-  // spans per card, reflowed against the columns that fit the current width.
-  const projectsGrid = useBentoColumns(240);
-  const threadsGrid = useBentoColumns(280);
 
   // Thread context-menu flow: the menu itself, plus the three dialogs it can
   // open (rename, delete confirm, usage/subagent drill-in).
@@ -1219,10 +1274,11 @@ export default function App() {
   if (status !== "online") {
     return (
       <div className="splash">
-        <div className="mark">
-          Agent<span style={{ color: "var(--accent)" }}>Tunnel</span>
+        <img src="/brand-mark.svg" alt="" />
+        <div className="mark">AgentTunnel</div>
+        <div className="splash-sub">
+          {status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}
         </div>
-        <div>{status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}</div>
         {error && <div className="err-text">{error}</div>}
       </div>
     );
@@ -1231,7 +1287,10 @@ export default function App() {
   const titlebar = (
     <div className="titlebar">
       <div className="brand">
-        Agent<span className="dot">Tunnel</span>
+        <img src="/brand-mark.svg" alt="" />
+        <span>
+          Agent<b>Tunnel</b>
+        </span>
       </div>
       <div className={`conn ${status}`}>
         <span className="led" />
@@ -1332,6 +1391,27 @@ export default function App() {
     </>
   );
 
+  // Review comments belong with the diff, not pinned under every aside tab.
+  // The same block renders in the center Review tab and the aside Diff panel.
+  const reviewComments = (
+    <div className="section">
+      <h3>
+        Review comments <span>{comments.length}</span>
+      </h3>
+      {comments.length === 0 && (
+        <p className="hint">None yet. Comment on a line in Review or the Diff panel.</p>
+      )}
+      {comments.map((c) => (
+        <div className="comment-item" key={c.id}>
+          <div className="comment-file">
+            {c.file}:{c.line}
+          </div>
+          <div className="comment-body">{c.body}</div>
+        </div>
+      ))}
+    </div>
+  );
+
   // Screen 1 — the projects configured in this environment.
   if (!projectId) {
     return (
@@ -1339,8 +1419,17 @@ export default function App() {
         {titlebar}
         <div className="screen-body">
           <div className="screen-head">
-            <h2>Projects</h2>
-            <button onClick={openPicker}>New project</button>
+            <div className="screen-title">
+              <h2>Projects</h2>
+              <p className="screen-sub">
+                {projects.length === 0
+                  ? "No projects yet"
+                  : `${projects.length} project${projects.length === 1 ? "" : "s"}`}
+              </p>
+            </div>
+            <button className="primary" onClick={openPicker}>
+              New project
+            </button>
           </div>
           {showNewProject && (
             <div className="new-project">
@@ -1363,27 +1452,33 @@ export default function App() {
           {projects.length === 0 && !showNewProject && (
             <div className="empty">No projects yet. Add one to get started.</div>
           )}
-          <div className="project-grid" ref={projectsGrid.ref} style={projectsGrid.gridStyle}>
+          <div className="project-grid">
             {projects.map((p) => (
-              <div
-                className="project-card"
-                key={p.id}
-                style={bentoTile(p.id, projectsGrid.columns)}
-                onClick={() => openProject(p.id)}
-              >
-                <div className="pc-name">{p.name}</div>
-                <div className="pc-path">{p.path || "no path set"}</div>
+              <div className="project-card" key={p.id} {...clickable(() => openProject(p.id))}>
+                <div className="pc-name" title={p.name}>
+                  {p.name}
+                </div>
+                <div className="pc-path" title={p.path || "No path set"}>
+                  {p.path || "No path set"}
+                </div>
                 <div className="pc-meta">
-                  {p.threads} thread{p.threads === 1 ? "" : "s"}
+                  <span>
+                    {p.threads} thread{p.threads === 1 ? "" : "s"}
+                  </span>
+                  <span className="pc-arrow" aria-hidden="true">
+                    →
+                  </span>
                 </div>
                 <button
                   className="pc-del"
+                  title="Remove project"
+                  aria-label={`Remove ${p.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     deleteProject(p.id).catch(() => undefined);
                   }}
                 >
-                  Delete
+                  ×
                 </button>
               </div>
             ))}
@@ -1403,18 +1498,22 @@ export default function App() {
             <button className="back" onClick={() => setProjectId(null)}>
               ← Projects
             </button>
-            <h2>{selectedProject?.name ?? "Threads"}</h2>
-            <input
-              className="thread-filter"
-              placeholder="Filter threads…"
-              value={threadFilter}
-              onChange={(e) => setThreadFilter(e.target.value)}
-            />
-            <button className="primary" onClick={newThread}>
-              New thread
-            </button>
+            <div className="screen-title">
+              <h2>{selectedProject?.name ?? "Threads"}</h2>
+              {selectedProject?.path && <p className="screen-sub">{selectedProject.path}</p>}
+            </div>
+            <div className="screen-actions">
+              <input
+                className="thread-filter"
+                placeholder="Filter threads…"
+                value={threadFilter}
+                onChange={(e) => setThreadFilter(e.target.value)}
+              />
+              <button className="primary" onClick={newThread}>
+                New thread
+              </button>
+            </div>
           </div>
-          {selectedProject?.path && <div className="screen-sub">{selectedProject.path}</div>}
           {projectThreads.length === 0 && (
             <div className="empty">
               {needle
@@ -1422,26 +1521,27 @@ export default function App() {
                 : "No threads yet. Start one for this project."}
             </div>
           )}
-          <div className="thread-cards" ref={threadsGrid.ref} style={threadsGrid.gridStyle}>
+          <div className="thread-cards">
             {projectThreads.map((t) => (
               <div
-                className={`thread-card ${t.stale ? "stale" : ""}`}
+                className={`thread-card${t.stale ? " is-stale" : ""}`}
                 key={t.id}
-                style={bentoTile(t.id, threadsGrid.columns)}
-                onClick={() => setActiveId(t.id)}
+                {...clickable(() => setActiveId(t.id))}
                 onContextMenu={(e) => openThreadMenu(t, e)}
               >
                 <div className="tc-head">
-                  <div className="tc-title">{t.title}</div>
-                  {fmtUpdated(t.updatedAt) && (
-                    <div className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</div>
-                  )}
+                  <div className="tc-title" title={t.title}>
+                    {t.title}
+                  </div>
                 </div>
                 <div className="tc-meta">
                   {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
                 </div>
-                <div className="tc-clock">
+                <div className="tc-foot">
                   <ThreadClock t={t} />
+                  {fmtUpdated(t.updatedAt) && (
+                    <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
+                  )}
                 </div>
               </div>
             ))}
@@ -1469,18 +1569,18 @@ export default function App() {
             <div
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
-              onClick={() => setActiveId(t.id)}
+              {...clickable(() => setActiveId(t.id))}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
-              <div className="t">{t.title}</div>
+              <div className="t" title={t.title}>
+                {t.title}
+              </div>
               <div className="m">
                 {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
               </div>
-              {fmtUpdated(t.updatedAt) && (
-                <div className="u">Updated {fmtUpdated(t.updatedAt)}</div>
-              )}
-              <div className="u row-clock">
+              <div className="thread-row-foot">
                 <ThreadClock t={t} />
+                {fmtUpdated(t.updatedAt) && <span className="u">{fmtUpdated(t.updatedAt)}</span>}
               </div>
             </div>
           ))}
@@ -1508,15 +1608,24 @@ export default function App() {
 
       <div className="col">
         <div className="chat-head">
-          <div className="tabs">
-            <div className={`tab ${tab === "chat" ? "on" : ""}`} onClick={() => setTab("chat")}>
+          <div className="tabs" role="tablist" aria-label="Thread view">
+            <div
+              className={`tab ${tab === "chat" ? "on" : ""}`}
+              {...tabProps(tab === "chat", () => setTab("chat"))}
+            >
               Chat
             </div>
-            <div className={`tab ${tab === "review" ? "on" : ""}`} onClick={() => setTab("review")}>
+            <div
+              className={`tab ${tab === "review" ? "on" : ""}`}
+              {...tabProps(tab === "review", () => setTab("review"))}
+            >
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
             </div>
-            <div className={`tab ${tab === "graph" ? "on" : ""}`} onClick={() => setTab("graph")}>
+            <div
+              className={`tab ${tab === "graph" ? "on" : ""}`}
+              {...tabProps(tab === "graph", () => setTab("graph"))}
+            >
               Graph
               {(thread?.mailbox?.length ?? 0) > 0 && (
                 <span className="pill">{thread?.mailbox?.length}</span>
@@ -1526,7 +1635,9 @@ export default function App() {
           <div className="toggles">
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
-              onClick={() => thread && toggle("peerMailbox", !thread.peerMailbox)}
+              {...switchProps(!!thread?.peerMailbox, () =>
+                thread && toggle("peerMailbox", !thread.peerMailbox),
+              )}
               aria-label="Let subagents message each other"
             >
               <span className="sw" /> Peer chat
@@ -1537,9 +1648,13 @@ export default function App() {
         {tab === "chat" ? (
           <>
             <div className="stream" ref={streamRef}>
-              {(!thread || (thread.messages?.length ?? 0) === 0) && (
-                <div className="empty">
-                  Describe the task. The orchestrator will plan it and dispatch your team.
+              {(!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
+                <div className="stream-empty">
+                  <img src="/brand-mark.svg" alt="" />
+                  <div className="stream-empty-title">Start a thread</div>
+                  <div className="stream-empty-sub">
+                    Describe the task. The orchestrator will plan it and dispatch your team.
+                  </div>
                 </div>
               )}
               {(thread?.messages ?? []).map((m) => (
@@ -1691,7 +1806,9 @@ export default function App() {
                     <>
                       <div
                         className={`toggle${thread?.autoMode ? " on" : ""}`}
-                        onClick={() => thread && toggle("autoMode", !thread.autoMode)}
+                        {...switchProps(!!thread?.autoMode, () =>
+                          thread && toggle("autoMode", !thread.autoMode),
+                        )}
                         title="Auto mode: the orchestrator picks each task's model and harness"
                       >
                         <span className="sw" /> Auto mode
@@ -1773,6 +1890,7 @@ export default function App() {
               onCancelDraft={() => setDraft(null)}
               onRefresh={() => loadDiff(activeId)}
             />
+            {reviewComments}
           </div>
         ) : (
           <AgentGraph
@@ -1787,12 +1905,12 @@ export default function App() {
       </div>
 
       <div className="col aside">
-        <div className="aside-tabs">
+        <div className="aside-tabs" role="tablist" aria-label="Thread details">
           {asideTabs.map((id) => (
             <div
               key={id}
               className={`tab ${asideActive === id ? "on" : ""}`}
-              onClick={() => setAsideActive(id)}
+              {...tabProps(asideActive === id, () => setAsideActive(id))}
             >
               {id === "agents" ? (
                 <>
@@ -1804,10 +1922,20 @@ export default function App() {
               {!ASIDE_PINNED.includes(id) && (
                 <span
                   className="tab-x"
+                  role="button"
+                  tabIndex={0}
                   title={`Close ${ASIDE_META[id].label}`}
+                  aria-label={`Close ${ASIDE_META[id].label}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     closePanel(id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closePanel(id);
+                    }
                   }}
                 >
                   ×
@@ -1817,10 +1945,20 @@ export default function App() {
           ))}
           <div
             className="tab tab-add"
+            role="button"
+            tabIndex={0}
+            aria-label="Add panel"
             title="Add panel"
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               setPanelMenu({ x: r.left, y: r.bottom + 4 });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                const r = e.currentTarget.getBoundingClientRect();
+                setPanelMenu({ x: r.left, y: r.bottom + 4 });
+              }
             }}
           >
             +
@@ -1839,63 +1977,75 @@ export default function App() {
           />
         )}
 
-        {asideActive === "agents" ? (
-          <div className="section">
-            <h3>
-              Workflow{" "}
-              <span style={{ color: "var(--faint)" }}>
-                {settled}/{agents.length} settled
-              </span>
-            </h3>
-            {lanes.length === 0 && (
-              <div style={{ color: "var(--faint)", fontSize: 12 }}>No agents yet</div>
-            )}
-            {lanes.map((lane) => (
-              <div className="lane" key={lane.name}>
-                <div className="lane-head">
-                  <span className="lane-name">{lane.name}</span>
-                  <span className="lane-count">
-                    {lane.done}/{lane.agents.length}
+        <div className="aside-body">
+          {asideActive === "agents" ? (
+            <>
+              <div className="section">
+                <h3>
+                  Workflow{" "}
+                  <span>
+                    {settled}/{agents.length} settled
                   </span>
-                </div>
-                {lane.agents.map((a) => {
-                  const entry = thread?.usage?.[a.id];
-                  return (
-                    <div className="wf-row" key={a.id} onClick={() => setDetailId(a.id)}>
-                      <span className={`dot ${a.status}`} />
-                      <div className="wf-main">
-                        <div className="wf-name">{a.name || rolesById[a.role] || a.role}</div>
-                        <div className="wf-task">{a.task}</div>
-                      </div>
-                      <div className="wf-side">
-                        <div className="wf-role">{a.role}</div>
-                        <div className="wf-meta">
-                          {entry ? `${fmtTokens(totalTokens(entry.usage))} tok` : a.status}
-                        </div>
-                        {a.status === "running" && (
-                          <button
-                            className="stop-btn mini"
-                            title="Stop this agent — the rest of the turn keeps running"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              stopAgent(a.id);
-                            }}
-                          >
-                            Stop
-                          </button>
-                        )}
-                      </div>
+                </h3>
+                {lanes.length === 0 && <p className="hint">No agents yet.</p>}
+                {lanes.map((lane) => (
+                  <div className="lane" key={lane.name}>
+                    <div className="lane-head">
+                      <span className="lane-name">{lane.name}</span>
+                      <span className="lane-count">
+                        {lane.done}/{lane.agents.length}
+                      </span>
                     </div>
-                  );
-                })}
+                    {lane.agents.map((a) => {
+                      const entry = thread?.usage?.[a.id];
+                      return (
+                        <div className="wf-row" key={a.id} {...clickable(() => setDetailId(a.id))}>
+                          <span className={`dot ${a.status}`} />
+                          <div className="wf-main">
+                            <div className="wf-name">{a.name || rolesById[a.role] || a.role}</div>
+                            <div className="wf-task">{a.task}</div>
+                          </div>
+                          <div className="wf-side">
+                            <div className="wf-role">{a.role}</div>
+                            <div className="wf-meta">
+                              {entry ? `${fmtTokens(totalTokens(entry.usage))} tok` : a.status}
+                            </div>
+                            {a.status === "running" && (
+                              <button
+                                className="stop-btn mini"
+                                title="Stop this agent — the rest of the turn keeps running"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  stopAgent(a.id);
+                                }}
+                              >
+                                Stop
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+                <div className="wf-foot">
+                  <span>{settled} settled</span>
+                  <span>Σ {fmtTokens(totals.total)} tok</span>
+                </div>
               </div>
-            ))}
-            <div className="wf-foot">
-              <span>{settled} settled</span>
-              <span>Σ {fmtTokens(totals.total)} tok</span>
-            </div>
-          </div>
-        ) : asideActive === "usage" ? (
+              <div className="section">
+                <h3>Roles</h3>
+                <ul className="roles">
+                  {roles.map((r) => (
+                    <li key={r.id}>
+                      <span>{r.name}</span>
+                      <span className="harness">{r.defaultHarness}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          ) : asideActive === "usage" ? (
           <>
             <div className="section">
               <h3>Token usage</h3>
@@ -1946,7 +2096,7 @@ export default function App() {
             <div className="section">
               <h3>By turn</h3>
               {turns.length === 0 ? (
-                <div style={{ color: "var(--faint)", fontSize: 12 }}>No turns yet.</div>
+                <p className="hint">No turns yet.</p>
               ) : (
                 <div className="md-table-wrap">
                   <table className="grid">
@@ -2036,14 +2186,30 @@ export default function App() {
                 </table>
               </div>
             </div>
+
+            {globalUsage && (
+              <div className="section">
+                <h3>Environment</h3>
+                <div className="usage-grid">
+                  <div className="stat">
+                    <div className="k">Orchestrator tokens</div>
+                    <div className="v">{fmtTokens(totalTokens(globalUsage.orchestrator))}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="k">Subagent tokens</div>
+                    <div className="v">{fmtTokens(totalTokens(globalUsage.subagents))}</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         ) : asideActive === "context" ? (
           <div className="section">
             <h3>Context</h3>
             {sharedEntries.length === 0 ? (
-              <div style={{ color: "var(--faint)", fontSize: 12 }}>
+              <p className="hint">
                 No shared context yet. Agents record findings here as they work.
-              </div>
+              </p>
             ) : (
               sharedEntries.map(([key, value]) => (
                 <div className="ctx-entry" key={key}>
@@ -2061,7 +2227,7 @@ export default function App() {
               <code>tool learn</code>; everything here is yours to edit.
             </p>
             {!inherited ? (
-              <div style={{ color: "var(--faint)", fontSize: 12 }}>Loading…</div>
+              <p className="hint">Loading…</p>
             ) : (
               <>
                 <div className="inh-block">
@@ -2157,72 +2323,27 @@ export default function App() {
             />
           </div>
         ) : (
-          <div className="section diff-section">
-            {diffError && <div className="empty err-text">{diffError}</div>}
-            <DiffView
-              diff={diff}
-              idPrefix="aside-"
-              title={thread?.title ?? "Working tree"}
-              comments={comments}
-              draft={draft}
-              emptyText="No changes in the working tree."
-              onLineClick={(file, line) => setDraft({ file, line, body: "" })}
-              onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
-              onAddComment={() => addComment().catch(() => undefined)}
-              onCancelDraft={() => setDraft(null)}
-              onRefresh={() => loadDiff(activeId)}
-            />
-          </div>
+          <>
+            <div className="section diff-section">
+              {diffError && <div className="empty err-text">{diffError}</div>}
+              <DiffView
+                diff={diff}
+                idPrefix="aside-"
+                title={thread?.title ?? "Working tree"}
+                comments={comments}
+                draft={draft}
+                emptyText="No changes in the working tree."
+                onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+                onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
+                onAddComment={() => addComment().catch(() => undefined)}
+                onCancelDraft={() => setDraft(null)}
+                onRefresh={() => loadDiff(activeId)}
+              />
+            </div>
+            {reviewComments}
+          </>
         )}
-
-        <div className="section">
-          <h3>
-            Review comments <span style={{ color: "var(--faint)" }}>({comments.length})</span>
-          </h3>
-          {comments.length === 0 && (
-            <div style={{ color: "var(--faint)", fontSize: 12 }}>
-              None yet. Open Review and comment on a line.
-            </div>
-          )}
-          {comments.map((c) => (
-            <div className="agent" key={c.id} style={{ cursor: "default" }}>
-              <div className="meta" style={{ marginTop: 0 }}>
-                {c.file}:{c.line}
-              </div>
-              <div className="task" style={{ whiteSpace: "normal" }}>
-                {c.body}
-              </div>
-            </div>
-          ))}
         </div>
-
-        <div className="section">
-          <h3>Roles</h3>
-          <ul className="roles">
-            {roles.map((r) => (
-              <li key={r.id}>
-                <span>{r.name}</span>
-                <span className="harness">{r.defaultHarness}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {globalUsage && (
-          <div className="section">
-            <h3>Usage — environment</h3>
-            <div className="usage-grid">
-              <div className="stat">
-                <div className="k">Orchestrators</div>
-                <div className="v">{fmtTokens(totalTokens(globalUsage.orchestrator))}</div>
-              </div>
-              <div className="stat">
-                <div className="k">Subagents</div>
-                <div className="v">{fmtTokens(totalTokens(globalUsage.subagents))}</div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {detailAgent && (
@@ -2383,7 +2504,9 @@ export default function App() {
                 </label>
                 <div
                   className={`toggle ${settings.autoMode ? "on" : ""}`}
-                  onClick={() => setSettings({ ...settings, autoMode: !settings.autoMode })}
+                  {...switchProps(settings.autoMode, () =>
+                    setSettings({ ...settings, autoMode: !settings.autoMode }),
+                  )}
                   style={{ marginTop: 10 }}
                 >
                   <span className="sw" /> Auto mode — orchestrator picks each task's model
@@ -2429,7 +2552,10 @@ export default function App() {
                     </span>
                     <div
                       className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
-                      onClick={() => toggleHarness(h, !isHarnessEnabled(h))}
+                      {...switchProps(isHarnessEnabled(h), () =>
+                        toggleHarness(h, !isHarnessEnabled(h)),
+                      )}
+                      aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
                     >
                       <span className="sw" />
                     </div>
