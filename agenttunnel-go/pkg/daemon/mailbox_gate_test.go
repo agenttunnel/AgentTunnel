@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -297,5 +299,42 @@ func TestThreadGetExposesGraphReadModel(t *testing.T) {
 	orchUsage, ok := state.Usage["agent-orchestrator"]
 	if !ok || orchUsage.Usage.InputTokens < 5 || orchUsage.Usage.OutputTokens < 4 {
 		t.Fatalf("orchestrator usage = %+v (%+v)", orchUsage, state.Usage)
+	}
+}
+
+// Creation-only threads from older versions are reclaimed at daemon start:
+// logs holding nothing but creation events are deleted, used ones are kept.
+func TestDaemonSweepsCreationOnlyThreadsFromOlderVersions(t *testing.T) {
+	dir := t.TempDir()
+	threadsDir := filepath.Join(dir, "threads")
+	if err := os.MkdirAll(threadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(threadsDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A ghost: only creation events. Old versions persisted these on create.
+	write("ghost.jsonl", `{"seq":1,"threadId":"ghost","type":"thread.created","at":"2026-01-01T00:00:00Z","payload":{"title":"New chat"}}
+{"seq":2,"threadId":"ghost","type":"peer-mailbox.set","at":"2026-01-01T00:00:00Z","payload":{"enabled":true}}
+`)
+	// A used thread: has a message.
+	write("used.jsonl", `{"seq":1,"threadId":"used","type":"thread.created","at":"2026-01-01T00:00:00Z","payload":{"title":"New chat"}}
+{"seq":2,"threadId":"used","type":"thread.message-sent","at":"2026-01-01T00:00:01Z","payload":{"messageId":"m","author":"user","text":"hi"}}
+`)
+
+	d, err := New(context.Background(), Options{StateDir: dir})
+	if err != nil {
+		t.Fatalf("daemon: %v", err)
+	}
+	t.Cleanup(d.Close)
+
+	if _, err := os.Stat(filepath.Join(threadsDir, "ghost.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("creation-only log survived the sweep: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(threadsDir, "used.jsonl")); err != nil {
+		t.Fatalf("used log was swept: %v", err)
 	}
 }

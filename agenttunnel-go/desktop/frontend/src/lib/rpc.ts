@@ -4,10 +4,14 @@ export type Conn = {
   wsUrl: string;
   httpUrl: string;
   token: string;
+  /** A project directory passed on the command line (agenttunnel <dir>): open
+   * a thread in it once connected. Empty for a plain launch. */
+  launchDir?: string;
 };
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 type ThreadEventHandler = (event: unknown) => void;
+type AppOpenHandler = (params: { threadId?: string; projectId?: string }) => void;
 
 /**
  * Rpc is a tiny JSON-RPC-over-WebSocket client. It is the same surface any
@@ -19,6 +23,7 @@ export class Rpc {
   private nextId = 1;
   private pending = new Map<string, Pending>();
   private handlers = new Set<ThreadEventHandler>();
+  private appOpenHandlers = new Set<AppOpenHandler>();
 
   constructor(private readonly conn: Conn) {}
 
@@ -49,6 +54,10 @@ export class Rpc {
       this.handlers.forEach((h) => h(msg.params));
       return;
     }
+    if (msg.method === "app.open") {
+      this.appOpenHandlers.forEach((h) => h((msg.params ?? {}) as { threadId?: string; projectId?: string }));
+      return;
+    }
     if (!msg.id) return;
     const pending = this.pending.get(msg.id);
     if (!pending) return;
@@ -76,6 +85,15 @@ export class Rpc {
     this.handlers.add(handler);
     return () => {
       this.handlers.delete(handler);
+    };
+  }
+
+  /** onAppOpen subscribes to app.open pushes: another `agenttunnel <dir>`
+   * invocation forwarded a thread to this running instance. */
+  onAppOpen(handler: AppOpenHandler): () => void {
+    this.appOpenHandlers.add(handler);
+    return () => {
+      this.appOpenHandlers.delete(handler);
     };
   }
 

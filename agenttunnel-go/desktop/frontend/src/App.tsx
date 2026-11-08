@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Window } from "@wailsio/runtime";
 import { discover, pickFolder, Rpc, type Conn } from "./lib/rpc";
 import { bentoTile, useBentoColumns } from "./lib/bento";
 import {
@@ -780,10 +781,34 @@ export default function App() {
         setHarnesses(h);
         setThreads(list);
         setProjects(projs);
-        // Start at the projects screen; a thread is opened explicitly.
+        // Start at the projects screen; a thread is opened explicitly —
+        // unless the app was launched as `agenttunnel <dir>`, which opens a
+        // thread in that project right away.
+        if (conn.launchDir) {
+          const opened = await rpc.call<{
+            threadId: string;
+            projectId: string;
+            projects: Project[];
+          }>("thread.open", { dir: conn.launchDir });
+          setProjects(opened.projects);
+          setProjectId(opened.projectId);
+          setActiveId(opened.threadId);
+          const updated = await rpc.call<ThreadSummary[]>("thread.list");
+          setThreads(updated);
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
+      // Another `agenttunnel <dir>` invocation while this window runs: the
+      // launcher forwarded the thread here.
+      rpc.onAppOpen(({ threadId, projectId }) => {
+        if (projectId) setProjectId(projectId);
+        if (threadId) {
+          setActiveId(threadId);
+          reloadThreads();
+        }
+        Window.Focus().catch(() => undefined);
+      });
     });
     return () => {
       cancelled = true;

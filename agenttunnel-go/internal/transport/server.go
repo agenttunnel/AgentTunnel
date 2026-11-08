@@ -25,6 +25,9 @@ type Server struct {
 	runner *orchestrator.Runner
 	token  string
 	box    *toolbox.Box
+
+	connMu sync.Mutex
+	conns  map[*conn]struct{}
 }
 
 // NewServer builds the HTTP surface. An empty token disables auth (dev only).
@@ -173,14 +176,64 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.CloseNow()
 
-	c := &conn{ws: ws, engine: s.engine, disp: s.disp}
+	c := &conn{ws: ws, engine: s.engine, disp: s.disp, srv: s}
+	s.connMu.Lock()
+	if s.conns == nil {
+		s.conns = map[*conn]struct{}{}
+	}
+	s.conns[c] = struct{}{}
+	s.connMu.Unlock()
+	defer func() {
+		s.connMu.Lock()
+		delete(s.conns, c)
+		s.connMu.Unlock()
+	}()
 	c.serve(r.Context())
+}
+
+// NotifyAll pushes a frame to every connected client, for cross-client
+// notifications like the desktop's open-thread handoff. Slow or closing
+// connections simply miss the frame: these are hints, not guarantees.
+func (s *Server) NotifyAll(method string, params any) {
+	s.connMu.Lock()
+	snapshot := make([]*conn, 0, len(s.conns))
+	for c := range s.conns {
+		snapshot = append(snapshot, c)
+	}
+	s.connMu.Unlock()
+	for _, c := range snapshot {
+		c.send(Response{Method: method, Params: params})
+	}
+}
+
+// handleAppOpen broadcasts an `app.open` frame to every client — the running
+// desktop opens the named thread and focuses its window. Without a threadId it
+// is a focus-only nudge. Handled here rather than in the dispatcher so the
+// server owns its connection registry.
+func (s *Server) handleAppOpen(c *conn, req Request) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(req.Params, &p)
+	params := map[string]any{}
+	if p.ThreadID != "" {
+		st, err := s.engine.State(context.Background(), contracts.ThreadID(p.ThreadID))
+		if err != nil {
+			c.send(Response{ID: req.ID, Error: &RPCError{Code: 1, Message: err.Error()}})
+			return
+		}
+		params["threadId"] = p.ThreadID
+		params["projectId"] = st.ProjectID
+	}
+	s.NotifyAll("app.open", params)
+	c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
 }
 
 type conn struct {
 	ws     *websocket.Conn
 	engine *domain.Engine
 	disp   *Dispatcher
+	srv    *Server
 
 	writeMu sync.Mutex
 	unsubs  []func()
@@ -216,6 +269,10 @@ func (c *conn) serve(ctx context.Context) {
 		}
 		if req.Method == "thread.subscribe" {
 			c.subscribe(ctx, req)
+			continue
+		}
+		if req.Method == "app.open" {
+			c.srv.handleAppOpen(c, req)
 			continue
 		}
 		go func() {

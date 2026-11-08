@@ -61,9 +61,14 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	// Threads are durable: their event logs live under <state>/threads and the
-	// read model is rebuilt by replaying them on start.
+	// read model is rebuilt by replaying them on start. Creation itself is
+	// provisional (an unused thread writes nothing); logs written by older
+	// versions may still hold creation-only ghosts, so reclaim them here.
 	events, err := domain.NewFileStore(filepath.Join(opts.StateDir, "threads"))
 	if err != nil {
+		return nil, err
+	}
+	if _, err := events.DropEmptyThreads(); err != nil {
 		return nil, err
 	}
 

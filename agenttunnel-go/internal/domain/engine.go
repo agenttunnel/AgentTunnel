@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,6 +130,47 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 	if err != nil {
 		return err
 	}
+
+	// Thread creation is in-memory only: a thread that is never used leaves no
+	// trace on disk. The creation events are written by the first durable
+	// command instead (materialize below). A create for an id that already
+	// exists — durable or provisional — still falls through to the decider,
+	// which rejects it.
+	if cmd.Type == contracts.CmdThreadCreate && !state.Exists {
+		e.mu.Lock()
+		state.Exists = true
+		state.Provisional = true
+		state.PeerMailbox = true
+		state.Title = strings.TrimSpace(cmd.Title)
+		if state.Title == "" {
+			state.Title = contracts.DefaultThreadTitle
+		}
+		state.ProjectID = cmd.ProjectID
+		state.UpdatedAt = e.clock()
+		e.states[cmd.ThreadID] = state
+		e.mu.Unlock()
+		return nil
+	}
+
+	// Deleting a provisional thread just forgets it: there is nothing on disk
+	// to tombstone, and writing creation-plus-deletion events would persist
+	// the very thread the caller is discarding.
+	if state.Provisional && cmd.Type == contracts.CmdThreadDelete {
+		e.mu.Lock()
+		delete(e.states, cmd.ThreadID)
+		e.mu.Unlock()
+		return nil
+	}
+
+	// The first durable command materializes the thread: its creation events
+	// are appended and projected first, so the log reads as if the thread had
+	// always existed.
+	if state.Provisional {
+		if err := e.materialize(ctx, cmd.ThreadID, state); err != nil {
+			return err
+		}
+	}
+
 	payloads, err := Decide(cmd, state)
 	if err != nil {
 		e.auditLog("command.rejected", map[string]any{
@@ -160,6 +202,43 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 			"threadId": string(ev.ThreadID),
 			"seq":      ev.Seq,
 		})
+		for _, ch := range listeners {
+			select {
+			case ch <- ev:
+			default: // slow subscriber: drop rather than block the worker
+			}
+		}
+	}
+	return nil
+}
+
+// materialize writes a provisional thread's creation events — the same payload
+// the decider returns for thread.create — so the thread becomes durable the
+// moment something is actually done with it. Mirrors the append/project/notify
+// tail of process.
+func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *ThreadState) error {
+	payloads := []contracts.EventPayload{
+		contracts.ThreadCreated{Title: state.Title, ProjectID: state.ProjectID},
+		contracts.PeerMailboxSet{Enabled: true},
+	}
+	events, err := e.store.Append(ctx, id, payloads, e.clock)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	for _, ev := range events {
+		if err := Project(state, ev); err != nil {
+			e.mu.Unlock()
+			return err
+		}
+	}
+	state.Provisional = false
+	listeners := make([]chan contracts.Event, 0, len(e.subs[id]))
+	for _, ch := range e.subs[id] {
+		listeners = append(listeners, ch)
+	}
+	e.mu.Unlock()
+	for _, ev := range events {
 		for _, ch := range listeners {
 			select {
 			case ch <- ev:
@@ -205,8 +284,9 @@ func (e *Engine) State(ctx context.Context, id contracts.ThreadID) (*ThreadState
 	return s.Clone(), nil
 }
 
-// Threads lists every thread with a durable event log, minus tombstoned ones:
-// loading each state is O(n) once and cached thereafter.
+// Threads lists every thread with a durable event log, plus provisional ones
+// still open in memory, minus tombstoned ones: loading each state is O(n) once
+// and cached thereafter.
 func (e *Engine) Threads(ctx context.Context) ([]contracts.ThreadID, error) {
 	ids, err := e.store.Threads(ctx)
 	if err != nil {
@@ -222,7 +302,17 @@ func (e *Engine) Threads(ctx context.Context) ([]contracts.ThreadID, error) {
 			out = append(out, id)
 		}
 	}
-	return out, nil
+	// Provisional threads exist only in memory; they are listed (the UI has
+	// them open) but live in no event log yet.
+	e.mu.RLock()
+	pending := make([]contracts.ThreadID, 0, 4)
+	for id, s := range e.states {
+		if s.Provisional && !s.Deleted {
+			pending = append(pending, id)
+		}
+	}
+	e.mu.RUnlock()
+	return append(out, pending...), nil
 }
 
 // Publish fans an event out to a thread's subscribers without persisting it. Use

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -272,6 +273,54 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		d.models.Add(h, p.Model)
 		return map[string]any{"harness": string(h), "models": d.models.List(h)}, nil
+
+	case "thread.open":
+		// The desktop CLI's `agenttunnel <dir>` flow: resolve the directory to
+		// a project (creating one when the dir is unknown) and open a fresh
+		// thread in it. Creation is provisional — closing the window without
+		// typing leaves nothing behind.
+		var p struct {
+			Dir string `json:"dir"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Dir) == "" {
+			return nil, errors.New("dir is required")
+		}
+		if d.settings == nil {
+			return nil, errors.New("settings are unavailable")
+		}
+		resolved := resolveDirPath(p.Dir)
+		var project settings.Project
+		created := false
+		for _, cand := range d.settings.Projects() {
+			if resolveDirPath(cand.Path) == resolved {
+				project = cand
+				break
+			}
+		}
+		if project.ID == "" {
+			name := filepath.Base(resolved)
+			if name == "" || name == "." || name == string(filepath.Separator) {
+				name = "project"
+			}
+			project = settings.Project{ID: d.newProjectID(), Name: name, Path: resolved}
+			d.settings.AddProject(project)
+			created = true
+		}
+		id := d.newThreadID()
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id, ProjectID: project.ID,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"threadId":       id,
+			"projectId":      project.ID,
+			"projectCreated": created,
+			"projects":       d.projectList(ctx),
+		}, nil
 
 	case "thread.create":
 		var p createThreadParams
@@ -962,4 +1011,17 @@ func (d *Dispatcher) settingsView() SettingsView {
 		})
 	}
 	return view
+}
+
+// resolveDirPath normalizes a project directory for comparison: absolute, and
+// symlink-free when the path exists. A stored project path that no longer
+// exists still resolves to its absolute form, so lookup stays stable.
+func resolveDirPath(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return filepath.Clean(dir)
 }

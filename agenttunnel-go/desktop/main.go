@@ -28,16 +28,29 @@ import (
 var assets embed.FS
 
 func main() {
-	// Arguments mean someone invoked this binary as a CLI. Agents do exactly that
-	// while exploring (they run "$AT_TOOL" to see what it is), so anything that is
-	// not the `tool` subcommand must fail fast — never boot a second window.
-	if len(os.Args) > 1 {
-		if os.Args[1] == "tool" {
-			os.Exit(toolcli.Run(os.Args[2:]))
+	// Arguments mean someone invoked this binary as a CLI. `tool` is the
+	// agent-callable subcommand; a single directory argument opens a thread in
+	// that project (forwarded to the running app when there is one); anything
+	// else is a usage error — never boot a second window.
+	dir := ""
+	if args := os.Args[1:]; len(args) > 0 {
+		switch {
+		case args[0] == "tool":
+			os.Exit(toolcli.Run(args[1:]))
+		case args[0] == "-h" || args[0] == "--help":
+			usage()
+			os.Exit(0)
+		case len(args) == 1:
+			d, err := launchDirArg(args[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "agenttunnel:", err)
+				os.Exit(2)
+			}
+			dir = d
+		default:
+			usage()
+			os.Exit(2)
 		}
-		fmt.Fprintln(os.Stderr, "usage: agenttunnel            start the app")
-		fmt.Fprintln(os.Stderr, "       agenttunnel tool ...   agent-callable tool")
-		os.Exit(2)
 	}
 	// Defence in depth: the agent environment is exported to child agents, so a
 	// stray invocation from inside a session must not start the app either.
@@ -51,9 +64,16 @@ func main() {
 
 	daemon.EnrichPATH()
 
+	state := stateDir()
+	// An instance is already running: hand the request to it and stay out of
+	// the way — two daemons must never share one state directory.
+	if forwardToRunning(state, dir) {
+		return
+	}
+
 	cwd, _ := os.Getwd()
 	d, err := daemon.New(ctx, daemon.Options{
-		StateDir: stateDir(),
+		StateDir: state,
 		Token:    mustToken(),
 		Workdir:  cwd,
 		Config:   orchestrator.Config{MaxPasses: 3, MaxConcurrency: 4},
@@ -70,13 +90,20 @@ func main() {
 	// Agents call the tool endpoint at this address.
 	d.SetEndpoint("http://" + ln.Addr().String())
 
+	wsURL := fmt.Sprintf("ws://%s/ws", ln.Addr().String())
+	if err := writeLock(state, launchLock{WsURL: wsURL, Token: d.Token}); err != nil {
+		log.Fatalf("agenttunnel: write launch lock: %v", err)
+	}
+	defer removeLock(state)
+
 	srv := &http.Server{Handler: d.Server.Handler()}
 	go func() { _ = srv.Serve(ln) }()
 
 	conn := map[string]any{
-		"wsUrl":   fmt.Sprintf("ws://%s/ws", ln.Addr().String()),
-		"httpUrl": fmt.Sprintf("http://%s", ln.Addr().String()),
-		"token":   d.Token,
+		"wsUrl":     wsURL,
+		"httpUrl":   fmt.Sprintf("http://%s", ln.Addr().String()),
+		"token":     d.Token,
+		"launchDir": dir,
 	}
 
 	app := application.New(application.Options{
@@ -136,6 +163,12 @@ func main() {
 		log.Fatal(err)
 	}
 	_ = srv.Shutdown(context.Background())
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: agenttunnel            start the app")
+	fmt.Fprintln(os.Stderr, "       agenttunnel <dir>      open a thread in that project (creates the project if unknown)")
+	fmt.Fprintln(os.Stderr, "       agenttunnel tool ...   agent-callable tool")
 }
 
 func stateDir() string {

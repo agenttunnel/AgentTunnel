@@ -58,15 +58,31 @@ func TestEngineSubscribeReceivesEvents(t *testing.T) {
 	ch, unsub := e.Subscribe("t1")
 	defer unsub()
 
+	// Creation alone is provisional and emits nothing; the first durable
+	// command materializes the thread and commits its events.
 	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
-
 	select {
 	case ev := <-ch:
-		if ev.Type() != contracts.EvtThreadCreated {
-			t.Fatalf("got event %s", ev.Type())
+		t.Fatalf("provisional creation must not emit events, got %s", ev.Type())
+	case <-time.After(50 * time.Millisecond):
+	}
+	mustDispatch(t, e, ctx, contracts.Command{
+		ID: "c2", Type: contracts.CmdMessageAppend, ThreadID: "t1",
+		Message: &contracts.MessageSent{MessageID: "m1", Author: "user", Text: "hi"},
+	})
+
+	seen := 0
+	want := map[contracts.EventType]bool{contracts.EvtThreadCreated: false, contracts.EvtPeerMailboxSet: false, contracts.EvtMessageSent: false}
+	for seen < len(want) {
+		select {
+		case ev := <-ch:
+			if _, expected := want[ev.Type()]; expected {
+				want[ev.Type()] = true
+			}
+			seen++
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for materialization + message events")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for event")
 	}
 }
 
@@ -259,4 +275,117 @@ func TestEngineUnsubscribeConcurrentWithDispatch(t *testing.T) {
 		unsub()
 	}
 	<-done
+}
+
+// A thread that is created but never used leaves no durable trace: creation is
+// in-memory (provisional), the event log is only written when something real
+// happens, and a restart forgets the thread entirely.
+func TestThreadCreateIsProvisionalUntilUsed(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	e := NewEngine(store, nil)
+	e.Start(ctx)
+	t.Cleanup(e.Close)
+
+	mustDispatch(t, e, ctx, contracts.Command{
+		ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1", ProjectID: "p1",
+	})
+
+	// In memory: listed, gettable, carries the creation defaults.
+	ids, err := e.Threads(ctx)
+	if err != nil || len(ids) != 1 || ids[0] != "t1" {
+		t.Fatalf("threads = %v, err = %v", ids, err)
+	}
+	st, err := e.State(ctx, "t1")
+	if err != nil || !st.Exists || st.Title == "" || !st.PeerMailbox || st.ProjectID != "p1" {
+		t.Fatalf("provisional state = %+v, err = %v", st, err)
+	}
+
+	// On disk: nothing. An abandoned thread leaves no file behind.
+	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if len(files) != 0 {
+		t.Fatalf("provisional thread wrote an event log: %v", files)
+	}
+
+	// The first durable command materializes it: creation events plus the
+	// command's own, in one log — the same shape as if it had always existed.
+	mustDispatch(t, e, ctx, contracts.Command{
+		ID: "c2", Type: contracts.CmdMessageAppend, ThreadID: "t1",
+		Message: &contracts.MessageSent{MessageID: "m1", Author: "user", Text: "do something"},
+	})
+	st, _ = e.State(ctx, "t1")
+	if st.Provisional || st.Version != 3 || len(st.Messages) != 1 {
+		t.Fatalf("materialized state = %+v", st)
+	}
+	files, _ = filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("materialized thread has no event log: %v", files)
+	}
+
+	// Replay from disk reconstructs it; a provisional one is forgotten.
+	e.Close()
+	e2 := NewEngine(store, nil)
+	e2.Start(ctx)
+	t.Cleanup(e2.Close)
+	if _, err := e2.State(ctx, "t1"); err != nil {
+		t.Fatalf("materialized thread lost: %v", err)
+	}
+	notThere, err := e2.Threads(ctx)
+	if err != nil || len(notThere) != 1 {
+		t.Fatalf("after restart, threads = %v (err %v): the abandoned thread must be gone", notThere, err)
+	}
+}
+
+// Deleting a provisional thread forgets it in memory without writing anything.
+func TestDeleteProvisionalThreadLeavesNoTrace(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	e := NewEngine(store, nil)
+	e.Start(ctx)
+	t.Cleanup(e.Close)
+
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c2", Type: contracts.CmdThreadDelete, ThreadID: "t1"})
+
+	ids, err := e.Threads(ctx)
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("threads = %v, err = %v", ids, err)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if len(files) != 0 {
+		t.Fatalf("deleted provisional thread left a log: %v", files)
+	}
+}
+
+// Renaming a fresh thread counts as doing something: it materializes.
+func TestRenameMaterializesProvisionalThread(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	e := NewEngine(store, nil)
+	e.Start(ctx)
+	t.Cleanup(e.Close)
+
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c2", Type: contracts.CmdThreadRename, ThreadID: "t1", Title: "renamed"})
+
+	st, _ := e.State(ctx, "t1")
+	if st.Provisional || st.Title != "renamed" {
+		t.Fatalf("state = %+v", st)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("renamed thread not materialized: %v", files)
+	}
 }

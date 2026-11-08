@@ -54,6 +54,11 @@ const maxMailboxEntries = 200
 type ThreadState struct {
 	ID     contracts.ThreadID `json:"id"`
 	Exists bool               `json:"exists"`
+	// Provisional marks a thread whose creation lives in memory only: nothing
+	// was appended to the event log, so a thread that is never used leaves no
+	// trace. The first durable command materializes it. Never serialized — it
+	// is an engine-side condition, not client-visible state.
+	Provisional bool `json:"-"`
 	// Deleted marks a tombstoned thread: the event log is retained, but the
 	// thread is gone from listings and refuses further commands.
 	Deleted     bool                     `json:"deleted"`

@@ -134,3 +134,38 @@ func (s *FileStore) Threads(_ context.Context) ([]contracts.ThreadID, error) {
 	}
 	return out, nil
 }
+
+// DropEmptyThreads removes the event logs of threads whose only events are
+// their creation ones — threads that were created and never used. Creation is
+// provisional now and writes nothing, but logs written by older versions keep
+// these ghosts; this reclaims them. Returns the ids removed.
+func (s *FileStore) DropEmptyThreads() ([]contracts.ThreadID, error) {
+	ctx := context.Background()
+	ids, err := s.Threads(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var removed []contracts.ThreadID
+	for _, id := range ids {
+		events, err := s.Load(ctx, id)
+		if err != nil {
+			// A torn or unreadable log is not the caller's problem here; leave it.
+			continue
+		}
+		empty := true
+		for _, ev := range events {
+			switch ev.Payload.(type) {
+			case contracts.ThreadCreated, contracts.PeerMailboxSet:
+			default:
+				empty = false
+			}
+		}
+		if !empty {
+			continue
+		}
+		if err := os.Remove(s.path(id)); err == nil {
+			removed = append(removed, id)
+		}
+	}
+	return removed, nil
+}

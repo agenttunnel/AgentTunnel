@@ -13,15 +13,8 @@ func TestPublishStreamsWithoutPersisting(t *testing.T) {
 	defer unsub()
 
 	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
-	// Creation commits two events (thread.created + peer-mailbox-set); drain
-	// both so the next read is the published one.
-	for i := 0; i < 2; i++ {
-		select {
-		case <-ch:
-		case <-time.After(time.Second):
-			t.Fatal("timed out draining the committed create events")
-		}
-	}
+	// Creation is provisional: it commits no events, so there is nothing to
+	// drain before the published one.
 
 	e.Publish("t1", contracts.AgentOutput{AgentID: "a1", Kind: contracts.LogText, Text: "hello"})
 

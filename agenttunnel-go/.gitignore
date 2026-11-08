@@ -4,6 +4,7 @@ agenttunnel-go/bin/
 
 # Desktop (Wails) build output and generated assets
 desktop/bin/
+desktop/dist/
 desktop/frontend/dist/
 desktop/frontend/node_modules/
 desktop/bindings/

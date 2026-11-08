@@ -87,6 +87,28 @@ cd desktop
 `wails3 build` caches its native link step and does not watch the parent module
 (`../internal`, `../pkg`), so a server-side Go change can leave a stale binary.
 
+macOS app bundle:
+
+```bash
+cd desktop
+./build-app.sh --install         # /Applications/AgentTunnel.app + `agenttunnel` on PATH
+```
+
+Then `agenttunnel` starts the app from anywhere. Opening a project:
+
+```bash
+agenttunnel ~/code/my-project    # new thread in that project
+```
+
+An unknown directory becomes a new project (named after the directory); a known
+one (including through a symlink) reuses its existing project. If the app is
+already running, the request is forwarded to it and the window focuses instead
+of booting a second instance.
+
+Threads are only saved once something happens in them: creating one — from the
+UI or `agenttunnel <dir>` — is in-memory until the first message, rename, or
+setting change. A thread you create and never use leaves nothing behind.
+
 Tests:
 
 ```bash
@@ -159,6 +181,10 @@ Review: `review.diff`, `review.comment`.
 
 Context: `context.save`, `context.inherited.get`, `context.inherited.save`,
 `context.inherited.rule.save`, `context.inherited.rule.delete`.
+
+Desktop handoff: `thread.open` (open a thread for a directory, creating the
+project when unknown), `app.open` (broadcast an open-thread/focus request to
+every connected client — how `agenttunnel <dir>` reaches a running app).
 
 Files: `files.tree`, `files.read`.
 
