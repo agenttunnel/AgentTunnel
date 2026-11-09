@@ -67,6 +67,8 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 	for _, t := range minted {
 		names[t.Name] = true
 	}
+	used := o.threadNameSet(ctx, threadID)
+	taken := func(name string) bool { return used[name] || names[name] }
 	seen := map[string]bool{}
 	for i, call := range o.runner.DrainTools(threadID) {
 		// A command can arrive twice when an agent executes it and also prints
@@ -117,7 +119,8 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 			if fromLead {
 				// The lead is the approver, so its own spawn is simply a
 				// dispatch.
-				if task, ok := o.dispatchTask(orchID, call, i, names); ok {
+				if task, ok := o.dispatchTask(orchID, call, taken); ok {
+					names[task.Name] = true
 					tasks = append(tasks, task)
 				}
 				continue
@@ -138,25 +141,26 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 }
 
 // dispatchTask converts one lead dispatch or spawn call into a task, skipping
-// empty ones. names records the task names built in this drain so an approved
-// request cannot silently collide with one of them.
-func (o *Orchestrator) dispatchTask(parentID contracts.AgentID, call toolbox.Call, i int, names map[string]bool) (contracts.DispatchTask, bool) {
+// empty ones. An unnamed dispatch gets a docker-style name that `taken` reports
+// as unused; a named one keeps the lead's name, which dependencies refer to.
+func (o *Orchestrator) dispatchTask(parentID contracts.AgentID, call toolbox.Call, taken func(string) bool) (contracts.DispatchTask, bool) {
 	if strings.TrimSpace(call.Task) == "" {
 		return contracts.DispatchTask{}, false
 	}
+	// Agent ids must be unique per dispatch: the same task name can be
+	// dispatched again on a later pass.
+	seq := o.seq.Add(1)
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
-		name = fmt.Sprintf("task-%d-%d", time.Now().UnixNano(), i)
+		name = generateAgentName(fmt.Sprintf("agent-%d", seq), taken)
+	} else {
+		name = safeName(name)
 	}
-	name = safeName(name)
-	names[name] = true
 	role := call.Role
 	if role == "" {
 		role = contracts.RoleExecutor
 	}
-	// Agent ids must be unique per dispatch: the same task name can be
-	// dispatched again on a later pass.
-	id := fmt.Sprintf("agent-%s-%d", name, o.seq.Add(1))
+	id := fmt.Sprintf("agent-%s-%d", name, seq)
 	task := contracts.DispatchTask{
 		AgentID:       contracts.AgentID(id),
 		ParentAgentID: parentID,
@@ -447,7 +451,9 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		for _, t := range carried {
 			claimed[t.Name] = true
 		}
-		tasks := o.toolTasks(ctx, threadID, orchID, ToDispatchTasks(orchID, Dispatches(calls)), claimed)
+		used := o.threadNameSet(ctx, threadID)
+		protocol := ToDispatchTasks(orchID, Dispatches(calls), func(name string) bool { return used[name] || claimed[name] })
+		tasks := o.toolTasks(ctx, threadID, orchID, protocol, claimed)
 		tasks = append(tasks, carried...)
 		// A pass that dispatched nothing still earns another pass if the user
 		// steered while it was running or a spawn request is still undecided.
