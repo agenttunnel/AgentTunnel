@@ -3,14 +3,28 @@ name: AgentTunnel Release
 # Builds the Go app for macOS, Linux, and Windows and publishes the artifacts
 # to a GitHub Release. Builds are unsigned: this repository has no Apple/Azure
 # signing secrets configured.
+#
+# Versions:
+#   - pushed tag vX.Y.Z    -> release vX.Y.Z (stable, the installer default)
+#   - every push to main   -> prerelease main-<short sha>, version <short sha>
+#                             (7 chars). Prereleases are never "latest", so
+#                             releases/latest keeps pointing at tagged builds.
+#   - workflow_dispatch    -> the given version, or 0.0.0-dev.<run number>
+# The version is embedded in atd and the desktop binary as main.version.
+#
+# Loop safety: this workflow pushes no commits. The release and its tag are
+# created with GITHUB_TOKEN, and events from GITHUB_TOKEN do not start new runs.
+# It also does not listen to release events, so publishing cannot re-trigger it.
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to build and release (for example 0.1.0). Defaults to the pushed tag."
+        description: "Version to build and release (for example 0.1.0). Defaults to the pushed tag, or the short commit hash on main."
         required: false
         type: string
       draft:
@@ -33,15 +47,28 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - id: version
         name: Compute version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          raw="${{ inputs.version }}"
-          if [[ -z "$raw" && "${{ github.ref_type }}" == "tag" ]]; then
+          raw="$INPUT_VERSION"
+          if [[ -z "$raw" && "$REF_TYPE" == "tag" ]]; then
             raw="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "$raw" && "$EVENT_NAME" == "push" && "$REF" == "refs/heads/main" ]]; then
+            version="${GITHUB_SHA:0:7}"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "tag=main-${version}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [[ -z "$raw" ]]; then
             raw="0.0.0-dev.${GITHUB_RUN_NUMBER}"
@@ -49,6 +76,7 @@ jobs:
           version="${raw#v}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
 
   build-go:
     name: Build Go ${{ matrix.platform }}-${{ matrix.arch }}
@@ -110,14 +138,15 @@ jobs:
         run: |
           set -euo pipefail
           ext=""
-          desktop_ldflags="-w -s"
+          ldflags="-w -s -X main.version=${VERSION}"
+          desktop_ldflags="$ldflags"
           if [[ "$GOOS" == "windows" ]]; then
             ext=".exe"
-            desktop_ldflags="-w -s -H windowsgui"
+            desktop_ldflags="$ldflags -H windowsgui"
           fi
 
           mkdir -p go-dist
-          go build -trimpath -buildvcs=false -ldflags="-w -s" -o "go-dist/atd${ext}" ./cmd/atd
+          go build -trimpath -buildvcs=false -ldflags="$ldflags" -o "go-dist/atd${ext}" ./cmd/atd
           (
             cd desktop
             go build -tags production -trimpath -buildvcs=false \
@@ -192,6 +221,7 @@ jobs:
           name: AgentTunnel ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}
           draft: ${{ inputs.draft || false }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: release-assets/*
       - name: Add install notes

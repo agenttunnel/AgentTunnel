@@ -27,6 +27,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// version is the release version, set at link time by the release workflow
+// (-ldflags "-X main.version=..."). Local builds report "dev".
+var version = "dev"
+
 func main() {
 	// Arguments mean someone invoked this binary as a CLI. `tool` is the
 	// agent-callable subcommand; a single directory argument opens a thread in
@@ -39,6 +43,9 @@ func main() {
 			os.Exit(toolcli.Run(args[1:]))
 		case args[0] == "-h" || args[0] == "--help":
 			usage()
+			os.Exit(0)
+		case args[0] == "--version":
+			fmt.Println("agenttunnel", version)
 			os.Exit(0)
 		case len(args) == 1:
 			d, err := launchDirArg(args[0])
@@ -169,6 +176,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: agenttunnel            start the app")
 	fmt.Fprintln(os.Stderr, "       agenttunnel <dir>      open a thread in that project (creates the project if unknown)")
 	fmt.Fprintln(os.Stderr, "       agenttunnel tool ...   agent-callable tool")
+	fmt.Fprintln(os.Stderr, "       agenttunnel --version  print the release version")
 }
 
 func stateDir() string {
