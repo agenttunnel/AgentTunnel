@@ -957,6 +957,13 @@ body.is-resizing * {
 .act-head .stop-btn {
   margin-left: auto;
 }
+/* While agents run, the log takes most of the viewport and fills it. */
+.activity.agents {
+  height: 62vh;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
 .act-body {
   padding: 10px 12px;
   font-family: var(--mono);
@@ -964,6 +971,14 @@ body.is-resizing * {
   line-height: 1.6;
   max-height: 320px;
   overflow: auto;
+}
+.activity.agents .act-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.activity.agents .act-head {
+  flex: none;
 }
 @keyframes act-pulse {
   0%,

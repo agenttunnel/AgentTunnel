@@ -706,6 +706,15 @@ export default function App() {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [thread?.messages?.length, thread?.messages?.[thread.messages.length - 1]?.text, live.length]);
 
+  // Live log follows the newest output, unless the user scrolled up to read.
+  const actBodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = actBodyRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [live]);
+
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -2328,7 +2337,7 @@ export default function App() {
                 </section>
               ))}
               {running.length > 0 && (
-                <div className="activity">
+                <div className="activity agents">
                   <div className="act-head">
                     <span className="act-led" />
                     <span className="act-label">
@@ -2344,7 +2353,7 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  <div className="act-body">
+                  <div className="act-body" ref={actBodyRef}>
                     {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
                     {live.slice(-60).map((l, i) =>
                       l.kind === "text" || l.kind === "reasoning" ? (
