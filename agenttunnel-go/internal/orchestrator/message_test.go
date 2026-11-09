@@ -114,13 +114,13 @@ func TestPostMessageRecordsAndDelivers(t *testing.T) {
 
 	// The sender's log shows where the message went.
 	sawTrail := false
-	for _, e := range r.Logs().Entries("agent-orchestrator") {
+	for _, e := range r.Logs().Entries("t1") {
 		if e.Kind == contracts.LogTool && e.Text == "→ researcher: watch the flaky test" {
 			sawTrail = true
 		}
 	}
 	if !sawTrail {
-		t.Fatalf("no tool log for the sent message: %+v", r.Logs().Entries("agent-orchestrator"))
+		t.Fatalf("no tool log for the sent message: %+v", r.Logs().Entries("t1"))
 	}
 
 	// "orchestrator" resolves to the team lead, and a raw agent id works too.
@@ -201,7 +201,7 @@ printf '{"type":"text","text":"pass prompt carried the messages"}\n'`
 	}
 
 	if err := New(r).RunTurn(ctx, "t1", "please check the flaky test"); err != nil {
-		for _, e := range r.Logs().Entries("agent-orchestrator") {
+		for _, e := range r.Logs().Entries("t1") {
 			t.Logf("orchestrator %s: %s", e.Kind, e.Text)
 		}
 		t.Fatalf("run turn: %v", err)

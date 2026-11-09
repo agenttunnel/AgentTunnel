@@ -46,7 +46,8 @@ func TestAgentLogsSurviveRestart(t *testing.T) {
 	// Sanity: the live buffer has the orchestrator's output.
 	var live []contracts.LogEntry
 	json.Unmarshal(call(t, c1, "3", "agents.logs", map[string]any{
-		"agentId": "agent-orchestrator",
+		"threadId": created.ThreadID,
+		"agentId":  "agent-orchestrator",
 	}), &live)
 	if len(live) == 0 {
 		t.Fatal("no logs for the orchestrator in the same session")
@@ -60,7 +61,8 @@ func TestAgentLogsSurviveRestart(t *testing.T) {
 
 	var after []contracts.LogEntry
 	json.Unmarshal(call(t, c2, "1", "agents.logs", map[string]any{
-		"agentId": "agent-orchestrator",
+		"threadId": created.ThreadID,
+		"agentId":  "agent-orchestrator",
 	}), &after)
 	if len(after) == 0 {
 		t.Fatal("agent logs did not survive the restart")

@@ -109,7 +109,7 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 				// the model behind it — must see why, or it will assume the
 				// message arrived.
 				line := "tool message failed: " + err.Error()
-				_ = o.runner.logs.Append(contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+				_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
 				o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
 			}
 

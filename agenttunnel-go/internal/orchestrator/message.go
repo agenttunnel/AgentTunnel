@@ -96,7 +96,7 @@ func (r *Runner) postMessage(ctx context.Context, threadID contracts.ThreadID, f
 		"threadId": string(threadID), "from": string(from), "to": string(resolved), "body": body,
 	})
 	line := "→ " + display + ": " + body
-	_ = r.logs.Append(contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
+	_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
 	r.publishOutput(threadID, from, contracts.LogTool, line)
 	return nil
 }

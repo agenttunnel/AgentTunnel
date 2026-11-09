@@ -338,7 +338,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	emitted := false
 	for ev := range events {
 		emitted = true
-		_ = r.logs.Append(contracts.LogEntry{AgentID: t.AgentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: t.AgentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
 		r.publishOutput(threadID, t.AgentID, ev.Kind, ev.Text)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, t.AgentID, t.Role, false, *ev.Usage)
@@ -365,7 +365,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	// Surface it as an error instead of an empty, green agent.
 	if werr == nil && !emitted {
 		msg := "harness exited without any output (check its auth or quota)"
-		_ = r.logs.Append(contracts.LogEntry{AgentID: t.AgentID, Kind: contracts.LogError, Text: msg, At: r.clock()})
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: t.AgentID, Kind: contracts.LogError, Text: msg, At: r.clock()})
 		r.publishOutput(threadID, t.AgentID, contracts.LogError, msg)
 		return "", errors.New(msg)
 	}
@@ -409,7 +409,7 @@ func (r *Runner) postAgentCall(threadID contracts.ThreadID, from contracts.Agent
 	}
 	r.tools.Post(threadID, call)
 	line := "tool " + string(call.Kind)
-	_ = r.logs.Append(contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
+	_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: from, Kind: contracts.LogTool, Text: line, At: r.clock()})
 	r.publishOutput(threadID, from, contracts.LogTool, line)
 }
 
@@ -480,11 +480,11 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 				continue
 			}
 			calls = append(calls, *call)
-			_ = r.logs.Append(contracts.LogEntry{AgentID: agentID, Kind: contracts.LogTool, Text: ev.Text, At: r.clock()})
+			_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: contracts.LogTool, Text: ev.Text, At: r.clock()})
 			r.publishOutput(threadID, agentID, contracts.LogTool, ev.Text)
 			continue
 		}
-		_ = r.logs.Append(contracts.LogEntry{AgentID: agentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
 		r.publishOutput(threadID, agentID, ev.Kind, ev.Text)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
@@ -513,7 +513,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 			if r.tools != nil {
 				r.tools.Post(threadID, call)
 			}
-			_ = r.logs.Append(contracts.LogEntry{
+			_ = r.logs.Append(threadID, contracts.LogEntry{
 				AgentID: agentID, Kind: contracts.LogTool,
 				Text: "tool " + string(call.Kind), At: r.clock(),
 			})

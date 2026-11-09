@@ -159,6 +159,60 @@ function loadOpenProjects(): string[] {
   return [];
 }
 
+/** Composer drafts keyed by project and thread, remembered across restarts. */
+function draftKeyOf(projectId: string | null, threadId: string | null): string {
+  return `${projectId ?? ""}\u001f${threadId ?? ""}`;
+}
+
+function loadDrafts(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem("at.drafts");
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v;
+        return out;
+      }
+    }
+  } catch {
+    /* private mode or corrupt: start with no drafts */
+  }
+  return {};
+}
+
+/** One line of the activity log box. */
+type LiveLine = { agentId: string; kind: string; text: string };
+const LIVE_LIMIT = 400;
+
+/** Appends one output line. Harnesses stream text in chunks, so a text or
+ *  reasoning chunk from the same agent grows the last block instead of stacking. */
+function pushLiveLine(prev: LiveLine[], line: LiveLine): LiveLine[] {
+  const last = prev[prev.length - 1];
+  if (
+    last &&
+    last.agentId === line.agentId &&
+    last.kind === line.kind &&
+    (line.kind === "text" || line.kind === "reasoning")
+  ) {
+    return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
+  }
+  return [...prev.slice(-(LIVE_LIMIT - 1)), line];
+}
+
+/** Frames published while the snapshot loads may already be in the snapshot:
+ *  the daemon appends a line before publishing it. Drop the longest run at the
+ *  start of `buffered` that repeats the snapshot's tail, keeping only new lines. */
+function dropSnapshotOverlap(snapshot: LiveLine[], buffered: LiveLine[]): LiveLine[] {
+  const same = (a: LiveLine, b: LiveLine) =>
+    a.agentId === b.agentId && a.kind === b.kind && a.text === b.text;
+  for (let k = Math.min(snapshot.length, buffered.length); k > 0; k--) {
+    const tail = snapshot.slice(snapshot.length - k);
+    if (tail.every((line, i) => same(line, buffered[i]))) return buffered.slice(k);
+  }
+  return buffered;
+}
+
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = window.localStorage.getItem("at.asideTabs");
@@ -419,7 +473,6 @@ export default function App() {
   const [thread, setThread] = useState<ThreadState | null>(null);
   const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
 
-  const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   // Aside panel tabs: agents + usage are pinned; context, files, and diff can
@@ -492,6 +545,18 @@ export default function App() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
+  // Each (project, thread) keeps its own composer text, so switching threads
+  // swaps the draft instead of carrying it over.
+  const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
+  const draftKey = draftKeyOf(projectId, activeId);
+  const input = drafts[draftKey] ?? "";
+  const setInput = useCallback(
+    (text: string) => {
+      if (!activeId) return;
+      setDrafts((prev) => ({ ...prev, [draftKey]: text }));
+    },
+    [activeId, draftKey],
+  );
   // Projects stay open as tabs; each one remembers the thread it was showing.
   const [openProjectIds, setOpenProjectIds] = useState<string[]>(loadOpenProjects);
   const lastThreadByProject = useRef<Record<string, string | null>>({});
@@ -936,45 +1001,60 @@ export default function App() {
     [refresh],
   );
 
-  // Subscribe to the active thread and keep the local view fresh. Transient
-  // "agent.output" frames append to a live buffer instead of refetching state.
+  // Subscribe to the active thread and keep the local view fresh. The activity
+  // log box restores this thread's persisted output on switch, then appends
+  // "agent.output" frames for this thread as they stream.
   useEffect(() => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
+    let stale = false;
+    // Frames that arrive before the snapshot lands wait here, then merge after it.
+    let buffered: LiveLine[] | null = [];
     setLive([]);
     rpc.call("thread.subscribe", { threadId: activeId }).catch(() => undefined);
+    // Snapshot and buffered frames are both raw chunks, so overlap is compared
+    // before the chunks are merged into display lines.
+    const applyBuffered = (snapshot: LiveLine[]) => {
+      const fresh = dropSnapshotOverlap(snapshot, buffered ?? []);
+      buffered = null;
+      setLive([...snapshot, ...fresh].reduce<LiveLine[]>(pushLiveLine, []));
+    };
+    rpc
+      .call<LogEntry[]>("thread.logs", { threadId: activeId })
+      .then((entries) => {
+        if (stale) return;
+        applyBuffered(entries);
+      })
+      .catch(() => {
+        if (stale) return;
+        applyBuffered([]);
+      });
     const off = rpc.onThreadEvent((raw) => {
       const ev = raw as {
         type?: string;
+        threadId?: string;
         payload?: { agentId?: string; kind?: string; text?: string };
       };
       if (ev?.type === "agent.output" && ev.payload) {
+        // Output from another thread belongs to that thread's log; it is
+        // restored from the daemon when the user switches back.
+        if (stale || ev.threadId !== activeId) return;
         const line = {
           agentId: String(ev.payload.agentId ?? ""),
           kind: String(ev.payload.kind ?? "text"),
           text: String(ev.payload.text ?? ""),
         };
-        setLive((prev) => {
-          // Harnesses emit text in chunks; grow the last block of the same kind
-          // rather than stacking one line per chunk, so it reads as a stream.
-          const last = prev[prev.length - 1];
-          if (
-            last &&
-            last.agentId === line.agentId &&
-            last.kind === line.kind &&
-            (line.kind === "text" || line.kind === "reasoning")
-          ) {
-            const merged = { ...last, text: last.text + line.text };
-            return [...prev.slice(0, -1), merged].slice(-400);
-          }
-          return [...prev.slice(-399), line];
-        });
+        if (buffered) buffered.push(line);
+        else setLive((prev) => pushLiveLine(prev, line));
         return;
       }
       scheduleRefresh(activeId);
     });
     refresh(activeId).catch(() => undefined);
-    return off;
+    return () => {
+      stale = true;
+      off();
+    };
   }, [activeId, refresh, scheduleRefresh]);
 
   // The diff backs both the center Review tab and the aside Diff panel.
@@ -1001,6 +1081,16 @@ export default function App() {
       /* private mode: stay in memory */
     }
   }, [asideTabs]);
+
+  // Remember composer drafts across restarts; empty drafts are dropped.
+  useEffect(() => {
+    try {
+      const kept = Object.fromEntries(Object.entries(drafts).filter(([, v]) => v !== ""));
+      window.localStorage.setItem("at.drafts", JSON.stringify(kept));
+    } catch {
+      /* private mode: stay in memory */
+    }
+  }, [drafts]);
 
   // Remember which projects are open as tabs.
   useEffect(() => {
@@ -1059,15 +1149,17 @@ export default function App() {
   // While an agent is open in the detail panel, poll its log.
   useEffect(() => {
     const rpc = rpcRef.current;
-    if (!rpc || !detailId) return;
+    if (!rpc || !detailId || !activeId) return;
     const load = async () => {
-      const l = await rpc.call<LogEntry[]>("agents.logs", { agentId: detailId }).catch(() => null);
+      const l = await rpc
+        .call<LogEntry[]>("agents.logs", { threadId: activeId, agentId: detailId })
+        .catch(() => null);
       if (l) setLogs(l);
     };
     load();
     const timer = window.setInterval(load, 800);
     return () => window.clearInterval(timer);
-  }, [detailId]);
+  }, [detailId, activeId]);
 
   const rolesById = useMemo(() => {
     const map: Record<string, string> = {};

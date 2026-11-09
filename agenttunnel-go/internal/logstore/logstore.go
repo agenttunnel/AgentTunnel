@@ -13,14 +13,17 @@ import (
 
 const defaultMaxEntries = 2000
 
-// Store keeps per-agent log entries in a bounded in-memory buffer and mirrors
-// every entry to a JSONL file so full logs survive a restart.
+// Store keeps each thread's output entries in a bounded in-memory buffer and
+// mirrors every entry to that thread's JSONL file, so a thread's output survives
+// a restart. Entries are keyed by thread, not agent: the team lead's id is fixed
+// across threads, so an agent-keyed log would mix threads together.
 type Store struct {
 	dir string
 	max int
 
 	mu      sync.Mutex
-	buffers map[contracts.AgentID][]contracts.LogEntry
+	buffers map[contracts.ThreadID][]contracts.LogEntry
+	loaded  map[contracts.ThreadID]bool
 }
 
 // New creates a log store rooted at dir.
@@ -28,15 +31,16 @@ func New(dir string) *Store {
 	return &Store{
 		dir:     dir,
 		max:     defaultMaxEntries,
-		buffers: map[contracts.AgentID][]contracts.LogEntry{},
+		buffers: map[contracts.ThreadID][]contracts.LogEntry{},
+		loaded:  map[contracts.ThreadID]bool{},
 	}
 }
 
-func (s *Store) fileFor(agent contracts.AgentID) string {
-	return filepath.Join(s.dir, "agent-output", sanitize(string(agent))+".log")
+func (s *Store) fileFor(thread contracts.ThreadID) string {
+	return filepath.Join(s.dir, "thread-output", sanitize(string(thread))+".log")
 }
 
-// sanitize makes an agent id safe to use as a file name. Ids are derived from
+// sanitize makes an id safe to use as a file name. Ids are derived from
 // model-supplied task names, so anything that could escape the directory (path
 // separators, "..") is replaced.
 func sanitize(id string) string {
@@ -57,20 +61,36 @@ func sanitize(id string) string {
 	return out
 }
 
+// ensureLoaded fills a thread's buffer from its file the first time the thread
+// is touched in this process, so the buffer always holds the newest entries
+// including those written before a restart. Caller holds s.mu.
+func (s *Store) ensureLoaded(thread contracts.ThreadID) {
+	if s.loaded[thread] {
+		return
+	}
+	s.loaded[thread] = true
+	entries, _ := s.readFile(thread)
+	if len(entries) > s.max {
+		entries = entries[len(entries)-s.max:]
+	}
+	s.buffers[thread] = entries
+}
+
 // Append records an entry in memory (bounded) and on disk (append-only).
-func (s *Store) Append(e contracts.LogEntry) error {
+func (s *Store) Append(thread contracts.ThreadID, e contracts.LogEntry) error {
 	s.mu.Lock()
-	buf := append(s.buffers[e.AgentID], e)
+	s.ensureLoaded(thread)
+	buf := append(s.buffers[thread], e)
 	if len(buf) > s.max {
 		buf = buf[len(buf)-s.max:]
 	}
-	s.buffers[e.AgentID] = buf
+	s.buffers[thread] = buf
 	s.mu.Unlock()
-	return s.appendFile(e)
+	return s.appendFile(thread, e)
 }
 
-func (s *Store) appendFile(e contracts.LogEntry) error {
-	path := s.fileFor(e.AgentID)
+func (s *Store) appendFile(thread contracts.ThreadID, e contracts.LogEntry) error {
+	path := s.fileFor(thread)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -87,16 +107,31 @@ func (s *Store) appendFile(e contracts.LogEntry) error {
 	return err
 }
 
-// Entries returns the in-memory buffer for an agent.
-func (s *Store) Entries(agent contracts.AgentID) []contracts.LogEntry {
+// Entries returns a copy of a thread's bounded log, oldest first.
+func (s *Store) Entries(thread contracts.ThreadID) []contracts.LogEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]contracts.LogEntry(nil), s.buffers[agent]...)
+	s.ensureLoaded(thread)
+	return append([]contracts.LogEntry(nil), s.buffers[thread]...)
 }
 
-// ReadFile reads the persisted JSONL log for an agent.
-func (s *Store) ReadFile(agent contracts.AgentID) ([]contracts.LogEntry, error) {
-	data, err := os.ReadFile(s.fileFor(agent))
+// AgentEntries returns one agent's full output history within a thread, oldest
+// first. It reads the thread's file rather than the bounded buffer, so a busy
+// thread's other agents cannot evict this agent's older lines.
+func (s *Store) AgentEntries(thread contracts.ThreadID, agent contracts.AgentID) []contracts.LogEntry {
+	entries, _ := s.readFile(thread)
+	var out []contracts.LogEntry
+	for _, e := range entries {
+		if e.AgentID == agent {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// readFile reads a thread's persisted JSONL log.
+func (s *Store) readFile(thread contracts.ThreadID) ([]contracts.LogEntry, error) {
+	data, err := os.ReadFile(s.fileFor(thread))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
