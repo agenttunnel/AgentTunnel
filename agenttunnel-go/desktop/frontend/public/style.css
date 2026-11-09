@@ -1174,20 +1174,55 @@ select {
 }
 .roles li {
   list-style: none;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 0;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
   font-size: 12px;
 }
 .roles li:last-child {
   border-bottom: 0;
 }
+.roles li.clickable {
+  cursor: pointer;
+}
+.roles li.clickable:hover .role-name {
+  text-decoration: underline;
+}
+.role-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.role-head .dot {
+  margin-top: 0;
+}
+.role-name {
+  font-weight: 550;
+  white-space: nowrap;
+}
 .roles .harness {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--faint);
   font-family: var(--mono);
   font-size: 10.5px;
+}
+.role-meta {
+  margin: 3px 0 0 15px;
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.role-task {
+  margin: 3px 0 0 15px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .turn {
