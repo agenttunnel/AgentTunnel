@@ -1931,12 +1931,14 @@ table.grid tr.rowlink:hover td {
   background: transparent;
   color: var(--faint);
   opacity: 0;
+  pointer-events: none;
   font-size: 15px;
   line-height: 1;
 }
 .project-card:hover .pc-del,
 .pc-del:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 .pc-del:hover:not(:disabled) {
   color: var(--err);
