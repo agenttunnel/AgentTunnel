@@ -43,6 +43,18 @@ cd agenttunnel-go/desktop
 # dist/AgentTunnel-darwin-<arch>.dmg
 ```
 
+### Versions
+
+- **Tagged releases** (`vX.Y.Z`) are the stable builds. `releases/latest` and the
+  installer resolve to these.
+- **Every merge to `main`** publishes a prerelease named `main-<short sha>`. Its
+  version is the 7-character commit hash (for example `main-1a2b3c4`). Prereleases
+  are never "latest", so the installer keeps pointing at tagged builds. Pin one with
+  `AGENTTUNNEL_VERSION=main-1a2b3c4`.
+
+The version is embedded at link time (`-X main.version=…`). Check it with
+`atd --version` or `agenttunnel --version`; local builds report `dev`.
+
 ## Build from source
 
 Requires Go (see `agenttunnel-go/go.mod`) and Node for the desktop frontend.

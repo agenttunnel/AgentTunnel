@@ -34,6 +34,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "tool" {
 		os.Exit(toolcli.Run(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println("atd", version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "update" {
 		os.Exit(runUpdate(os.Args[2:]))
 	}

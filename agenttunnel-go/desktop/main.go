@@ -44,6 +44,9 @@ func main() {
 		case args[0] == "-h" || args[0] == "--help":
 			usage()
 			os.Exit(0)
+		case args[0] == "--version":
+			fmt.Println("agenttunnel", version)
+			os.Exit(0)
 		case len(args) == 1:
 			d, err := launchDirArg(args[0])
 			if err != nil {
@@ -174,6 +177,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: agenttunnel            start the app")
 	fmt.Fprintln(os.Stderr, "       agenttunnel <dir>      open a thread in that project (creates the project if unknown)")
 	fmt.Fprintln(os.Stderr, "       agenttunnel tool ...   agent-callable tool")
+	fmt.Fprintln(os.Stderr, "       agenttunnel --version  print the release version")
 }
 
 func stateDir() string {
