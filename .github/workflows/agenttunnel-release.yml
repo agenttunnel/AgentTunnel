@@ -126,11 +126,25 @@ jobs:
 
           printf '%s\n' "$VERSION" > go-dist/VERSION
           tar -czf "agenttunnel-go-${GOOS}-${GOARCH}.tar.gz" -C go-dist .
+      - name: Package macOS app and DMG
+        if: matrix.platform == 'darwin'
+        working-directory: agenttunnel-go/desktop
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          ./build-app.sh --no-build --binary ../go-dist/agenttunnel \
+            --version "$VERSION" --arch "${{ matrix.arch }}" --dmg
+          mkdir -p ../release
+          cp "dist/AgentTunnel-darwin-${{ matrix.arch }}.app.tar.gz" ../release/
+          cp "dist/AgentTunnel-darwin-${{ matrix.arch }}.dmg" ../release/
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: agenttunnel-go-${{ matrix.platform }}-${{ matrix.arch }}
-          path: agenttunnel-go/agenttunnel-go-*.tar.gz
+          path: |
+            agenttunnel-go/agenttunnel-go-*.tar.gz
+            agenttunnel-go/release/*
           if-no-files-found: error
 
   release:
@@ -169,5 +183,26 @@ jobs:
           if [[ "$existing" == *"Install notes"* ]]; then
             exit 0
           fi
-          note="$(printf '\n### Install notes\n\nmacOS builds are unsigned, so Gatekeeper may quarantine the downloaded archive. After extracting, clear the quarantine flag before first run:\n\n```\nxattr -d com.apple.quarantine ./agenttunnel\n```\n\nOr install with the bundled script, which handles this for you:\n\n```\ncurl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh\n```\n')"
+          note='
+
+          ### Install notes
+
+          **macOS** — download `AgentTunnel-darwin-arm64.dmg` (Apple Silicon) or
+          `AgentTunnel-darwin-amd64.dmg` (Intel), open it, and drag AgentTunnel into
+          Applications. The builds are unsigned; if Gatekeeper quarantines the app:
+
+          ```
+          xattr -dr com.apple.quarantine /Applications/AgentTunnel.app
+          ```
+
+          The installer does this for you, installs the app into ~/Applications, and puts
+          the CLI on your PATH:
+
+          ```
+          curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
+          ```
+
+          **Linux / Windows** — the archives contain `atd` and the `agenttunnel`
+          desktop binary.
+          '
           printf '%s%s' "$existing" "$note" | gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file -
