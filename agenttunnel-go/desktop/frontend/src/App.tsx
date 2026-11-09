@@ -145,6 +145,20 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
 };
+/** Projects opened as tabs, remembered across restarts. */
+function loadOpenProjects(): string[] {
+  try {
+    const raw = window.localStorage.getItem("at.openProjects");
+    if (raw) {
+      const ids = JSON.parse(raw) as unknown;
+      if (Array.isArray(ids)) return ids.filter((id): id is string => typeof id === "string");
+    }
+  } catch {
+    /* private mode or corrupt: start with no tabs */
+  }
+  return [];
+}
+
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = window.localStorage.getItem("at.asideTabs");
@@ -478,6 +492,9 @@ export default function App() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
+  // Projects stay open as tabs; each one remembers the thread it was showing.
+  const [openProjectIds, setOpenProjectIds] = useState<string[]>(loadOpenProjects);
+  const lastThreadByProject = useRef<Record<string, string | null>>({});
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
@@ -608,20 +625,53 @@ export default function App() {
     setNewProjectName("");
     setNewProjectPath("");
     setShowNewProject(false);
-    setProjectId(res.project.id);
-    setActiveId(null);
+    openProject(res.project.id);
   };
 
   const deleteProject = async (id: string) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
     setProjects(await rpc.call<Project[]>("project.delete", { id }));
-    if (projectId === id) setProjectId(null);
+    closeProjectTab(id);
   };
 
+  /** Thread selection also records the project's place, so its tab reopens
+   * where it was left. */
+  const selectThread = (id: string | null) => {
+    setActiveId(id);
+    if (projectId) lastThreadByProject.current[projectId] = id;
+  };
+
+  /** The thread a project tab should reopen, unless it has since been deleted. */
+  const rememberedThread = (id: string | null): string | null => {
+    if (!id) return null;
+    const threadId = lastThreadByProject.current[id] ?? null;
+    if (!threadId) return null;
+    return threads.some((t) => t.id === threadId) ? threadId : null;
+  };
+
+  /** Opening a project reuses its tab and restores the thread it was showing;
+   * the project grid and the tab strip both go through here. */
   const openProject = (id: string) => {
+    setOpenProjectIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setProjectId(id);
+    setActiveId(rememberedThread(id));
+  };
+
+  const showProjects = () => {
+    setProjectId(null);
     setActiveId(null);
+  };
+
+  const closeProjectTab = (id: string) => {
+    const index = openProjectIds.indexOf(id);
+    const next = openProjectIds.filter((x) => x !== id);
+    delete lastThreadByProject.current[id];
+    setOpenProjectIds(next);
+    if (projectId !== id) return;
+    const fallback = next[index] ?? next[index - 1] ?? null;
+    setProjectId(fallback);
+    setActiveId(rememberedThread(fallback));
   };
 
   // --- thread context-menu actions ---------------------------------------
@@ -672,7 +722,7 @@ export default function App() {
     await reloadThreads();
     // Deleting the open thread closes back to the thread list.
     if (activeId === deleted.id) {
-      setActiveId(null);
+      selectThread(null);
       setThread(null);
     }
   };
@@ -842,6 +892,10 @@ export default function App() {
             projects: Project[];
           }>("thread.open", { dir: conn.launchDir });
           setProjects(opened.projects);
+          setOpenProjectIds((prev) =>
+            prev.includes(opened.projectId) ? prev : [...prev, opened.projectId],
+          );
+          lastThreadByProject.current[opened.projectId] = opened.threadId;
           setProjectId(opened.projectId);
           setActiveId(opened.threadId);
           const updated = await rpc.call<ThreadSummary[]>("thread.list");
@@ -852,8 +906,14 @@ export default function App() {
       }
       // Another `agenttunnel <dir>` invocation while this window runs: the
       // launcher forwarded the thread here.
-      rpc.onAppOpen(({ threadId, projectId }) => {
-        if (projectId) setProjectId(projectId);
+      rpc.onAppOpen(({ threadId, projectId: openedProjectId }) => {
+        if (openedProjectId) {
+          setOpenProjectIds((prev) =>
+            prev.includes(openedProjectId) ? prev : [...prev, openedProjectId],
+          );
+          setProjectId(openedProjectId);
+          if (threadId) lastThreadByProject.current[openedProjectId] = threadId;
+        }
         if (threadId) {
           setActiveId(threadId);
           reloadThreads();
@@ -941,6 +1001,37 @@ export default function App() {
       /* private mode: stay in memory */
     }
   }, [asideTabs]);
+
+  // Remember which projects are open as tabs.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("at.openProjects", JSON.stringify(openProjectIds));
+    } catch {
+      /* private mode: stay in memory */
+    }
+  }, [openProjectIds]);
+
+  // Drop tabs whose project was removed elsewhere (settings, another window).
+  useEffect(() => {
+    if (projects.length === 0) return;
+    setOpenProjectIds((prev) => {
+      const next = prev.filter((id) => projects.some((p) => p.id === id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [projects]);
+
+  // Other projects keep working while their tab is in the background. Poll the
+  // recency list so their tabs stay honest about running agents and activity.
+  useEffect(() => {
+    if (status !== "online") return;
+    const timer = window.setInterval(() => {
+      rpcRef.current
+        ?.call<ThreadSummary[]>("thread.list")
+        .then(setThreads)
+        .catch(() => undefined);
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [status]);
 
   // Single-letter panel shortcuts (shown in the "+" menu), inactive while typing.
   useEffect(() => {
@@ -1051,6 +1142,20 @@ export default function App() {
       ),
     [threads, projectId, needle],
   );
+  const openProjects = useMemo(
+    () =>
+      openProjectIds
+        .map((id) => projects.find((p) => p.id === id))
+        .filter((p): p is Project => !!p),
+    [openProjectIds, projects],
+  );
+  const runningByProject = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const t of threads) {
+      if (t.projectId && t.runningAgents) map[t.projectId] = (map[t.projectId] ?? 0) + t.runningAgents;
+    }
+    return map;
+  }, [threads]);
   const enabledHarnesses = harnesses.enabled ?? harnesses.all;
   const isHarnessEnabled = (h: string) => enabledHarnesses.includes(h);
 
@@ -1083,7 +1188,7 @@ export default function App() {
     const created = await rpc.call<{ threadId: string }>("thread.create", { projectId });
     const list = await rpc.call<ThreadSummary[]>("thread.list");
     setThreads(list);
-    setActiveId(created.threadId);
+    selectThread(created.threadId);
   };
 
   const send = async () => {
@@ -1298,6 +1403,81 @@ export default function App() {
     </div>
   );
 
+  // Open projects live in a persistent tab strip, so switching projects is one
+  // click and never loses what the other project was doing.
+  const projectTabs =
+    openProjects.length > 0 ? (
+      <div className="project-tabs">
+        <div
+          className={`ptab pt-home${projectId ? "" : " on"}`}
+          {...tabProps(projectId === null, showProjects)}
+          title="All projects"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="13"
+            height="13"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+          Projects
+        </div>
+        <div className="pt-scroll" role="tablist" aria-label="Open projects">
+          {openProjects.map((p) => {
+            const busy = runningByProject[p.id] ?? 0;
+            return (
+              <div
+                key={p.id}
+                className={`ptab${p.id === projectId ? " on" : ""}`}
+                {...tabProps(p.id === projectId, () => openProject(p.id))}
+                title={p.path || p.name}
+              >
+                <span className={`pt-led${busy > 0 ? " run" : ""}`} />
+                <span className="pt-name">{p.name}</span>
+                {busy > 0 && (
+                  <span className="pt-count" title={`${busy} running agent${busy === 1 ? "" : "s"}`}>
+                    {busy}
+                  </span>
+                )}
+                <span
+                  className="pt-x"
+                  role="button"
+                  tabIndex={0}
+                  title={`Close ${p.name}`}
+                  aria-label={`Close ${p.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeProjectTab(p.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closeProjectTab(p.id);
+                    }
+                  }}
+                >
+                  ×
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <button className="pt-add" onClick={openPicker} title="Add project" aria-label="Add project">
+          +
+        </button>
+      </div>
+    ) : null;
+
   const menuItems: MenuItem[] = threadMenu
     ? [
         { label: "Rename…", onSelect: () => beginRename(threadMenu.thread) },
@@ -1413,6 +1593,7 @@ export default function App() {
     return (
       <div className="screen">
         {titlebar}
+        {projectTabs}
         <div className="screen-body">
           <div className="screen-head">
             <div className="screen-title">
@@ -1450,7 +1631,11 @@ export default function App() {
           )}
           <div className="project-grid">
             {projects.map((p) => (
-              <div className="project-card" key={p.id} {...clickable(() => openProject(p.id))}>
+              <div
+                className={`project-card${openProjectIds.includes(p.id) ? " is-open" : ""}`}
+                key={p.id}
+                {...clickable(() => openProject(p.id))}
+              >
                 <div className="pc-name" title={p.name}>
                   {p.name}
                 </div>
@@ -1489,9 +1674,10 @@ export default function App() {
     return (
       <div className="screen">
         {titlebar}
+        {projectTabs}
         <div className="screen-body">
           <div className="screen-head">
-            <button className="back" onClick={() => setProjectId(null)}>
+            <button className="back" onClick={showProjects}>
               ← Projects
             </button>
             <div className="screen-title">
@@ -1522,7 +1708,7 @@ export default function App() {
               <div
                 className={`thread-card${t.stale ? " is-stale" : ""}`}
                 key={t.id}
-                {...clickable(() => setActiveId(t.id))}
+                {...clickable(() => selectThread(t.id))}
                 onContextMenu={(e) => openThreadMenu(t, e)}
               >
                 <div className="tc-head">
@@ -1551,10 +1737,11 @@ export default function App() {
   return (
     <div className="app">
       {titlebar}
+      {projectTabs}
 
       <div className="col sidebar">
         <div className="col-head">
-          <button className="back-mini" onClick={() => setActiveId(null)}>
+          <button className="back-mini" onClick={() => selectThread(null)}>
             ← {selectedProject?.name ?? "Threads"}
           </button>
           <button onClick={newThread}>New</button>
@@ -1565,7 +1752,7 @@ export default function App() {
             <div
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
-              {...clickable(() => setActiveId(t.id))}
+              {...clickable(() => selectThread(t.id))}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
               <div className="t" title={t.title}>
