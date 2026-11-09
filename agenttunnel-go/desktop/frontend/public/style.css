@@ -2902,6 +2902,78 @@ table.grid tr.rowlink:hover td {
   }
 }
 
+/* The agreed plan above the board: a checklist, styled apart from agent cards. */
+.board-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.task-list {
+  flex: 0 1 auto;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  margin: 14px 14px 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  min-height: 0;
+}
+.task-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px dashed var(--border-soft);
+}
+.task-rows {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.task-glyph {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+}
+.task-row.doing .task-glyph {
+  border-color: var(--accent);
+  background: linear-gradient(90deg, var(--accent) 50%, transparent 50%);
+}
+.task-row.done .task-glyph {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.task-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-row.done .task-title {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+.task-name {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 /* Task board: one column per status, cards open the agent detail. */
 .board {
   flex: 1;
