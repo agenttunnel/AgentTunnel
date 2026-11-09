@@ -22,6 +22,8 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { AgentGraph } from "./components/AgentGraph";
+import { KanbanBoard } from "./components/KanbanBoard";
+import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
@@ -60,6 +62,8 @@ type ThreadState = {
   title: string;
   autoMode: boolean;
   peerMailbox: boolean;
+  /** Orchestrator team size; zero or absent means one lead. */
+  leads?: number;
   messages: Message[] | null;
   mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
@@ -70,6 +74,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** The agreed task list, in the order the leads added it. */
+  tasks?: TaskItem[] | null;
 };
 type ThreadSummary = {
   id: string;
@@ -487,7 +493,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
 
-  const [tab, setTab] = useState<"chat" | "review" | "graph">("chat");
+  const [tab, setTab] = useState<"chat" | "review" | "graph" | "board">("chat");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ file: string; line: number; body: string } | null>(null);
@@ -1253,6 +1259,7 @@ export default function App() {
   const settled = agents.filter((a) => a.status !== "running" && a.status !== "pending").length;
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
@@ -1352,6 +1359,18 @@ export default function App() {
     if (!rpc || !activeId) return;
     const method = field === "autoMode" ? "thread.setAutoMode" : "thread.setPeerMailbox";
     await rpc.call(method, { threadId: activeId, enabled: value });
+    refresh(activeId).catch(() => undefined);
+  };
+
+  /** Sets how many orchestrators lead the active thread's turns from the next turn on. */
+  const setLeads = async (count: number) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setLeads", { threadId: activeId, count });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
     refresh(activeId).catch(() => undefined);
   };
 
@@ -1951,8 +1970,29 @@ export default function App() {
                 <span className="pill">{thread?.mailbox?.length}</span>
               )}
             </div>
+            <div
+              className={`tab ${tab === "board" ? "on" : ""}`}
+              {...tabProps(tab === "board", () => setTab("board"))}
+            >
+              Board
+              {agents.some((a) => a.role !== "orchestrator") && (
+                <span className="pill">{agents.filter((a) => a.role !== "orchestrator").length}</span>
+              )}
+            </div>
           </div>
           <div className="toggles">
+            <select
+              className="team-size"
+              aria-label="Orchestrator team size"
+              title="Leads that plan and dispatch together on the next turn"
+              value={thread?.leads && thread.leads > 0 ? thread.leads : 1}
+              disabled={!thread}
+              onChange={(e) => setLeads(Number(e.target.value))}
+            >
+              <option value={1}>1 lead</option>
+              <option value={2}>2 leads</option>
+              <option value={3}>3 leads</option>
+            </select>
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               {...switchProps(!!thread?.peerMailbox, () =>
@@ -2224,6 +2264,11 @@ export default function App() {
               onRefresh={() => loadDiff(activeId)}
             />
             {reviewComments}
+          </div>
+        ) : tab === "board" ? (
+          <div className="board-view">
+            {tasks.length > 0 && <TaskList tasks={tasks} />}
+            <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
           </div>
         ) : (
           <AgentGraph

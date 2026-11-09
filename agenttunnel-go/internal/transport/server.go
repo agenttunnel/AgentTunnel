@@ -63,26 +63,21 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		ThreadID  contracts.ThreadID `json:"threadId"`
-		AgentID   contracts.AgentID  `json:"agentId"`
-		Kind      string             `json:"kind"`
-		Name      string             `json:"name"`
-		Lane      string             `json:"lane"`
-		Role      string             `json:"role"`
-		Task      string             `json:"task"`
-		Harness   string             `json:"harness"`
-		Model     string             `json:"model"`
-		DependsOn []string           `json:"dependsOn"`
-		Text      string             `json:"text"`
-		To        string             `json:"to"`
-	}
+	var req toolCallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.ThreadID == "" || req.Kind == "" {
 		http.Error(w, "threadId and kind are required", http.StatusBadRequest)
+		return
+	}
+
+	// Task calls apply at once rather than queueing: a lead's task-list must
+	// reflect its own create and update earlier in the same pass.
+	switch toolbox.Kind(req.Kind) {
+	case toolbox.KindTaskCreate, toolbox.KindTaskUpdate, toolbox.KindTaskList:
+		s.handleTaskCall(w, r, req)
 		return
 	}
 
@@ -149,6 +144,68 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// toolCallRequest is the body the `atd tool` command posts to /tool/call.
+type toolCallRequest struct {
+	ThreadID  contracts.ThreadID `json:"threadId"`
+	AgentID   contracts.AgentID  `json:"agentId"`
+	Kind      string             `json:"kind"`
+	Name      string             `json:"name"`
+	Lane      string             `json:"lane"`
+	Role      string             `json:"role"`
+	Task      string             `json:"task"`
+	Harness   string             `json:"harness"`
+	Model     string             `json:"model"`
+	DependsOn []string           `json:"dependsOn"`
+	Status    string             `json:"status"`
+	Text      string             `json:"text"`
+	To        string             `json:"to"`
+}
+
+// handleTaskCall applies a task-create, task-update or task-list call to the
+// thread's agreed task list. Creates and updates answer ok; a list answers with
+// the tasks themselves.
+func (s *Server) handleTaskCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	ctx := r.Context()
+	var resp any = map[string]any{"ok": true}
+	var err error
+	switch toolbox.Kind(req.Kind) {
+	case toolbox.KindTaskCreate:
+		err = s.engine.Dispatch(ctx, contracts.Command{
+			ID: s.disp.nextID(), Type: contracts.CmdTaskAdd, ThreadID: req.ThreadID,
+			TaskAdd: &contracts.TaskAdded{Name: req.Name, Title: req.Task},
+		})
+	case toolbox.KindTaskUpdate:
+		err = s.engine.Dispatch(ctx, contracts.Command{
+			ID: s.disp.nextID(), Type: contracts.CmdTaskStatusSet, ThreadID: req.ThreadID,
+			TaskStatus: &contracts.TaskStatusChanged{Name: req.Name, Status: contracts.TaskStatus(req.Status)},
+		})
+	case toolbox.KindTaskList:
+		var st *domain.ThreadState
+		st, err = s.engine.State(ctx, req.ThreadID)
+		if err == nil {
+			tasks := st.Tasks
+			if tasks == nil {
+				tasks = []domain.TaskItem{}
+			}
+			resp = map[string]any{"ok": true, "tasks": tasks}
+		}
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, domain.ErrInvalidCommand) || errors.Is(err, domain.ErrThreadNotFound) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.disp.auditLog("tool", map[string]any{
+		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+		"name": req.Name, "status": req.Status,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) authorized(r *http.Request) bool {

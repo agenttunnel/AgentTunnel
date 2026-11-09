@@ -96,6 +96,60 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.PeerMailboxSet{Enabled: *cmd.PeerMailbox}}, nil
 
+	case contracts.CmdLeadsSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Leads == nil {
+			return nil, fmt.Errorf("%w: leads count is required", ErrInvalidCommand)
+		}
+		if *cmd.Leads < 1 || *cmd.Leads > contracts.MaxLeads {
+			return nil, fmt.Errorf("%w: leads must be between 1 and %d", ErrInvalidCommand, contracts.MaxLeads)
+		}
+		events := []contracts.EventPayload{contracts.LeadsSet{Count: *cmd.Leads}}
+		// A team of leads agrees through peer messages, so a multi-lead thread
+		// turns the peer mailbox on with it.
+		if *cmd.Leads > 1 && !s.PeerMailbox {
+			events = append(events, contracts.PeerMailboxSet{Enabled: true})
+		}
+		return events, nil
+
+	case contracts.CmdTaskAdd:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.TaskAdd == nil {
+			return nil, fmt.Errorf("%w: task payload is required", ErrInvalidCommand)
+		}
+		name := strings.TrimSpace(cmd.TaskAdd.Name)
+		title := strings.TrimSpace(cmd.TaskAdd.Title)
+		if name == "" || title == "" {
+			return nil, fmt.Errorf("%w: task name and title are required", ErrInvalidCommand)
+		}
+		if s.taskIndex(name) >= 0 {
+			return nil, fmt.Errorf("%w: task %q already exists", ErrInvalidCommand, name)
+		}
+		if len(s.Tasks) >= maxTasks {
+			return nil, fmt.Errorf("%w: a thread holds at most %d tasks", ErrInvalidCommand, maxTasks)
+		}
+		return []contracts.EventPayload{contracts.TaskAdded{Name: name, Title: title}}, nil
+
+	case contracts.CmdTaskStatusSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.TaskStatus == nil {
+			return nil, fmt.Errorf("%w: task status payload is required", ErrInvalidCommand)
+		}
+		name := strings.TrimSpace(cmd.TaskStatus.Name)
+		if s.taskIndex(name) < 0 {
+			return nil, fmt.Errorf("%w: no task named %q", ErrInvalidCommand, name)
+		}
+		if !cmd.TaskStatus.Status.Valid() {
+			return nil, fmt.Errorf("%w: unknown task status %q", ErrInvalidCommand, cmd.TaskStatus.Status)
+		}
+		return []contracts.EventPayload{contracts.TaskStatusChanged{Name: name, Status: cmd.TaskStatus.Status}}, nil
+
 	case contracts.CmdTaskDispatch:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

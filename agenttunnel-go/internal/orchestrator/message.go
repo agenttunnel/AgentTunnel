@@ -14,6 +14,35 @@ import (
 // `--to orchestrator`; the runtime inbox it drains is keyed by the same id.
 const orchestratorAgentID = contracts.AgentID("agent-orchestrator")
 
+// leadAgentID is the id of the i-th lead on a thread's team. Lead zero keeps the
+// original id. Later leads end in "-lead<n>" rather than "-<n>": subagent ids
+// always end in a sequence number, so no subagent can ever take a lead's id.
+func leadAgentID(i int) contracts.AgentID {
+	if i == 0 {
+		return orchestratorAgentID
+	}
+	return contracts.AgentID(fmt.Sprintf("agent-orchestrator-lead%d", i+1))
+}
+
+// leadName is the roster name the i-th lead is addressed by. Lead zero is the
+// classic "orchestrator".
+func leadName(i int) string {
+	if i == 0 {
+		return "orchestrator"
+	}
+	return fmt.Sprintf("orchestrator-%d", i+1)
+}
+
+// isLeadID reports whether id is a lead on any team size up to MaxLeads.
+func isLeadID(id contracts.AgentID) bool {
+	for i := 0; i < contracts.MaxLeads; i++ {
+		if id == leadAgentID(i) {
+			return true
+		}
+	}
+	return false
+}
+
 // Rejections a caller can present to the agent that sent the message. Nothing
 // is recorded durably when one of these is returned.
 var (
