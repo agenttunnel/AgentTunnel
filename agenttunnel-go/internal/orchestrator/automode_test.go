@@ -79,7 +79,6 @@ func autoHarnessRunner(t *testing.T, seen *sync.Map) (*Runner, context.Context) 
 		Roles:     contracts.NewRoleRegistry(contracts.BuiltinRoles()...),
 		Logs:      logstore.New(t.TempDir()),
 		Ledger:    usage.NewLedger(),
-		Notebook:  contextstore.NewNotebook(),
 		Mailbox:   contextstore.NewMailbox(),
 		Inherited: inherited,
 		Settings:  settings.New(t.TempDir()),

@@ -121,6 +121,8 @@ type ThreadSummary struct {
 	Messages  int                `json:"messages"`
 	Agents    int                `json:"agents"`
 	AutoMode  bool               `json:"autoMode"`
+	// ParentThreadID marks a subthread and names the thread that started it.
+	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -407,7 +409,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
-				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+				ParentThreadID: st.ParentThreadID,
+				RunningAgents:  running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
 		}
 		// The thread list is a recency list: newest activity first. Event stores

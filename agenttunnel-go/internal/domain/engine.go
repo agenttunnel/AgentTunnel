@@ -146,6 +146,7 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 			state.Title = contracts.DefaultThreadTitle
 		}
 		state.ProjectID = cmd.ProjectID
+		state.ParentThreadID = cmd.ParentThreadID
 		state.UpdatedAt = e.clock()
 		e.states[cmd.ThreadID] = state
 		e.mu.Unlock()
@@ -218,7 +219,7 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 // tail of process.
 func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *ThreadState) error {
 	payloads := []contracts.EventPayload{
-		contracts.ThreadCreated{Title: state.Title, ProjectID: state.ProjectID},
+		contracts.ThreadCreated{Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID},
 		contracts.PeerMailboxSet{Enabled: true},
 	}
 	events, err := e.store.Append(ctx, id, payloads, e.clock)

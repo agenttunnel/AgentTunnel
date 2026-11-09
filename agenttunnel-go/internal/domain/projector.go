@@ -14,6 +14,7 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Exists = true
 		s.Title = p.Title
 		s.ProjectID = p.ProjectID
+		s.ParentThreadID = p.ParentThreadID
 
 	case contracts.ThreadRenamed:
 		s.Title = p.Title
@@ -41,6 +42,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 
 	case contracts.LeadsSet:
 		s.Leads = p.Count
+
+	case contracts.SubthreadSpawned:
+		s.Subthreads = append(s.Subthreads, p.ThreadID)
 
 	case contracts.TaskAdded:
 		s.Tasks = append(s.Tasks, TaskItem{Name: p.Name, Title: p.Title, Status: contracts.TaskTodo})

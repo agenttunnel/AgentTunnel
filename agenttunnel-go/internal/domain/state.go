@@ -80,8 +80,13 @@ type ThreadState struct {
 	PeerMailbox bool                     `json:"peerMailbox"`
 	// Leads is the stored orchestrator team size; zero means one. Read it
 	// through LeadCount.
-	Leads    int       `json:"leads"`
-	Messages []Message `json:"messages"`
+	Leads int `json:"leads"`
+	// ParentThreadID is set on a subthread: the thread that started it. Its
+	// presence is also the depth check — a subthread starts no subthreads.
+	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
+	// Subthreads lists the threads this one started, in start order.
+	Subthreads []contracts.ThreadID `json:"subthreads,omitempty"`
+	Messages   []Message            `json:"messages"`
 	// Tasks is the agreed task list, in the order the leads added them.
 	Tasks []TaskItem `json:"tasks"`
 
@@ -178,6 +183,7 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.SharedOrder = append([]string(nil), s.SharedOrder...)
 	c.Mailbox = append([]MailboxMessage(nil), s.Mailbox...)
 	c.ReviewComments = append([]ReviewComment(nil), s.ReviewComments...)
+	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {
 		c.Turns[i] = TurnUsage{

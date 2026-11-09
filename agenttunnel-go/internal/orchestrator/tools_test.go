@@ -53,7 +53,7 @@ func TestToolNoteLandsInTheNotebook(t *testing.T) {
 
 	New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
 
-	notes := r.notebook.Get("notes")
+	notes := r.notebookFor("t1").Get("notes")
 	if len(notes) != 1 || notes[0].Value != "the config lives in ~/.agenttunnel" {
 		t.Fatalf("notes = %+v", notes)
 	}

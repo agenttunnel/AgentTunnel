@@ -18,6 +18,7 @@ const (
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
+	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
 	EvtTaskAdded          EventType = "thread.task-added"
 	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
 	EvtTaskDispatched     EventType = "agent.task-dispatched"
@@ -104,6 +105,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[PeerMailboxSet](data)
 	case EvtLeadsSet:
 		return decodePayload[LeadsSet](data)
+	case EvtSubthreadSpawned:
+		return decodePayload[SubthreadSpawned](data)
 	case EvtTaskAdded:
 		return decodePayload[TaskAdded](data)
 	case EvtTaskStatusChanged:
@@ -140,6 +143,8 @@ func decodePayload[T EventPayload](data []byte) (EventPayload, error) {
 type ThreadCreated struct {
 	Title     string `json:"title"`
 	ProjectID string `json:"projectId,omitempty"`
+	// ParentThreadID is set on a subthread: the thread that started it.
+	ParentThreadID ThreadID `json:"parentThreadId,omitempty"`
 }
 
 func (ThreadCreated) eventType() EventType { return EvtThreadCreated }
@@ -189,6 +194,18 @@ const MaxLeads = 3
 type LeadsSet struct{ Count int }
 
 func (LeadsSet) eventType() EventType { return EvtLeadsSet }
+
+// MaxSubthreads bounds how many subthreads one thread may start. A subthread
+// cannot start its own, so this is also the whole tree below a thread.
+const MaxSubthreads = 4
+
+// SubthreadSpawned records that a thread started the subthread ThreadID. The
+// subthread is a thread of its own; this event is the parent's side of the link.
+type SubthreadSpawned struct {
+	ThreadID ThreadID `json:"threadId"`
+}
+
+func (SubthreadSpawned) eventType() EventType { return EvtSubthreadSpawned }
 
 // TaskStatus is where a task on a thread's agreed list stands. Statuses are
 // set by the leads as they judge progress; they are not derived from agent runs.

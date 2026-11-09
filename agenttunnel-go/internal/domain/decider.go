@@ -114,6 +114,31 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return events, nil
 
+	case contracts.CmdSubthreadSpawn:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Subthread == nil || cmd.Subthread.ThreadID == "" {
+			return nil, fmt.Errorf("%w: subthread id is required", ErrInvalidCommand)
+		}
+		if s.ParentThreadID != "" {
+			return nil, fmt.Errorf("%w: a subthread cannot start subthreads", ErrInvalidCommand)
+		}
+		if len(s.Subthreads) >= contracts.MaxSubthreads {
+			return nil, fmt.Errorf("%w: a thread starts at most %d subthreads", ErrInvalidCommand, contracts.MaxSubthreads)
+		}
+		// Subthreads report back through the peer mailbox; without it the
+		// summary would have nowhere to go, so refuse up front.
+		if !s.PeerMailbox {
+			return nil, fmt.Errorf("%w: peer mailbox is disabled for this thread", ErrInvalidCommand)
+		}
+		for _, id := range s.Subthreads {
+			if id == cmd.Subthread.ThreadID {
+				return nil, fmt.Errorf("%w: subthread %q already exists", ErrInvalidCommand, id)
+			}
+		}
+		return []contracts.EventPayload{*cmd.Subthread}, nil
+
 	case contracts.CmdTaskAdd:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

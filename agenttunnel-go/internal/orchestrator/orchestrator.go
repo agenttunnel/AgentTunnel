@@ -90,7 +90,7 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 		switch call.Kind {
 		case toolbox.KindNote, toolbox.KindProgress, toolbox.KindDone:
 			if strings.TrimSpace(call.Text) != "" {
-				o.runner.notebook.Append("notes", call.Text, string(call.AgentID))
+				o.runner.notebookFor(threadID).Append("notes", call.Text, string(call.AgentID))
 			}
 
 		case toolbox.KindLearn:
@@ -189,7 +189,7 @@ func (o *Orchestrator) recordSpawnRequest(threadID contracts.ThreadID, call tool
 		kindWord = "dispatch request"
 	}
 	refuse := func(reason string) {
-		o.runner.notebook.Append("notes", fmt.Sprintf("Refused %s from %s: %s", kindWord, call.AgentID, reason), "orchestrator")
+		o.runner.notebookFor(threadID).Append("notes", fmt.Sprintf("Refused %s from %s: %s", kindWord, call.AgentID, reason), "orchestrator")
 		o.runner.auditLog("spawn.refused", map[string]any{
 			"threadId": string(threadID), "requester": string(call.AgentID),
 			"role": string(role), "reason": reason,
@@ -248,12 +248,12 @@ func (o *Orchestrator) decideSpawnRequest(threadID contracts.ThreadID, call tool
 		req, ok = o.runner.spawns.take(threadID, safeName(trimmed))
 	}
 	if !ok {
-		o.runner.notebook.Append("notes", fmt.Sprintf("No pending spawn request named %q.", strings.TrimSpace(call.Name)), "orchestrator")
+		o.runner.notebookFor(threadID).Append("notes", fmt.Sprintf("No pending spawn request named %q.", strings.TrimSpace(call.Name)), "orchestrator")
 		o.runner.auditLog("spawn.unknown", map[string]any{"threadId": string(threadID), "name": call.Name})
 		return
 	}
 	if call.Kind == toolbox.KindReject {
-		o.runner.notebook.Append("notes", fmt.Sprintf("Rejected spawn request %q from %s.", req.Name, req.RequesterID), "orchestrator")
+		o.runner.notebookFor(threadID).Append("notes", fmt.Sprintf("Rejected spawn request %q from %s.", req.Name, req.RequesterID), "orchestrator")
 		o.runner.auditLog("spawn.rejected", map[string]any{
 			"threadId": string(threadID), "name": req.Name, "requester": string(req.RequesterID),
 		})
@@ -530,11 +530,12 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Role:           t.role,
 		UserMessage:    t.message,
 		Inherited:      inherited,
-		Shared:         o.runner.notebook.Render(),
+		Shared:         o.runner.notebookFor(t.threadID).Render(),
 		Roster:         o.runner.Roster(state),
 		PendingSpawns:  renderPendingSpawns(state, o.runner.spawns.list(t.threadID)),
 		PeerMessages:   peerMessages,
 		PeerMailbox:    peerMailbox,
+		Subthreads:     peerMailbox && state.ParentThreadID == "",
 		Team:           teamBrief(t.leads, i, peerMailbox),
 		Pass:           pass,
 		Steering:       steering,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -158,5 +159,28 @@ func TestToolTaskCLI(t *testing.T) {
 		if got.Name != w.name || got.Title != w.title || got.Status != w.status {
 			t.Fatalf("task %d = %+v, want %+v", i, got, w)
 		}
+	}
+}
+
+// The subthread verb posts its brief as the task of a `subthread` call. The
+// refusal or start is the daemon's to decide; the CLI only carries the request.
+func TestToolSubthreadPostsTheBrief(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AT_THREAD_ID", "t1")
+	t.Setenv("AT_AGENT_ID", "agent-orchestrator")
+	t.Setenv("AT_DAEMON_URL", srv.URL)
+
+	var code int
+	captureStdout(t, func() { code = Run([]string{"subthread", "--task", "write the release notes"}) })
+	if code != 0 {
+		t.Fatalf("subthread exit = %d, want 0", code)
+	}
+	if got["kind"] != "subthread" || got["task"] != "write the release notes" || got["agentId"] != "agent-orchestrator" {
+		t.Fatalf("posted body = %+v", got)
 	}
 }

@@ -67,7 +67,6 @@ func newPromptHarness(t *testing.T, script string) (*Runner, *domain.Engine, con
 		Roles:     contracts.NewRoleRegistry(contracts.BuiltinRoles()...),
 		Logs:      logstore.New(t.TempDir()),
 		Ledger:    usage.NewLedger(),
-		Notebook:  contextstore.NewNotebook(),
 		Mailbox:   contextstore.NewMailbox(),
 		Inherited: inherited,
 		Settings:  settings.New(t.TempDir()),
@@ -483,7 +482,7 @@ esac`
 		t.Fatalf("inbox calls = %+v", calls)
 	}
 	// Findings kept the prose, not the tool line.
-	result := r.Notebook().Get("result_worker")
+	result := r.Notebook("t1").Get("result_worker")
 	if len(result) != 1 || result[0].Value != "summary line follows" {
 		t.Fatalf("worker result = %+v", result)
 	}

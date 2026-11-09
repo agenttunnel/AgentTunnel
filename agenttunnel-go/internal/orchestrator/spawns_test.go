@@ -148,7 +148,7 @@ func TestSpawnRequestForOrchestratorRoleRefused(t *testing.T) {
 	if got := r.spawns.list("t1"); len(got) != 0 {
 		t.Fatalf("an orchestrator request must not pend: %+v", got)
 	}
-	if notes := r.notebook.Get("notes"); len(notes) != 1 || !strings.Contains(notes[0].Value, "Refused") {
+	if notes := r.notebookFor("t1").Get("notes"); len(notes) != 1 || !strings.Contains(notes[0].Value, "Refused") {
 		t.Fatalf("notes = %+v", notes)
 	}
 }
@@ -164,7 +164,7 @@ func TestSpawnRequestForUnknownRoleRefused(t *testing.T) {
 	if got := r.spawns.list("t1"); len(got) != 0 {
 		t.Fatalf("an unknown role must not pend: %+v", got)
 	}
-	if notes := r.notebook.Get("notes"); len(notes) != 1 || !strings.Contains(notes[0].Value, "Refused") {
+	if notes := r.notebookFor("t1").Get("notes"); len(notes) != 1 || !strings.Contains(notes[0].Value, "Refused") {
 		t.Fatalf("notes = %+v", notes)
 	}
 }
@@ -204,7 +204,7 @@ func TestLeadApproveUnknownNameLeavesNote(t *testing.T) {
 	if tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil); len(tasks) != 0 {
 		t.Fatalf("tasks = %+v", tasks)
 	}
-	notes := r.notebook.Get("notes")
+	notes := r.notebookFor("t1").Get("notes")
 	if len(notes) != 1 || !strings.Contains(notes[0].Value, "ghost") {
 		t.Fatalf("notes = %+v", notes)
 	}
@@ -260,7 +260,7 @@ func TestLeadRejectRemovesRequestAndNotes(t *testing.T) {
 	if got := r.spawns.list("t1"); len(got) != 0 {
 		t.Fatalf("rejected request should be gone: %+v", got)
 	}
-	notes := r.notebook.Get("notes")
+	notes := r.notebookFor("t1").Get("notes")
 	if len(notes) != 1 || !strings.Contains(notes[0].Value, "inner") || !strings.Contains(notes[0].Value, "agent-outer-1") {
 		t.Fatalf("rejection note should name request and requester: %+v", notes)
 	}
