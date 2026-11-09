@@ -59,6 +59,11 @@ type Agent = {
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
 type Message = { id: string; author: string; text: string; at: string };
+/** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
+const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
+function isFailedBlock(m: Message): boolean {
+  return m.author === "shell" && SHELL_FAILED.test(m.text.trimEnd());
+}
 /** submitted comments were already handed to the team in a review turn. */
 type ReviewComment = { id: string; file: string; line: number; body: string; submitted: boolean };
 type ThreadState = {
@@ -2139,7 +2144,7 @@ export default function App() {
               {(thread?.messages ?? []).map((m) => (
                 <div
                   key={m.id}
-                  className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}`}
+                  className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${isFailedBlock(m) ? " failed" : ""}`}
                 >
                   <div className="who">
                     <span className="role">
@@ -2153,6 +2158,16 @@ export default function App() {
                               ? "Shell"
                               : "Orchestrator"}
                     </span>
+                  </div>
+                  <div className="msg-actions">
+                    <button
+                      onClick={() =>
+                        navigator.clipboard.writeText(m.text).catch(() => setError("Could not copy"))
+                      }
+                      title="Copy this block"
+                    >
+                      Copy
+                    </button>
                   </div>
                   <div className="body">
                     <Markdown text={m.text} />
@@ -2206,7 +2221,9 @@ export default function App() {
               {error && <div className="empty err-text">{error}</div>}
             </div>
 
-            <div className={commandMode ? "composer command-mode" : "composer"}>
+            <div
+              className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
+            >
               <div className="box">
                 <textarea
                   rows={1}
@@ -2234,6 +2251,11 @@ export default function App() {
                 </button>
               </div>
               <div className="composer-foot">
+                {selectedProject && (
+                  <span className="ctx-chip" title={selectedProject.path}>
+                    {selectedProject.name}
+                  </span>
+                )}
                 <button
                   className={`model-btn${modelConfigOpen ? " open" : ""}`}
                   onClick={toggleModelConfig}
