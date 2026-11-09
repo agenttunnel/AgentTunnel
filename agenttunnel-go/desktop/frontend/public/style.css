@@ -174,7 +174,7 @@ select {
 .app {
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr) 360px;
-  grid-template-rows: 46px minmax(0, 1fr);
+  grid-template-rows: 46px 40px minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
 }
@@ -1840,6 +1840,136 @@ table.grid tr.rowlink:hover td {
   background: var(--panel);
   border-color: var(--border-soft);
 }
+
+/* --- open project tabs -------------------------------------------------- */
+.project-tabs {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  flex: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+}
+.pt-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pt-scroll::-webkit-scrollbar {
+  display: none;
+}
+.ptab {
+  flex: none;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 130ms ease,
+    border-color 130ms ease,
+    color 130ms ease;
+}
+.ptab:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+.ptab.on {
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.pt-home svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+.pt-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pt-led {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+  opacity: 0.5;
+}
+.pt-led.run {
+  background: var(--ok);
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(95, 211, 155, 0.12);
+}
+.pt-count {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.pt-x {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+.ptab:hover .pt-x,
+.ptab.on .pt-x,
+.pt-x:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pt-x:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.pt-add {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--faint);
+  font-size: 15px;
+}
+.pt-add:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--border-soft);
+  color: var(--text);
+}
 .new-project {
   display: grid;
   grid-template-columns: 1fr 1.6fr auto auto;
@@ -1875,6 +2005,9 @@ table.grid tr.rowlink:hover td {
 .project-card:hover {
   border-color: var(--border-strong);
   background: var(--panel-2);
+}
+.project-card.is-open {
+  border-color: var(--accent-line);
 }
 .pc-name {
   font-weight: 600;
