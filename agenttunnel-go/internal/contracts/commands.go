@@ -26,6 +26,7 @@ const (
 	CmdMailboxPost      CommandType = "mailbox.post"
 	CmdMessageAppend    CommandType = "thread.message.append"
 	CmdReviewCommentAdd CommandType = "review.comment.add"
+	CmdReviewSubmit     CommandType = "review.submit"
 )
 
 // DispatchTask is the orchestrator's instruction to spawn a subagent.
@@ -49,23 +50,24 @@ type DispatchTask struct {
 // Command is a request to change thread state. Exactly one payload field is
 // meaningful per Type; the decider rejects mismatches.
 type Command struct {
-	ID             string              `json:"id"`
-	Type           CommandType         `json:"type"`
-	ThreadID       ThreadID            `json:"threadId"`
-	Text           string              `json:"text,omitempty"`
-	Title          string              `json:"title,omitempty"`
-	ProjectID      string              `json:"projectId,omitempty"`
-	ModelSelection *ModelSelection     `json:"modelSelection,omitempty"`
-	AutoMode       *bool               `json:"autoMode,omitempty"`
-	PeerMailbox    *bool               `json:"peerMailbox,omitempty"`
-	Leads          *int                `json:"leads,omitempty"`
-	TaskAdd        *TaskAdded          `json:"taskAdd,omitempty"`
-	TaskStatus     *TaskStatusChanged  `json:"taskStatus,omitempty"`
-	Dispatch       *DispatchTask       `json:"dispatch,omitempty"`
-	Usage          *UsageRecorded      `json:"usage,omitempty"`
-	Status         *AgentStatusChanged `json:"status,omitempty"`
-	SharedContext  *SharedContextSet   `json:"sharedContext,omitempty"`
-	Mailbox        *MailboxPosted      `json:"mailbox,omitempty"`
-	Message        *MessageSent        `json:"message,omitempty"`
-	ReviewComment  *ReviewCommentAdded `json:"reviewComment,omitempty"`
+	ID             string                   `json:"id"`
+	Type           CommandType              `json:"type"`
+	ThreadID       ThreadID                 `json:"threadId"`
+	Text           string                   `json:"text,omitempty"`
+	Title          string                   `json:"title,omitempty"`
+	ProjectID      string                   `json:"projectId,omitempty"`
+	ModelSelection *ModelSelection          `json:"modelSelection,omitempty"`
+	AutoMode       *bool                    `json:"autoMode,omitempty"`
+	PeerMailbox    *bool                    `json:"peerMailbox,omitempty"`
+	Leads          *int                     `json:"leads,omitempty"`
+	TaskAdd        *TaskAdded               `json:"taskAdd,omitempty"`
+	TaskStatus     *TaskStatusChanged       `json:"taskStatus,omitempty"`
+	Dispatch       *DispatchTask            `json:"dispatch,omitempty"`
+	Usage          *UsageRecorded           `json:"usage,omitempty"`
+	Status         *AgentStatusChanged      `json:"status,omitempty"`
+	SharedContext  *SharedContextSet        `json:"sharedContext,omitempty"`
+	Mailbox        *MailboxPosted           `json:"mailbox,omitempty"`
+	Message        *MessageSent             `json:"message,omitempty"`
+	ReviewComment  *ReviewCommentAdded      `json:"reviewComment,omitempty"`
+	ReviewSubmit   *ReviewCommentsSubmitted `json:"reviewSubmit,omitempty"`
 }

@@ -96,12 +96,19 @@ type ThreadState struct {
 	Steps   map[contracts.AgentID][]UsageStep `json:"steps"`
 	Mailbox []MailboxMessage                  `json:"mailbox"`
 
-	ReviewComments []contracts.ReviewCommentAdded `json:"reviewComments"`
+	ReviewComments []ReviewComment `json:"reviewComments"`
 
 	Shared      map[string]string `json:"shared"`
 	SharedOrder []string          `json:"sharedOrder"`
 
 	Version int64 `json:"version"`
+}
+
+// ReviewComment is a human line comment on the diff. Submitted comments were
+// handed to the team in a review turn and stay listed for reference.
+type ReviewComment struct {
+	contracts.ReviewCommentAdded
+	Submitted bool `json:"submitted"`
 }
 
 // taskIndex returns the position of a named task, or -1.
@@ -170,7 +177,7 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.AgentOrder = append([]contracts.AgentID(nil), s.AgentOrder...)
 	c.SharedOrder = append([]string(nil), s.SharedOrder...)
 	c.Mailbox = append([]MailboxMessage(nil), s.Mailbox...)
-	c.ReviewComments = append([]contracts.ReviewCommentAdded(nil), s.ReviewComments...)
+	c.ReviewComments = append([]ReviewComment(nil), s.ReviewComments...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {
 		c.Turns[i] = TurnUsage{

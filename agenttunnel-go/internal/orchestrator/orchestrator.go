@@ -516,10 +516,6 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	if err != nil {
 		return "", nil, err
 	}
-	// Hand any pending review comments to the team as shared context.
-	if len(state.ReviewComments) > 0 {
-		o.runner.notebook.Set("review_comments", renderReviewComments(state.ReviewComments), "user")
-	}
 	// Peer messages that arrived while work was running are weighed here too:
 	// the lead's own arrive directly, the rest as relay lines.
 	peerMessages := o.drainPeerMessages(state, orchID)

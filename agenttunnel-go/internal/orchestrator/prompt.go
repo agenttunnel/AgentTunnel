@@ -165,13 +165,3 @@ func clip(s string, max int) string {
 	}
 	return s[:max] + "…"
 }
-
-// renderReviewComments formats pending review comments for the shared notebook,
-// so the next turn's agents see the human's line-anchored feedback.
-func renderReviewComments(comments []contracts.ReviewCommentAdded) string {
-	var b strings.Builder
-	for _, c := range comments {
-		fmt.Fprintf(&b, "- %s:%d — %s\n", c.File, c.Line, c.Body)
-	}
-	return b.String()
-}

@@ -169,6 +169,27 @@ const threadLogTail = 400
 
 const defaultStaleAfterSeconds = 30 * 60
 
+// runTurn starts a user turn: it claims the thread's turn slot first, so a busy
+// thread is refused before cmd is recorded, then records cmd and runs the lead
+// orchestrators on text. A stop from the client is reported as ok, not an error.
+func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
+	turnCtx, done, err := d.beginTurn(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if err := d.engine.Dispatch(ctx, cmd); err != nil {
+		return nil, err
+	}
+	if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
+		if turnCtx.Err() != nil {
+			return map[string]any{"ok": true, "stopped": true}, nil
+		}
+		return nil, err
+	}
+	return map[string]any{"ok": true}, nil
+}
+
 // beginTurn claims a thread's turn slot, returning a context that ends when the
 // turn is stopped. The second call for the same thread fails; turns are serial
 // per thread.
@@ -432,24 +453,41 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
+		return d.runTurn(ctx, p.ThreadID, p.Text, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
-		}); err != nil {
+		})
+
+	case "review.submit":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		turnCtx, done, err := d.beginTurn(ctx, p.ThreadID)
+		st, err := d.engine.State(ctx, p.ThreadID)
 		if err != nil {
 			return nil, err
 		}
-		defer done()
-		if err := d.orch.RunTurn(turnCtx, p.ThreadID, p.Text); err != nil {
-			if turnCtx.Err() != nil {
-				// Stopped from the client: not an error, but say what happened.
-				return map[string]any{"ok": true, "stopped": true}, nil
-			}
-			return nil, err
+		if !st.Exists {
+			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
-		return map[string]any{"ok": true}, nil
+		var pending []contracts.ReviewCommentAdded
+		var ids []string
+		for _, c := range st.ReviewComments {
+			if c.Submitted {
+				continue
+			}
+			pending = append(pending, c.ReviewCommentAdded)
+			ids = append(ids, c.ID)
+		}
+		if len(ids) == 0 {
+			return nil, errors.New("no pending review comments")
+		}
+		text := domain.ReviewRequest(pending)
+		return d.runTurn(ctx, p.ThreadID, text, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdReviewSubmit, ThreadID: p.ThreadID, Text: text,
+			ReviewSubmit: &contracts.ReviewCommentsSubmitted{CommentIDs: ids},
+		})
 
 	case "thread.runCommand":
 		var p struct {
