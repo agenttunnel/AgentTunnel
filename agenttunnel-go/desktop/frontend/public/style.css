@@ -12,8 +12,8 @@
   --border-strong: rgba(255, 255, 255, 0.16);
 
   --text: #e6e9f0;
-  --dim: #8b92a3;
-  --faint: #6b7285;
+  --dim: #adb4c4;
+  --faint: #8c93a6;
 
   /* One accent for focus and selection. Violet is reserved for agent mode. */
   --accent: #19c3c8;
@@ -536,6 +536,12 @@ select {
   padding: 2px 8px;
   font-size: 11px;
   background: var(--surface-2);
+}
+/* Touch screens have no hover; keep the action reachable. */
+@media (hover: none) {
+  .msg-actions {
+    opacity: 1;
+  }
 }
 .msg.shell .who .role {
   color: var(--dim);
