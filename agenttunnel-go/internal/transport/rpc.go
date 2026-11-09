@@ -156,6 +156,13 @@ type (
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Count    int                `json:"count"`
 	}
+	setLeadRuntimeParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
 	agentParams struct {
 		AgentID contracts.AgentID `json:"agentId"`
 	}
@@ -705,6 +712,22 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdPeerMailboxSet, ThreadID: p.ThreadID, PeerMailbox: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setLeadRuntime":
+		var p setLeadRuntimeParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
+			LeadRuntime: &contracts.LeadRuntimeSet{
+				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
 		}); err != nil {
 			return nil, err
 		}

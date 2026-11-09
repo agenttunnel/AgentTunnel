@@ -96,6 +96,22 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.PeerMailboxSet{Enabled: *cmd.PeerMailbox}}, nil
 
+	case contracts.CmdLeadRuntimeSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.LeadRuntime == nil {
+			return nil, fmt.Errorf("%w: lead runtime is required", ErrInvalidCommand)
+		}
+		set := *cmd.LeadRuntime
+		if set.Index < 0 || set.Index >= contracts.MaxLeads {
+			return nil, fmt.Errorf("%w: lead index must be between 0 and %d", ErrInvalidCommand, contracts.MaxLeads-1)
+		}
+		if set.Runtime.Harness != "" && !set.Runtime.Harness.Valid() {
+			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, set.Runtime.Harness)
+		}
+		return []contracts.EventPayload{set}, nil
+
 	case contracts.CmdLeadsSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

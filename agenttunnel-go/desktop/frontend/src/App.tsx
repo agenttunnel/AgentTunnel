@@ -75,6 +75,9 @@ function isFailedBlock(m: Message): boolean {
 }
 /** submitted comments were already handed to the team in a review turn. */
 type ReviewComment = { id: string; file: string; line: number; body: string; submitted: boolean };
+/** One lead's runtime override. Empty fields inherit the Orchestrator role's runtime. */
+type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
+
 type ThreadState = {
   id: string;
   title: string;
@@ -82,6 +85,8 @@ type ThreadState = {
   peerMailbox: boolean;
   /** Orchestrator team size; zero or absent means one lead. */
   leads?: number;
+  /** Per-lead runtime overrides by lead index; an empty harness inherits the Orchestrator role. */
+  leadRuntimes?: LeadRuntimeView[];
   messages: Message[] | null;
   mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
@@ -1545,6 +1550,24 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
+  /** Sets one lead's runtime override from the next turn on. */
+  const setLeadRuntime = async (index: number, rt: LeadRuntimeView) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setLeadRuntime", {
+        threadId: activeId,
+        index,
+        harness: rt.harness ?? "",
+        model: rt.model ?? "",
+        variant: rt.variant ?? "",
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    refresh(activeId).catch(() => undefined);
+  };
+
   /** Stops the turn running on the active thread, if any. */
   const stopTurn = async () => {
     const rpc = rpcRef.current;
@@ -2263,18 +2286,6 @@ export default function App() {
             </div>
           </div>
           <div className="toggles">
-            <select
-              className="team-size"
-              aria-label="Orchestrator team size"
-              title="Leads that plan and dispatch together on the next turn"
-              value={thread?.leads && thread.leads > 0 ? thread.leads : 1}
-              disabled={!thread}
-              onChange={(e) => setLeads(Number(e.target.value))}
-            >
-              <option value={1}>1 lead</option>
-              <option value={2}>2 leads</option>
-              <option value={3}>3 leads</option>
-            </select>
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               {...switchProps(!!thread?.peerMailbox, () =>
@@ -2671,6 +2682,69 @@ export default function App() {
                   </div>
                 );
               })}
+              {(() => {
+                const orch = settings.roles.find((r) => r.id === "orchestrator");
+                const count = thread?.leads && thread.leads > 0 ? thread.leads : 1;
+                return (
+                  <div className="lead-block">
+                    <div className="lead-head">
+                      <span className="rn">Leads</span>
+                      <div className="lead-count" role="group" aria-label="Number of leads">
+                        {[1, 2, 3].map((n) => (
+                          <button
+                            key={n}
+                            type="button"
+                            aria-pressed={count === n}
+                            disabled={!thread}
+                            onClick={() => setLeads(n)}
+                          >
+                            {n}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="hint">
+                      Each lead runs the Orchestrator's runtime unless you override it here. Changes apply to the next turn.
+                    </p>
+                    {Array.from({ length: count }, (_, i) => {
+                      const ov: LeadRuntimeView = thread?.leadRuntimes?.[i] ?? {};
+                      const harness = ov.harness ?? "";
+                      const model = ov.model ?? "";
+                      const variant = ov.variant ?? "";
+                      const effective = harness || orch?.harness || "";
+                      return (
+                        <div className="role-edit" key={i}>
+                          <span className="rn">Lead {i + 1}</span>
+                          <Dropdown
+                            value={harness}
+                            options={[
+                              { value: "", label: `Orchestrator (${orch?.harness ?? "default"})` },
+                              ...harnessOptionsFor(harness),
+                            ]}
+                            disabled={!thread}
+                            onChange={(v) => setLeadRuntime(i, { harness: v })}
+                          />
+                          <Dropdown
+                            value={model}
+                            options={modelOptions(effective, model)}
+                            searchable
+                            placeholder="model (default)"
+                            disabled={!thread}
+                            onRefresh={() => refreshModels(effective).catch(() => undefined)}
+                            addLabel="Add model"
+                            onAdd={(m) => {
+                              addModel(effective, m)
+                                .then(() => setLeadRuntime(i, { harness, model: m, variant }))
+                                .catch(() => undefined);
+                            }}
+                            onChange={(v) => setLeadRuntime(i, { harness, model: v, variant })}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </>
           )}
             </div>

@@ -445,14 +445,40 @@ func routedPrintedKind(k toolbox.Kind) bool {
 	}
 }
 
-// runOrchestratorPass runs one orchestrator process and collects its text output
-// and tool calls. Usage from the orchestrator is attributed as orchestrator.
-func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.ThreadID, agentID contracts.AgentID, role contracts.Role, prompt string, pass int) (string, []ToolCall, error) {
+// leadRuntime resolves lead i's harness, model and variant: the orchestrator
+// role's runtime, with the thread's per-lead override on top. Overriding the
+// harness drops the role's model, which belongs to the role's harness.
+func (r *Runner) leadRuntime(ctx context.Context, threadID contracts.ThreadID, lead int, role contracts.Role) (contracts.Harness, string, string) {
+	harness, model, variant := r.roleRuntime(role)
+	if r.engine == nil {
+		return harness, model, variant
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil {
+		return harness, model, variant
+	}
+	ov := st.LeadRuntimeFor(lead)
+	if ov.Harness.Valid() && ov.Harness != harness {
+		harness, model, variant = ov.Harness, "", ""
+	}
+	if ov.Model != "" {
+		model = ov.Model
+	}
+	if ov.Variant != "" {
+		variant = ov.Variant
+	}
+	return harness, model, variant
+}
+
+// runOrchestratorPass runs one orchestrator process for lead `lead` and collects
+// its text output and tool calls. Usage from the orchestrator is attributed as
+// orchestrator.
+func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.ThreadID, lead int, agentID contracts.AgentID, role contracts.Role, prompt string, pass int) (string, []ToolCall, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	tc := r.trackCancel(agentID, cancel)
 	defer r.untrackCancel(agentID, tc)
 
-	harness, _, variant := r.roleRuntime(role)
+	harness, model, variant := r.leadRuntime(ctx, threadID, lead, role)
 	if !r.harnessAllowed(harness) {
 		return "", nil, fmt.Errorf("harness %q is disabled", harness)
 	}
@@ -463,7 +489,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		ThreadID: threadID,
 		Role:     contracts.RoleOrchestrator,
 		Harness:  harness,
-		Model:    r.resolveModel(role, harness, "", r.autoModeFor(ctx, threadID), false),
+		Model:    model,
 		Variant:  variant,
 		Prompt:   prompt,
 		Workdir:  r.workdirFor(ctx, threadID),

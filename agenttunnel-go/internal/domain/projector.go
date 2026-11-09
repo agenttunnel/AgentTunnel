@@ -43,6 +43,12 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.LeadsSet:
 		s.Leads = p.Count
 
+	case contracts.LeadRuntimeSet:
+		for len(s.LeadRuntimes) <= p.Index {
+			s.LeadRuntimes = append(s.LeadRuntimes, contracts.LeadRuntime{})
+		}
+		s.LeadRuntimes[p.Index] = p.Runtime
+
 	case contracts.SubthreadSpawned:
 		s.Subthreads = append(s.Subthreads, p.ThreadID)
 
