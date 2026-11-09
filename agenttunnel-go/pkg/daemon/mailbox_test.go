@@ -146,7 +146,7 @@ func TestPeerMailboxEndToEnd(t *testing.T) {
 			continue
 		}
 		if resp.Error != nil {
-			for _, e := range d.Logs.Entries("agent-orchestrator") {
+			for _, e := range d.Logs.Entries(created.ThreadID) {
 				t.Logf("orchestrator %s: %s", e.Kind, e.Text)
 			}
 			t.Fatalf("turn failed: %s", resp.Error.Message)

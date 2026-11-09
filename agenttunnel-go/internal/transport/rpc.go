@@ -144,7 +144,15 @@ type (
 	agentParams struct {
 		AgentID contracts.AgentID `json:"agentId"`
 	}
+	agentLogParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		AgentID  contracts.AgentID  `json:"agentId"`
+	}
 )
+
+// threadLogTail bounds thread.logs: the desktop log box shows this many recent
+// lines, so the restore never ships a whole long-running thread over the socket.
+const threadLogTail = 400
 
 const defaultStaleAfterSeconds = 30 * 60
 
@@ -605,19 +613,29 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return out, nil
 
-	case "agents.logs":
-		var p agentParams
+	case "thread.logs":
+		var p threadParams
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		// The on-disk log is the superset: it holds everything the live buffer
-		// does, plus anything written before a restart. Read it first and fall
-		// back to the buffer only when nothing has been persisted yet.
-		entries, err := d.logs.ReadFile(p.AgentID)
-		if err != nil || len(entries) == 0 {
-			entries = d.logs.Entries(p.AgentID)
+		entries := d.logs.Entries(p.ThreadID)
+		if len(entries) > threadLogTail {
+			entries = entries[len(entries)-threadLogTail:]
 		}
 		return entries, nil
+
+	case "agents.logs":
+		var p agentLogParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		var out []contracts.LogEntry
+		for _, e := range d.logs.Entries(p.ThreadID) {
+			if e.AgentID == p.AgentID {
+				out = append(out, e)
+			}
+		}
+		return out, nil
 
 	case "usage.get":
 		return d.ledger.Snapshot(), nil

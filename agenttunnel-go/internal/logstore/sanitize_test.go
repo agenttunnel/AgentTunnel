@@ -8,14 +8,14 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
-// Agent ids reach the filesystem as file names, so a hostile-looking id must not
+// Thread ids reach the filesystem as file names, so a hostile-looking id must not
 // be able to write outside the store directory.
-func TestStoreConfinesAgentIDsToItsDirectory(t *testing.T) {
+func TestStoreConfinesThreadIDsToItsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
 
-	const evil contracts.AgentID = "../../evil"
-	if err := s.Append(contracts.LogEntry{AgentID: evil, Kind: contracts.LogText, Text: "x"}); err != nil {
+	const evil contracts.ThreadID = "../../evil"
+	if err := s.Append(evil, contracts.LogEntry{AgentID: "a1", Kind: contracts.LogText, Text: "x"}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -35,11 +35,7 @@ func TestStoreConfinesAgentIDsToItsDirectory(t *testing.T) {
 		t.Fatalf("log escaped the store directory: %s", files[0])
 	}
 
-	entries, err := s.ReadFile(evil)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Text != "x" {
-		t.Fatalf("entries = %+v", entries)
+	if restored := New(dir).Entries(evil); len(restored) != 1 || restored[0].Text != "x" {
+		t.Fatalf("restored entries = %+v", restored)
 	}
 }

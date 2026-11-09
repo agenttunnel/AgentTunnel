@@ -75,7 +75,13 @@ func TestRunCouncilDebatesInRounds(t *testing.T) {
 
 	// Round 2 prompts saw round 1 positions: the planner's second round ran
 	// with the reviewer's position already on the table.
-	if log := r.logs.Entries("agent-council-planner-r2"); len(log) == 0 {
+	plannerLogged := false
+	for _, e := range r.logs.Entries("t1") {
+		if e.AgentID == "agent-council-planner-r2" {
+			plannerLogged = true
+		}
+	}
+	if !plannerLogged {
 		t.Fatal("planner round 2 left no logs")
 	}
 }

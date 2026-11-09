@@ -85,8 +85,14 @@ printf '{"usage":{"input_tokens":10,"output_tokens":5}}\n'`, marker, marker)
 	if state.Agents["agent-b"].Status != contracts.AgentSucceeded {
 		t.Fatalf("b status = %s", state.Agents["agent-b"].Status)
 	}
-	if got := r.Logs().Entries("agent-a"); len(got) != 2 {
-		t.Fatalf("agent-a logs = %d, want 2", len(got))
+	agentALogs := 0
+	for _, e := range r.Logs().Entries("t1") {
+		if e.AgentID == "agent-a" {
+			agentALogs++
+		}
+	}
+	if agentALogs != 2 {
+		t.Fatalf("agent-a logs = %d, want 2", agentALogs)
 	}
 	au, ok := r.Ledger().Agent("agent-b")
 	if !ok || au.Usage.Total() != 15 {

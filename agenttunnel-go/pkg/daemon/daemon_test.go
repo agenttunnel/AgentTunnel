@@ -170,7 +170,7 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 
 	var logs []contracts.LogEntry
-	json.Unmarshal(call(t, c, "7", "agents.logs", map[string]any{"agentId": "agent-impl"}), &logs)
+	json.Unmarshal(call(t, c, "7", "agents.logs", map[string]any{"threadId": created.ThreadID, "agentId": "agent-impl"}), &logs)
 	if len(logs) == 0 {
 		t.Fatal("no agent logs recorded")
 	}
