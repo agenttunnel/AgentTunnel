@@ -10,6 +10,11 @@ import { addUsage, zeroUsage, type TokenUsage } from "./usage";
  * thread.get. Must match graphBodyMax on the daemon. */
 const BODY_MAX = 280;
 
+/** Checkpoint k is the folded state after the first k * CHECKPOINT_EVERY
+ * events. A seek starts from the nearest checkpoint, so it applies at most
+ * CHECKPOINT_EVERY events no matter how long the thread is. */
+export const CHECKPOINT_EVERY = 200;
+
 type Base = { seq: number; at: string };
 
 /** Graph-relevant event, in the slim shape thread.events returns. Live frames
@@ -46,13 +51,17 @@ type AgentRecord = {
   dependsOn: string[];
 };
 
+/** A folded message keeps the seq it was posted at, so replay can hide
+ * messages that come after the cursor by order rather than by time. */
+export type GraphMessage = MailboxMessage & { seq: number };
+
 export type GraphState = {
   /** Last applied seq; events at or below it are ignored. */
   seq: number;
   /** Insertion order is the agent order the layout stacks by. */
   agents: Map<string, AgentRecord>;
   usage: Map<string, { usage: TokenUsage }>;
-  messages: MailboxMessage[];
+  messages: GraphMessage[];
   /** The newest message, so the view can pulse its edge once. */
   lastMessage: { from: string; to: string; seq: number } | null;
 };
@@ -124,7 +133,9 @@ export function toGraphEvent(raw: unknown, threadId?: string): GraphEvent | null
   return null;
 }
 
-/** Applies one event to a state the caller owns. Mutates `s`. */
+/** Applies one event to a state the caller owns. Mutates `s`. Agent and usage
+ * records are replaced, never edited, so a shallow copy of the Maps is a safe
+ * snapshot. */
 function applyEvent(s: GraphState, ev: GraphEvent) {
   s.seq = ev.seq;
   switch (ev.type) {
@@ -169,37 +180,64 @@ function applyEvent(s: GraphState, ev: GraphEvent) {
     }
     case "mailbox.posted": {
       const p = ev.payload;
-      s.messages.push({ from: p.from, to: p.to, kind: p.kind, body: p.body, at: ev.at });
+      s.messages.push({ from: p.from, to: p.to, kind: p.kind, body: p.body, at: ev.at, seq: ev.seq });
       s.lastMessage = { from: p.from, to: p.to, seq: ev.seq };
       return;
     }
   }
 }
 
+/** Copies the containers so the copy can be applied to without touching the
+ * original. Agent and usage values are shared, which is safe because they are
+ * replaced rather than mutated. */
+function cloneGraph(s: GraphState): GraphState {
+  return {
+    seq: s.seq,
+    agents: new Map(s.agents),
+    usage: new Map(s.usage),
+    messages: s.messages.slice(),
+    lastMessage: s.lastMessage,
+  };
+}
+
 /** Pure step: returns `state` itself when the event was already applied. */
 export function reduceGraph(state: GraphState, ev: GraphEvent): GraphState {
   if (ev.seq <= state.seq) return state;
-  const next: GraphState = {
-    ...state,
-    agents: new Map(state.agents),
-    usage: new Map(state.usage),
-    messages: state.messages.slice(),
-  };
+  const next = cloneGraph(state);
   applyEvent(next, ev);
   return next;
 }
 
-/** Folds the first `count` events into a fresh state. Mutates a private
- * accumulator, so a scrub costs one pass rather than one copy per event. */
-export function foldTo(events: readonly GraphEvent[], count: number): GraphState {
-  const s = emptyGraph();
-  const n = Math.min(count, events.length);
-  for (let i = 0; i < n; i++) {
+/** Applies events[from, to) to `s` in place, skipping any already applied. */
+function applyRange(s: GraphState, events: readonly GraphEvent[], from: number, to: number): GraphState {
+  for (let i = from; i < to; i++) {
     const ev = events[i];
     if (ev.seq <= s.seq) continue;
     applyEvent(s, ev);
   }
   return s;
+}
+
+/** Snapshots of the folded state every CHECKPOINT_EVERY events: entry k is the
+ * state after the first k * CHECKPOINT_EVERY events, and entry 0 is empty.
+ * Append-only, like the log it describes. */
+export function buildCheckpoints(events: readonly GraphEvent[]): GraphState[] {
+  const checkpoints = [emptyGraph()];
+  const acc = emptyGraph();
+  for (let i = 0; i < events.length; i++) {
+    applyRange(acc, events, i, i + 1);
+    if ((i + 1) % CHECKPOINT_EVERY === 0) checkpoints.push(cloneGraph(acc));
+  }
+  return checkpoints;
+}
+
+/** The state after the first `count` events. Starts from the nearest
+ * checkpoint at or below `count`, so the cost is bounded by CHECKPOINT_EVERY
+ * plus one copy, not by the prefix length. */
+export function stateAt(events: readonly GraphEvent[], checkpoints: readonly GraphState[], count: number): GraphState {
+  const n = Math.min(Math.max(count, 0), events.length);
+  const k = Math.min(Math.floor(n / CHECKPOINT_EVERY), checkpoints.length - 1);
+  return applyRange(cloneGraph(checkpoints[k]), events, k * CHECKPOINT_EVERY, n);
 }
 
 /** Index ranges per user turn. Turn k runs from its user message (or from the
@@ -218,6 +256,64 @@ export function turnRanges(events: readonly GraphEvent[]): TurnRange[] {
     start,
     end: starts[k + 1] ?? events.length,
   }));
+}
+
+export type MarkerKind = "turn" | "spawn" | "message" | "done";
+
+/** A meaningful event on the scrubber. `index` is the event's position in the
+ * log; applying it means a cursor of index + 1. */
+export type Marker = { index: number; kind: MarkerKind; label: string };
+
+const TERMINAL = new Set<string>(["succeeded", "failed", "cancelled"]);
+
+export function markersOf(events: readonly GraphEvent[]): Marker[] {
+  const out: Marker[] = [];
+  events.forEach((ev, index) => {
+    switch (ev.type) {
+      case "thread.message-sent":
+        if (ev.payload.author === "user") out.push({ index, kind: "turn", label: "Turn start" });
+        return;
+      case "agent.task-dispatched": {
+        const p = ev.payload;
+        out.push({ index, kind: "spawn", label: `Spawn ${p.name || p.role || p.agentId}` });
+        return;
+      }
+      case "mailbox.posted": {
+        const p = ev.payload;
+        out.push({ index, kind: "message", label: `Message ${p.from} → ${p.to}` });
+        return;
+      }
+      case "agent.status-changed":
+        if (TERMINAL.has(ev.payload.status)) {
+          out.push({ index, kind: "done", label: `${ev.payload.agentId} ${ev.payload.status}` });
+        }
+        return;
+    }
+  });
+  return out;
+}
+
+/** The cursor that lands on the nearest marker strictly before (dir -1) or
+ * after (dir 1) `at`, restricted to the turn bounds [lo, hi]. Null if none. */
+export function seekMarker(
+  markers: readonly Marker[],
+  at: number,
+  dir: 1 | -1,
+  lo: number,
+  hi: number,
+): number | null {
+  const inBounds = (m: Marker) => m.index >= lo && m.index < hi;
+  if (dir > 0) {
+    for (const m of markers) {
+      if (inBounds(m) && m.index + 1 > at) return m.index + 1;
+    }
+    return null;
+  }
+  for (let i = markers.length - 1; i >= 0; i--) {
+    const m = markers[i];
+    if (inBounds(m) && m.index + 1 < at) return m.index + 1;
+  }
+  return null;
 }
 
 /** The shape computeGraph takes, from a folded state. */

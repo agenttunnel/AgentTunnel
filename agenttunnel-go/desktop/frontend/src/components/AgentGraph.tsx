@@ -1,11 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   computeGraph,
   conversationBetween,
   conversationKey,
   type MailboxMessage,
 } from "../lib/graph";
-import { foldTo, toLayoutInput, turnRanges } from "../lib/graphEvents";
+import {
+  markersOf,
+  reduceGraph,
+  seekMarker,
+  stateAt,
+  toLayoutInput,
+  turnRanges,
+  type GraphState,
+} from "../lib/graphEvents";
 import { useGraphFeed } from "../lib/useGraphFeed";
 import type { Rpc } from "../lib/rpc";
 import { fmtTokens, type TokenUsage } from "../lib/usage";
@@ -74,7 +82,7 @@ export function AgentGraph({
   onOpenAgent: (id: string) => void;
 }) {
   const feed = useGraphFeed(rpc, threadId);
-  const { events } = feed;
+  const { events, checkpoints } = feed;
   const total = events.length;
   const [conversation, setConversation] = useState<{ a: string; b: string } | null>(null);
   // Playback: `cursor` is how many events are applied; null means live.
@@ -85,17 +93,30 @@ export function AgentGraph({
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
 
   const ranges = useMemo(() => turnRanges(events), [events]);
+  const markers = useMemo(() => markersOf(events), [events]);
   const range = turn === null ? null : (ranges.find((r) => r.turn === turn) ?? null);
   const lo = range?.start ?? 0;
   const hi = range?.end ?? total;
   const replay = cursor !== null && feed.loaded && total > 0;
   const applied = replay ? Math.min(Math.max(cursor, lo), hi) : total;
 
-  // Replay folds the prefix; live reuses the state the feed folded per event.
-  const view = useMemo(
-    () => (replay ? foldTo(events, applied) : feed.state),
-    [replay, events, applied, feed.state],
-  );
+  // The last replayed state. Stepping forward by one applies only that event;
+  // any other move (scrub, jump, turn switch) restarts from the nearest
+  // checkpoint. Live mode uses the state the feed already folded.
+  const replayRef = useRef<{ at: number; state: GraphState } | null>(null);
+  const view = useMemo(() => {
+    if (!replay) {
+      replayRef.current = null;
+      return feed.state;
+    }
+    const prev = replayRef.current;
+    let state: GraphState;
+    if (prev && applied === prev.at + 1) state = reduceGraph(prev.state, events[applied - 1]);
+    else if (prev && applied === prev.at) state = prev.state;
+    else state = stateAt(events, checkpoints, applied);
+    replayRef.current = { at: applied, state };
+    return state;
+  }, [replay, events, checkpoints, applied, feed.state]);
   const folded = useMemo(() => (feed.loaded ? toLayoutInput(view) : null), [feed.loaded, view]);
   const members = folded?.agents ?? agents;
 
@@ -117,18 +138,26 @@ export function AgentGraph({
     return a ? a.name || roleNames[a.role] || a.role : id;
   };
 
-  // Replay hides messages that have not happened yet at the cursor. Bodies
-  // come from thread state, which holds the full mailbox.
-  const cutoff = replay && applied > 0 ? ms(events[applied - 1].at) : null;
-  const talk = useMemo(
-    () =>
-      conversation
-        ? conversationBetween(mailbox, conversation.a, conversation.b).filter(
-            (m) => cutoff === null || ms(m.at) <= cutoff,
-          )
-        : [],
-    [conversation, mailbox, cutoff],
-  );
+  // The sheet reads the folded messages, so replay hides anything after the
+  // cursor by seq. Thread state's mailbox is capped and may lack older
+  // messages, so it supplies the full body when it has one; otherwise the
+  // clipped folded body is shown.
+  const fullBodies = useMemo(() => {
+    const byKey = new Map<string, string>();
+    for (const m of mailbox ?? []) {
+      const k = `${m.from}\u0000${m.to}\u0000${m.at}`;
+      if (!byKey.has(k)) byKey.set(k, m.body);
+    }
+    return byKey;
+  }, [mailbox]);
+  const talk = useMemo(() => {
+    if (!conversation) return [];
+    if (!feed.loaded) return conversationBetween(mailbox, conversation.a, conversation.b);
+    return conversationBetween(view.messages, conversation.a, conversation.b).map((m) => ({
+      ...m,
+      body: fullBodies.get(`${m.from}\u0000${m.to}\u0000${m.at}`) ?? m.body,
+    }));
+  }, [conversation, feed.loaded, mailbox, view, fullBodies]);
   // A thread switch or a vanished pair drops the selection so the sheet
   // cannot pop back open when an unrelated pair reappears.
   useEffect(() => {
@@ -141,9 +170,15 @@ export function AgentGraph({
     if (!running) return;
     const gap = applied > 0 && applied < total ? ms(events[applied].at) - ms(events[applied - 1].at) : 0;
     const wait = Math.max(MIN_STEP_MS, Math.min(Number.isFinite(gap) ? gap : 0, MAX_GAP_MS)) / speed;
-    const t = window.setTimeout(() => setCursor(applied + 1), wait);
+    const t = window.setTimeout(() => {
+      const next = applied + 1;
+      setCursor(next);
+      // Reaching the bound ends playback. Stopping here, rather than leaving
+      // `playing` set, keeps later live events from restarting it.
+      if (next >= hi) setPlaying(false);
+    }, wait);
     return () => window.clearTimeout(t);
-  }, [running, applied, speed, events, total]);
+  }, [running, applied, hi, speed, events, total]);
 
   // Esc closes the conversation sheet, the way the context menus close.
   useEffect(() => {
@@ -174,6 +209,15 @@ export function AgentGraph({
     setPlaying(false);
     setCursor(value);
   };
+  // A marker or prev/next lands the cursor on the event's position, so the
+  // event itself is applied.
+  const jump = (pos: number) => {
+    setPlaying(false);
+    setCursor(pos);
+  };
+  const prevMarker = seekMarker(markers, applied, -1, lo, hi);
+  const nextMarker = seekMarker(markers, applied, 1, lo, hi);
+  const visibleMarkers = markers.filter((m) => m.index >= lo && m.index < hi);
   const pickTurn = (value: string) => {
     setPlaying(false);
     if (value === "all") {
@@ -237,16 +281,46 @@ export function AgentGraph({
               </option>
             ))}
           </select>
-          <input
-            className="graph-scrub"
-            type="range"
-            aria-label="Replay position"
-            min={lo}
-            max={hi}
-            step={1}
-            value={applied}
-            onChange={(e) => scrub(Number(e.target.value))}
-          />
+          <button
+            className="graph-marker-step"
+            onClick={() => prevMarker !== null && jump(prevMarker)}
+            disabled={prevMarker === null}
+            aria-label="Previous marker"
+            title="Previous marker"
+          >
+            ‹
+          </button>
+          <div className="graph-track">
+            <input
+              className="graph-scrub"
+              type="range"
+              aria-label="Replay position"
+              min={lo}
+              max={hi}
+              step={1}
+              value={applied}
+              onChange={(e) => scrub(Number(e.target.value))}
+            />
+            {visibleMarkers.map((m) => (
+              <button
+                key={m.index}
+                className={`graph-mark ${m.kind}`}
+                style={{ left: `${((m.index + 1 - lo) / Math.max(hi - lo, 1)) * 100}%` }}
+                onClick={() => jump(m.index + 1)}
+                aria-label={`${m.label}, event ${m.index + 1}`}
+                title={`${m.label} · event ${m.index + 1}`}
+              />
+            ))}
+          </div>
+          <button
+            className="graph-marker-step"
+            onClick={() => nextMarker !== null && jump(nextMarker)}
+            disabled={nextMarker === null}
+            aria-label="Next marker"
+            title="Next marker"
+          >
+            ›
+          </button>
           <div className="graph-speed" role="group" aria-label="Replay speed">
             {SPEEDS.map((s) => (
               <button
@@ -376,8 +450,8 @@ export function AgentGraph({
               <button onClick={() => setConversation(null)}>Close</button>
             </div>
             <div className="sheet-body">
-              {talk.map((m) => (
-                <div className="graph-msg-item" key={`${m.at}-${m.from}-${m.body}`}>
+              {talk.map((m, i) => (
+                <div className="graph-msg-item" key={i}>
                   <div className="graph-msg-meta">
                     <span className="graph-msg-kind">{m.kind || "message"}</span>
                     <span className="graph-msg-from">
