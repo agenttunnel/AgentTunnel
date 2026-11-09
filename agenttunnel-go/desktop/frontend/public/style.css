@@ -2713,6 +2713,10 @@ table.grid tr.rowlink:hover td {
   box-shadow: var(--shadow-float);
   overflow: hidden;
 }
+.dd-pop.end {
+  left: auto;
+  right: 0;
+}
 .dd-search {
   padding: 8px;
   border-bottom: 1px solid var(--border-soft);

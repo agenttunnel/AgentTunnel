@@ -2538,6 +2538,7 @@ export default function App() {
                       value={r.model}
                       options={modelOptions(r.harness, r.model)}
                       searchable
+                      align="end"
                       placeholder="model (default)"
                       disabled={parked}
                       onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
@@ -3209,6 +3210,7 @@ export default function App() {
                       value={r.model}
                       options={modelOptions(r.harness, r.model)}
                       searchable
+                      align="end"
                       placeholder="model (default)"
                       footNote="Discovered from the harness CLI"
                       onRefresh={() => refreshModels(r.harness).catch(() => undefined)}

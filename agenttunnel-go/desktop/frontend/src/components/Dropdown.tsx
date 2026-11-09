@@ -21,6 +21,8 @@ type Props = {
   /** When set, shows a footer with a refresh action. */
   onRefresh?: () => void;
   footNote?: string;
+  /** Which trigger edge the popover hangs from; use "end" near the right edge of a panel. */
+  align?: "start" | "end";
 };
 
 /** A styled, optionally searchable dropdown with grouped options and keyboard nav. */
@@ -35,6 +37,7 @@ export function Dropdown({
   addLabel = "Add",
   onRefresh,
   footNote,
+  align = "start",
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -136,7 +139,7 @@ export function Dropdown({
       </button>
 
       {open && (
-        <div className="dd-pop" onKeyDown={onKeyDown}>
+        <div className={`dd-pop ${align === "end" ? "end" : ""}`} onKeyDown={onKeyDown}>
           {searchable && (
             <div className="dd-search">
               <input
