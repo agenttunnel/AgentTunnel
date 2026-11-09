@@ -595,9 +595,6 @@ export default function App() {
   // Projects stay open as tabs; each one remembers the thread it was showing.
   const [openProjectIds, setOpenProjectIds] = useState<string[]>(loadOpenProjects);
   const lastThreadByProject = useRef<Record<string, string | null>>({});
-  const [showNewProject, setShowNewProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectPath, setNewProjectPath] = useState("");
 
   // Thread context-menu flow: the menu itself, plus the three dialogs it can
   // open (rename, delete confirm, usage/subagent drill-in).
@@ -756,17 +753,17 @@ export default function App() {
     setProjects(await rpc.call<Project[]>("project.list"));
   }, []);
 
-  const createProject = async () => {
+  /** Adding a project is the native folder picker; the folder's name is the project name. */
+  const addProject = async () => {
     const rpc = rpcRef.current;
-    if (!rpc || !newProjectName.trim()) return;
+    const path = await pickFolder();
+    if (!rpc || !path) return;
+    const name = path.split("/").filter(Boolean).pop() ?? path;
     const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
-      name: newProjectName.trim(),
-      path: newProjectPath.trim(),
+      name,
+      path,
     });
     setProjects(res.projects);
-    setNewProjectName("");
-    setNewProjectPath("");
-    setShowNewProject(false);
     openProject(res.project.id);
   };
 
@@ -889,17 +886,6 @@ export default function App() {
       cancelled = true;
     };
   }, [infoTarget]);
-
-  // Adding a project starts with the native folder picker; the chosen path seeds
-  // the name, which stays editable. Cancelling still shows the form so a path can
-  // be typed (for example in the browser, where there is no shell dialog).
-  const openPicker = async () => {
-    const path = await pickFolder();
-    setShowNewProject(true);
-    if (!path) return;
-    setNewProjectPath(path);
-    setNewProjectName((name) => name.trim() || (path.split("/").filter(Boolean).pop() ?? ""));
-  };
 
   const refreshModels = useCallback(async (harness: string) => {
     const rpc = rpcRef.current;
@@ -1736,7 +1722,7 @@ export default function App() {
             );
           })}
         </div>
-        <button className="pt-add" onClick={openPicker} title="Add project" aria-label="Add project">
+        <button className="pt-add" onClick={showProjects} title="Projects" aria-label="Projects">
           +
         </button>
       </div>
@@ -1882,32 +1868,18 @@ export default function App() {
                   : `${projects.length} project${projects.length === 1 ? "" : "s"}`}
               </p>
             </div>
-            <button className="primary" onClick={openPicker}>
-              New project
-            </button>
           </div>
-          {showNewProject && (
-            <div className="new-project">
-              <input
-                placeholder="Name"
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-              />
-              <input
-                placeholder="/path/to/repo"
-                value={newProjectPath}
-                onChange={(e) => setNewProjectPath(e.target.value)}
-              />
-              <button onClick={openPicker}>Browse…</button>
-              <button className="primary" onClick={createProject}>
-                Add project
-              </button>
-            </div>
-          )}
-          {projects.length === 0 && !showNewProject && (
-            <div className="empty">No projects yet. Add one to get started.</div>
-          )}
           <div className="project-grid">
+            <div
+              className="new-card"
+              aria-label="Add project"
+              title="Add project"
+              {...clickable(addProject)}
+            >
+              <span className="new-card-plus" aria-hidden="true">
+                +
+              </span>
+            </div>
             {projects.map((p) => (
               <div
                 className={`project-card${openProjectIds.includes(p.id) ? " is-open" : ""}`}
@@ -1969,19 +1941,22 @@ export default function App() {
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
-              <button className="primary" onClick={newThread}>
-                New thread
-              </button>
             </div>
           </div>
-          {projectThreads.length === 0 && (
-            <div className="empty">
-              {needle
-                ? "No threads match that filter."
-                : "No threads yet. Start one for this project."}
-            </div>
+          {projectThreads.length === 0 && needle && (
+            <div className="empty">No threads match that filter.</div>
           )}
           <div className="thread-cards">
+            <div
+              className="new-card"
+              aria-label="New thread"
+              title="New thread"
+              {...clickable(newThread)}
+            >
+              <span className="new-card-plus" aria-hidden="true">
+                +
+              </span>
+            </div>
             {projectThreads.map((t) => (
               <div
                 className={`thread-card${t.stale ? " is-stale" : ""}`}
