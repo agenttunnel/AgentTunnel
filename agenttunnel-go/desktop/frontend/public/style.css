@@ -476,6 +476,13 @@ select {
   background: rgba(142, 166, 255, 0.06);
   border-color: rgba(142, 166, 255, 0.2);
 }
+.msg.shell .who .role {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.msg.shell .body {
+  border-style: dashed;
+}
 .msg.steering {
   margin-left: 26px;
 }

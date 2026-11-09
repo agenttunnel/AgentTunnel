@@ -421,6 +421,8 @@ export default function App() {
 
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
+  const [shellThread, setShellThread] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   // Aside panel tabs: agents + usage are pinned; context, files, and diff can
   // be added via the "+" menu (or single-letter shortcuts) and closed again.
@@ -1195,17 +1197,29 @@ export default function App() {
     const rpc = rpcRef.current;
     const text = input.trim();
     if (!rpc || !activeId || !text) return;
-    setInput("");
+    // "! cmd" runs a shell command in the thread's project. A lone "!" is just text.
+    const command = text.startsWith("!") ? text.slice(1).trim() : "";
     // While a turn is running, a message steers the orchestrator's next pass
     // rather than starting a competing turn.
     const steer = running.length > 0;
+    if (command && steer) {
+      setError("Stop the running turn before running a shell command.");
+      return;
+    }
+    setInput("");
     setBusy(true);
+    if (command) setShellThread(activeId);
     try {
-      await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId: activeId, text });
+      if (command) {
+        await rpc.call("thread.runCommand", { threadId: activeId, command });
+      } else {
+        await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId: activeId, text });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setShellThread(null);
       refresh(activeId).catch(() => undefined);
     }
   };
@@ -1843,7 +1857,7 @@ export default function App() {
               {(thread?.messages ?? []).map((m) => (
                 <div
                   key={m.id}
-                  className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : ""}`}
+                  className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}`}
                 >
                   <div className="who">
                     <span className="role">
@@ -1853,7 +1867,9 @@ export default function App() {
                           ? "Steering"
                           : m.author === "system"
                             ? "System"
-                            : "Orchestrator"}
+                            : m.author === "shell"
+                              ? "Shell"
+                              : "Orchestrator"}
                     </span>
                   </div>
                   <div className="body">
@@ -1894,6 +1910,17 @@ export default function App() {
                   </div>
                 </div>
               )}
+              {shellThread === activeId && shellThread !== null && (
+                <div className="activity">
+                  <div className="act-head">
+                    <span className="act-led" />
+                    <span className="act-label">Running shell command</span>
+                    <button className="stop-btn" onClick={stopTurn} title="Stop this command">
+                      Stop
+                    </button>
+                  </div>
+                </div>
+              )}
               {error && <div className="empty err-text">{error}</div>}
             </div>
 
@@ -1904,7 +1931,7 @@ export default function App() {
                   placeholder={
                     running.length > 0
                       ? "Steer the orchestrator — it lands on the next pass…"
-                      : "Ask the team to build something…"
+                      : "Ask the team to build something, or ! to run a shell command…"
                   }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
