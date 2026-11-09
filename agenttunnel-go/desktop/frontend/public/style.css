@@ -2785,3 +2785,119 @@ table.grid tr.rowlink:hover td {
     width: 170px;
   }
 }
+
+/* --- graph playback ------------------------------------------------------ */
+/* Motion is transform/opacity (or a one-shot stroke dash on the pulse), never
+ * an infinite loop, so an idle graph costs nothing per frame. */
+.graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  font-size: 11px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.graph-bar button,
+.graph-bar select {
+  font-size: 11px;
+}
+.graph-live.on {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.graph-track {
+  position: relative;
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 420px;
+}
+.graph-scrub {
+  display: block;
+  width: 100%;
+}
+/* Markers sit on the track above the range input. Each is a small tick in the
+ * kind's color; no motion. */
+.graph-mark {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 12px;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 0;
+  border-radius: 1px;
+  background: var(--faint);
+  cursor: pointer;
+}
+.graph-mark.turn {
+  background: var(--text);
+}
+.graph-mark.spawn {
+  background: var(--accent);
+}
+.graph-mark.message {
+  background: var(--muted);
+}
+.graph-mark.done {
+  background: var(--green, var(--accent));
+}
+.graph-mark:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.graph-marker-step {
+  padding: 0 6px;
+}
+.graph-speed {
+  display: inline-flex;
+  gap: 2px;
+}
+.graph-speed button.on {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.graph-clock {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.graph-pulse {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 0.18 1.2;
+  opacity: 0;
+  animation: graph-pulse 900ms ease-out;
+}
+@keyframes graph-pulse {
+  from {
+    stroke-dashoffset: 1.38;
+    opacity: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+.graph-node.enter {
+  animation: graph-enter 240ms ease-out both;
+}
+@keyframes graph-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-pulse,
+  .graph-node.enter {
+    animation: none;
+  }
+}
