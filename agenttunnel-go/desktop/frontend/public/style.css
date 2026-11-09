@@ -2181,16 +2181,31 @@ table.grid tr.rowlink:hover td {
   border-color: var(--border-soft);
   color: var(--text);
 }
-.new-project {
-  display: grid;
-  grid-template-columns: 1fr 1.6fr auto auto;
-  gap: 10px;
+/* The "add" tile at the head of the project and thread grids. */
+.new-card {
+  display: flex;
   align-items: center;
-  margin-bottom: 20px;
-  padding: 12px;
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
+  justify-content: center;
+  min-height: 150px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 14px;
+  color: var(--faint);
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+.new-card:hover,
+.new-card:focus-visible {
+  border-color: var(--border-strong);
   background: var(--panel);
+  color: var(--text);
+}
+.new-card-plus {
+  font-size: 56px;
+  font-weight: 300;
+  line-height: 1;
 }
 .project-grid {
   display: grid;
