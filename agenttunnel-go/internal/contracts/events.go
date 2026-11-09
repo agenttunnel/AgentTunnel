@@ -18,6 +18,7 @@ const (
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
+	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
 	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
 	EvtTaskAdded          EventType = "thread.task-added"
 	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
@@ -105,6 +106,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[PeerMailboxSet](data)
 	case EvtLeadsSet:
 		return decodePayload[LeadsSet](data)
+	case EvtLeadRuntimeSet:
+		return decodePayload[LeadRuntimeSet](data)
 	case EvtSubthreadSpawned:
 		return decodePayload[SubthreadSpawned](data)
 	case EvtTaskAdded:
@@ -194,6 +197,23 @@ const MaxLeads = 3
 type LeadsSet struct{ Count int }
 
 func (LeadsSet) eventType() EventType { return EvtLeadsSet }
+
+// LeadRuntime overrides one lead's runtime on a thread. An empty Harness means
+// the lead inherits the orchestrator role; an empty Model or Variant means the
+// harness default. Overriding the harness resets the model to its default.
+type LeadRuntime struct {
+	Harness Harness `json:"harness,omitempty"`
+	Model   string  `json:"model,omitempty"`
+	Variant string  `json:"variant,omitempty"`
+}
+
+// LeadRuntimeSet sets lead Index's (zero-based) runtime override.
+type LeadRuntimeSet struct {
+	Index   int         `json:"index"`
+	Runtime LeadRuntime `json:"runtime"`
+}
+
+func (LeadRuntimeSet) eventType() EventType { return EvtLeadRuntimeSet }
 
 // MaxSubthreads bounds how many subthreads one thread may start. A subthread
 // cannot start its own, so this is also the whole tree below a thread.

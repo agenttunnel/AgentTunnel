@@ -909,6 +909,39 @@ body.is-resizing * {
   opacity: 0.45;
 }
 
+.lead-block {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.lead-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.lead-count {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.lead-count button {
+  min-width: 30px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  border-radius: 6px;
+}
+.lead-count button[aria-pressed="true"] {
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.lead-count button:disabled {
+  opacity: 0.5;
+}
+
 /* --- activity ----------------------------------------------------------- */
 .activity {
   max-width: 900px;

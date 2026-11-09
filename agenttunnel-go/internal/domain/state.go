@@ -81,6 +81,10 @@ type ThreadState struct {
 	// Leads is the stored orchestrator team size; zero means one. Read it
 	// through LeadCount.
 	Leads int `json:"leads"`
+	// LeadRuntimes holds per-lead runtime overrides, indexed by lead. A missing
+	// entry means the lead inherits the orchestrator role. Read through
+	// LeadRuntimeFor.
+	LeadRuntimes []contracts.LeadRuntime `json:"leadRuntimes,omitempty"`
 	// ParentThreadID is set on a subthread: the thread that started it. Its
 	// presence is also the depth check — a subthread starts no subthreads.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
@@ -124,6 +128,14 @@ func (s *ThreadState) taskIndex(name string) int {
 		}
 	}
 	return -1
+}
+
+// LeadRuntimeFor is lead i's runtime override; the zero value inherits.
+func (s *ThreadState) LeadRuntimeFor(i int) contracts.LeadRuntime {
+	if i < 0 || i >= len(s.LeadRuntimes) {
+		return contracts.LeadRuntime{}
+	}
+	return s.LeadRuntimes[i]
 }
 
 // LeadCount is the number of orchestrators leading the thread's turns.

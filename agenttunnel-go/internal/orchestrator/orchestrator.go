@@ -542,7 +542,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		RuntimeChoices: runtimeChoices,
 	})
 
-	text, calls, err := o.runner.runOrchestratorPass(ctx, t.threadID, orchID, t.role, prompt, pass)
+	text, calls, err := o.runner.runOrchestratorPass(ctx, t.threadID, i, orchID, t.role, prompt, pass)
 	if err != nil {
 		return "", nil, err
 	}
