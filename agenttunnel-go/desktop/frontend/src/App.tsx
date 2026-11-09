@@ -2110,9 +2110,6 @@ export default function App() {
             open={layout.sidebarOpen}
             onToggle={() => setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))}
           />
-          <button className="back-mini" onClick={() => selectThread(null)}>
-            ← {selectedProject?.name ?? "Threads"}
-          </button>
           <button onClick={newThread}>New</button>
         </div>
         <div className="col-body">

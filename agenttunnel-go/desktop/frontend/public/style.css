@@ -2513,23 +2513,6 @@ table.grid tr.rowlink:hover td {
   margin-top: auto;
   padding-top: 16px;
 }
-.back-mini {
-  background: transparent;
-  border-color: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 4px 6px;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.back-mini:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--panel);
-  border-color: var(--border-soft);
-}
-
 /* --- sidebar footer + settings ---------------------------------------- */
 .sidebar-foot {
   border-top: 1px solid var(--border-soft);
