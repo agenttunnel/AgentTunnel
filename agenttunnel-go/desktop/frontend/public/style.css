@@ -618,11 +618,14 @@ select {
 }
 .model-panel {
   max-width: 900px;
+  max-height: min(420px, 42vh);
   margin: 10px auto 0;
   border: 1px solid var(--border-soft);
   border-radius: 12px;
   background: var(--panel);
   padding: 12px 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .model-panel .hint {
   margin: 0 0 10px;
