@@ -29,6 +29,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/update"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
+	"github.com/agenttunnel/agenttunnel-go/internal/worktree"
 )
 
 // Request is a client->server RPC call.
@@ -122,7 +123,8 @@ type ThreadSummary struct {
 	Agents    int                `json:"agents"`
 	AutoMode  bool               `json:"autoMode"`
 	// ParentThreadID marks a subthread and names the thread that started it.
-	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
+	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
+	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -140,6 +142,8 @@ type (
 	createThreadParams struct {
 		Title     string `json:"title"`
 		ProjectID string `json:"projectId"`
+		// Worktree cuts the thread's worktree up front instead of on its first turn.
+		Worktree bool `json:"worktree"`
 	}
 	threadParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -187,6 +191,9 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	defer done()
+	// The first turn of a top-level thread in a git project cuts its worktree;
+	// the attach is dispatched before the turn so the agents' workdir is ready.
+	d.ensureWorktree(ctx, threadID)
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
@@ -379,9 +386,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		id := d.newThreadID()
+		var wt *contracts.WorktreeRef
+		if p.Worktree && p.ProjectID != "" {
+			wt = d.createWorktreeRef(ctx, p.ProjectID, p.Title, id)
+		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
-			Title: p.Title, ProjectID: p.ProjectID,
+			Title: p.Title, ProjectID: p.ProjectID, Worktree: wt,
 		}); err != nil {
 			return nil, err
 		}
@@ -416,8 +427,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
-				ParentThreadID: st.ParentThreadID,
-				RunningAgents:  running, StaleAfterSeconds: staleAfter, Stale: stale,
+				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
+				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
 		}
 		// The thread list is a recency list: newest activity first. Event stores
@@ -644,7 +655,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"ok": true}, nil
 
 	case "thread.delete":
-		var p threadParams
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			// RemoveWorktree deletes the thread's own worktree with it. Off by
+			// default: the worktree may hold work the user still wants.
+			RemoveWorktree bool `json:"removeWorktree"`
+		}
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
@@ -654,6 +670,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		// A refused removal (dirty worktree, running turn) aborts the delete.
+		if p.RemoveWorktree && st.Worktree != nil && !st.Worktree.Inherited {
+			if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
+				return nil, err
+			}
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: p.ThreadID,
@@ -1012,6 +1034,42 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 	case "project.list":
 		return d.projectList(ctx), nil
 
+	case "worktree.list":
+		var p struct {
+			ProjectID string `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.worktreeList(ctx, p.ProjectID)
+
+	case "worktree.create":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.worktreeCreate(ctx, p.ThreadID)
+
+	case "worktree.remove":
+		var p struct {
+			ProjectID string `json:"projectId"`
+			Path      string `json:"path"`
+			Force     bool   `json:"force"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.worktreeRemove(ctx, p.ProjectID, p.Path, p.Force)
+
+	case "worktree.prune":
+		var p struct {
+			ProjectID string `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.worktreePrune(ctx, p.ProjectID)
+
 	case "project.create":
 		var p struct {
 			Name string `json:"name"`
@@ -1059,20 +1117,24 @@ type ProjectView struct {
 	Threads int    `json:"threads"`
 }
 
-// threadWorkdir resolves a thread's working directory: its project's path,
-// falling back to the environment default when the thread has no project.
-// Mirrors the orchestrator's workdirFor so diffs and file trees show the same
-// repo the agents work in.
+// threadWorkdir resolves a thread's working directory: its worktree when it has
+// one on disk, otherwise its project's path. Mirrors the orchestrator's
+// workdirFor so diffs and file trees show the same checkout the agents use.
 func (d *Dispatcher) threadWorkdir(ctx context.Context, id contracts.ThreadID) string {
 	if d.settings == nil {
 		return ""
 	}
-	if st, err := d.engine.State(ctx, id); err == nil && st.ProjectID != "" {
+	base := d.settings.Workdir()
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return base
+	}
+	if st.ProjectID != "" {
 		if project, ok := d.settings.Project(st.ProjectID); ok && project.Path != "" {
-			return project.Path
+			base = project.Path
 		}
 	}
-	return d.settings.Workdir()
+	return worktree.Resolve(st.Worktree, base)
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {
