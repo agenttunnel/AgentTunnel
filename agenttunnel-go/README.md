@@ -176,7 +176,7 @@ Agents coordinate beyond the turn loop:
 | Council (parallel debate to a synthesized outcome)            | `orchestrator/council.go`                                                  |
 | Agent graph (spawn tree, dependencies, message arcs)          | `desktop/frontend/src/lib/graph.ts`                                        |
 | Steering a running turn                                       | `thread.steer`; consumed by the lead's next pass                           |
-| Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; comments flow into the next prompt |
+| Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; submitted comments start a review turn |
 | Stoppable turns and agents                                    | `thread.turn.stop`, `agents.stop` — real process-group teardown            |
 | GitHub/GitLab awareness                                       | **not yet** — next up                                                      |
 
@@ -189,7 +189,7 @@ Threads: `thread.create`, `thread.list`, `thread.get`, `thread.rename`,
 
 Agents and usage: `agents.list`, `agents.logs`, `agents.stop`, `usage.get`.
 
-Review: `review.diff`, `review.comment`.
+Review: `review.diff`, `review.comment`, `review.submit` (sends pending comments as a turn).
 
 Context: `context.save`, `context.inherited.get`, `context.inherited.save`,
 `context.inherited.rule.save`, `context.inherited.rule.delete`.

@@ -57,7 +57,8 @@ type Agent = {
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
 type Message = { id: string; author: string; text: string; at: string };
-type ReviewComment = { id: string; file: string; line: number; body: string };
+/** submitted comments were already handed to the team in a review turn. */
+type ReviewComment = { id: string; file: string; line: number; body: string; submitted: boolean };
 type ThreadState = {
   id: string;
   title: string;
@@ -1307,6 +1308,7 @@ export default function App() {
   );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
@@ -1497,6 +1499,21 @@ export default function App() {
     });
     setDraft(null);
     refresh(activeId).catch(() => undefined);
+  };
+
+  /** Hands every pending review comment to the team as one review turn. */
+  const submitReview = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId || pendingComments.length === 0) return;
+    setBusy(true);
+    try {
+      await rpc.call("review.submit", { threadId: activeId });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      refresh(activeId).catch(() => undefined);
+    }
   };
 
   const toggleModelConfig = () => {
@@ -1779,15 +1796,16 @@ export default function App() {
 
   // Review comments belong with the diff, not pinned under every aside tab.
   // The same block renders in the center Review tab and the aside Diff panel.
+  const sentComments = comments.length - pendingComments.length;
   const reviewComments = (
     <div className="section">
       <h3>
-        Review comments <span>{comments.length}</span>
+        Review comments <span>{pendingComments.length}</span>
       </h3>
-      {comments.length === 0 && (
-        <p className="hint">None yet. Comment on a line in Review or the Diff panel.</p>
+      {pendingComments.length === 0 && (
+        <p className="hint">None pending. Comment on a line in Review or the Diff panel.</p>
       )}
-      {comments.map((c) => (
+      {pendingComments.map((c) => (
         <div className="comment-item" key={c.id}>
           <div className="comment-file">
             {c.file}:{c.line}
@@ -1795,6 +1813,19 @@ export default function App() {
           <div className="comment-body">{c.body}</div>
         </div>
       ))}
+      {pendingComments.length > 0 && (
+        <button
+          className="primary"
+          disabled={busy || running.length > 0}
+          onClick={() => submitReview().catch(() => undefined)}
+        >
+          Submit review
+        </button>
+      )}
+      {pendingComments.length > 0 && running.length > 0 && (
+        <p className="hint">Submit once the running turn finishes.</p>
+      )}
+      {sentComments > 0 && <p className="hint">{sentComments} already sent to the team.</p>}
     </div>
   );
 

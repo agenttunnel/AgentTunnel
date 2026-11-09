@@ -26,6 +26,7 @@ const (
 	EvtSharedContextSet   EventType = "context.shared-set"
 	EvtMailboxPosted      EventType = "mailbox.posted"
 	EvtReviewCommentAdded EventType = "review.comment-added"
+	EvtReviewSubmitted    EventType = "review.comments-submitted"
 	EvtAgentOutput        EventType = "agent.output"
 )
 
@@ -119,6 +120,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[MailboxPosted](data)
 	case EvtReviewCommentAdded:
 		return decodePayload[ReviewCommentAdded](data)
+	case EvtReviewSubmitted:
+		return decodePayload[ReviewCommentsSubmitted](data)
 	default:
 		return nil, fmt.Errorf("unknown event type %q", t)
 	}
@@ -285,6 +288,14 @@ type ReviewCommentAdded struct {
 }
 
 func (ReviewCommentAdded) eventType() EventType { return EvtReviewCommentAdded }
+
+// ReviewCommentsSubmitted marks pending review comments as handed to the
+// team. It is recorded alongside the user turn that carries them.
+type ReviewCommentsSubmitted struct {
+	CommentIDs []string `json:"commentIds"`
+}
+
+func (ReviewCommentsSubmitted) eventType() EventType { return EvtReviewSubmitted }
 
 // AgentOutput is a transient progress line streamed to clients while an agent
 // runs. It is never appended to the event log — it exists only so a running turn
