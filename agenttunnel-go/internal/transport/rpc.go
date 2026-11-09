@@ -84,6 +84,10 @@ type Dispatcher struct {
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
 	turns   map[contracts.ThreadID]context.CancelFunc
+
+	// shellStarted, when set by a test, runs once a thread.runCommand child is
+	// live. Nil in production.
+	shellStarted func()
 }
 
 // NewDispatcher constructs a dispatcher.
@@ -426,6 +430,53 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
+
+	case "thread.runCommand":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Command  string             `json:"command"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		command := strings.TrimSpace(p.Command)
+		if command == "" {
+			return nil, errors.New("command is required")
+		}
+		st, err := d.engine.State(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Exists {
+			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		// The command takes the turn slot: it cannot interleave with agent work,
+		// and the Stop button cancels it through the same context.
+		turnCtx, done, err := d.beginTurn(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		defer done()
+		res, err := runShell(turnCtx, shellRun{
+			Dir: d.threadWorkdir(ctx, p.ThreadID), Command: command,
+			MaxBytes: shellOutputCap, Timeout: shellTimeout,
+			Started: d.shellStarted,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID:       d.nextID(),
+			Type:     contracts.CmdMessageAppend,
+			ThreadID: p.ThreadID,
+			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"ok": true, "exitCode": res.ExitCode, "truncated": res.Truncated,
+			"timedOut": res.TimedOut, "stopped": res.Stopped,
+		}, nil
 
 	case "thread.council.start":
 		var p struct {
