@@ -200,6 +200,19 @@ function pushLiveLine(prev: LiveLine[], line: LiveLine): LiveLine[] {
   return [...prev.slice(-(LIVE_LIMIT - 1)), line];
 }
 
+/** Frames published while the snapshot loads may already be in the snapshot:
+ *  the daemon appends a line before publishing it. Drop the longest run at the
+ *  start of `buffered` that repeats the snapshot's tail, keeping only new lines. */
+function dropSnapshotOverlap(snapshot: LiveLine[], buffered: LiveLine[]): LiveLine[] {
+  const same = (a: LiveLine, b: LiveLine) =>
+    a.agentId === b.agentId && a.kind === b.kind && a.text === b.text;
+  for (let k = Math.min(snapshot.length, buffered.length); k > 0; k--) {
+    const tail = snapshot.slice(snapshot.length - k);
+    if (tail.every((line, i) => same(line, buffered[i]))) return buffered.slice(k);
+  }
+  return buffered;
+}
+
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = window.localStorage.getItem("at.asideTabs");
@@ -995,18 +1008,26 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
     let stale = false;
-    let hydrated = false;
+    // Frames that arrive before the snapshot lands wait here, then merge after it.
+    let buffered: LiveLine[] | null = [];
     setLive([]);
     rpc.call("thread.subscribe", { threadId: activeId }).catch(() => undefined);
+    // Snapshot and buffered frames are both raw chunks, so overlap is compared
+    // before the chunks are merged into display lines.
+    const applyBuffered = (snapshot: LiveLine[]) => {
+      const fresh = dropSnapshotOverlap(snapshot, buffered ?? []);
+      buffered = null;
+      setLive([...snapshot, ...fresh].reduce<LiveLine[]>(pushLiveLine, []));
+    };
     rpc
       .call<LogEntry[]>("thread.logs", { threadId: activeId })
       .then((entries) => {
         if (stale) return;
-        setLive(entries.reduce<LiveLine[]>((acc, e) => pushLiveLine(acc, e), []));
-        hydrated = true;
+        applyBuffered(entries);
       })
       .catch(() => {
-        hydrated = true;
+        if (stale) return;
+        applyBuffered([]);
       });
     const off = rpc.onThreadEvent((raw) => {
       const ev = raw as {
@@ -1017,13 +1038,14 @@ export default function App() {
       if (ev?.type === "agent.output" && ev.payload) {
         // Output from another thread belongs to that thread's log; it is
         // restored from the daemon when the user switches back.
-        if (stale || !hydrated || ev.threadId !== activeId) return;
+        if (stale || ev.threadId !== activeId) return;
         const line = {
           agentId: String(ev.payload.agentId ?? ""),
           kind: String(ev.payload.kind ?? "text"),
           text: String(ev.payload.text ?? ""),
         };
-        setLive((prev) => pushLiveLine(prev, line));
+        if (buffered) buffered.push(line);
+        else setLive((prev) => pushLiveLine(prev, line));
         return;
       }
       scheduleRefresh(activeId);
