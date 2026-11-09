@@ -26,9 +26,16 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/pkg/daemon"
 )
 
+// version is the release version, set at link time by the release workflow
+// (-ldflags "-X main.version=..."). Local builds report "dev".
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "tool" {
 		os.Exit(toolcli.Run(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		os.Exit(runUpdate(os.Args[2:]))
 	}
 	// The agent environment is exported to child agents, so a stray invocation
 	// from inside a session must not start another daemon.
@@ -64,6 +71,7 @@ func main() {
 			MaxPasses:      *maxPasses,
 			MaxConcurrency: *concurrency,
 		},
+		Version: version,
 	})
 	if err != nil {
 		log.Fatalf("atd: %v", err)

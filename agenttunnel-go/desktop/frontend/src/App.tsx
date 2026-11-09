@@ -31,6 +31,7 @@ import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
+import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import type { MailboxMessage } from "./lib/graph";
 
 type Role = {
@@ -480,6 +481,9 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadState | null>(null);
   const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
@@ -621,6 +625,20 @@ export default function App() {
     setThread(state);
     setThreads(list);
     setGlobalUsage(usage);
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      setUpdate(await rpc.call<UpdateStatus>("update.apply"));
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdateBusy(false);
+    }
   }, []);
 
   const loadDiff = useCallback(async (id: string | null) => {
@@ -964,6 +982,8 @@ export default function App() {
       if (cancelled) return;
       rpcRef.current = rpc;
       setStatus("online");
+      // Not awaited: a slow GitHub lookup must not hold up startup.
+      rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
       try {
         const [r, h, list, projs] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -1556,6 +1576,12 @@ export default function App() {
           {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
         </span>
       </div>
+      <UpdateChip
+        status={update}
+        busy={updateBusy}
+        error={updateError}
+        onInstall={installUpdate}
+      />
     </div>
   );
 

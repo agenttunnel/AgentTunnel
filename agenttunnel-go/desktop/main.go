@@ -27,6 +27,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// version is the release version, set at link time by the release workflow
+// (-ldflags "-X main.version=..."). Local builds report "dev".
+var version = "dev"
+
 func main() {
 	// Arguments mean someone invoked this binary as a CLI. `tool` is the
 	// agent-callable subcommand; a single directory argument opens a thread in
@@ -77,6 +81,7 @@ func main() {
 		Token:    mustToken(),
 		Workdir:  cwd,
 		Config:   orchestrator.Config{MaxPasses: 3, MaxConcurrency: 4},
+		Version:  version,
 	})
 	if err != nil {
 		log.Fatalf("agenttunnel: %v", err)
