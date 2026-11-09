@@ -17,6 +17,9 @@ const (
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
+	EvtLeadsSet           EventType = "thread.leads-set"
+	EvtTaskAdded          EventType = "thread.task-added"
+	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
 	EvtTaskDispatched     EventType = "agent.task-dispatched"
 	EvtAgentStatusChanged EventType = "agent.status-changed"
 	EvtUsageRecorded      EventType = "agent.usage-recorded"
@@ -98,6 +101,12 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AutoModeSet](data)
 	case EvtPeerMailboxSet:
 		return decodePayload[PeerMailboxSet](data)
+	case EvtLeadsSet:
+		return decodePayload[LeadsSet](data)
+	case EvtTaskAdded:
+		return decodePayload[TaskAdded](data)
+	case EvtTaskStatusChanged:
+		return decodePayload[TaskStatusChanged](data)
 	case EvtTaskDispatched:
 		return decodePayload[TaskDispatched](data)
 	case EvtAgentStatusChanged:
@@ -167,6 +176,52 @@ func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
 type PeerMailboxSet struct{ Enabled bool }
 
 func (PeerMailboxSet) eventType() EventType { return EvtPeerMailboxSet }
+
+// MaxLeads bounds a thread's orchestrator team. One lead is the classic single
+// orchestrator; more lead a discussion among peers that agree on the plan.
+const MaxLeads = 3
+
+// LeadsSet sets how many orchestrators lead a thread's turns. Threads with no
+// LeadsSet event have one lead.
+type LeadsSet struct{ Count int }
+
+func (LeadsSet) eventType() EventType { return EvtLeadsSet }
+
+// TaskStatus is where a task on a thread's agreed list stands. Statuses are
+// set by the leads as they judge progress; they are not derived from agent runs.
+type TaskStatus string
+
+const (
+	TaskTodo  TaskStatus = "todo"
+	TaskDoing TaskStatus = "doing"
+	TaskDone  TaskStatus = "done"
+)
+
+// Valid reports whether s is a known task status.
+func (s TaskStatus) Valid() bool {
+	switch s {
+	case TaskTodo, TaskDoing, TaskDone:
+		return true
+	}
+	return false
+}
+
+// TaskAdded puts a task on the thread's list. Name is the handle later status
+// changes use; it is unique within the thread.
+type TaskAdded struct {
+	Name  string `json:"name"`
+	Title string `json:"title"`
+}
+
+func (TaskAdded) eventType() EventType { return EvtTaskAdded }
+
+// TaskStatusChanged moves a task named on the thread's list to a new status.
+type TaskStatusChanged struct {
+	Name   string     `json:"name"`
+	Status TaskStatus `json:"status"`
+}
+
+func (TaskStatusChanged) eventType() EventType { return EvtTaskStatusChanged }
 
 type TaskDispatched struct {
 	AgentID       AgentID    `json:"agentId"`

@@ -1338,7 +1338,8 @@ table.grid tr.rowlink:hover td {
   min-height: 0;
 }
 .files-section,
-.diff-section {
+.diff-section,
+.pr-section {
   padding-left: 12px;
   padding-right: 12px;
 }
@@ -2900,4 +2901,229 @@ table.grid tr.rowlink:hover td {
   .graph-node.enter {
     animation: none;
   }
+}
+
+/* --- PR/MR aside panel --------------------------------------------------- */
+.pr-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.pr-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pr-heading {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.pr-url {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.pr-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pr-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.pr-comments-label {
+  margin-top: 6px;
+}
+.pr-checks,
+.pr-comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pr-checks li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pr-check-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The agreed plan above the board: a checklist, styled apart from agent cards. */
+.board-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.task-list {
+  flex: 0 1 auto;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  margin: 14px 14px 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  min-height: 0;
+}
+.task-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px dashed var(--border-soft);
+}
+.task-rows {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.task-glyph {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+}
+.task-row.doing .task-glyph {
+  border-color: var(--accent);
+  background: linear-gradient(90deg, var(--accent) 50%, transparent 50%);
+}
+.task-row.done .task-glyph {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.task-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-comments li {
+  border-left: 2px solid var(--border-soft);
+  padding-left: 8px;
+}
+.pr-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.task-row.done .task-title {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+.task-name {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Task board: one column per status, cards open the agent detail. */
+.board {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  overflow: hidden;
+}
+.board-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+.board-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.board-cards {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.board-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.board-card:hover {
+  border-color: var(--border-strong);
+}
+.board-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.board-card-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-card-role,
+.board-card-deps {
+  color: var(--faint);
+  font-size: 11px;
+}
+.board-card-role {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.board-card-task {
+  color: var(--muted);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }

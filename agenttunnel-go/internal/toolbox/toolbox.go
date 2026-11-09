@@ -38,6 +38,12 @@ const (
 	// request, selected by --name.
 	KindApprove Kind = "approve"
 	KindReject  Kind = "reject"
+	// KindTaskCreate, KindTaskUpdate and KindTaskList maintain the thread's
+	// agreed task list. They are applied immediately, not queued; see the
+	// transport handler.
+	KindTaskCreate Kind = "task-create"
+	KindTaskUpdate Kind = "task-update"
+	KindTaskList   Kind = "task-list"
 )
 
 // Call is one recorded tool invocation.

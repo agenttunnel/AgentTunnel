@@ -22,9 +22,12 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { AgentGraph } from "./components/AgentGraph";
+import { KanbanBoard } from "./components/KanbanBoard";
+import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
@@ -59,6 +62,8 @@ type ThreadState = {
   title: string;
   autoMode: boolean;
   peerMailbox: boolean;
+  /** Orchestrator team size; zero or absent means one lead. */
+  leads?: number;
   messages: Message[] | null;
   mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
@@ -69,6 +74,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** The agreed task list, in the order the leads added it. */
+  tasks?: TaskItem[] | null;
 };
 type ThreadSummary = {
   id: string;
@@ -135,7 +142,7 @@ type SettingsView = {
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -144,6 +151,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   inherited: { label: "Inherited", key: "M" },
   files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
+  pr: { label: "Pull request", key: "P" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -485,7 +493,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
 
-  const [tab, setTab] = useState<"chat" | "review" | "graph">("chat");
+  const [tab, setTab] = useState<"chat" | "review" | "graph" | "board">("chat");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ file: string; line: number; body: string } | null>(null);
@@ -502,6 +510,10 @@ export default function App() {
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
+  // PR/MR status for the active thread; tagged with its thread so a late reply never shows elsewhere.
+  const [prState, setPRState] = useState<PRSnapshot | null>(null);
+  const [prLoading, setPRLoading] = useState(false);
+  const [prError, setPRError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -622,6 +634,20 @@ export default function App() {
       setDiffError(null);
     } catch (e) {
       setDiffError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const loadPR = useCallback(async (id: string | null) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !id) return;
+    setPRLoading(true);
+    setPRError(null);
+    try {
+      setPRState({ ...(await rpc.call<PRSnapshot>("pr.status", { threadId: id })), threadId: id });
+    } catch (e) {
+      setPRError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPRLoading(false);
     }
   }, []);
 
@@ -1064,6 +1090,15 @@ export default function App() {
     if (tab === "review" || asideActive === "diff") loadDiff(activeId);
   }, [tab, asideActive, activeId, loadDiff]);
 
+  // The PR panel loads when shown and refreshes while visible; a minute keeps
+  // CI status fresh without hammering the forge CLI.
+  useEffect(() => {
+    if (asideActive !== "pr") return;
+    loadPR(activeId).catch(() => undefined);
+    const timer = setInterval(() => loadPR(activeId).catch(() => undefined), 60_000);
+    return () => clearInterval(timer);
+  }, [asideActive, activeId, loadPR]);
+
   // The file tree loads when its panel is shown.
   useEffect(() => {
     if (asideActive === "files") loadFileTree(activeId);
@@ -1224,6 +1259,7 @@ export default function App() {
   const settled = agents.filter((a) => a.status !== "running" && a.status !== "pending").length;
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
@@ -1323,6 +1359,18 @@ export default function App() {
     if (!rpc || !activeId) return;
     const method = field === "autoMode" ? "thread.setAutoMode" : "thread.setPeerMailbox";
     await rpc.call(method, { threadId: activeId, enabled: value });
+    refresh(activeId).catch(() => undefined);
+  };
+
+  /** Sets how many orchestrators lead the active thread's turns from the next turn on. */
+  const setLeads = async (count: number) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setLeads", { threadId: activeId, count });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
     refresh(activeId).catch(() => undefined);
   };
 
@@ -1922,8 +1970,29 @@ export default function App() {
                 <span className="pill">{thread?.mailbox?.length}</span>
               )}
             </div>
+            <div
+              className={`tab ${tab === "board" ? "on" : ""}`}
+              {...tabProps(tab === "board", () => setTab("board"))}
+            >
+              Board
+              {agents.some((a) => a.role !== "orchestrator") && (
+                <span className="pill">{agents.filter((a) => a.role !== "orchestrator").length}</span>
+              )}
+            </div>
           </div>
           <div className="toggles">
+            <select
+              className="team-size"
+              aria-label="Orchestrator team size"
+              title="Leads that plan and dispatch together on the next turn"
+              value={thread?.leads && thread.leads > 0 ? thread.leads : 1}
+              disabled={!thread}
+              onChange={(e) => setLeads(Number(e.target.value))}
+            >
+              <option value={1}>1 lead</option>
+              <option value={2}>2 leads</option>
+              <option value={3}>3 leads</option>
+            </select>
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               {...switchProps(!!thread?.peerMailbox, () =>
@@ -2195,6 +2264,11 @@ export default function App() {
               onRefresh={() => loadDiff(activeId)}
             />
             {reviewComments}
+          </div>
+        ) : tab === "board" ? (
+          <div className="board-view">
+            {tasks.length > 0 && <TaskList tasks={tasks} />}
+            <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
           </div>
         ) : (
           <AgentGraph
@@ -2611,6 +2685,15 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        ) : asideActive === "pr" ? (
+          <div className="section pr-section">
+            <PRPanel
+              snapshot={prState?.threadId === activeId ? prState : null}
+              loading={prLoading}
+              error={prError}
+              onRefresh={() => loadPR(activeId).catch(() => undefined)}
+            />
           </div>
         ) : asideActive === "files" ? (
           <div className="section files-section">

@@ -24,6 +24,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
+	"github.com/agenttunnel/agenttunnel-go/internal/scm"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
@@ -144,6 +145,10 @@ type (
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Enabled  bool               `json:"enabled"`
+	}
+	setLeadsParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Count    int                `json:"count"`
 	}
 	agentParams struct {
 		AgentID contracts.AgentID `json:"agentId"`
@@ -660,6 +665,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true}, nil
 
+	case "thread.setLeads":
+		var p setLeadsParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdLeadsSet, ThreadID: p.ThreadID, Leads: &p.Count,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
 	case "agents.list":
 		var p threadParams
 		if err := decode(req.Params, &p); err != nil {
@@ -709,6 +726,20 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			wd = d.threadWorkdir(ctx, p.ThreadID)
 		}
 		return gitdiff.WorkingTreeDiff(ctx, wd)
+
+	case "pr.status":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		wd := p.Workdir
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
+		}
+		return scm.Fetch(ctx, wd), nil
 
 	case "files.tree":
 		var p struct {
