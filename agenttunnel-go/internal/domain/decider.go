@@ -96,6 +96,24 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.PeerMailboxSet{Enabled: *cmd.PeerMailbox}}, nil
 
+	case contracts.CmdLeadsSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Leads == nil {
+			return nil, fmt.Errorf("%w: leads count is required", ErrInvalidCommand)
+		}
+		if *cmd.Leads < 1 || *cmd.Leads > contracts.MaxLeads {
+			return nil, fmt.Errorf("%w: leads must be between 1 and %d", ErrInvalidCommand, contracts.MaxLeads)
+		}
+		events := []contracts.EventPayload{contracts.LeadsSet{Count: *cmd.Leads}}
+		// A team of leads agrees through peer messages, so a multi-lead thread
+		// turns the peer mailbox on with it.
+		if *cmd.Leads > 1 && !s.PeerMailbox {
+			events = append(events, contracts.PeerMailboxSet{Enabled: true})
+		}
+		return events, nil
+
 	case contracts.CmdTaskDispatch:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

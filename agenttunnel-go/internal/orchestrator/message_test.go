@@ -276,7 +276,7 @@ func TestDrainPeerMessagesSkipsPendingAgents(t *testing.T) {
 		t.Fatalf("state: %v", err)
 	}
 	o := New(r)
-	if got := o.drainPeerMessages(state); got != "" {
+	if got := o.drainPeerMessages(state, orchestratorAgentID); got != "" {
 		t.Fatalf("a pending agent's inbox must not drain into the lead's pass: %q", got)
 	}
 	if inbox := r.Mailbox().Inbox("t1", "agent-waiter"); len(inbox) != 1 {
@@ -289,7 +289,7 @@ func TestDrainPeerMessagesSkipsPendingAgents(t *testing.T) {
 		t.Fatalf("start agent: %v", err)
 	}
 	state, _ = eng.State(ctx, "t1")
-	if got := o.drainPeerMessages(state); !strings.Contains(got, "for waiter from agent-orchestrator: start when ready") {
+	if got := o.drainPeerMessages(state, orchestratorAgentID); !strings.Contains(got, "for waiter from agent-orchestrator: start when ready") {
 		t.Fatalf("a started agent's message should relay to the lead: %q", got)
 	}
 }

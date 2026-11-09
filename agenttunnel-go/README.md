@@ -184,7 +184,7 @@ Agents coordinate beyond the turn loop:
 
 Threads: `thread.create`, `thread.list`, `thread.get`, `thread.rename`,
 `thread.delete`, `thread.subscribe`, `thread.turn.start`, `thread.turn.stop`,
-`thread.steer`, `thread.setAutoMode`, `thread.setPeerMailbox`,
+`thread.steer`, `thread.setAutoMode`, `thread.setPeerMailbox`, `thread.setLeads`,
 `thread.council.start`.
 
 Agents and usage: `agents.list`, `agents.logs`, `agents.stop`, `usage.get`.

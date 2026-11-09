@@ -57,6 +57,7 @@ type OrchestratorPrompt struct {
 	PendingSpawns  string
 	PeerMessages   string
 	PeerMailbox    bool
+	Team           string
 	Pass           int
 	Steering       []string
 	RuntimeChoices string
@@ -103,6 +104,10 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("\n\n## Peer messages\n")
 		b.WriteString(peerMessages)
 		b.WriteString("\nWeigh these now. Messages to you are yours to act on; relay the ones marked for a subagent when you dispatch or reply to it.")
+	}
+	if strings.TrimSpace(in.Team) != "" {
+		b.WriteString("\n\n## Your team\n")
+		b.WriteString(in.Team)
 	}
 	b.WriteString("\n\n## Dispatching work\n")
 	b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
