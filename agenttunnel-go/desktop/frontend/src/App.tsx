@@ -1216,6 +1216,8 @@ export default function App() {
         await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId: activeId, text });
       }
     } catch (e) {
+      // Put the typed text back so a failed send does not lose it.
+      setInput(input);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);

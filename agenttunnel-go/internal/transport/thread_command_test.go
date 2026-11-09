@@ -110,3 +110,61 @@ func TestRunCommandValidatesInput(t *testing.T) {
 		t.Fatalf("unknown thread err = %v, want does not exist", err)
 	}
 }
+
+func TestRunCommandStoppedByTurnStop(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	ctx := context.Background()
+	eng, disp := newCommandFixture(t)
+
+	started := make(chan struct{})
+	disp.shellStarted = func() { close(started) }
+
+	type outcome struct {
+		res map[string]any
+		err error
+	}
+	done := make(chan outcome, 1)
+	params, err := json.Marshal(map[string]string{"threadId": "t1", "command": "sleep 30; echo done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		out, err := disp.Handle(ctx, Request{Method: "thread.runCommand", Params: params})
+		res, _ := out.(map[string]any)
+		done <- outcome{res: res, err: err}
+	}()
+
+	// The turn slot is claimed before the child starts, so stopping here always
+	// reaches the running command.
+	<-started
+	stopParams, err := json.Marshal(map[string]string{"threadId": "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopOut, err := disp.Handle(ctx, Request{Method: "thread.turn.stop", Params: stopParams})
+	if err != nil {
+		t.Fatalf("thread.turn.stop: %v", err)
+	}
+	if stopped := stopOut.(map[string]any)["stopped"]; stopped != true {
+		t.Fatalf("thread.turn.stop stopped = %v, want true", stopped)
+	}
+
+	out := <-done
+	if out.err != nil {
+		t.Fatalf("thread.runCommand: %v", out.err)
+	}
+	if out.res["stopped"] != true {
+		t.Fatalf("runCommand result = %+v, want stopped", out.res)
+	}
+
+	st, err := eng.State(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Messages) != 1 || st.Messages[0].Author != "shell" {
+		t.Fatalf("messages = %+v, want one shell message", st.Messages)
+	}
+	if !strings.Contains(st.Messages[0].Text, "stopped") || strings.Contains(st.Messages[0].Text, "\ndone") {
+		t.Fatalf("shell message = %q, want stopped status without completion output", st.Messages[0].Text)
+	}
+}

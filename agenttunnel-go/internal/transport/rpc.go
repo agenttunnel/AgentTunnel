@@ -84,6 +84,10 @@ type Dispatcher struct {
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
 	turns   map[contracts.ThreadID]context.CancelFunc
+
+	// shellStarted, when set by a test, runs once a thread.runCommand child is
+	// live. Nil in production.
+	shellStarted func()
 }
 
 // NewDispatcher constructs a dispatcher.
@@ -448,6 +452,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		res, err := runShell(turnCtx, shellRun{
 			Dir: d.threadWorkdir(ctx, p.ThreadID), Command: command,
 			MaxBytes: shellOutputCap, Timeout: shellTimeout,
+			Started: d.shellStarted,
 		})
 		if err != nil {
 			return nil, err
