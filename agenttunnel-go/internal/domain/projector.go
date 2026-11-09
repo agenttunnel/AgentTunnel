@@ -15,6 +15,11 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Title = p.Title
 		s.ProjectID = p.ProjectID
 		s.ParentThreadID = p.ParentThreadID
+		s.Worktree = p.Worktree
+
+	case contracts.WorktreeAttached:
+		ref := p.Worktree
+		s.Worktree = &ref
 
 	case contracts.ThreadRenamed:
 		s.Title = p.Title
