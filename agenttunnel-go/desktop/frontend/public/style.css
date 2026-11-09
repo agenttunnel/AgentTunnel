@@ -201,12 +201,22 @@ select {
 }
 
 /* --- shell -------------------------------------------------------------- */
+/* Side panels take their saved width, capped at a share of the window so the
+ * chat column keeps room as the window narrows. Collapsing swaps in a rail. */
 .app {
+  --sb-track: min(var(--sidebar-w, 264px), 30vw);
+  --as-track: min(var(--aside-w, 360px), 34vw);
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr) 360px;
+  grid-template-columns: var(--sb-track) 6px minmax(0, 1fr) 6px var(--as-track);
   grid-template-rows: 46px 40px minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
+}
+.app.sidebar-closed {
+  --sb-track: 44px;
+}
+.app.aside-closed {
+  --as-track: 44px;
 }
 .titlebar {
   grid-column: 1 / -1;
@@ -286,13 +296,80 @@ select {
   display: flex;
   flex-direction: column;
 }
-.sidebar {
-  border-right: 1px solid var(--border-soft);
+.sidebar,
+.aside {
   background: var(--bg-elev);
 }
-.aside {
-  border-left: 1px solid var(--border-soft);
-  background: var(--bg-elev);
+
+/* The divider line lives on the handle, so dragging and the hover cue share one
+ * element. Disabled handles (a collapsed panel) keep the line but stop reacting. */
+.split {
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.split::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border-soft);
+  transition: background var(--dur) ease;
+}
+.split:hover::before,
+.split.dragging::before,
+.split:focus-visible::before {
+  background: var(--accent-line);
+}
+.split.is-disabled {
+  cursor: default;
+  pointer-events: none;
+}
+body.is-resizing,
+body.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+.panel-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--faint);
+}
+.panel-toggle:hover {
+  color: var(--text);
+}
+.panel-toggle svg {
+  transition: transform var(--dur) ease;
+}
+
+/* A collapsed panel keeps its DOM mounted (state and scroll survive) and shows
+ * only its header row, centred in a 44px rail. */
+.col.collapsed > :not(.col-head):not(.aside-tabs) {
+  display: none;
+}
+.col.collapsed .col-head {
+  justify-content: center;
+  padding: 10px 0;
+}
+.col.collapsed .col-head > :not(.panel-toggle),
+.col.collapsed .aside-tabs > :not(.panel-toggle) {
+  display: none;
+}
+.col.collapsed .aside-tabs {
+  justify-content: center;
+  padding: 9px 0;
+  overflow: hidden;
 }
 .col-head {
   display: flex;
@@ -3010,9 +3087,6 @@ table.grid tr.rowlink:hover td {
 }
 
 @media (max-width: 1180px) {
-  .app {
-    grid-template-columns: 232px minmax(0, 1fr) 320px;
-  }
   .screen-body {
     padding: 24px 24px 40px;
   }
