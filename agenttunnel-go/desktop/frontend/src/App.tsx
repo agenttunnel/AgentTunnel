@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from "react";
@@ -23,6 +24,12 @@ import {
   type UsageStep,
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
+import {
+  PANEL_BOUNDS,
+  PanelToggle,
+  SplitHandle,
+  clampWidth,
+} from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
@@ -271,6 +278,39 @@ function loadAsideTabs(): AsideTabId[] {
     /* private mode or corrupt: fall through to defaults */
   }
   return [...ASIDE_PINNED];
+}
+
+type PanelLayout = {
+  sidebarW: number;
+  asideW: number;
+  sidebarOpen: boolean;
+  asideOpen: boolean;
+};
+
+/** Panel sizes and collapsed state persist per viewer; a corrupt entry falls back. */
+function loadLayout(): PanelLayout {
+  const { sidebar, aside } = PANEL_BOUNDS;
+  const fallback: PanelLayout = {
+    sidebarW: sidebar.def,
+    asideW: aside.def,
+    sidebarOpen: true,
+    asideOpen: true,
+  };
+  try {
+    const raw = window.localStorage.getItem("at.layout");
+    if (!raw) return fallback;
+    const v = JSON.parse(raw) as Partial<PanelLayout>;
+    const width = (n: unknown, b: { min: number; max: number; def: number }) =>
+      typeof n === "number" && Number.isFinite(n) ? clampWidth(n, b.min, b.max) : b.def;
+    return {
+      sidebarW: width(v.sidebarW, sidebar),
+      asideW: width(v.asideW, aside),
+      sidebarOpen: v.sidebarOpen !== false,
+      asideOpen: v.asideOpen !== false,
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 type FileTreeState = {
@@ -530,6 +570,16 @@ export default function App() {
   // be added via the "+" menu (or single-letter shortcuts) and closed again.
   const [asideTabs, setAsideTabs] = useState<AsideTabId[]>(loadAsideTabs);
   const [asideActive, setAsideActive] = useState<AsideTabId>("agents");
+  // Side panels: width (dragged via the split handles) and collapsed state.
+  const [layout, setLayout] = useState<PanelLayout>(loadLayout);
+  const shellRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("at.layout", JSON.stringify(layout));
+    } catch {
+      /* private mode: the layout just resets next launch */
+    }
+  }, [layout]);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
@@ -2089,12 +2139,26 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${layout.asideOpen ? "" : " aside-closed"}`}
+      ref={shellRef}
+      style={
+        {
+          "--sidebar-w": `${layout.sidebarW}px`,
+          "--aside-w": `${layout.asideW}px`,
+        } as CSSProperties
+      }
+    >
       {titlebar}
       {projectTabs}
 
-      <div className="col sidebar">
+      <div className={`col sidebar${layout.sidebarOpen ? "" : " collapsed"}`}>
         <div className="col-head">
+          <PanelToggle
+            side="left"
+            open={layout.sidebarOpen}
+            onToggle={() => setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))}
+          />
           <button className="back-mini" onClick={() => selectThread(null)}>
             ← {selectedProject?.name ?? "Threads"}
           </button>
@@ -2143,6 +2207,16 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      <SplitHandle
+        side="left"
+        width={layout.sidebarW}
+        min={PANEL_BOUNDS.sidebar.min}
+        max={PANEL_BOUNDS.sidebar.max}
+        shellRef={shellRef}
+        disabled={!layout.sidebarOpen}
+        onCommit={(px) => setLayout((l) => ({ ...l, sidebarW: px }))}
+      />
 
       <div className="col">
         <div className="chat-head">
@@ -2420,8 +2494,23 @@ export default function App() {
         )}
       </div>
 
-      <div className="col aside">
+      <SplitHandle
+        side="right"
+        width={layout.asideW}
+        min={PANEL_BOUNDS.aside.min}
+        max={PANEL_BOUNDS.aside.max}
+        shellRef={shellRef}
+        disabled={!layout.asideOpen}
+        onCommit={(px) => setLayout((l) => ({ ...l, asideW: px }))}
+      />
+
+      <div className={`col aside${layout.asideOpen ? "" : " collapsed"}`}>
         <div className="aside-tabs" role="tablist" aria-label="Thread details">
+          <PanelToggle
+            side="right"
+            open={layout.asideOpen}
+            onToggle={() => setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }))}
+          />
           {asideTabs.map((id) => (
             <div
               key={id}
