@@ -229,12 +229,8 @@ function clickable(onActivate: () => void) {
   return {
     role: "button" as const,
     tabIndex: 0,
-    onClick: (e: MouseEvent<HTMLElement>) => {
-      if (e.target !== e.currentTarget) return;
-      onActivate();
-    },
+    onClick: onActivate,
     onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
-      if (e.target !== e.currentTarget) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         onActivate();
