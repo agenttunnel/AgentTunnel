@@ -273,6 +273,13 @@ func (e *Engine) stateFor(ctx context.Context, id contracts.ThreadID) (*ThreadSt
 	return s, nil
 }
 
+// Events returns a thread's durable event log, oldest first. It reads the
+// store directly and never touches the cached projection, so it is safe to
+// call while turns are running.
+func (e *Engine) Events(ctx context.Context, id contracts.ThreadID) ([]contracts.Event, error) {
+	return e.store.Load(ctx, id)
+}
+
 // State returns a consistent snapshot of a thread's read model.
 func (e *Engine) State(ctx context.Context, id contracts.ThreadID) (*ThreadState, error) {
 	s, err := e.stateFor(ctx, id)

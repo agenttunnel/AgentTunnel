@@ -2077,6 +2077,9 @@ export default function App() {
           </div>
         ) : (
           <AgentGraph
+            key={activeId ?? ""}
+            rpc={rpcRef.current}
+            threadId={activeId ?? ""}
             agents={agents}
             roleNames={rolesById}
             usage={thread?.usage ?? null}

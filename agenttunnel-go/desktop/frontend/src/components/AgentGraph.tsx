@@ -5,6 +5,9 @@ import {
   conversationKey,
   type MailboxMessage,
 } from "../lib/graph";
+import { foldTo, toLayoutInput, turnRanges } from "../lib/graphEvents";
+import { useGraphFeed } from "../lib/useGraphFeed";
+import type { Rpc } from "../lib/rpc";
 import { fmtTokens, type TokenUsage } from "../lib/usage";
 import { Markdown } from "./Markdown";
 
@@ -18,6 +21,13 @@ type GraphAgent = {
   dependsOn?: string[];
 };
 
+/** Replay pacing: the gap between two events is played at its real length,
+ * capped so an idle hour does not stall playback, and never faster than
+ * MIN_STEP_MS so bursts stay readable. */
+const MAX_GAP_MS = 1500;
+const MIN_STEP_MS = 40;
+const SPEEDS = [1, 2, 4] as const;
+
 /** Message timestamps follow the usage table: short local time, with the full
  * date available on hover. */
 const fmtTime = (iso: string) => {
@@ -30,16 +40,23 @@ const fullTime = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
 };
+const ms = (iso: string) => Date.parse(iso);
 
 /**
  * AgentGraph renders the thread as a spawn tree: agent nodes layered by
  * depth, structural spawn edges, dashed task dependencies, and one accent
  * arrow per ordered agent pair that exchanged messages. Clicking a node
  * opens the agent drill-in; clicking a message arrow opens that pair's
- * conversation in both directions. It is a pure function of the thread
- * state passed in — live updates just re-render it.
+ * conversation in both directions.
+ *
+ * The graph is built from the thread's event log, not from thread state:
+ * live frames fold in as they arrive, and the playback bar folds a prefix of
+ * the same log to replay a turn or the whole thread. Thread state still
+ * supplies full message bodies and is the fallback until the log loads.
  */
 export function AgentGraph({
+  rpc,
+  threadId,
   agents,
   roleNames,
   usage,
@@ -47,6 +64,8 @@ export function AgentGraph({
   peerMailbox,
   onOpenAgent,
 }: {
+  rpc: Rpc | null;
+  threadId: string;
   agents: GraphAgent[];
   roleNames: Record<string, string>;
   usage: Record<string, { usage: TokenUsage }> | null;
@@ -54,29 +73,77 @@ export function AgentGraph({
   peerMailbox: boolean;
   onOpenAgent: (id: string) => void;
 }) {
+  const feed = useGraphFeed(rpc, threadId);
+  const { events } = feed;
+  const total = events.length;
   const [conversation, setConversation] = useState<{ a: string; b: string } | null>(null);
+  // Playback: `cursor` is how many events are applied; null means live.
+  // `turn` bounds playback to one user turn; null means the whole thread.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [turn, setTurn] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
 
-  // Layout is pure geometry over the thread state and only reruns when that
-  // state changes — never per frame.
-  const layout = useMemo(
-    () => computeGraph({ agents, roleNames, usage, mailbox }),
-    [agents, roleNames, usage, mailbox],
+  const ranges = useMemo(() => turnRanges(events), [events]);
+  const range = turn === null ? null : (ranges.find((r) => r.turn === turn) ?? null);
+  const lo = range?.start ?? 0;
+  const hi = range?.end ?? total;
+  const replay = cursor !== null && feed.loaded && total > 0;
+  const applied = replay ? Math.min(Math.max(cursor, lo), hi) : total;
+
+  // Replay folds the prefix; live reuses the state the feed folded per event.
+  const view = useMemo(
+    () => (replay ? foldTo(events, applied) : feed.state),
+    [replay, events, applied, feed.state],
   );
-  const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  const folded = useMemo(() => (feed.loaded ? toLayoutInput(view) : null), [feed.loaded, view]);
+  const members = folded?.agents ?? agents;
+
+  // Layout is pure geometry over the folded state and reruns only when that
+  // state changes, never per animation frame.
+  const layout = useMemo(
+    () =>
+      computeGraph({
+        agents: folded?.agents ?? agents,
+        roleNames,
+        usage: folded ? folded.usage : usage,
+        mailbox: folded ? folded.mailbox : mailbox,
+      }),
+    [folded, agents, roleNames, usage, mailbox],
+  );
+  const byId = useMemo(() => new Map(members.map((a) => [a.id, a])), [members]);
   const nameOf = (id: string) => {
     const a = byId.get(id);
     return a ? a.name || roleNames[a.role] || a.role : id;
   };
-  // The conversation holds every message between the two agents in either
-  // direction; a thread switch or a vanished pair drops the selection so the
-  // sheet cannot pop back open when an unrelated pair reappears.
+
+  // Replay hides messages that have not happened yet at the cursor. Bodies
+  // come from thread state, which holds the full mailbox.
+  const cutoff = replay && applied > 0 ? ms(events[applied - 1].at) : null;
   const talk = useMemo(
-    () => (conversation ? conversationBetween(mailbox, conversation.a, conversation.b) : []),
-    [conversation, mailbox],
+    () =>
+      conversation
+        ? conversationBetween(mailbox, conversation.a, conversation.b).filter(
+            (m) => cutoff === null || ms(m.at) <= cutoff,
+          )
+        : [],
+    [conversation, mailbox, cutoff],
   );
+  // A thread switch or a vanished pair drops the selection so the sheet
+  // cannot pop back open when an unrelated pair reappears.
   useEffect(() => {
     if (conversation && talk.length === 0) setConversation(null);
   }, [conversation, talk]);
+
+  // Playback: one timer per step, paced by the real gap between events.
+  const running = playing && replay && applied < hi;
+  useEffect(() => {
+    if (!running) return;
+    const gap = applied > 0 && applied < total ? ms(events[applied].at) - ms(events[applied - 1].at) : 0;
+    const wait = Math.max(MIN_STEP_MS, Math.min(Number.isFinite(gap) ? gap : 0, MAX_GAP_MS)) / speed;
+    const t = window.setTimeout(() => setCursor(applied + 1), wait);
+    return () => window.clearTimeout(t);
+  }, [running, applied, speed, events, total]);
 
   // Esc closes the conversation sheet, the way the context menus close.
   useEffect(() => {
@@ -88,7 +155,38 @@ export function AgentGraph({
     return () => window.removeEventListener("keydown", onKey);
   }, [conversation]);
 
-  if (agents.length === 0) {
+  const togglePlay = () => {
+    if (running) {
+      setPlaying(false);
+      return;
+    }
+    // Resume from the cursor, or restart the bound when it has finished.
+    const start = replay && applied < hi ? applied : lo;
+    setCursor(start);
+    setPlaying(true);
+  };
+  const goLive = () => {
+    setPlaying(false);
+    setTurn(null);
+    setCursor(null);
+  };
+  const scrub = (value: number) => {
+    setPlaying(false);
+    setCursor(value);
+  };
+  const pickTurn = (value: string) => {
+    setPlaying(false);
+    if (value === "all") {
+      setTurn(null);
+      return;
+    }
+    const r = ranges.find((x) => x.turn === Number(value));
+    if (!r) return;
+    setTurn(r.turn);
+    setCursor(r.start);
+  };
+
+  if (members.length === 0) {
     return (
       <div className="graph-scroll">
         <div className="empty">
@@ -98,13 +196,81 @@ export function AgentGraph({
     );
   }
 
-  const messageCount = mailbox?.length ?? 0;
+  const messageCount = (folded?.mailbox ?? mailbox ?? []).length;
   // Both arrows of the selected pair light up while its sheet is open.
   const onPair = (from: string, to: string) =>
     !!conversation && conversationKey(from, to) === conversationKey(conversation.a, conversation.b);
+  // The newest message's edge gets one traveling pulse. The key is the seq,
+  // so the pulse mounts (and animates) once per new message.
+  const pulse = view.lastMessage;
+  const pulseEdge = pulse
+    ? layout.messageEdges.find((e) => e.from === pulse.from && e.to === pulse.to)
+    : undefined;
 
   return (
     <div className="graph-scroll">
+      {feed.loaded && total > 0 && (
+        <div className="graph-bar" role="group" aria-label="Graph playback">
+          <button
+            className={`graph-live ${replay ? "" : "on"}`}
+            onClick={goLive}
+            aria-pressed={!replay}
+          >
+            Live
+          </button>
+          <button
+            className="graph-play"
+            onClick={togglePlay}
+            aria-label={running ? "Pause replay" : "Play replay"}
+          >
+            {running ? "Pause" : "Play"}
+          </button>
+          <select
+            aria-label="Turn"
+            value={turn === null ? "all" : String(turn)}
+            onChange={(e) => pickTurn(e.target.value)}
+          >
+            <option value="all">All turns</option>
+            {ranges.map((r) => (
+              <option key={r.turn} value={r.turn}>
+                Turn {r.turn}
+              </option>
+            ))}
+          </select>
+          <input
+            className="graph-scrub"
+            type="range"
+            aria-label="Replay position"
+            min={lo}
+            max={hi}
+            step={1}
+            value={applied}
+            onChange={(e) => scrub(Number(e.target.value))}
+          />
+          <div className="graph-speed" role="group" aria-label="Replay speed">
+            {SPEEDS.map((s) => (
+              <button
+                key={s}
+                className={speed === s ? "on" : ""}
+                aria-pressed={speed === s}
+                onClick={() => setSpeed(s)}
+              >
+                {s}×
+              </button>
+            ))}
+          </div>
+          <span className="graph-clock">
+            {replay ? (
+              <>
+                {applied} / {total}
+                {applied > 0 && <span title={fullTime(events[applied - 1].at)}> · {fmtTime(events[applied - 1].at)}</span>}
+              </>
+            ) : (
+              "live"
+            )}
+          </span>
+        </div>
+      )}
       {messageCount === 0 && (
         <p className="graph-hint">
           {peerMailbox ? (
@@ -172,11 +338,19 @@ export function AgentGraph({
               />
             </g>
           ))}
+          {pulse && pulseEdge && (
+            <path
+              key={`pulse-${pulse.seq}`}
+              className="graph-pulse"
+              d={pulseEdge.path}
+              pathLength={1}
+            />
+          )}
         </svg>
         {layout.nodes.map((n) => (
           <button
             key={n.id}
-            className="graph-node"
+            className="graph-node enter"
             style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
             onClick={() => onOpenAgent(n.id)}
             aria-label={`${n.name} (${n.role}) — open details`}

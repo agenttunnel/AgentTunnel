@@ -385,6 +385,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.engine.State(ctx, p.ThreadID)
 
+	case "thread.events":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		events, err := d.engine.Events(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		return graphEvents(events), nil
+
 	case "thread.turn.start":
 		var p turnParams
 		if err := decode(req.Params, &p); err != nil {
@@ -1024,4 +1035,56 @@ func resolveDirPath(dir string) string {
 		dir = resolved
 	}
 	return filepath.Clean(dir)
+}
+
+// graphEventTypes are the only events the agent graph's replay folds. Everything
+// else (chat text, shared context, reviews, output) stays out of the payload.
+var graphEventTypes = map[contracts.EventType]bool{
+	contracts.EvtTaskDispatched:     true,
+	contracts.EvtAgentStatusChanged: true,
+	contracts.EvtUsageRecorded:      true,
+	contracts.EvtMailboxPosted:      true,
+	contracts.EvtMessageSent:        true,
+}
+
+// graphBodyMax bounds the mailbox body echoed into replay frames. Full bodies
+// are already in thread.get's mailbox; replay only needs the edges.
+const graphBodyMax = 280
+
+// graphEvent is the slim wire shape of one graph-relevant event. Message-sent
+// carries only its author: it marks turn boundaries and its text is not needed.
+type graphEvent struct {
+	Seq     int64               `json:"seq"`
+	Type    contracts.EventType `json:"type"`
+	At      time.Time           `json:"at"`
+	Payload any                 `json:"payload"`
+}
+
+func graphEvents(events []contracts.Event) []graphEvent {
+	out := make([]graphEvent, 0, len(events))
+	for _, ev := range events {
+		if !graphEventTypes[ev.Type()] {
+			continue
+		}
+		var payload any = ev.Payload
+		switch p := ev.Payload.(type) {
+		case contracts.MailboxPosted:
+			p.Body = clipRunes(p.Body, graphBodyMax)
+			payload = p
+		case contracts.MessageSent:
+			payload = struct {
+				Author string `json:"author"`
+			}{p.Author}
+		}
+		out = append(out, graphEvent{Seq: ev.Seq, Type: ev.Type(), At: ev.At, Payload: payload})
+	}
+	return out
+}
+
+func clipRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
