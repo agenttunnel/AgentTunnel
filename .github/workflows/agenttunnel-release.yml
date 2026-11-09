@@ -135,16 +135,19 @@ jobs:
           set -euo pipefail
           ./build-app.sh --no-build --binary ../go-dist/agenttunnel \
             --version "$VERSION" --arch "${{ matrix.arch }}" --dmg
-          mkdir -p ../release
-          cp "dist/AgentTunnel-darwin-${{ matrix.arch }}.app.tar.gz" ../release/
-          cp "dist/AgentTunnel-darwin-${{ matrix.arch }}.dmg" ../release/
+          # Keep the bundle files in the same directory as the tarball so the
+          # artifact is flat. A nested subdirectory here would be silently
+          # dropped by the release job's `release-assets/*` glob.
+          cp "dist/AgentTunnel-darwin-${{ matrix.arch }}.app.tar.gz" ..
+          cp "dist/AgentTunnel-darwin-${{ matrix.arch }}.dmg" ..
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: agenttunnel-go-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             agenttunnel-go/agenttunnel-go-*.tar.gz
-            agenttunnel-go/release/*
+            agenttunnel-go/AgentTunnel-darwin-*.app.tar.gz
+            agenttunnel-go/AgentTunnel-darwin-*.dmg
           if-no-files-found: error
 
   release:
@@ -163,6 +166,25 @@ jobs:
         run: |
           cp agenttunnel-go/scripts/install.sh release-assets/install-agenttunnel-go.sh
           chmod +x release-assets/install-agenttunnel-go.sh
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+          for asset in \
+            agenttunnel-go-darwin-arm64.tar.gz \
+            agenttunnel-go-darwin-amd64.tar.gz \
+            agenttunnel-go-linux-amd64.tar.gz \
+            agenttunnel-go-windows-amd64.tar.gz \
+            AgentTunnel-darwin-arm64.app.tar.gz \
+            AgentTunnel-darwin-amd64.app.tar.gz \
+            AgentTunnel-darwin-arm64.dmg \
+            AgentTunnel-darwin-amd64.dmg \
+            install-agenttunnel-go.sh; do
+            if [ ! -f "release-assets/${asset}" ]; then
+              echo "missing release asset: ${asset}" >&2
+              ls -R release-assets >&2
+              exit 1
+            fi
+          done
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
