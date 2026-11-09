@@ -67,7 +67,9 @@ func openCodeInvocation(spec SessionSpec) (CommandSpec, error) {
 }
 
 func claudeInvocation(spec SessionSpec) (CommandSpec, error) {
-	args := []string{"-p"}
+	// Claude only reports token usage and cost in its JSON output, and
+	// stream-json requires --verbose in print mode.
+	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}

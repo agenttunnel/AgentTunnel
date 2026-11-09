@@ -94,6 +94,29 @@ func (JSONLineTranslator) Translate(line string) []Event {
 		return executionEnd(raw)
 	}
 
+	// Claude's stream-json frames carry a full Anthropic message: content
+	// blocks hold text, thinking, and tool calls, while usage rides on
+	// message.usage. The final "result" frame aggregates usage for the whole
+	// process, so per-message usage is deliberately not emitted — the ledger
+	// adds every usage event and would double count.
+	if frameType == "assistant" || frameType == "user" {
+		if msg, ok := raw["message"].(map[string]any); ok {
+			return contentEvents(msg["content"])
+		}
+	}
+	if frameType == "result" {
+		var out []Event
+		if isErr, _ := raw["is_error"].(bool); isErr {
+			if text := firstString(raw, "result", "error"); text != "" {
+				out = append(out, Event{Kind: contracts.LogError, Text: text})
+			}
+		}
+		if usage := usageFromFrame(raw, raw); usage != nil {
+			out = append(out, Event{Kind: contracts.LogUsage, Usage: usage})
+		}
+		return out
+	}
+
 	if usage := usageFromFrame(raw, scope); usage != nil {
 		return []Event{{Kind: contracts.LogUsage, Usage: usage}}
 	}
@@ -105,7 +128,7 @@ func (JSONLineTranslator) Translate(line string) []Event {
 		return singleText(contracts.LogError, firstString(scope, "text", "message", "error"))
 	case "stream_event", "message_start", "message_started", "turn_start", "turn_end",
 		"agent_start", "agent_end", "session", "step_start", "step-start",
-		"step_finish", "step-finish":
+		"step_finish", "step-finish", "system", "rate_limit_event":
 		return nil // structural frames with no user-visible text
 	}
 
@@ -211,6 +234,77 @@ func contentText(v any) string {
 	return strings.Join(parts, "\n")
 }
 
+// contentEvents turns an Anthropic-style content array into events. Claude puts
+// text, thinking, tool calls, and tool results in this shape.
+func contentEvents(v any) []Event {
+	if text, ok := v.(string); ok {
+		return singleText(contracts.LogText, text)
+	}
+	blocks, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []Event
+	for _, block := range blocks {
+		m, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(firstString(m, "type")) {
+		case "text", "output_text":
+			out = append(out, singleText(contracts.LogText, firstString(m, "text"))...)
+		case "thinking", "reasoning":
+			out = append(out, singleText(contracts.LogReasoning,
+				firstString(m, "thinking", "text", "reasoning"))...)
+		case "tool_use", "tool_call":
+			out = append(out, toolUseEvent(m)...)
+		case "tool_result":
+			out = append(out, toolResultEvent(m)...)
+		}
+	}
+	return out
+}
+
+// toolUseEvent summarizes an Anthropic tool_use block the way the harness
+// renders it: `$ <command>` for a shell call, `→ Read <path>` for a file.
+func toolUseEvent(block map[string]any) []Event {
+	name := firstString(block, "name", "tool")
+	input, _ := block["input"].(map[string]any)
+	summary := ""
+	switch {
+	case firstString(input, "command", "cmd") != "":
+		summary = "$ " + firstString(input, "command", "cmd")
+	case firstString(input, "file_path", "filePath", "path", "file", "pattern", "query", "url") != "":
+		summary = "→ " + titleFirst(name) + " " +
+			firstString(input, "file_path", "filePath", "path", "file", "pattern", "query", "url")
+	case name != "":
+		summary = "→ " + titleFirst(name)
+	}
+	if summary == "" {
+		return nil
+	}
+	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name}}
+}
+
+func toolResultEvent(block map[string]any) []Event {
+	text := ""
+	switch content := block["content"].(type) {
+	case string:
+		text = content
+	case []any:
+		text = contentText(content)
+	}
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return nil
+	}
+	kind := contracts.LogRaw
+	if isErr, _ := block["is_error"].(bool); isErr {
+		kind = contracts.LogError
+	}
+	return []Event{{Kind: kind, Text: truncate(text, 4000)}}
+}
+
 func singleText(kind contracts.LogKind, text string) []Event {
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -237,9 +331,11 @@ func truncate(s string, max int) string {
 // step-finish frame; other harnesses use a top-level "usage" object.
 func usageFromFrame(raw, scope map[string]any) *contracts.TokenUsage {
 	if usage := usageFromMap(scope); usage != nil {
+		addFrameCost(usage, scope)
 		return usage
 	}
 	if usage := usageFromMap(raw); usage != nil {
+		addFrameCost(usage, raw)
 		return usage
 	}
 	tokens, ok := scope["tokens"].(map[string]any)
@@ -267,9 +363,18 @@ func usageFromMap(m map[string]any) *contracts.TokenUsage {
 	return usageFromValue(m["usage"])
 }
 
+// addFrameCost picks up cost reported beside a usage object rather than inside
+// it, as Claude's result frame does with total_cost_usd.
+func addFrameCost(u *contracts.TokenUsage, frame map[string]any) {
+	if u.CostUSD == 0 {
+		u.CostUSD = floatField(frame, "total_cost_usd", "cost_usd", "costUsd")
+	}
+}
+
 // usageFromValue parses the common usage object shapes. Pi reports short keys
 // (input/output/cacheRead/cacheWrite/reasoning) and a nested cost object; other
-// harnesses use *_tokens keys with a flat cost.
+// harnesses use *_tokens keys with a flat cost. Claude separates cache reads
+// from cache writes, so both count as cached tokens.
 func usageFromValue(v any) *contracts.TokenUsage {
 	u, ok := v.(map[string]any)
 	if !ok {
@@ -279,8 +384,13 @@ func usageFromValue(v any) *contracts.TokenUsage {
 		InputTokens:     intField(u, "input", "input_tokens", "inputTokens", "prompt_tokens"),
 		OutputTokens:    intField(u, "output", "output_tokens", "outputTokens", "completion_tokens"),
 		ReasoningTokens: intField(u, "reasoning", "reasoning_tokens"),
-		CachedTokens:    intField(u, "cached", "cached_tokens", "cachedTokens", "cache_read_input_tokens"),
-		ToolUses:        intField(u, "tool_uses", "toolUses"),
+		CachedTokens: intField(u, "cached", "cached_tokens", "cachedTokens",
+			"cache_read_input_tokens", "cacheReadInputTokens"),
+		ToolUses: intField(u, "tool_uses", "toolUses"),
+	}
+	usage.CachedTokens += intField(u, "cache_creation_input_tokens", "cacheCreationInputTokens")
+	if details, ok := u["output_tokens_details"].(map[string]any); ok {
+		usage.ReasoningTokens += intField(details, "thinking_tokens", "reasoning_tokens")
 	}
 	if cache, ok := u["cache"].(map[string]any); ok {
 		usage.CachedTokens += intField(cache, "read") + intField(cache, "write")
