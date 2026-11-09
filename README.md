@@ -19,13 +19,29 @@ client drives it. Both ship as static binaries.
 
 ## Install
 
+**macOS** — download `AgentTunnel-darwin-arm64.dmg` (Apple Silicon) or
+`AgentTunnel-darwin-amd64.dmg` (Intel) from
+[the releases page](https://github.com/agenttunnel/AgentTunnel/releases), open
+it, and drag AgentTunnel into Applications.
+
+The installer sets up the app in `~/Applications` (so it gets its icon in
+Spotlight/Launchpad) and links the terminal command into `~/.local/bin`:
+
 ```
 curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
 ```
 
-Or grab a tarball from [the releases page](https://github.com/agenttunnel/AgentTunnel/releases):
-`agenttunnel-go-darwin-arm64.tar.gz`, `agenttunnel-go-darwin-amd64.tar.gz`,
-`agenttunnel-go-linux-amd64.tar.gz`, or `agenttunnel-go-windows-amd64.tar.gz`.
+**Linux / Windows** — the installer (or the release tarball) provides `atd`,
+the daemon, and `agenttunnel`, the desktop client. Linux needs GTK 4 and
+WebKitGTK 6.0 at runtime.
+
+To build a DMG locally instead:
+
+```
+cd agenttunnel-go/desktop
+./build-app.sh --dmg
+# dist/AgentTunnel-darwin-<arch>.dmg
+```
 
 ## Build from source
 
