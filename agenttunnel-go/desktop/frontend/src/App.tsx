@@ -568,6 +568,8 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
   const draftKey = draftKeyOf(projectId, activeId);
   const input = drafts[draftKey] ?? "";
+  // Mirrors send(): a leading "!" (after trimming) runs a shell command.
+  const commandMode = input.trimStart().startsWith("!");
   const setInput = useCallback(
     (text: string) => {
       if (!activeId) return;
@@ -2113,7 +2115,7 @@ export default function App() {
               {error && <div className="empty err-text">{error}</div>}
             </div>
 
-            <div className="composer">
+            <div className={commandMode ? "composer command-mode" : "composer"}>
               <div className="box">
                 <textarea
                   rows={1}
