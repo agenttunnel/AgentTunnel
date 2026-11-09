@@ -1338,7 +1338,8 @@ table.grid tr.rowlink:hover td {
   min-height: 0;
 }
 .files-section,
-.diff-section {
+.diff-section,
+.pr-section {
   padding-left: 12px;
   padding-right: 12px;
 }
@@ -2900,4 +2901,74 @@ table.grid tr.rowlink:hover td {
   .graph-node.enter {
     animation: none;
   }
+}
+
+/* --- PR/MR aside panel --------------------------------------------------- */
+.pr-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.pr-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pr-heading {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.pr-url {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.pr-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pr-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.pr-comments-label {
+  margin-top: 6px;
+}
+.pr-checks,
+.pr-comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pr-checks li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pr-check-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-comments li {
+  border-left: 2px solid var(--border-soft);
+  padding-left: 8px;
+}
+.pr-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }

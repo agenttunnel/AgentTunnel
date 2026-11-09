@@ -25,6 +25,7 @@ import { AgentGraph } from "./components/AgentGraph";
 import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
@@ -135,7 +136,7 @@ type SettingsView = {
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -144,6 +145,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   inherited: { label: "Inherited", key: "M" },
   files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
+  pr: { label: "Pull request", key: "P" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -502,6 +504,10 @@ export default function App() {
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
+  // PR/MR status for the active thread; tagged with its thread so a late reply never shows elsewhere.
+  const [prState, setPRState] = useState<PRSnapshot | null>(null);
+  const [prLoading, setPRLoading] = useState(false);
+  const [prError, setPRError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -622,6 +628,20 @@ export default function App() {
       setDiffError(null);
     } catch (e) {
       setDiffError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const loadPR = useCallback(async (id: string | null) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !id) return;
+    setPRLoading(true);
+    setPRError(null);
+    try {
+      setPRState({ ...(await rpc.call<PRSnapshot>("pr.status", { threadId: id })), threadId: id });
+    } catch (e) {
+      setPRError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPRLoading(false);
     }
   }, []);
 
@@ -1063,6 +1083,15 @@ export default function App() {
   useEffect(() => {
     if (tab === "review" || asideActive === "diff") loadDiff(activeId);
   }, [tab, asideActive, activeId, loadDiff]);
+
+  // The PR panel loads when shown and refreshes while visible; a minute keeps
+  // CI status fresh without hammering the forge CLI.
+  useEffect(() => {
+    if (asideActive !== "pr") return;
+    loadPR(activeId).catch(() => undefined);
+    const timer = setInterval(() => loadPR(activeId).catch(() => undefined), 60_000);
+    return () => clearInterval(timer);
+  }, [asideActive, activeId, loadPR]);
 
   // The file tree loads when its panel is shown.
   useEffect(() => {
@@ -2611,6 +2640,15 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        ) : asideActive === "pr" ? (
+          <div className="section pr-section">
+            <PRPanel
+              snapshot={prState?.threadId === activeId ? prState : null}
+              loading={prLoading}
+              error={prError}
+              onRefresh={() => loadPR(activeId).catch(() => undefined)}
+            />
           </div>
         ) : asideActive === "files" ? (
           <div className="section files-section">

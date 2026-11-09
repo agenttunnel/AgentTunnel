@@ -24,6 +24,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
+	"github.com/agenttunnel/agenttunnel-go/internal/scm"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
@@ -709,6 +710,20 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			wd = d.threadWorkdir(ctx, p.ThreadID)
 		}
 		return gitdiff.WorkingTreeDiff(ctx, wd)
+
+	case "pr.status":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		wd := p.Workdir
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
+		}
+		return scm.Fetch(ctx, wd), nil
 
 	case "files.tree":
 		var p struct {
