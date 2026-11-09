@@ -68,7 +68,10 @@ type ThreadState struct {
 	Model       contracts.ModelSelection `json:"model"`
 	AutoMode    bool                     `json:"autoMode"`
 	PeerMailbox bool                     `json:"peerMailbox"`
-	Messages    []Message                `json:"messages"`
+	// Leads is the stored orchestrator team size; zero means one. Read it
+	// through LeadCount.
+	Leads    int       `json:"leads"`
+	Messages []Message `json:"messages"`
 
 	// Turn counts user messages: the turn spend currently accrues to.
 	Turn  int         `json:"turn"`
@@ -87,6 +90,14 @@ type ThreadState struct {
 	SharedOrder []string          `json:"sharedOrder"`
 
 	Version int64 `json:"version"`
+}
+
+// LeadCount is the number of orchestrators leading the thread's turns.
+func (s *ThreadState) LeadCount() int {
+	if s.Leads < 1 {
+		return 1
+	}
+	return s.Leads
 }
 
 // NewThreadState returns an empty read model for a thread.

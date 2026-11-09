@@ -17,6 +17,7 @@ const (
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
+	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtTaskDispatched     EventType = "agent.task-dispatched"
 	EvtAgentStatusChanged EventType = "agent.status-changed"
 	EvtUsageRecorded      EventType = "agent.usage-recorded"
@@ -98,6 +99,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AutoModeSet](data)
 	case EvtPeerMailboxSet:
 		return decodePayload[PeerMailboxSet](data)
+	case EvtLeadsSet:
+		return decodePayload[LeadsSet](data)
 	case EvtTaskDispatched:
 		return decodePayload[TaskDispatched](data)
 	case EvtAgentStatusChanged:
@@ -167,6 +170,16 @@ func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
 type PeerMailboxSet struct{ Enabled bool }
 
 func (PeerMailboxSet) eventType() EventType { return EvtPeerMailboxSet }
+
+// MaxLeads bounds a thread's orchestrator team. One lead is the classic single
+// orchestrator; more lead a discussion among peers that agree on the plan.
+const MaxLeads = 3
+
+// LeadsSet sets how many orchestrators lead a thread's turns. Threads with no
+// LeadsSet event have one lead.
+type LeadsSet struct{ Count int }
+
+func (LeadsSet) eventType() EventType { return EvtLeadsSet }
 
 type TaskDispatched struct {
 	AgentID       AgentID    `json:"agentId"`
