@@ -629,13 +629,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		var out []contracts.LogEntry
-		for _, e := range d.logs.Entries(p.ThreadID) {
-			if e.AgentID == p.AgentID {
-				out = append(out, e)
-			}
-		}
-		return out, nil
+		return d.logs.AgentEntries(p.ThreadID, p.AgentID), nil
 
 	case "usage.get":
 		return d.ledger.Snapshot(), nil

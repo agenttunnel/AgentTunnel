@@ -115,6 +115,20 @@ func (s *Store) Entries(thread contracts.ThreadID) []contracts.LogEntry {
 	return append([]contracts.LogEntry(nil), s.buffers[thread]...)
 }
 
+// AgentEntries returns one agent's full output history within a thread, oldest
+// first. It reads the thread's file rather than the bounded buffer, so a busy
+// thread's other agents cannot evict this agent's older lines.
+func (s *Store) AgentEntries(thread contracts.ThreadID, agent contracts.AgentID) []contracts.LogEntry {
+	entries, _ := s.readFile(thread)
+	var out []contracts.LogEntry
+	for _, e := range entries {
+		if e.AgentID == agent {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // readFile reads a thread's persisted JSONL log.
 func (s *Store) readFile(thread contracts.ThreadID) ([]contracts.LogEntry, error) {
 	data, err := os.ReadFile(s.fileFor(thread))

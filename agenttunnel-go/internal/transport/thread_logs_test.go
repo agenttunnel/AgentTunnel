@@ -92,3 +92,19 @@ func TestAgentLogsFilterByThread(t *testing.T) {
 		t.Fatalf("agent logs = %+v", got)
 	}
 }
+
+// The thread buffer is bounded, but agents.logs reads the thread's full file: a
+// noisy agent filling the buffer must not evict a quiet agent's earlier lines.
+func TestAgentLogsSurviveNoisyAgentInSameThread(t *testing.T) {
+	d, logs := logsFixture(t)
+	_ = logs.Append("t1", contracts.LogEntry{AgentID: "agent-quiet", Kind: contracts.LogText, Text: "quiet line"})
+	// Past the buffer bound (2000), so the quiet line is gone from the buffer.
+	for i := 0; i < 2100; i++ {
+		_ = logs.Append("t1", contracts.LogEntry{AgentID: "agent-noisy", Kind: contracts.LogText, Text: fmt.Sprint(i)})
+	}
+
+	got := callRPC(t, d, "agents.logs", `{"threadId":"t1","agentId":"agent-quiet"}`)
+	if len(got) != 1 || got[0].Text != "quiet line" {
+		t.Fatalf("quiet agent logs = %+v", got)
+	}
+}
