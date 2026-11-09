@@ -65,9 +65,12 @@ func Dispatches(calls []ToolCall) []ToolCall {
 }
 
 // ToDispatchTasks converts dispatch_task calls into command dispatch payloads.
-// The task id is used as both the dependency name and the agent id suffix.
-func ToDispatchTasks(parentID contracts.AgentID, calls []ToolCall) []contracts.DispatchTask {
+// The task id is used as both the dependency name and the agent id suffix; an
+// unnamed call gets a docker-style name that `taken` and earlier calls in this
+// batch do not use.
+func ToDispatchTasks(parentID contracts.AgentID, calls []ToolCall, taken func(string) bool) []contracts.DispatchTask {
 	var out []contracts.DispatchTask
+	minted := map[string]bool{}
 	n := 0
 	for _, c := range calls {
 		if c.Name != "dispatch_task" {
@@ -76,8 +79,11 @@ func ToDispatchTasks(parentID contracts.AgentID, calls []ToolCall) []contracts.D
 		n++
 		name := c.TaskID
 		if name == "" {
-			name = fmt.Sprintf("task-%d", n)
+			name = generateAgentName(fmt.Sprintf("dispatch-%d", n), func(s string) bool {
+				return minted[s] || taken(s)
+			})
 		}
+		minted[name] = true
 		out = append(out, contracts.DispatchTask{
 			AgentID:       contracts.AgentID("agent-" + name),
 			ParentAgentID: parentID,

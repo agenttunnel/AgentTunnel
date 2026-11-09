@@ -19,6 +19,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 	"github.com/agenttunnel/agenttunnel-go/internal/transport"
+	"github.com/agenttunnel/agenttunnel-go/internal/update"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
 )
 
@@ -33,6 +34,9 @@ type Options struct {
 	// ToolPath is the binary agents run for `tool …`. Defaults to this
 	// executable; tests point it at a built daemon.
 	ToolPath string
+	// Version is the release version embedded at link time. Empty or "dev"
+	// disables self-update.
+	Version string
 }
 
 // Daemon is the fully assembled AgentTunnel server: engine, orchestrator, usage,
@@ -53,6 +57,10 @@ type Daemon struct {
 
 // New assembles a daemon and starts its engine.
 func New(ctx context.Context, opts Options) (*Daemon, error) {
+	updater, err := update.New(opts.Version)
+	if err != nil {
+		return nil, err
+	}
 	if opts.Registry == nil {
 		opts.Registry = providers.BuiltinRegistry()
 	}
@@ -151,6 +159,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Models:       modelService,
 		Steering:     steerBox,
 		Audit:        actions.Func(),
+		Updater:      updater,
 	})
 
 	return &Daemon{

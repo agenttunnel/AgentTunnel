@@ -84,6 +84,7 @@ func main() {
 		Token:    mustToken(),
 		Workdir:  cwd,
 		Config:   orchestrator.Config{MaxPasses: 3, MaxConcurrency: 4},
+		Version:  version,
 	})
 	if err != nil {
 		log.Fatalf("agenttunnel: %v", err)

@@ -2,7 +2,10 @@ package toolcli
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
@@ -82,5 +85,78 @@ func TestToolRequiresThreadID(t *testing.T) {
 	t.Setenv("AT_THREAD_ID", "")
 	if code := Run([]string{"note", "--text", "hi"}); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
+	}
+}
+
+// captureStdout runs fn and returns what it printed to stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+	fn()
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func TestToolTaskCLI(t *testing.T) {
+	eng, _ := newCLIServer(t)
+	ctx := context.Background()
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c", Type: contracts.CmdThreadCreate, ThreadID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := Run([]string{"task-create", "--name", "api", "--task", "Design the API"}); code != 0 {
+		t.Fatalf("create exit = %d, want 0", code)
+	}
+	if code := Run([]string{"task-create", "--name", "db", "--task", "Schema"}); code != 0 {
+		t.Fatalf("create exit = %d, want 0", code)
+	}
+	// A duplicate name is refused, and the refusal reaches the model.
+	if code := Run([]string{"task-create", "--name", "api", "--task", "Again"}); code != 1 {
+		t.Fatalf("duplicate create exit = %d, want 1", code)
+	}
+	if code := Run([]string{"task-update", "--name", "api", "--status", "doing"}); code != 0 {
+		t.Fatalf("update exit = %d, want 0", code)
+	}
+	if code := Run([]string{"task-update", "--name", "api", "--status", "blocked"}); code != 1 {
+		t.Fatalf("bad status exit = %d, want 1", code)
+	}
+
+	var listed struct {
+		Tasks []struct {
+			Name   string `json:"name"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		} `json:"tasks"`
+	}
+	var code int
+	out := captureStdout(t, func() { code = Run([]string{"task-list"}) })
+	if code != 0 {
+		t.Fatalf("list exit = %d, want 0", code)
+	}
+	if err := json.Unmarshal([]byte(out), &listed); err != nil {
+		t.Fatalf("list output is not JSON: %v\n%s", err, out)
+	}
+	want := []struct{ name, title, status string }{
+		{"api", "Design the API", "doing"},
+		{"db", "Schema", "todo"},
+	}
+	if len(listed.Tasks) != len(want) {
+		t.Fatalf("listed %+v, want %+v", listed.Tasks, want)
+	}
+	for i, w := range want {
+		got := listed.Tasks[i]
+		if got.Name != w.name || got.Title != w.title || got.Status != w.status {
+			t.Fatalf("task %d = %+v, want %+v", i, got, w)
+		}
 	}
 }

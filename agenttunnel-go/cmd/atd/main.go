@@ -38,6 +38,9 @@ func main() {
 		fmt.Println("atd", version)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		os.Exit(runUpdate(os.Args[2:]))
+	}
 	// The agent environment is exported to child agents, so a stray invocation
 	// from inside a session must not start another daemon.
 	if os.Getenv("AT_AGENT_ID") != "" {
@@ -72,6 +75,7 @@ func main() {
 			MaxPasses:      *maxPasses,
 			MaxConcurrency: *concurrency,
 		},
+		Version: version,
 	})
 	if err != nil {
 		log.Fatalf("atd: %v", err)

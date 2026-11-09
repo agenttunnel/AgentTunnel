@@ -49,6 +49,16 @@ type MailboxMessage struct {
 // durable event log keeps everything; only the read model truncates.
 const maxMailboxEntries = 200
 
+// TaskItem is one task on a thread's agreed list.
+type TaskItem struct {
+	Name   string               `json:"name"`
+	Title  string               `json:"title"`
+	Status contracts.TaskStatus `json:"status"`
+}
+
+// maxTasks bounds the task list: the leads' plan, shipped whole by thread.get.
+const maxTasks = 100
+
 // ThreadState is the read model for one thread, derived entirely from its event
 // log by the projector. It is never mutated by clients directly.
 type ThreadState struct {
@@ -68,7 +78,12 @@ type ThreadState struct {
 	Model       contracts.ModelSelection `json:"model"`
 	AutoMode    bool                     `json:"autoMode"`
 	PeerMailbox bool                     `json:"peerMailbox"`
-	Messages    []Message                `json:"messages"`
+	// Leads is the stored orchestrator team size; zero means one. Read it
+	// through LeadCount.
+	Leads    int       `json:"leads"`
+	Messages []Message `json:"messages"`
+	// Tasks is the agreed task list, in the order the leads added them.
+	Tasks []TaskItem `json:"tasks"`
 
 	// Turn counts user messages: the turn spend currently accrues to.
 	Turn  int         `json:"turn"`
@@ -87,6 +102,24 @@ type ThreadState struct {
 	SharedOrder []string          `json:"sharedOrder"`
 
 	Version int64 `json:"version"`
+}
+
+// taskIndex returns the position of a named task, or -1.
+func (s *ThreadState) taskIndex(name string) int {
+	for i := range s.Tasks {
+		if s.Tasks[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// LeadCount is the number of orchestrators leading the thread's turns.
+func (s *ThreadState) LeadCount() int {
+	if s.Leads < 1 {
+		return 1
+	}
+	return s.Leads
 }
 
 // NewThreadState returns an empty read model for a thread.

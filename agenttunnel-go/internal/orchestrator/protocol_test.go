@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -36,15 +37,18 @@ func TestToDispatchTasks(t *testing.T) {
 		{Name: "note_finding"},
 		{Name: "dispatch_task", Task: "review", Role: "reviewer", DependsOn: []string{"impl"}},
 	}
-	got := ToDispatchTasks("orchestrator", calls)
+	got := ToDispatchTasks("orchestrator", calls, func(string) bool { return false })
 	if len(got) != 2 {
 		t.Fatalf("want 2 tasks, got %d", len(got))
 	}
 	if got[0].AgentID != "agent-impl" || got[0].ParentAgentID != "orchestrator" {
 		t.Fatalf("task 0 = %+v", got[0])
 	}
-	if got[1].Name != "task-2" || got[1].AgentID != "agent-task-2" {
-		t.Fatalf("task 1 = %+v", got[1])
+	if got[1].Name == "" || got[1].Name == got[0].Name || got[1].AgentID != contracts.AgentID("agent-"+got[1].Name) {
+		t.Fatalf("task 1 = %+v, want a generated name distinct from task 0", got[1])
+	}
+	if !strings.Contains(got[1].Name, "_") {
+		t.Fatalf("task 1 name %q is not docker-style", got[1].Name)
 	}
 	if len(Dispatches(calls)) != 2 {
 		t.Fatal("Dispatches should return only dispatch_task calls")

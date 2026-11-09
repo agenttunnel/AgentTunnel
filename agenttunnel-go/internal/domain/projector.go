@@ -39,6 +39,17 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.PeerMailboxSet:
 		s.PeerMailbox = p.Enabled
 
+	case contracts.LeadsSet:
+		s.Leads = p.Count
+
+	case contracts.TaskAdded:
+		s.Tasks = append(s.Tasks, TaskItem{Name: p.Name, Title: p.Title, Status: contracts.TaskTodo})
+
+	case contracts.TaskStatusChanged:
+		if i := s.taskIndex(p.Name); i >= 0 {
+			s.Tasks[i].Status = p.Status
+		}
+
 	case contracts.TaskDispatched:
 		if _, exists := s.Agents[p.AgentID]; !exists {
 			s.AgentOrder = append(s.AgentOrder, p.AgentID)

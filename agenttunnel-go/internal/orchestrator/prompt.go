@@ -57,6 +57,7 @@ type OrchestratorPrompt struct {
 	PendingSpawns  string
 	PeerMessages   string
 	PeerMailbox    bool
+	Team           string
 	Pass           int
 	Steering       []string
 	RuntimeChoices string
@@ -104,6 +105,10 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString(peerMessages)
 		b.WriteString("\nWeigh these now. Messages to you are yours to act on; relay the ones marked for a subagent when you dispatch or reply to it.")
 	}
+	if strings.TrimSpace(in.Team) != "" {
+		b.WriteString("\n\n## Your team\n")
+		b.WriteString(in.Team)
+	}
 	b.WriteString("\n\n## Dispatching work\n")
 	b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
@@ -118,6 +123,11 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
 		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
 	}
+	b.WriteString("\n\n## Tracking the plan\n")
+	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")
+	b.WriteString("  \"$AT_TOOL\" tool task-create --name <short-name> --task \"<task title>\"\n")
+	b.WriteString("  \"$AT_TOOL\" tool task-update --name <short-name> --status todo|doing|done\n")
+	b.WriteString("  \"$AT_TOOL\" tool task-list\n")
 	if strings.TrimSpace(runtimeChoices) != "" {
 		b.WriteString("\n\n## Runtime choices\n")
 		b.WriteString("Auto mode is ON for this thread. ")

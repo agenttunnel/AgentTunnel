@@ -23,6 +23,8 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		SharedContextSet{Key: "k", Value: "v", AuthorID: "a1"},
 		MailboxPosted{From: "a1", To: "a2", Kind: "note", Body: "hi"},
 		ReviewCommentAdded{ID: "r1", File: "main.go", Line: 12, Body: "rename", AuthorID: "user", CreatedAt: at},
+		TaskAdded{Name: "api", Title: "Design the API"},
+		TaskStatusChanged{Name: "api", Status: TaskDoing},
 	}
 
 	for _, payload := range payloads {
