@@ -41,22 +41,33 @@ agenttunnel-go/
 ## Install from a release
 
 The [AgentTunnel Release workflow](../.github/workflows/agenttunnel-release.yml)
-builds the Go daemon and desktop client for macOS (arm64 and amd64), Linux
-(amd64), and Windows (amd64), and attaches them to every GitHub release. Install
-both binaries with:
+builds the desktop app and daemon for macOS (arm64 and amd64), Linux (amd64),
+and Windows (amd64), and attaches them to every GitHub release.
+
+**macOS** — download `AgentTunnel-darwin-arm64.dmg` (Apple Silicon) or
+`AgentTunnel-darwin-amd64.dmg` (Intel), open it, and drag AgentTunnel into
+Applications. The builds are unsigned, so Gatekeeper may quarantine the app; the
+installer clears that for you.
+
+The installer puts `AgentTunnel.app` in `~/Applications`, links `agenttunnel`
+into `~/.local/bin`, and copies `atd` there too:
 
 ```bash
 curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
 ```
 
-The installer writes `atd` (the daemon) and `agenttunnel` (the desktop client)
-to `~/.local/bin`. Add that directory to `PATH` if it is not there already.
+**Linux / Windows** — the installer writes `atd` (the daemon) and `agenttunnel`
+(the desktop client) to `~/.local/bin`. Add that directory to `PATH` if it is
+not there already.
 
-Install somewhere else, or pin a release:
+Install somewhere else, pin a release, or choose where the macOS app lands:
 
 ```bash
 curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh \
   | AGENTTUNNEL_INSTALL_DIR=/usr/local/bin sh
+
+curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh \
+  | AGENTTUNNEL_APP_DIR="$HOME/Applications" sh
 
 curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh \
   | AGENTTUNNEL_VERSION=v0.10.0 sh
@@ -87,11 +98,12 @@ cd desktop
 `wails3 build` caches its native link step and does not watch the parent module
 (`../internal`, `../pkg`), so a server-side Go change can leave a stale binary.
 
-macOS app bundle:
+macOS app bundle and DMG:
 
 ```bash
 cd desktop
-./build-app.sh --install         # /Applications/AgentTunnel.app + `agenttunnel` on PATH
+./build-app.sh --dmg             # dist/AgentTunnel-darwin-<arch>.dmg
+./build-app.sh --install         # ~/Applications (or /Applications) + `agenttunnel` on PATH
 ```
 
 Then `agenttunnel` starts the app from anywhere. Opening a project:
