@@ -18,7 +18,7 @@ import (
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -34,6 +34,7 @@ func Run(args []string) int {
 	text := fs.String("text", "", "text for a note or progress update")
 	summary := fs.String("summary", "", "summary for done")
 	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message)")
+	status := fs.String("status", "", "todo|doing|done (for task-update)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -50,6 +51,7 @@ func Run(args []string) int {
 		"model":    *model,
 		"text":     *text,
 		"to":       *to,
+		"status":   *status,
 	}
 	if *summary != "" {
 		payload["text"] = *summary
@@ -93,6 +95,16 @@ func Run(args []string) int {
 		msg, _ := io.ReadAll(resp.Body)
 		fmt.Fprintf(os.Stderr, "tool: %s: %s\n", resp.Status, strings.TrimSpace(string(msg)))
 		return 1
+	}
+	if kind == "task-list" {
+		// A list is the answer itself, so it is printed as the daemon sends it.
+		out, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tool: %v\n", err)
+			return 1
+		}
+		fmt.Println(strings.TrimSpace(string(out)))
+		return 0
 	}
 	fmt.Println("ok")
 	return 0

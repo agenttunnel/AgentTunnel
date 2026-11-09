@@ -123,6 +123,11 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
 		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
 	}
+	b.WriteString("\n\n## Tracking the plan\n")
+	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")
+	b.WriteString("  \"$AT_TOOL\" tool task-create --name <short-name> --task \"<task title>\"\n")
+	b.WriteString("  \"$AT_TOOL\" tool task-update --name <short-name> --status todo|doing|done\n")
+	b.WriteString("  \"$AT_TOOL\" tool task-list\n")
 	if strings.TrimSpace(runtimeChoices) != "" {
 		b.WriteString("\n\n## Runtime choices\n")
 		b.WriteString("Auto mode is ON for this thread. ")

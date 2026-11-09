@@ -17,6 +17,8 @@ const (
 	CmdAutoModeSet      CommandType = "thread.automode.set"
 	CmdPeerMailboxSet   CommandType = "thread.peer-mailbox.set"
 	CmdLeadsSet         CommandType = "thread.leads.set"
+	CmdTaskAdd          CommandType = "thread.task.add"
+	CmdTaskStatusSet    CommandType = "thread.task.status.set"
 	CmdTaskDispatch     CommandType = "agent.task.dispatch"
 	CmdAgentStatusSet   CommandType = "agent.status.set"
 	CmdUsageRecord      CommandType = "agent.usage.record"
@@ -57,6 +59,8 @@ type Command struct {
 	AutoMode       *bool               `json:"autoMode,omitempty"`
 	PeerMailbox    *bool               `json:"peerMailbox,omitempty"`
 	Leads          *int                `json:"leads,omitempty"`
+	TaskAdd        *TaskAdded          `json:"taskAdd,omitempty"`
+	TaskStatus     *TaskStatusChanged  `json:"taskStatus,omitempty"`
 	Dispatch       *DispatchTask       `json:"dispatch,omitempty"`
 	Usage          *UsageRecorded      `json:"usage,omitempty"`
 	Status         *AgentStatusChanged `json:"status,omitempty"`
