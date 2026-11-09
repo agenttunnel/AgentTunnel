@@ -26,6 +26,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
+	"github.com/agenttunnel/agenttunnel-go/internal/update"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
 )
 
@@ -64,6 +65,7 @@ type DispatcherDeps struct {
 	Models       *models.Service
 	Steering     *steering.Box
 	Audit        actionlog.Func
+	Updater      *update.Updater
 }
 
 // Dispatcher routes RPC methods to the daemon's services.
@@ -79,6 +81,7 @@ type Dispatcher struct {
 	models   *models.Service
 	steering *steering.Box
 	audit    actionlog.Func
+	updater  *update.Updater
 	seq      atomic.Int64
 
 	// turns gates one running turn per thread and lets clients stop it.
@@ -104,6 +107,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		models:   d.Models,
 		steering: d.Steering,
 		audit:    d.Audit,
+		updater:  d.Updater,
 	}
 }
 
@@ -695,6 +699,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 
 	case "usage.get":
 		return d.ledger.Snapshot(), nil
+
+	case "update.check":
+		if d.updater == nil {
+			return nil, errors.New("updates are unavailable")
+		}
+		return d.updater.Check(ctx)
+
+	case "update.apply":
+		if d.updater == nil {
+			return nil, errors.New("updates are unavailable")
+		}
+		return d.updater.Apply(ctx)
 
 	case "review.diff":
 		var p struct {
