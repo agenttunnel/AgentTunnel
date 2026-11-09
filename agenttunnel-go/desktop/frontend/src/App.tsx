@@ -23,6 +23,7 @@ import {
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { AgentGraph } from "./components/AgentGraph";
 import { KanbanBoard } from "./components/KanbanBoard";
+import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
@@ -72,6 +73,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** The agreed task list, in the order the leads added it. */
+  tasks?: TaskItem[] | null;
 };
 type ThreadSummary = {
   id: string;
@@ -1227,6 +1230,7 @@ export default function App() {
   const settled = agents.filter((a) => a.status !== "running" && a.status !== "pending").length;
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
@@ -2233,7 +2237,10 @@ export default function App() {
             {reviewComments}
           </div>
         ) : tab === "board" ? (
-          <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
+          <div className="board-view">
+            {tasks.length > 0 && <TaskList tasks={tasks} />}
+            <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
+          </div>
         ) : (
           <AgentGraph
             key={activeId ?? ""}
