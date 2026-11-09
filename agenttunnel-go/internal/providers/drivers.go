@@ -42,10 +42,10 @@ func BuiltinRegistry() *Registry {
 	r.RegisterDiscoverer(contracts.HarnessPi,
 		NewCommandDiscoverer("pi", "--list-models").WithParser(ParsePiModelListTable))
 	// Command Code's CLI is `command-code`, also installed as `cmd`; both print
-	// provider/model slugs.
+	// provider/model slugs and bare short model names from `--list-models`.
 	r.RegisterDiscoverer(contracts.HarnessCommandCode, NewChainDiscoverer(
-		NewCommandDiscoverer("command-code", "--list-models"),
-		NewCommandDiscoverer("cmd", "--list-models"),
+		NewCommandDiscoverer("command-code", "--list-models").WithParser(ParseCommandCodeModels),
+		NewCommandDiscoverer("cmd", "--list-models").WithParser(ParseCommandCodeModels),
 	))
 	// `cursor-agent --list-models` prints "<slug> - <description>" rows.
 	r.RegisterDiscoverer(contracts.HarnessCursor,

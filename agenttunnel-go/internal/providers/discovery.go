@@ -105,6 +105,9 @@ var (
 	ansiRe       = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
 	slashModelRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*`)
 	tokenCountRe = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*([KMB]?)$`)
+	// Command Code model ids are provider/model slugs or a bare short name;
+	// either may carry a ":free" style tier suffix.
+	commandCodeModelRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._/-]*(?::[A-Za-z0-9._-]+)?$`)
 )
 
 // StripANSI removes terminal escape sequences and stray control characters.
@@ -234,6 +237,32 @@ func parsePiBool(s string) (bool, bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// ParseCommandCodeModels parses `command-code --list-models` (also `cmd`). Each
+// row is a model id followed by a description. The CLI accepts both a
+// provider/model slug and the bare short name after the last "/", and prints both
+// forms, so a slash-only parser silently drops half the catalog. Provider
+// headings and usage hints are skipped.
+func ParseCommandCodeModels(output string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range strings.Split(StripANSI(output), "\n") {
+		fields := strings.Fields(strings.TrimSpace(raw))
+		if len(fields) == 0 {
+			continue
+		}
+		id := fields[0]
+		if !commandCodeModelRe.MatchString(id) || !strings.ContainsAny(id, "/-._:") {
+			continue
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // ParseCursorModelList parses `cursor-agent --list-models`, whose rows are

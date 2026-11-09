@@ -76,7 +76,7 @@ func TestCommandCodeDiscoveryAgainstInstalledCLI(t *testing.T) {
 	if bin == "" {
 		t.Skip("command-code/cmd not installed")
 	}
-	d := NewCommandDiscoverer(bin, "--list-models")
+	d := NewCommandDiscoverer(bin, "--list-models").WithParser(ParseCommandCodeModels)
 	d.Timeout = liveProbeTimeout
 
 	got, err := d.Discover(context.Background())
