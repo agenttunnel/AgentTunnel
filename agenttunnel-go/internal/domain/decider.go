@@ -31,9 +31,26 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		// graph view both rely on the traffic it records. Existing threads stay
 		// as they were, and `thread.setPeerMailbox` remains the override.
 		return []contracts.EventPayload{
-			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID},
+			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree},
 			contracts.PeerMailboxSet{Enabled: true},
 		}, nil
+
+	case contracts.CmdWorktreeAttach:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		// A subthread works in its parent's worktree and never owns one; a thread
+		// has at most one worktree, fixed once attached.
+		if s.ParentThreadID != "" {
+			return nil, fmt.Errorf("%w: a subthread shares its parent's worktree", ErrInvalidCommand)
+		}
+		if s.Worktree != nil {
+			return nil, fmt.Errorf("%w: thread already has a worktree", ErrInvalidCommand)
+		}
+		if cmd.Worktree == nil || cmd.Worktree.Path == "" {
+			return nil, fmt.Errorf("%w: worktree path is required", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.WorktreeAttached{Worktree: *cmd.Worktree}}, nil
 
 	case contracts.CmdThreadRename:
 		if !s.Exists {
