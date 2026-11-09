@@ -119,7 +119,18 @@ func Project(s *ThreadState, e contracts.Event) error {
 		}
 
 	case contracts.ReviewCommentAdded:
-		s.ReviewComments = append(s.ReviewComments, p)
+		s.ReviewComments = append(s.ReviewComments, ReviewComment{ReviewCommentAdded: p})
+
+	case contracts.ReviewCommentsSubmitted:
+		sent := make(map[string]bool, len(p.CommentIDs))
+		for _, id := range p.CommentIDs {
+			sent[id] = true
+		}
+		for i := range s.ReviewComments {
+			if sent[s.ReviewComments[i].ID] {
+				s.ReviewComments[i].Submitted = true
+			}
+		}
 
 	default:
 		return fmt.Errorf("project: unknown event payload %T", e.Payload)

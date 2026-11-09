@@ -28,6 +28,7 @@ import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
+import { HarnessStatsPanel, type HarnessStat } from "./components/HarnessStatsPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
@@ -58,7 +59,8 @@ type Agent = {
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
 type Message = { id: string; author: string; text: string; at: string };
-type ReviewComment = { id: string; file: string; line: number; body: string };
+/** submitted comments were already handed to the team in a review turn. */
+type ReviewComment = { id: string; file: string; line: number; body: string; submitted: boolean };
 type ThreadState = {
   id: string;
   title: string;
@@ -146,7 +148,7 @@ type SettingsView = {
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr" | "stats";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -156,6 +158,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
   pr: { label: "Pull request", key: "P" },
+  stats: { label: "Harness stats", key: "H" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -521,6 +524,10 @@ export default function App() {
   const [prState, setPRState] = useState<PRSnapshot | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
+  // Environment-wide harness rollup; not thread-scoped, so it needs no thread tag.
+  const [harnessStats, setHarnessStats] = useState<HarnessStat[]>([]);
+  const [harnessLoading, setHarnessLoading] = useState(false);
+  const [harnessError, setHarnessError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -671,6 +678,20 @@ export default function App() {
       setPRError(e instanceof Error ? e.message : String(e));
     } finally {
       setPRLoading(false);
+    }
+  }, []);
+
+  const loadHarnessStats = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setHarnessLoading(true);
+    setHarnessError(null);
+    try {
+      setHarnessStats(await rpc.call<HarnessStat[]>("stats.harnesses"));
+    } catch (e) {
+      setHarnessError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHarnessLoading(false);
     }
   }, []);
 
@@ -1126,6 +1147,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, [asideActive, activeId, loadPR]);
 
+  // The harness rollup scans every thread, so it loads once when shown and then
+  // only on Refresh rather than on a timer.
+  useEffect(() => {
+    if (asideActive !== "stats") return;
+    loadHarnessStats().catch(() => undefined);
+  }, [asideActive, loadHarnessStats]);
+
   // The file tree loads when its panel is shown.
   useEffect(() => {
     if (asideActive === "files") loadFileTree(activeId);
@@ -1310,6 +1338,7 @@ export default function App() {
   );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
@@ -1502,6 +1531,21 @@ export default function App() {
     });
     setDraft(null);
     refresh(activeId).catch(() => undefined);
+  };
+
+  /** Hands every pending review comment to the team as one review turn. */
+  const submitReview = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId || pendingComments.length === 0) return;
+    setBusy(true);
+    try {
+      await rpc.call("review.submit", { threadId: activeId });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      refresh(activeId).catch(() => undefined);
+    }
   };
 
   const toggleModelConfig = () => {
@@ -1784,15 +1828,16 @@ export default function App() {
 
   // Review comments belong with the diff, not pinned under every aside tab.
   // The same block renders in the center Review tab and the aside Diff panel.
+  const sentComments = comments.length - pendingComments.length;
   const reviewComments = (
     <div className="section">
       <h3>
-        Review comments <span>{comments.length}</span>
+        Review comments <span>{pendingComments.length}</span>
       </h3>
-      {comments.length === 0 && (
-        <p className="hint">None yet. Comment on a line in Review or the Diff panel.</p>
+      {pendingComments.length === 0 && (
+        <p className="hint">None pending. Comment on a line in Review or the Diff panel.</p>
       )}
-      {comments.map((c) => (
+      {pendingComments.map((c) => (
         <div className="comment-item" key={c.id}>
           <div className="comment-file">
             {c.file}:{c.line}
@@ -1800,6 +1845,19 @@ export default function App() {
           <div className="comment-body">{c.body}</div>
         </div>
       ))}
+      {pendingComments.length > 0 && (
+        <button
+          className="primary"
+          disabled={busy || running.length > 0}
+          onClick={() => submitReview().catch(() => undefined)}
+        >
+          Submit review
+        </button>
+      )}
+      {pendingComments.length > 0 && running.length > 0 && (
+        <p className="hint">Submit once the running turn finishes.</p>
+      )}
+      {sentComments > 0 && <p className="hint">{sentComments} already sent to the team.</p>}
     </div>
   );
 
@@ -2775,6 +2833,15 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        ) : asideActive === "stats" ? (
+          <div className="section stats-section">
+            <HarnessStatsPanel
+              stats={harnessStats}
+              loading={harnessLoading}
+              error={harnessError}
+              onRefresh={() => loadHarnessStats().catch(() => undefined)}
+            />
           </div>
         ) : asideActive === "pr" ? (
           <div className="section pr-section">

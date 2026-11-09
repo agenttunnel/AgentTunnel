@@ -261,6 +261,29 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{*cmd.ReviewComment}, nil
 
+	case contracts.CmdReviewSubmit:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.ReviewSubmit == nil || len(cmd.ReviewSubmit.CommentIDs) == 0 || strings.TrimSpace(cmd.Text) == "" {
+			return nil, fmt.Errorf("%w: review submit requires comments and text", ErrInvalidCommand)
+		}
+		pending := make(map[string]bool, len(s.ReviewComments))
+		for _, c := range s.ReviewComments {
+			if !c.Submitted {
+				pending[c.ID] = true
+			}
+		}
+		for _, id := range cmd.ReviewSubmit.CommentIDs {
+			if !pending[id] {
+				return nil, fmt.Errorf("%w: review comment %q is not pending", ErrInvalidCommand, id)
+			}
+		}
+		return []contracts.EventPayload{
+			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text},
+			*cmd.ReviewSubmit,
+		}, nil
+
 	case contracts.CmdUsageRecord:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
