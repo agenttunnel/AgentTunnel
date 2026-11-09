@@ -13,6 +13,7 @@ const (
 	EvtThreadCreated      EventType = "thread.created"
 	EvtThreadRenamed      EventType = "thread.renamed"
 	EvtThreadDeleted      EventType = "thread.deleted"
+	EvtWorktreeAttached   EventType = "thread.worktree-attached"
 	EvtMessageSent        EventType = "thread.message-sent"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
@@ -96,6 +97,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ThreadRenamed](data)
 	case EvtThreadDeleted:
 		return decodePayload[ThreadDeleted](data)
+	case EvtWorktreeAttached:
+		return decodePayload[WorktreeAttached](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
 	case EvtModelSet:
@@ -148,9 +151,20 @@ type ThreadCreated struct {
 	ProjectID string `json:"projectId,omitempty"`
 	// ParentThreadID is set on a subthread: the thread that started it.
 	ParentThreadID ThreadID `json:"parentThreadId,omitempty"`
+	// Worktree is set when the thread was created with its worktree already
+	// cut, or inherits a parent's.
+	Worktree *WorktreeRef `json:"worktree,omitempty"`
 }
 
 func (ThreadCreated) eventType() EventType { return EvtThreadCreated }
+
+// WorktreeAttached gives a thread its worktree after creation, the first time a
+// turn runs in a git project. A thread has at most one worktree.
+type WorktreeAttached struct {
+	Worktree WorktreeRef `json:"worktree"`
+}
+
+func (WorktreeAttached) eventType() EventType { return EvtWorktreeAttached }
 
 // ThreadRenamed renames a thread, typically after the model has read the first
 // exchange and picked a title.
