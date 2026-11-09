@@ -717,6 +717,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 	case "usage.get":
 		return d.ledger.Snapshot(), nil
 
+	case "stats.harnesses":
+		return d.engine.HarnessStats(ctx)
+
 	case "update.check":
 		if d.updater == nil {
 			return nil, errors.New("updates are unavailable")
