@@ -44,6 +44,9 @@ const (
 	KindTaskCreate Kind = "task-create"
 	KindTaskUpdate Kind = "task-update"
 	KindTaskList   Kind = "task-list"
+	// KindSubthread starts a subthread for the lead's thread. It is answered at
+	// once, not queued, so the lead learns of a refusal in the same pass.
+	KindSubthread Kind = "subthread"
 )
 
 // Call is one recorded tool invocation.

@@ -12,6 +12,8 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	payloads := []EventPayload{
 		ThreadCreated{Title: "my thread", ProjectID: "proj_1"},
+		ThreadCreated{Title: "sub", ProjectID: "proj_1", ParentThreadID: "t1"},
+		SubthreadSpawned{ThreadID: "t2"},
 		ThreadRenamed{Title: "renamed thread"},
 		MessageSent{MessageID: "m1", Author: "user", Text: "hello"},
 		ModelSet{Selection: ModelSelection{InstanceID: "i", Model: "gpt-5"}},

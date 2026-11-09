@@ -49,14 +49,16 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 // so BuildOrchestratorPrompt's signature stays readable as sections are added;
 // zero values render no section.
 type OrchestratorPrompt struct {
-	Role           contracts.Role
-	UserMessage    string
-	Inherited      string
-	Shared         string
-	Roster         string
-	PendingSpawns  string
-	PeerMessages   string
-	PeerMailbox    bool
+	Role          contracts.Role
+	UserMessage   string
+	Inherited     string
+	Shared        string
+	Roster        string
+	PendingSpawns string
+	PeerMessages  string
+	PeerMailbox   bool
+	// Subthreads offers the subthread tool: the thread may start one.
+	Subthreads     bool
 	Team           string
 	Pass           int
 	Steering       []string
@@ -128,6 +130,13 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("  \"$AT_TOOL\" tool task-create --name <short-name> --task \"<task title>\"\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-update --name <short-name> --status todo|doing|done\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-list\n")
+	if in.Subthreads {
+		b.WriteString("\n\n## Subthreads\n")
+		b.WriteString("Start a subthread only for work that is genuinely unrelated to this thread's plan and better kept in its own context. ")
+		b.WriteString("It runs as a separate thread with its own orchestrator, and its final summary comes back to you as a peer message. ")
+		b.WriteString("Related work belongs in dispatched tasks, not a subthread. A thread starts at most " + strconv.Itoa(contracts.MaxSubthreads) + " subthreads, and a subthread cannot start its own:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool subthread --task \"<self-contained brief for the unrelated work>\"\n")
+	}
 	if strings.TrimSpace(runtimeChoices) != "" {
 		b.WriteString("\n\n## Runtime choices\n")
 		b.WriteString("Auto mode is ON for this thread. ")

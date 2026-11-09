@@ -36,7 +36,6 @@ type Deps struct {
 	Roles     *contracts.RoleRegistry
 	Logs      *logstore.Store
 	Ledger    *usage.Ledger
-	Notebook  *contextstore.Notebook
 	Mailbox   *contextstore.Mailbox
 	Inherited *contextstore.InheritedContext
 	Settings  *settings.Store
@@ -59,7 +58,6 @@ type Runner struct {
 	roles     *contracts.RoleRegistry
 	logs      *logstore.Store
 	ledger    *usage.Ledger
-	notebook  *contextstore.Notebook
 	mailbox   *contextstore.Mailbox
 	inherited *contextstore.InheritedContext
 	settings  *settings.Store
@@ -80,6 +78,12 @@ type Runner struct {
 	cancels  map[contracts.AgentID]*trackedCancel
 
 	spawns *spawnStore
+
+	// notebooks holds each thread's shared notebook. A thread's context is its
+	// own: a subthread running beside its parent must not read or write the
+	// parent's notes.
+	notebookMu sync.Mutex
+	notebooks  map[contracts.ThreadID]*contextstore.Notebook
 }
 
 // NewRunner wires a runner from its dependencies.
@@ -93,7 +97,6 @@ func NewRunner(d Deps) *Runner {
 		roles:     d.Roles,
 		logs:      d.Logs,
 		ledger:    d.Ledger,
-		notebook:  d.Notebook,
 		mailbox:   d.Mailbox,
 		inherited: d.Inherited,
 		settings:  d.Settings,
@@ -107,6 +110,7 @@ func NewRunner(d Deps) *Runner {
 		clock:     d.Clock,
 		cfg:       d.Cfg,
 		spawns:    newSpawnStore(),
+		notebooks: map[contracts.ThreadID]*contextstore.Notebook{},
 	}
 }
 
@@ -116,8 +120,22 @@ func (r *Runner) Ledger() *usage.Ledger { return r.ledger }
 // Inherited exposes the environment's inherited context store.
 func (r *Runner) Inherited() *contextstore.InheritedContext { return r.inherited }
 
-// Notebook exposes the shared notebook.
-func (r *Runner) Notebook() *contextstore.Notebook { return r.notebook }
+// Notebook exposes a thread's shared notebook.
+func (r *Runner) Notebook(threadID contracts.ThreadID) *contextstore.Notebook {
+	return r.notebookFor(threadID)
+}
+
+// notebookFor returns the thread's notebook, creating it on first use.
+func (r *Runner) notebookFor(threadID contracts.ThreadID) *contextstore.Notebook {
+	r.notebookMu.Lock()
+	defer r.notebookMu.Unlock()
+	nb, ok := r.notebooks[threadID]
+	if !ok {
+		nb = contextstore.NewNotebook()
+		r.notebooks[threadID] = nb
+	}
+	return nb
+}
 
 // Mailbox exposes the runtime peer mailbox.
 func (r *Runner) Mailbox() *contextstore.Mailbox { return r.mailbox }
@@ -302,7 +320,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 
 	inherited, _ := r.inherited.Render()
 	peerMailbox := r.peerMailboxFor(ctx, threadID)
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebook.Render(), peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebookFor(threadID).Render(), peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -391,7 +409,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	summary := strings.TrimSpace(strings.Join(findings, "\n"))
 	if summary != "" {
 		key := "result_" + t.Name
-		r.notebook.Append(key, summary, string(t.AgentID))
+		r.notebookFor(threadID).Append(key, summary, string(t.AgentID))
 		r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
 	}
 	return summary, werr

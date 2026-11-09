@@ -33,6 +33,7 @@ import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import type { MailboxMessage } from "./lib/graph";
+import { arrangeThreads } from "./lib/threads";
 
 type Role = {
   id: string;
@@ -82,6 +83,8 @@ type ThreadSummary = {
   id: string;
   title: string;
   projectId?: string;
+  /** Set on a subthread: the thread that started it. */
+  parentThreadId?: string;
   updatedAt?: string;
   messages: number;
   agents: number;
@@ -1314,9 +1317,11 @@ export default function App() {
   const needle = threadFilter.trim().toLowerCase();
   const projectThreads = useMemo(
     () =>
-      threads.filter(
-        (t) =>
-          t.projectId === projectId && (needle === "" || t.title.toLowerCase().includes(needle)),
+      arrangeThreads(
+        threads.filter(
+          (t) =>
+            t.projectId === projectId && (needle === "" || t.title.toLowerCase().includes(needle)),
+        ),
       ),
     [threads, projectId, needle],
   );
@@ -1918,6 +1923,7 @@ export default function App() {
               <div
                 className={`thread-card${t.stale ? " is-stale" : ""}`}
                 key={t.id}
+                style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
                 {...clickable(() => selectThread(t.id))}
                 onContextMenu={(e) => openThreadMenu(t, e)}
               >
@@ -1962,6 +1968,7 @@ export default function App() {
             <div
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
+              style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
               {...clickable(() => selectThread(t.id))}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >

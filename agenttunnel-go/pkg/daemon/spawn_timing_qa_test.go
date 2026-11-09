@@ -144,7 +144,7 @@ esac`
 	}
 	// The approve in pass 1 matched a pending request; a timing regression
 	// would have dead-lettered it as a note instead.
-	for _, note := range d.Runner.Notebook().Get("notes") {
+	for _, note := range d.Runner.Notebook("t1").Get("notes") {
 		if strings.Contains(note.Value, "No pending spawn request") {
 			t.Fatalf("unexpected decision note: %+v", note)
 		}

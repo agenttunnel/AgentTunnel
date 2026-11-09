@@ -98,7 +98,7 @@ esac`
 
 	// If the lead had approved blindly without the request in its prompt, the
 	// decision would have left a note instead of running the child.
-	for _, note := range d.Runner.Notebook().Get("notes") {
+	for _, note := range d.Runner.Notebook("t1").Get("notes") {
 		if strings.Contains(note.Value, "No pending spawn request") {
 			t.Fatalf("unexpected decision note: %+v", note)
 		}

@@ -43,6 +43,10 @@ func isLeadID(id contracts.AgentID) bool {
 	return false
 }
 
+// IsLead reports whether id names a team lead. Leads are the only agents that
+// may start subthreads.
+func IsLead(id contracts.AgentID) bool { return isLeadID(id) }
+
 // Rejections a caller can present to the agent that sent the message. Nothing
 // is recorded durably when one of these is returned.
 var (

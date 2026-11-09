@@ -98,7 +98,6 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	logs := logstore.New(filepath.Join(opts.StateDir, "logs"))
 	ledger := usage.NewLedger()
-	notebook := contextstore.NewNotebook()
 	mailbox := contextstore.NewMailbox()
 	// The runtime box is a drained-once delivery buffer, not the gate: the
 	// authoritative switch is the durable thread's peerMailbox state, enforced
@@ -128,7 +127,6 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Roles:     opts.Roles,
 		Logs:      logs,
 		Ledger:    ledger,
-		Notebook:  notebook,
 		Mailbox:   mailbox,
 		Inherited: inherited,
 		Settings:  store,

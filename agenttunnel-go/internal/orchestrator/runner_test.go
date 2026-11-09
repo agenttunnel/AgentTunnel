@@ -43,7 +43,6 @@ func newHarness(t *testing.T, script string) (*Runner, *domain.Engine, context.C
 		Roles:     contracts.NewRoleRegistry(contracts.BuiltinRoles()...),
 		Logs:      logstore.New(t.TempDir()),
 		Ledger:    usage.NewLedger(),
-		Notebook:  contextstore.NewNotebook(),
 		Mailbox:   contextstore.NewMailbox(),
 		Inherited: inherited,
 		Settings:  settings.New(t.TempDir()),

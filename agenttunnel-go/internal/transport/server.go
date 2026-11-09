@@ -79,6 +79,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindTaskCreate, toolbox.KindTaskUpdate, toolbox.KindTaskList:
 		s.handleTaskCall(w, r, req)
 		return
+	case toolbox.KindSubthread:
+		s.handleSubthreadCall(w, r, req)
+		return
 	}
 
 	// Peer messages are delivered immediately rather than queued in the tool
@@ -206,6 +209,31 @@ func (s *Server) handleTaskCall(w http.ResponseWriter, r *http.Request, req tool
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleSubthreadCall starts a subthread for the caller's thread. Only a team
+// lead may start one; a subagent's request is refused here, not queued, so the
+// refusal reaches the agent that asked.
+func (s *Server) handleSubthreadCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if req.AgentID != "" && !orchestrator.IsLead(req.AgentID) {
+		http.Error(w, "only the orchestrator can start a subthread", http.StatusForbidden)
+		return
+	}
+	child, err := s.disp.startSubthread(r.Context(), req.ThreadID, req.Task)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, domain.ErrInvalidCommand) || errors.Is(err, domain.ErrThreadNotFound) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.disp.auditLog("tool", map[string]any{
+		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+		"subthreadId": string(child),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "threadId": child})
 }
 
 func (s *Server) authorized(r *http.Request) bool {
