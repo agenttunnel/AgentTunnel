@@ -987,13 +987,15 @@ export default function App() {
       // Not awaited: a slow GitHub lookup must not hold up startup.
       rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
       try {
-        const [r, h, list, projs] = await Promise.all([
+        const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
           rpc.call<HarnessInfo>("harness.list"),
           rpc.call<ThreadSummary[]>("thread.list"),
           rpc.call<Project[]>("project.list"),
+          rpc.call<SettingsView>("settings.get"),
         ]);
         setRoles(r);
+        setSettings(s);
         setHarnesses(h);
         setThreads(list);
         setProjects(projs);
@@ -1279,6 +1281,30 @@ export default function App() {
     });
   }, [agents]);
   const settled = agents.filter((a) => a.status !== "running" && a.status !== "pending").length;
+  // Each role's effective runtime from settings, with what it is doing in this thread.
+  const roleRows = useMemo(
+    () =>
+      (settings?.roles ?? []).map((r) => {
+        const mine = agents.filter((a) => a.role === r.id);
+        const running = mine.filter((a) => a.status === "running");
+        const latest = mine[mine.length - 1];
+        const tokens = mine.reduce((sum, a) => {
+          const usage = thread?.usage?.[a.id]?.usage;
+          return usage ? sum + totalTokens(usage) : sum;
+        }, 0);
+        return {
+          ...r,
+          mine,
+          running,
+          done: mine.filter((a) => a.status !== "running" && a.status !== "pending").length,
+          tokens,
+          latestId: latest?.id ?? null,
+          latestStatus: latest?.status ?? "pending",
+          current: running[running.length - 1] ?? null,
+        };
+      }),
+    [settings, agents, thread],
+  );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
   const tasks = thread?.tasks ?? [];
@@ -2443,15 +2469,44 @@ export default function App() {
                 </div>
               </div>
               <div className="section">
-                <h3>Roles</h3>
+                <h3>
+                  Roles{" "}
+                  <span>
+                    {roleRows.filter((r) => r.running.length > 0).length} active
+                  </span>
+                </h3>
+                {!settings && <p className="hint">Loading roles…</p>}
                 <ul className="roles">
-                  {roles.map((r) => (
-                    <li key={r.id}>
-                      <span>{r.name}</span>
-                      <span className="harness">{r.defaultHarness}</span>
+                  {roleRows.map((r) => (
+                    <li
+                      key={r.id}
+                      className={r.latestId ? "clickable" : undefined}
+                      {...(r.latestId ? clickable(() => setDetailId(r.latestId)) : {})}
+                    >
+                      <div className="role-head">
+                        <span className={`dot ${r.running.length > 0 ? "running" : r.latestStatus}`} />
+                        <span className="role-name">{r.name}</span>
+                        <span className="harness" title={`${r.harness} · ${r.model}`}>
+                          {r.harness}
+                          {r.model ? ` · ${r.model}` : ""}
+                        </span>
+                      </div>
+                      <div className="role-meta">
+                        {r.running.length > 0 ? `${r.running.length} running` : "idle"}
+                        {r.mine.length > 0 &&
+                          ` · ${r.done}/${r.mine.length} done · ${fmtTokens(r.tokens)} tok`}
+                      </div>
+                      {r.current && (
+                        <div className="role-task" title={r.current.task}>
+                          {r.current.task}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
+                {settings?.autoMode && (
+                  <p className="hint">Auto mode is on: the orchestrator picks each task's runtime.</p>
+                )}
               </div>
             </>
           ) : asideActive === "usage" ? (
