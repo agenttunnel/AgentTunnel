@@ -670,8 +670,9 @@ select {
 }
 .composer textarea {
   resize: none;
-  min-height: 36px;
-  max-height: 180px;
+  min-height: 40px;
+  max-height: 260px;
+  overflow-y: auto;
   flex: 1;
   background: transparent;
   border: 0;
@@ -754,22 +755,40 @@ select {
   padding: 1px 7px;
   font-family: inherit;
 }
-.model-panel {
-  max-width: 900px;
-  max-height: min(420px, 42vh);
-  margin: 10px auto 0;
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  background: var(--panel);
+/* Models live in the right pane; the summary sits above the role rows. */
+.aside-models {
   padding: 12px 14px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
-.model-panel .hint {
+.aside-models .model-summary {
+  margin: 0 0 12px;
+  flex-direction: column;
+  gap: 4px;
+}
+.aside-models .hint {
   margin: 0 0 10px;
 }
-.model-panel .toggle {
+.aside-models .toggle {
   margin-bottom: 8px;
+}
+
+/* One block per turn: the prompt heads it, the team's replies stack under it. */
+.turn {
+  max-width: 900px;
+  margin: 10px auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+.turn .msg {
+  max-width: none;
+  margin: 0;
+}
+.turn .msg:first-child {
+  border-top: 0;
+}
+.turn .msg.user {
+  background: var(--surface-2);
 }
 .mic-btn {
   flex: none;

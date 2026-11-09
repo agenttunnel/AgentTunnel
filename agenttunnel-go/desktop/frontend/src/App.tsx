@@ -1,9 +1,11 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from "react";
@@ -153,7 +155,7 @@ type SettingsView = {
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr" | "stats";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr" | "stats" | "models";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -164,6 +166,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   diff: { label: "Diff", key: "D" },
   pr: { label: "Pull request", key: "P" },
   stats: { label: "Harness stats", key: "H" },
+  models: { label: "Models", key: "L" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -177,6 +180,29 @@ function loadOpenProjects(): string[] {
     /* private mode or corrupt: start with no tabs */
   }
   return [];
+}
+
+/** Long pastes collapse to a `[Pasted text #id +N lines]` token; the full text is
+ *  kept per draft and swapped back in on send, persistence, or click. */
+const PASTE_TOKEN = /\[Pasted text #(\d+) \+\d+ lines\]/g;
+function pasteTokens(text: string): { start: number; end: number; id: number }[] {
+  return [...text.matchAll(PASTE_TOKEN)].map((m) => {
+    const start = m.index ?? 0;
+    return { start, end: start + m[0].length, id: Number(m[1]) };
+  });
+}
+function expandPastes(text: string, store?: Record<number, string>): string {
+  if (!store) return text;
+  return text.replace(PASTE_TOKEN, (tok, id: string) => store[Number(id)] ?? tok);
+}
+/** Turns a flat message list into turns: each user message opens one block. */
+function groupTurns(messages: Message[]): Message[][] {
+  const turns: Message[][] = [];
+  for (const m of messages) {
+    if (m.author === "user" || turns.length === 0) turns.push([m]);
+    else turns[turns.length - 1].push(m);
+  }
+  return turns;
 }
 
 /** Composer drafts keyed by project and thread, remembered across restarts. */
@@ -539,7 +565,9 @@ export default function App() {
   const [fileContentError, setFileContentError] = useState<string | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [modelConfigOpen, setModelConfigOpen] = useState(false);
+  const modelsOpen = asideActive === "models" && asideTabs.includes("models");
+  // Pasted text per draft: draftKey -> token id -> full text.
+  const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
   const [settings, setSettings] = useState<SettingsView | null>(null);
 
   // Council of agents: convene several perspectives on one question and let
@@ -1168,12 +1196,16 @@ export default function App() {
   // Remember composer drafts across restarts; empty drafts are dropped.
   useEffect(() => {
     try {
-      const kept = Object.fromEntries(Object.entries(drafts).filter(([, v]) => v !== ""));
+      const kept = Object.fromEntries(
+        Object.entries(drafts)
+          .map(([k, v]) => [k, expandPastes(v, pastes[k])] as const)
+          .filter(([, v]) => v !== ""),
+      );
       window.localStorage.setItem("at.drafts", JSON.stringify(kept));
     } catch {
       /* private mode: stay in memory */
     }
-  }, [drafts]);
+  }, [drafts, pastes]);
 
   // Remember which projects are open as tabs.
   useEffect(() => {
@@ -1396,7 +1428,7 @@ export default function App() {
 
   const send = async () => {
     const rpc = rpcRef.current;
-    const text = input.trim();
+    const text = expandPastes(input, pastes[draftKey]).trim();
     if (!rpc || !activeId || !text) return;
     // "! cmd" runs a shell command in the thread's project. A lone "!" is just text.
     const command = text.startsWith("!") ? text.slice(1).trim() : "";
@@ -1407,7 +1439,13 @@ export default function App() {
       setError("Stop the running turn before running a shell command.");
       return;
     }
+    const sentPastes = pastes[draftKey];
     setInput("");
+    setPastes((prev) => {
+      const rest = { ...prev };
+      delete rest[draftKey];
+      return rest;
+    });
     setBusy(true);
     if (command) setShellThread(activeId);
     try {
@@ -1419,6 +1457,7 @@ export default function App() {
     } catch (e) {
       // Put the typed text back so a failed send does not lose it.
       setInput(input);
+      setPastes((prev) => ({ ...prev, [draftKey]: sentPastes ?? {} }));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -1473,7 +1512,8 @@ export default function App() {
 
   /** Opens the council sheet, seeding the topic from the composer draft. */
   const openCouncil = () => {
-    if (input.trim()) setCouncilTopic(input.trim());
+    const topic = expandPastes(input, pastes[draftKey]).trim();
+    if (topic) setCouncilTopic(topic);
     setCouncilOpen(true);
   };
 
@@ -1539,21 +1579,81 @@ export default function App() {
     }
   };
 
-  const toggleModelConfig = () => {
+  const toggleModels = () => (modelsOpen ? closePanel("models") : openPanel("models"));
+  useEffect(() => {
     // Role config lives in settings, which is only fetched on demand — load it
-    // the first time the composer panel opens, same trio the settings sheet uses.
-    if (!modelConfigOpen && !settings) {
-      (async () => {
-        try {
-          const [s] = await Promise.all([loadSettings(), loadHarnesses()]);
-          const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
-          await Promise.all(used.map((h) => refreshModels(h)));
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-      })();
+    // the first time the Models panel opens, same trio the settings sheet uses.
+    if (!modelsOpen || settings) return;
+    (async () => {
+      try {
+        const [s] = await Promise.all([loadSettings(), loadHarnesses()]);
+        const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
+        await Promise.all(used.map((h) => refreshModels(h)));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }, [modelsOpen, settings]);
+
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const pendingCaret = useRef<number | null>(null);
+  const pasteSeq = useRef(0);
+  // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
+  useLayoutEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+    if (pendingCaret.current !== null) {
+      el.setSelectionRange(pendingCaret.current, pendingCaret.current);
+      pendingCaret.current = null;
     }
-    setModelConfigOpen((v) => !v);
+  }, [input]);
+
+  const replacePasteToken = (t: { start: number; end: number; id: number }, text: string) => {
+    setInput(input.slice(0, t.start) + text + input.slice(t.end));
+    pendingCaret.current = t.start + text.length;
+    setPastes((prev) => {
+      const rest = { ...prev[draftKey] };
+      delete rest[t.id];
+      return { ...prev, [draftKey]: rest };
+    });
+  };
+  const onComposerPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const text = e.clipboardData.getData("text/plain");
+    const lines = text.split("\n").length;
+    if (lines <= 6 && text.length <= 500) return;
+    e.preventDefault();
+    const { selectionStart: start, selectionEnd: end } = e.currentTarget;
+    const id = ++pasteSeq.current;
+    const token = `[Pasted text #${id} +${lines} lines]`;
+    setInput(input.slice(0, start) + token + input.slice(end));
+    pendingCaret.current = start + token.length;
+    setPastes((prev) => ({ ...prev, [draftKey]: { ...prev[draftKey], [id]: text } }));
+  };
+  const onComposerClick = (e: MouseEvent<HTMLTextAreaElement>) => {
+    const pos = e.currentTarget.selectionStart;
+    const t = pasteTokens(input).find((tok) => pos >= tok.start && pos <= tok.end);
+    const text = t && pastes[draftKey]?.[t.id];
+    if (t && text !== undefined) replacePasteToken(t, text);
+  };
+  const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    // A token is one unit: Backspace/Delete at its edge removes it whole.
+    const { selectionStart: pos, selectionEnd } = e.currentTarget;
+    if ((e.key === "Backspace" || e.key === "Delete") && pos === selectionEnd) {
+      const t = pasteTokens(input).find((tok) =>
+        e.key === "Backspace" ? tok.end === pos : tok.start === pos,
+      );
+      if (t) {
+        e.preventDefault();
+        replacePasteToken(t, "");
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
   };
 
   const openSettings = () => {
@@ -2116,38 +2216,42 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {(thread?.messages ?? []).map((m) => (
-                <div
-                  key={m.id}
-                  className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${isFailedBlock(m) ? " failed" : ""}`}
-                >
-                  <div className="who">
-                    <span className="role">
-                      {m.author === "user"
-                        ? "You"
-                        : m.author === "steering"
-                          ? "Steering"
-                          : m.author === "system"
-                            ? "System"
-                            : m.author === "shell"
-                              ? "Shell"
-                              : "Orchestrator"}
-                    </span>
+              {groupTurns(thread?.messages ?? []).map((turn) => (
+                <section className="turn" key={turn[0].id}>
+                  {turn.map((m) => (
+                  <div
+                    key={m.id}
+                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${isFailedBlock(m) ? " failed" : ""}`}
+                  >
+                    <div className="who">
+                      <span className="role">
+                        {m.author === "user"
+                          ? "You"
+                          : m.author === "steering"
+                            ? "Steering"
+                            : m.author === "system"
+                              ? "System"
+                              : m.author === "shell"
+                                ? "Shell"
+                                : "Orchestrator"}
+                      </span>
+                    </div>
+                    <div className="msg-actions">
+                      <button
+                        onClick={() =>
+                          navigator.clipboard.writeText(m.text).catch(() => setError("Could not copy"))
+                        }
+                        title="Copy this block"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="body">
+                      <Markdown text={m.text} />
+                    </div>
                   </div>
-                  <div className="msg-actions">
-                    <button
-                      onClick={() =>
-                        navigator.clipboard.writeText(m.text).catch(() => setError("Could not copy"))
-                      }
-                      title="Copy this block"
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  <div className="body">
-                    <Markdown text={m.text} />
-                  </div>
-                </div>
+                  ))}
+                </section>
               ))}
               {running.length > 0 && (
                 <div className="activity">
@@ -2201,7 +2305,10 @@ export default function App() {
             >
               <div className="box">
                 <textarea
+                  ref={taRef}
                   rows={1}
+                  onPaste={onComposerPaste}
+                  onClick={onComposerClick}
                   placeholder={
                     running.length > 0
                       ? "Steer the orchestrator — it lands on the next pass…"
@@ -2209,12 +2316,7 @@ export default function App() {
                   }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      send();
-                    }
-                  }}
+                  onKeyDown={onComposerKeyDown}
                 />
                 <MicButton
                   onText={(t) => setInput(t)}
@@ -2232,9 +2334,9 @@ export default function App() {
                   </span>
                 )}
                 <button
-                  className={`model-btn${modelConfigOpen ? " open" : ""}`}
-                  onClick={toggleModelConfig}
-                  aria-expanded={modelConfigOpen}
+                  className={`model-btn${modelsOpen ? " open" : ""}`}
+                  onClick={toggleModels}
+                  aria-expanded={modelsOpen}
                   title="Pick the harness and model each role runs on"
                 >
                   <svg
@@ -2277,90 +2379,7 @@ export default function App() {
                   </svg>
                   Council
                 </button>
-                {settings && (
-                  <div className="model-summary">
-                    {thread?.autoMode && <span className="ms-auto">auto</span>}
-                    {settings.roles.map((r) => (
-                      <span key={r.id}>
-                        {r.name} <b>{r.model || "default"}</b> {r.harness}
-                      </span>
-                    ))}
-                  </div>
-                )}
               </div>
-              {modelConfigOpen && (
-                <div className="model-panel">
-                  {!settings && <p className="hint">Loading roles…</p>}
-                  {settings && (
-                    <>
-                      <div
-                        className={`toggle${thread?.autoMode ? " on" : ""}`}
-                        {...switchProps(!!thread?.autoMode, () =>
-                          thread && toggle("autoMode", !thread.autoMode),
-                        )}
-                        title="Auto mode: the orchestrator picks each task's model and harness"
-                      >
-                        <span className="sw" /> Auto mode
-                      </div>
-                      <p className="hint">
-                        {thread?.autoMode
-                          ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
-                          : "Each role runs on its own harness and model. Changes apply to the next turn."}
-                      </p>
-                      {settings.roles.map((r) => {
-                        const parked = !!thread?.autoMode && r.id !== "orchestrator";
-                        return (
-                          <div
-                            className={`role-edit${parked ? " parked" : ""}`}
-                            key={r.id}
-                            title={
-                              parked
-                                ? "Parked while auto mode is on — the orchestrator decides this role's runtime"
-                                : undefined
-                            }
-                          >
-                            <span className="rn">{r.name}</span>
-                            <Dropdown
-                              value={r.harness}
-                              options={harnessOptionsFor(r.harness)}
-                              disabled={parked}
-                              onChange={(v) => {
-                                const row = { ...r, harness: v };
-                                updateRole(r.id, { harness: v });
-                                persistRole(row).catch(() => undefined);
-                                refreshModels(v).catch(() => undefined);
-                              }}
-                            />
-                            <Dropdown
-                              value={r.model}
-                              options={modelOptions(r.harness, r.model)}
-                              searchable
-                              placeholder="model (default)"
-                              disabled={parked}
-                              onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                              addLabel="Add model"
-                              onAdd={(m) => {
-                                addModel(r.harness, m)
-                                  .then(() => {
-                                    const row = { ...r, model: m };
-                                    updateRole(r.id, { model: m });
-                                    persistRole(row).catch(() => undefined);
-                                  })
-                                  .catch(() => undefined);
-                              }}
-                              onChange={(v) => {
-                                const row = { ...r, model: v };
-                                updateRole(r.id, { model: v });
-                                persistRole(row).catch(() => undefined);
-                              }}
-                            />
-                          </div>
-                        );
-                      })}
-                    </>
-                  )}
-                </div>
-              )}
             </div>
           </>
         ) : tab === "review" ? (
@@ -2475,7 +2494,89 @@ export default function App() {
         )}
 
         <div className="aside-body">
-          {asideActive === "agents" ? (
+          {asideActive === "models" ? (
+            <div className="aside-models">
+        {settings && (
+          <div className="model-summary">
+            {thread?.autoMode && <span className="ms-auto">auto</span>}
+            {settings.roles.map((r) => (
+              <span key={r.id}>
+                {r.name} <b>{r.model || "default"}</b> {r.harness}
+              </span>
+            ))}
+          </div>
+        )}
+          {!settings && <p className="hint">Loading roles…</p>}
+          {settings && (
+            <>
+              <div
+                className={`toggle${thread?.autoMode ? " on" : ""}`}
+                {...switchProps(!!thread?.autoMode, () =>
+                  thread && toggle("autoMode", !thread.autoMode),
+                )}
+                title="Auto mode: the orchestrator picks each task's model and harness"
+              >
+                <span className="sw" /> Auto mode
+              </div>
+              <p className="hint">
+                {thread?.autoMode
+                  ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
+                  : "Each role runs on its own harness and model. Changes apply to the next turn."}
+              </p>
+              {settings.roles.map((r) => {
+                const parked = !!thread?.autoMode && r.id !== "orchestrator";
+                return (
+                  <div
+                    className={`role-edit${parked ? " parked" : ""}`}
+                    key={r.id}
+                    title={
+                      parked
+                        ? "Parked while auto mode is on — the orchestrator decides this role's runtime"
+                        : undefined
+                    }
+                  >
+                    <span className="rn">{r.name}</span>
+                    <Dropdown
+                      value={r.harness}
+                      options={harnessOptionsFor(r.harness)}
+                      disabled={parked}
+                      onChange={(v) => {
+                        const row = { ...r, harness: v };
+                        updateRole(r.id, { harness: v });
+                        persistRole(row).catch(() => undefined);
+                        refreshModels(v).catch(() => undefined);
+                      }}
+                    />
+                    <Dropdown
+                      value={r.model}
+                      options={modelOptions(r.harness, r.model)}
+                      searchable
+                      placeholder="model (default)"
+                      disabled={parked}
+                      onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
+                      addLabel="Add model"
+                      onAdd={(m) => {
+                        addModel(r.harness, m)
+                          .then(() => {
+                            const row = { ...r, model: m };
+                            updateRole(r.id, { model: m });
+                            persistRole(row).catch(() => undefined);
+                          })
+                          .catch(() => undefined);
+                      }}
+                      onChange={(v) => {
+                        const row = { ...r, model: v };
+                        updateRole(r.id, { model: v });
+                        persistRole(row).catch(() => undefined);
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </>
+          )}
+            </div>
+          ) : asideActive === "agents" ? (
             <>
               <div className="section">
                 <h3>
