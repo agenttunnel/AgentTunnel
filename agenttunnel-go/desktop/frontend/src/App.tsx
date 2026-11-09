@@ -31,6 +31,8 @@ import {
   clampWidth,
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
+import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
+import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView } from "./components/DiffView";
@@ -162,7 +164,7 @@ type SettingsView = {
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr" | "stats" | "models";
+type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr" | "stats" | "models" | "council";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -174,6 +176,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   pr: { label: "Pull request", key: "P" },
   stats: { label: "Harness stats", key: "H" },
   models: { label: "Models", key: "L" },
+  council: { label: "Council", key: "O" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -393,118 +396,6 @@ function clickable(onActivate: () => void) {
   };
 }
 
-/** Minimal typings for the Web Speech API (nonstandard, prefixed in WebKit). */
-type SpeechRecognitionLike = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  start(): void;
-  stop(): void;
-  onresult:
-    | ((e: {
-        resultIndex: number;
-        results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
-      }) => void)
-    | null;
-  onerror: ((e: { error?: string }) => void) | null;
-  onend: (() => void) | null;
-};
-
-function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
-  const w = window as unknown as Record<string, unknown>;
-  return (w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null) as
-    | (new () => SpeechRecognitionLike)
-    | null;
-}
-
-/**
- * MicButton dictates into a text callback using the Web Speech API when the
- * webview provides it. When it does not (Wails' WebKit on macOS, for one), the
- * button degrades to a pointer at the OS dictation shortcut instead of a lying
- * control.
- */
-function MicButton({
-  onText,
-  disabled,
-  onUnavailable,
-}: {
-  onText: (text: string) => void;
-  disabled?: boolean;
-  onUnavailable?: (msg: string) => void;
-}) {
-  const [listening, setListening] = useState(false);
-  const recRef = useRef<SpeechRecognitionLike | null>(null);
-
-  const stop = () => {
-    recRef.current?.stop();
-    recRef.current = null;
-    setListening(false);
-  };
-
-  const toggle = () => {
-    if (listening) {
-      stop();
-      return;
-    }
-    const Ctor = getSpeechRecognition();
-    if (!Ctor) {
-      onUnavailable?.(
-        "Dictation is not available in this webview. Use your OS dictation instead (macOS: Edit ▸ Start Dictation, or press Fn Fn).",
-      );
-      return;
-    }
-    const rec = new Ctor();
-    rec.lang = navigator.language || "en-US";
-    rec.continuous = true;
-    rec.interimResults = false;
-    rec.onresult = (e) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const res = e.results[i];
-        if (res.isFinal) onText(res[0].transcript);
-      }
-    };
-    rec.onerror = () => stop();
-    rec.onend = () => {
-      recRef.current = null;
-      setListening(false);
-    };
-    recRef.current = rec;
-    rec.start();
-    setListening(true);
-  };
-
-  useEffect(() => () => recRef.current?.stop(), []);
-
-  return (
-    <button
-      className={`mic-btn${listening ? " on" : ""}`}
-      onClick={toggle}
-      disabled={disabled}
-      title={
-        listening
-          ? "Stop dictation"
-          : "Dictate your message (falls back to OS dictation when unavailable)"
-      }
-    >
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <rect x="9" y="3" width="6" height="11" rx="3" />
-        <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-      </svg>
-      {listening ? "Stop" : "Dictate"}
-    </button>
-  );
-}
-
 /** fmtIdleDuration renders an age as "45s" / "12m" / "3h 05m" / "4d". */
 function fmtIdleDuration(ms: number): string {
   const mins = Math.floor(ms / 60_000);
@@ -563,6 +454,7 @@ export default function App() {
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
+  const sendingRef = useRef(false);
   /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
   const [shellThread, setShellThread] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -622,7 +514,6 @@ export default function App() {
 
   // Council of agents: convene several perspectives on one question and let
   // them debate to a synthesized outcome.
-  const [councilOpen, setCouncilOpen] = useState(false);
   const [councilTopic, setCouncilTopic] = useState("");
   const [councilRounds, setCouncilRounds] = useState(2);
   const [councilMembers, setCouncilMembers] = useState<CouncilMemberRow[]>([
@@ -663,6 +554,11 @@ export default function App() {
   const input = drafts[draftKey] ?? "";
   // Mirrors send(): a leading "!" (after trimming) runs a shell command.
   const commandMode = input.trimStart().startsWith("!");
+  // Read by openPanel (a stable callback) to seed the council topic from the draft.
+  const draftRef = useRef("");
+  useEffect(() => {
+    draftRef.current = expandPastes(input, pastes[draftKey]).trim();
+  }, [input, pastes, draftKey]);
   const setInput = useCallback(
     (text: string) => {
       if (!activeId) return;
@@ -705,6 +601,15 @@ export default function App() {
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [thread?.messages?.length, thread?.messages?.[thread.messages.length - 1]?.text, live.length]);
+
+  // Live log follows the newest output, unless the user scrolled up to read.
+  const actBodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = actBodyRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [live]);
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -809,6 +714,7 @@ export default function App() {
   }, []);
 
   const openPanel = useCallback((id: AsideTabId) => {
+    if (id === "council" && draftRef.current) setCouncilTopic(draftRef.current);
     setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setAsideActive(id);
   }, []);
@@ -1479,7 +1385,9 @@ export default function App() {
   const send = async () => {
     const rpc = rpcRef.current;
     const text = expandPastes(input, pastes[draftKey]).trim();
-    if (!rpc || !activeId || !text) return;
+    // The ref closes the window before React re-renders with busy=true, so a
+    // second Enter in that gap cannot submit the same draft again.
+    if (!rpc || !activeId || !text || busy || sendingRef.current) return;
     // "! cmd" runs a shell command in the thread's project. A lone "!" is just text.
     const command = text.startsWith("!") ? text.slice(1).trim() : "";
     // While a turn is running, a message steers the orchestrator's next pass
@@ -1496,6 +1404,7 @@ export default function App() {
       delete rest[draftKey];
       return rest;
     });
+    sendingRef.current = true;
     setBusy(true);
     if (command) setShellThread(activeId);
     try {
@@ -1510,6 +1419,7 @@ export default function App() {
       setPastes((prev) => ({ ...prev, [draftKey]: sentPastes ?? {} }));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      sendingRef.current = false;
       setBusy(false);
       setShellThread(null);
       refresh(activeId).catch(() => undefined);
@@ -1560,13 +1470,6 @@ export default function App() {
     if (activeId) refresh(activeId).catch(() => undefined);
   };
 
-  /** Opens the council sheet, seeding the topic from the composer draft. */
-  const openCouncil = () => {
-    const topic = expandPastes(input, pastes[draftKey]).trim();
-    if (topic) setCouncilTopic(topic);
-    setCouncilOpen(true);
-  };
-
   const updateCouncilMember = (idx: number, patch: Partial<CouncilMemberRow>) => {
     setCouncilMembers((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
   };
@@ -1577,7 +1480,6 @@ export default function App() {
     const rpc = rpcRef.current;
     const topic = councilTopic.trim();
     if (!rpc || !activeId || !topic) return;
-    setCouncilOpen(false);
     setInput("");
     setBusy(true);
     try {
@@ -1687,7 +1589,33 @@ export default function App() {
     const text = t && pastes[draftKey]?.[t.id];
     if (t && text !== undefined) replacePasteToken(t, text);
   };
+  // Dictated text lands after whatever is already typed.
+  // Functional update: one onresult can carry several final phrases, and each
+  // must build on the previous one rather than the render-time draft.
+  const appendDictation = (text: string) => {
+    const spoken = text.trim();
+    if (!spoken || !activeId) return;
+    setDrafts((prev) => {
+      const cur = prev[draftKey] ?? "";
+      const next = cur && !/\s$/.test(cur) ? `${cur} ${spoken}` : `${cur}${spoken}`;
+      return { ...prev, [draftKey]: next };
+    });
+  };
+  const listening = useHoldToTalk({
+    enabled: !!activeId,
+    onText: appendDictation,
+    onUnavailable: (msg) => setError(msg),
+  });
+  useRotatingPlaceholder(taRef, {
+    rotate: tab === "chat" && !!activeId && running.length === 0 && !input,
+    idle:
+      running.length > 0
+        ? "Steer the orchestrator — it lands on the next pass…"
+        : "Ask the team to build something, or ! to run a shell command…",
+  });
   const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter confirms an IME candidate during composition; it must not submit.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     // A token is one unit: Backspace/Delete at its edge removes it whole.
     const { selectionStart: pos, selectionEnd } = e.currentTarget;
     if ((e.key === "Backspace" || e.key === "Delete") && pos === selectionEnd) {
@@ -2328,7 +2256,7 @@ export default function App() {
                 </section>
               ))}
               {running.length > 0 && (
-                <div className="activity">
+                <div className="activity agents">
                   <div className="act-head">
                     <span className="act-led" />
                     <span className="act-label">
@@ -2344,7 +2272,7 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  <div className="act-body">
+                  <div className="act-body" ref={actBodyRef}>
                     {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
                     {live.slice(-60).map((l, i) =>
                       l.kind === "text" || l.kind === "reasoning" ? (
@@ -2383,23 +2311,10 @@ export default function App() {
                   rows={1}
                   onPaste={onComposerPaste}
                   onClick={onComposerClick}
-                  placeholder={
-                    running.length > 0
-                      ? "Steer the orchestrator — it lands on the next pass…"
-                      : "Ask the team to build something, or ! to run a shell command…"
-                  }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={onComposerKeyDown}
                 />
-                <MicButton
-                  onText={(t) => setInput(t)}
-                  disabled={!activeId}
-                  onUnavailable={(msg) => setError(msg)}
-                />
-                <button className="primary" onClick={send} disabled={busy || !activeId}>
-                  {running.length > 0 ? "Steer" : "Send"}
-                </button>
               </div>
               <div className="composer-foot">
                 {selectedProject && (
@@ -2430,29 +2345,12 @@ export default function App() {
                   </svg>
                   Model config
                 </button>
-                <button
-                  className="model-btn"
-                  onClick={openCouncil}
-                  title="Convene a council: several agents debate one question in parallel rounds and reach a synthesized outcome"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <circle cx="12" cy="7" r="2.4" />
-                    <circle cx="5" cy="17" r="2.4" />
-                    <circle cx="19" cy="17" r="2.4" />
-                    <path d="M10.2 8.9 6.7 14.8M13.8 8.9l3.5 5.9M7.4 17h9.2" />
-                  </svg>
-                  Council
-                </button>
+                {listening && (
+                  <span className="rec-indicator" role="status">
+                    <span className="rec-dot" />
+                    Listening — release {HOLD_MOD_LABEL} + T to insert
+                  </span>
+                )}
               </div>
             </div>
           </>
@@ -3056,50 +2954,10 @@ export default function App() {
               onRefresh={() => loadFileTree(activeId)}
             />
           </div>
-        ) : (
-          <>
-            <div className="section diff-section">
-              {diffError && <div className="empty err-text">{diffError}</div>}
-              <DiffView
-                diff={diff}
-                idPrefix="aside-"
-                title={thread?.title ?? "Working tree"}
-                comments={comments}
-                draft={draft}
-                emptyText="No changes in the working tree."
-                onLineClick={(file, line) => setDraft({ file, line, body: "" })}
-                onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
-                onAddComment={() => addComment().catch(() => undefined)}
-                onCancelDraft={() => setDraft(null)}
-                onRefresh={() => loadDiff(activeId)}
-              />
-            </div>
-            {reviewComments}
-          </>
-        )}
-        </div>
-      </div>
-
-      {detailAgent && (
-        <AgentDetail
-          agent={detailAgent}
-          steps={thread?.steps?.[detailAgent.id] ?? []}
-          logs={logs}
-          roleName={rolesById[detailAgent.role] || detailAgent.role}
-          onClose={() => setDetailId(null)}
-        />
-      )}
-
-      {councilOpen && activeId && (
-        <div className="overlay" onClick={() => setCouncilOpen(false)}>
-          <div className="sheet council-sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-head">
-              <strong>Convene a council</strong>
-              <div className="sheet-head-right">
-                <button onClick={() => setCouncilOpen(false)}>Close</button>
-              </div>
-            </div>
-            <div className="sheet-body">
+        ) : asideActive === "council" ? (
+          <div className="section council-section">
+            {!activeId && <p className="hint">Open a thread to convene a council.</p>}
+            <div className="council-pane">
               <label className="field">
                 <span>The question to debate</span>
                 <textarea
@@ -3204,7 +3062,7 @@ export default function App() {
               <div className="sheet-actions">
                 <button
                   className="primary"
-                  disabled={!councilTopic.trim() || councilMembers.length < 2 || busy}
+                  disabled={!activeId || !councilTopic.trim() || councilMembers.length < 2 || busy}
                   onClick={startCouncil}
                 >
                   Convene council
@@ -3212,7 +3070,38 @@ export default function App() {
               </div>
             </div>
           </div>
+        ) : (
+          <>
+            <div className="section diff-section">
+              {diffError && <div className="empty err-text">{diffError}</div>}
+              <DiffView
+                diff={diff}
+                idPrefix="aside-"
+                title={thread?.title ?? "Working tree"}
+                comments={comments}
+                draft={draft}
+                emptyText="No changes in the working tree."
+                onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+                onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
+                onAddComment={() => addComment().catch(() => undefined)}
+                onCancelDraft={() => setDraft(null)}
+                onRefresh={() => loadDiff(activeId)}
+              />
+            </div>
+            {reviewComments}
+          </>
+        )}
         </div>
+      </div>
+
+      {detailAgent && (
+        <AgentDetail
+          agent={detailAgent}
+          steps={thread?.steps?.[detailAgent.id] ?? []}
+          logs={logs}
+          roleName={rolesById[detailAgent.role] || detailAgent.role}
+          onClose={() => setDetailId(null)}
+        />
       )}
 
       {settingsOpen && settings && (

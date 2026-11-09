@@ -689,9 +689,9 @@ body.is-resizing * {
 }
 
 .composer {
-  background: var(--surface-1);
-  border-top: 1px solid var(--border);
-  padding: 12px 24px 14px;
+  background: var(--bg);
+  border-top: 1px solid var(--border-soft);
+  padding: 10px 20px 12px;
   transition: border-color var(--dur) ease;
 }
 .composer:focus-within {
@@ -701,18 +701,24 @@ body.is-resizing * {
   max-width: 900px;
   margin: 0 auto;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: flex-end;
-  padding: 7px;
-  background: var(--surface-2);
+  padding: 5px 6px 5px 12px;
+  background: var(--surface-1);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 10px;
   transition: border-color var(--dur) ease;
 }
 .composer .box:focus-within {
   border-color: var(--accent-line);
 }
 /* Agent mode (steering a running turn): violet is reserved for it. */
+.composer:not(.command-mode) .box::before {
+  content: "›";
+  align-self: center;
+  font: 600 14px/1 var(--mono);
+  color: var(--faint);
+}
 .composer.agent-mode .box {
   background: var(--agent-soft);
   border-color: var(--agent-line);
@@ -747,24 +753,18 @@ body.is-resizing * {
 }
 .composer textarea {
   resize: none;
-  min-height: 40px;
+  min-height: 34px;
   max-height: 260px;
   overflow-y: auto;
   flex: 1;
   background: transparent;
   border: 0;
-  border-radius: var(--r-md);
-  padding: 8px 9px;
-  font-size: 13px;
-  line-height: 1.5;
+  border-radius: var(--r-sm);
+  padding: 7px 4px;
+  font: 12.5px/1.55 var(--mono);
 }
 .composer textarea:focus {
   border: 0;
-}
-.composer .primary {
-  height: 36px;
-  padding: 0 16px;
-  flex: none;
 }
 /* Context chip: read-only project name, already held by the client. */
 .ctx-chip {
@@ -783,7 +783,7 @@ body.is-resizing * {
 }
 .composer-foot {
   max-width: 900px;
-  margin: 9px auto 0;
+  margin: 7px auto 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -794,9 +794,10 @@ body.is-resizing * {
   color: var(--faint);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  padding: 5px 8px;
+  gap: 5px;
+  font: 11px/1 var(--mono);
+  padding: 4px 7px;
+  border-radius: var(--r-sm);
   flex-shrink: 0;
 }
 .model-btn:hover:not(:disabled) {
@@ -867,33 +868,24 @@ body.is-resizing * {
 .turn .msg.user {
   background: var(--surface-2);
 }
-.mic-btn {
-  flex: none;
+
+/* Listening state for hold-to-talk: a static dot and a mono label, no animation. */
+.rec-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 36px;
-  padding: 0 10px;
-  font-size: 11.5px;
-  border-radius: 9px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--faint);
-  cursor: pointer;
-}
-.mic-btn:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--panel-2);
-  border-color: var(--border-soft);
-}
-.mic-btn.on {
+  gap: 6px;
+  margin-left: auto;
+  padding-right: 4px;
+  font: 10.5px/1 var(--mono);
+  letter-spacing: 0.02em;
   color: var(--err);
-  border-color: rgba(240, 133, 133, 0.28);
-  background: rgba(240, 133, 133, 0.08);
+  white-space: nowrap;
 }
-.mic-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
+.rec-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--err);
 }
 
 .role-edit {
@@ -957,6 +949,13 @@ body.is-resizing * {
 .act-head .stop-btn {
   margin-left: auto;
 }
+/* While agents run, the log takes most of the viewport and fills it. */
+.activity.agents {
+  height: 62vh;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
 .act-body {
   padding: 10px 12px;
   font-family: var(--mono);
@@ -964,6 +963,14 @@ body.is-resizing * {
   line-height: 1.6;
   max-height: 320px;
   overflow: auto;
+}
+.activity.agents .act-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.activity.agents .act-head {
+  flex: none;
 }
 @keyframes act-pulse {
   0%,
@@ -1163,9 +1170,10 @@ body.is-resizing * {
 .aside-tabs {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 9px 10px;
+  gap: 1px;
+  padding: 5px 6px;
   border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
   flex: none;
   overflow-x: auto;
   scrollbar-width: none;
@@ -1174,8 +1182,9 @@ body.is-resizing * {
   display: none;
 }
 .aside-tabs .tab {
-  padding: 5px 9px;
-  font-size: 12px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  border-radius: var(--r-sm);
 }
 .aside-body {
   flex: 1;
@@ -2850,19 +2859,39 @@ table.grid tr.rowlink:hover td {
 }
 
 /* --- council ------------------------------------------------------------ */
-.council-sheet {
-  max-width: 640px;
-  width: min(640px, calc(100vw - 48px));
+.council-section {
+  padding: 10px 10px 12px;
+}
+.council-section > .hint {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.council-pane .field > span,
+.council-pane .field-label {
+  font: 10.5px/1.3 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.council-pane textarea,
+.council-pane input {
+  background: var(--bg);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+}
+.council-pane .sheet-actions {
+  margin-top: 10px;
 }
 .council-members {
-  margin-top: 16px;
+  margin-top: 12px;
 }
 .council-member {
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 9px 10px;
-  margin-bottom: 8px;
-  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px;
+  margin-bottom: 6px;
+  background: var(--surface-1);
 }
 
 /* --- graph -------------------------------------------------------------- */
