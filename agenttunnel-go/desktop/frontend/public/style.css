@@ -1418,9 +1418,43 @@ table.grid tr.rowlink:hover td {
 }
 .files-section,
 .diff-section,
-.pr-section {
+.pr-section,
+.stats-section {
   padding-left: 12px;
   padding-right: 12px;
+}
+/* Harness stats: a plain table with one bar per harness, scaled by agent count. */
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.stats-table th,
+.stats-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.stats-table th {
+  color: var(--faint);
+  font-weight: 500;
+}
+.stats-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.stats-name {
+  color: var(--text);
+}
+.stats-bar {
+  height: 3px;
+  margin-top: 4px;
+  max-width: 100%;
+  border-radius: 2px;
+  background: var(--accent-line);
 }
 .panel-bar {
   display: flex;
