@@ -231,12 +231,9 @@ type PeerMailboxSet struct{ Enabled bool }
 
 func (PeerMailboxSet) eventType() EventType { return EvtPeerMailboxSet }
 
-// MaxLeads bounds a thread's orchestrator team. One lead is the classic single
-// orchestrator; more lead a discussion among peers that agree on the plan.
-const MaxLeads = 3
-
-// LeadsSet sets how many orchestrators lead a thread's turns. Threads with no
-// LeadsSet event have one lead.
+// LeadsSet sets how many orchestrators lead a thread's turns. One lead is the
+// classic single orchestrator; more lead a discussion among peers that agree on
+// the plan. Threads with no LeadsSet event have one lead.
 type LeadsSet struct{ Count int }
 
 func (LeadsSet) eventType() EventType { return EvtLeadsSet }
