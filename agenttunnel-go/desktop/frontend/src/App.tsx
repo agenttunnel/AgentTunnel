@@ -519,15 +519,11 @@ export default function App() {
   const [harnessStats, setHarnessStats] = useState<HarnessStat[]>([]);
   const [harnessLoading, setHarnessLoading] = useState(false);
   const [harnessError, setHarnessError] = useState<string | null>(null);
-  // Worktrees: per open project, live git facts from worktree.list. The "Create
-  // worktree now" toggle is a local preference sent as `worktree` on thread.create;
-  // it changes only when a worktree is cut, never whether one is.
+  // Worktrees: per open project, live git facts from worktree.list. Every thread
+  // in a git project gets one, so the UI offers no choice about it.
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
-  const [worktreeForNewThreads, setWorktreeForNewThreads] = useState<boolean>(
-    () => window.localStorage.getItem("at.worktreeNewThreads") === "1",
-  );
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -868,11 +864,6 @@ export default function App() {
     lastThreadByProject.current[projectId] = threadId;
     setActiveId(threadId);
     setTab("chat");
-  };
-
-  const setWorktreeNewThreads = (on: boolean) => {
-    setWorktreeForNewThreads(on);
-    window.localStorage.setItem("at.worktreeNewThreads", on ? "1" : "0");
   };
 
   // --- thread context-menu actions ---------------------------------------
@@ -1460,10 +1451,7 @@ export default function App() {
     if (!rpc || !projectId) return;
     // No title: the server names it, and the orchestrator model renames it after
     // the first exchange.
-    const created = await rpc.call<{ threadId: string }>("thread.create", {
-      projectId,
-      worktree: worktreeForNewThreads,
-    });
+    const created = await rpc.call<{ threadId: string }>("thread.create", { projectId });
     const list = await rpc.call<ThreadSummary[]>("thread.list");
     setThreads(list);
     selectThread(created.threadId);
@@ -3088,8 +3076,6 @@ export default function App() {
               projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
               worktrees={worktrees}
               threads={threads}
-              newThreadsUseWorktree={worktreeForNewThreads}
-              onToggleNewThreads={setWorktreeNewThreads}
               loading={worktreesLoading}
               error={worktreesError}
               onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
