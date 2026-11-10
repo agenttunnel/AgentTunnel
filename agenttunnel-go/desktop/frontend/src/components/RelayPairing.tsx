@@ -205,8 +205,7 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
               <div className="relay-code-col">
                 <div className="relay-code">{offer.code}</div>
                 <p className="hint">
-                  Scan the QR code, or enter the relay URL and this code on the phone. Single use.
-                  Expires at{" "}
+                  Scan with a QR app, or type the code in the phone app. Single use. Expires at{" "}
                   {new Date(offer.expires).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.
                 </p>
               </div>
