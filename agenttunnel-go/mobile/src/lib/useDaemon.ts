@@ -208,6 +208,12 @@ export function useDaemon(
         }
         if (isStateFrame(frame)) scheduleRefresh();
       },
+      // The daemon dropped events for this phone. Re-read, as after a reconnect.
+      onResync: () => {
+        refreshListRef.current().catch(() => undefined);
+        const id = activeRef.current;
+        if (id) attachRef.current(id);
+      },
     });
     rpcRef.current = rpc;
     rpc.start();
