@@ -13,12 +13,24 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
+
+// stringList is a repeatable string flag, as in --option a --option b.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
 
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread|ask> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -35,6 +47,12 @@ func Run(args []string) int {
 	summary := fs.String("summary", "", "summary for done")
 	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message)")
 	status := fs.String("status", "", "todo|doing|done (for task-update)")
+	question := fs.String("question", "", "the question to ask the human (for ask)")
+	questionKind := fs.String("kind", "", "choice|multi|text: the shape of the answer (for ask)")
+	var options stringList
+	fs.Var(&options, "option", "an answer option; repeat for each (for ask)")
+	notify := fs.String("notify", "", "agent or 'orchestrator' that also hears the answer (for ask)")
+	timeout := fs.Int("timeout", 0, "seconds to wait for the answer, default 600, max 3600 (for ask)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -55,6 +73,13 @@ func Run(args []string) int {
 	}
 	if *summary != "" {
 		payload["text"] = *summary
+	}
+	if kind == "ask" {
+		payload["text"] = *question
+		payload["to"] = *notify
+		payload["questionKind"] = *questionKind
+		payload["options"] = []string(options)
+		payload["timeoutSec"] = *timeout
 	}
 	if *dependsOn != "" {
 		payload["dependsOn"] = strings.Split(*dependsOn, ",")
@@ -96,6 +121,9 @@ func Run(args []string) int {
 		fmt.Fprintf(os.Stderr, "tool: %s: %s\n", resp.Status, strings.TrimSpace(string(msg)))
 		return 1
 	}
+	if kind == "ask" {
+		return printAnswer(resp.Body)
+	}
 	if kind == "task-list" {
 		// A list is the answer itself, so it is printed as the daemon sends it.
 		out, err := io.ReadAll(resp.Body)
@@ -119,4 +147,43 @@ func Run(args []string) int {
 	}
 	fmt.Println("ok")
 	return 0
+}
+
+// askReply is the daemon's answer to `tool ask`: the answer, or why the
+// question closed without one.
+type askReply struct {
+	Answered bool     `json:"answered"`
+	Selected []string `json:"selected"`
+	Text     string   `json:"text"`
+	Reason   string   `json:"reason"`
+}
+
+// printAnswer shows the human's answer on stdout, where the agent reads it. A
+// dismissal is printed and succeeds, so the agent carries on without it. Any
+// other unanswered close fails the command.
+func printAnswer(body io.Reader) int {
+	var reply askReply
+	if err := json.NewDecoder(body).Decode(&reply); err != nil {
+		fmt.Fprintf(os.Stderr, "tool ask: %v\n", err)
+		return 1
+	}
+	if reply.Answered {
+		if len(reply.Selected) > 0 {
+			fmt.Printf("answer: %s\n", strings.Join(reply.Selected, ", "))
+		}
+		if reply.Text != "" {
+			label := "answer"
+			if len(reply.Selected) > 0 {
+				label = "note"
+			}
+			fmt.Printf("%s: %s\n", label, reply.Text)
+		}
+		return 0
+	}
+	if reply.Reason == contracts.ReasonQuestionDeclined {
+		fmt.Println("declined: the user dismissed the question; continue without an answer")
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "tool ask: no answer (%s)\n", reply.Reason)
+	return 1
 }

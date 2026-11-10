@@ -176,6 +176,10 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Updater:      updater,
 		Relay:        relay,
 	})
+	// Questions left open by a previous run have no caller to answer them.
+	if err := disp.CloseStaleQuestions(ctx); err != nil {
+		return nil, fmt.Errorf("close stale questions: %w", err)
+	}
 
 	srv := transport.NewServer(disp, eng, runner, opts.Token, box)
 	relay.Bind(srv)
