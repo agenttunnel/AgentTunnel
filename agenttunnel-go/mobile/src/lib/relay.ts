@@ -1,15 +1,19 @@
-// Relay transport: pairing and the JSON-RPC-over-WebSocket client the phone
-// uses to drive a user's instance. The RPC surface is the same one the desktop
-// client speaks (desktop/frontend/src/lib/rpc.ts over internal/transport):
+// Relay transport: pairing and the JSON-RPC client the phone uses to reach its
+// instance through atrelay. The wire contract is docs/relay-protocol.md.
+//
+// No secret goes in a URL. The phone opens the relay's /v1/client socket and
+// authenticates with a first frame: `pair` (with the code) to pair, or `hello`
+// (with the token) followed by `attach` to resume. After attach the socket
+// carries the daemon's own JSON-RPC, the same surface the desktop speaks:
 // request {id, method, params}, reply {id, result|error}, and pushed
-// {method: "thread.event", params} frames on the same socket.
+// {method: "thread.event", params} frames.
 
 export type RelayErrorCode =
-  | "unpublished" // the pairing exchange is not available in this build
-  | "rejected" // the relay refused the pairing code
+  | "rejected" // the address, pairing code, or relay refused the request
+  | "unpaired" // this phone's token was revoked; it must pair again
   | "unreachable" // the socket could not open or dropped
   | "offline" // a read was attempted while not connected
-  | "timeout" // no reply within the request timeout
+  | "timeout" // no reply within the deadline
   | "closed" // the client was stopped, or the socket dropped with the request in flight
   | "rpc" // the daemon replied with an error
   | "queue-full"; // too many sends are waiting for the connection
@@ -25,18 +29,53 @@ export class RelayError extends Error {
 
 /** What a successful pairing leaves on the device. The token is a secret. */
 export type Pairing = {
+  /** The relay base address the user entered, normalized. */
   relayUrl: string;
+  /** The relay's phone endpoint. It carries no secret. */
   wsUrl: string;
   token: string;
 };
 
-/** Trims and checks a relay base URL. Only http(s) is accepted. */
+const PAIR_TIMEOUT_MS = 15_000;
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+// scheme://host[:port][/path]. No userinfo, query, or fragment: none of those
+// belong in a relay address, and a secret there would be logged by proxies.
+const RELAY_URL = /^(https?|wss?):\/\/([^\s/?#@]+)(\/[^\s?#]*)?$/i;
+
+function isLocalHost(hostPort: string): boolean {
+  const host = hostPort.startsWith("[")
+    ? hostPort.slice(1, hostPort.indexOf("]"))
+    : hostPort.replace(/:\d+$/, "");
+  if (host === "localhost" || host === "::1") return true;
+  const v4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(host);
+  if (!v4) return false;
+  const a = Number(v4[1]);
+  const b = Number(v4[2]);
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+}
+
+/**
+ * Trims and checks a relay address. Any host and any path prefix are accepted,
+ * since self-hosted relays often sit behind a reverse proxy. ws:// and wss://
+ * are read as http:// and https://. Plain http is accepted only for loopback
+ * and private addresses, because the token and pairing code travel on the socket.
+ */
 export function normalizeRelayUrl(input: string): string {
   const trimmed = input.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\/[^\s/]+/i.test(trimmed)) {
-    throw new RelayError("rejected", "Enter the relay address, starting with https://");
+  const m = RELAY_URL.exec(trimmed);
+  if (!m) throw new RelayError("rejected", "Enter the relay address, for example https://relay.example.com");
+  const secure = /^(https|wss)$/i.test(m[1] ?? "");
+  const host = m[2] ?? "";
+  if (!secure && !isLocalHost(host)) {
+    throw new RelayError("rejected", "Use https:// for a relay on the internet. Plain http:// only works on this network.");
   }
-  return trimmed;
+  return `${secure ? "https" : "http"}://${host}${m[3] ?? ""}`;
+}
+
+/** The relay's phone endpoint for a normalized base address. */
+function clientSocketUrl(relayUrl: string): string {
+  return `${relayUrl.replace(/^http/i, "ws")}/v1/client`;
 }
 
 /** Pairing codes are typed by hand: spaces and dashes are ignored, case is not. */
@@ -46,41 +85,140 @@ export function normalizePairCode(input: string): string {
   return code;
 }
 
+export type RpcTimers = {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+};
+
+const defaultTimers: RpcTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/** One frame off the relay socket. Control frames carry `t`; JSON-RPC does not. */
+type Frame = {
+  t?: string;
+  ok?: boolean;
+  error?: { message?: string } | string;
+  token?: string;
+  reason?: string;
+  resync?: boolean;
+  id?: string | number;
+  result?: unknown;
+  method?: string;
+  params?: unknown;
+};
+
+function parseFrame(raw: string): Frame | null {
+  try {
+    const v: unknown = JSON.parse(raw);
+    return v !== null && typeof v === "object" ? (v as Frame) : null;
+  } catch {
+    return null;
+  }
+}
+
+function pairRefusal(code: string | undefined): RelayError {
+  switch (code) {
+    case "bad_code":
+      return new RelayError("rejected", "That code didn't work. Codes last five minutes and work once. Make a new one on your desktop.");
+    case "rate_limited":
+      return new RelayError("rejected", "Too many tries. Wait a minute, then try again.");
+    default:
+      return new RelayError("rejected", `The relay refused the pairing${code ? ` (${code})` : ""}.`);
+  }
+}
+
+export type PairOptions = {
+  /** The label this phone shows in the desktop's device list. */
+  deviceName?: string;
+  timeoutMs?: number;
+  /** Injection seams: the smoke test drives sockets and timers by hand. */
+  socketFactory?: (url: string) => WebSocket;
+  timers?: RpcTimers;
+};
+
 /**
- * Exchanges a pairing code for the instance's WebSocket URL and token.
- *
- * The relay's pairing wire format is not published yet (no PROTOCOL note exists
- * in the repo). This is the single place that call lives: until the design
- * lands it fails with a typed "unpublished" error, so the Pair screen shows the
- * gap instead of guessing a contract.
+ * Redeems a pairing code at the relay and returns what the phone keeps: the
+ * instance's socket endpoint and this phone's token. The code travels in a
+ * `pair` frame, never in a URL. The relay makes it single use.
  */
-export async function exchangePairCode(relayUrl: string, code: string): Promise<Pairing> {
-  normalizeRelayUrl(relayUrl);
-  normalizePairCode(code);
-  throw new RelayError(
-    "unpublished",
-    "Pairing is not available yet: the relay protocol has not been published.",
-  );
+export async function exchangePairCode(relayUrl: string, code: string, opts: PairOptions = {}): Promise<Pairing> {
+  const base = normalizeRelayUrl(relayUrl);
+  const pairCode = normalizePairCode(code);
+  const wsUrl = clientSocketUrl(base);
+  const timers = opts.timers ?? defaultTimers;
+  const makeSocket = opts.socketFactory ?? ((url: string) => new WebSocket(url));
+  const unreachable = () => new RelayError("unreachable", "Could not reach the relay. Check the address and your connection.");
+
+  return new Promise<Pairing>((resolve, reject) => {
+    let done = false;
+    let timer: unknown = null;
+    let ws: WebSocket | null = null;
+    const finish = (settle: () => void): void => {
+      if (done) return;
+      done = true;
+      if (timer !== null) timers.clear(timer);
+      ws?.close();
+      settle();
+    };
+
+    try {
+      ws = makeSocket(wsUrl);
+    } catch {
+      reject(unreachable());
+      return;
+    }
+    const sock = ws;
+    timer = timers.set(
+      () => finish(() => reject(new RelayError("timeout", "The relay did not answer. Check the address and try again."))),
+      opts.timeoutMs ?? PAIR_TIMEOUT_MS,
+    );
+    sock.onopen = () => {
+      try {
+        sock.send(JSON.stringify({ t: "pair", code: pairCode, name: opts.deviceName ?? "Phone" }));
+      } catch {
+        finish(() => reject(unreachable()));
+      }
+    };
+    sock.onmessage = (ev) => {
+      const frame = parseFrame(String(ev.data));
+      if (frame?.t !== "ack") return;
+      if (frame.ok !== true) {
+        const code = typeof frame.error === "string" ? frame.error : undefined;
+        finish(() => reject(pairRefusal(code)));
+        return;
+      }
+      const token = frame.token;
+      if (!token) {
+        finish(() => reject(new RelayError("rejected", "The relay sent no token.")));
+        return;
+      }
+      finish(() => resolve({ relayUrl: base, wsUrl, token }));
+    };
+    const dropped = () => finish(() => reject(new RelayError("unreachable", "The relay closed the connection before pairing finished.")));
+    sock.onclose = dropped;
+    sock.onerror = dropped;
+  });
 }
 
 // ---------- JSON-RPC client ----------
 
 export type RpcStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
-export type RpcTimers = {
-  set(fn: () => void, ms: number): unknown;
-  clear(handle: unknown): void;
-};
-
 export type RpcOptions = {
+  /** The relay's phone endpoint, from Pairing.wsUrl. */
   wsUrl: string;
+  /** Sent in the first frame after connect. Never placed in the URL. */
   token: string;
   /** Receives every pushed thread.event frame's params. */
   onEvent: (frame: unknown) => void;
   /** Fires on every status change. `error` is set when the change is a failure. */
   onStatus: (status: RpcStatus, error?: RelayError) => void;
-  /** Fires after each (re)connect, before queued sends flush. Resubscribe here. */
+  /** Fires after each (re)connect is attached, before queued sends flush. Resubscribe here. */
   onOpen?: () => void;
+  /** The relay asked for a re-read (a daemon-side overflow dropped events). */
+  onResync?: () => void;
   requestTimeoutMs?: number;
   reconnect?: { baseMs: number; maxMs: number };
   maxQueue?: number;
@@ -103,10 +241,9 @@ type Queued = {
   reject: (err: RelayError) => void;
 };
 
-const defaultTimers: RpcTimers = {
-  set: (fn, ms) => setTimeout(fn, ms),
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
+function unpairedError(): RelayError {
+  return new RelayError("unpaired", "This phone is no longer paired. Pair it again from your desktop.");
+}
 
 export class RpcClient {
   private socket: WebSocket | null = null;
@@ -115,6 +252,9 @@ export class RpcClient {
   private attempts = 0;
   private stopped = false;
   private retryHandle: unknown = null;
+  /** Where the first-frame handshake stands: hello, then attach, then done (null). */
+  private handshake: "hello" | "attach" | null = null;
+  private handshakeTimer: unknown = null;
   private readonly pending = new Map<string, Pending>();
   private queue: Queued[] = [];
   private readonly timers: RpcTimers;
@@ -171,24 +311,26 @@ export class RpcClient {
   }
 
   stop(): void {
+    this.halt();
+  }
+
+  /** Ends the client for good: no retry, queued and in-flight requests reject. */
+  private halt(err?: RelayError): void {
     this.stopped = true;
-    if (this.retryHandle !== null) {
-      this.timers.clear(this.retryHandle);
-      this.retryHandle = null;
-    }
+    this.clearRetry();
+    this.clearHandshake();
     const ws = this.socket;
     this.socket = null;
     ws?.close();
-    this.failAll(new RelayError("closed", "Disconnected from your instance"));
-    this.setStatus("closed");
+    this.failAll(err ?? new RelayError("closed", "Disconnected from your instance"));
+    this.setStatus("closed", err);
   }
 
   private open(): void {
     this.setStatus(this.attempts === 0 ? "connecting" : "reconnecting");
-    const url = `${this.opts.wsUrl}?token=${encodeURIComponent(this.opts.token)}`;
     let ws: WebSocket;
     try {
-      ws = this.opts.socketFactory ? this.opts.socketFactory(url) : new WebSocket(url);
+      ws = this.opts.socketFactory ? this.opts.socketFactory(this.opts.wsUrl) : new WebSocket(this.opts.wsUrl);
     } catch {
       this.scheduleRetry();
       return;
@@ -196,10 +338,9 @@ export class RpcClient {
     this.socket = ws;
     ws.onopen = () => {
       if (this.socket !== ws) return;
-      this.attempts = 0;
-      this.setStatus("open");
-      this.opts.onOpen?.();
-      this.flushQueue();
+      this.armHandshake(ws);
+      this.handshake = "hello";
+      this.sendFrame(ws, { t: "hello", role: "client", token: this.opts.token });
     };
     ws.onmessage = (ev) => {
       if (this.socket === ws) this.receive(String(ev.data));
@@ -207,6 +348,7 @@ export class RpcClient {
     ws.onclose = () => {
       if (this.socket !== ws) return;
       this.socket = null;
+      this.clearHandshake();
       this.scheduleRetry();
     };
   }
@@ -221,6 +363,42 @@ export class RpcClient {
       this.retryHandle = null;
       this.open();
     }, delay);
+  }
+
+  private clearRetry(): void {
+    if (this.retryHandle !== null) {
+      this.timers.clear(this.retryHandle);
+      this.retryHandle = null;
+    }
+  }
+
+  /** A socket that does not finish hello and attach in time is dropped and retried. */
+  private armHandshake(ws: WebSocket): void {
+    this.clearHandshake();
+    this.handshakeTimer = this.timers.set(() => {
+      this.handshakeTimer = null;
+      if (this.socket !== ws) return;
+      this.socket = null;
+      this.handshake = null;
+      ws.close();
+      this.scheduleRetry();
+    }, HANDSHAKE_TIMEOUT_MS);
+  }
+
+  private clearHandshake(): void {
+    if (this.handshakeTimer !== null) {
+      this.timers.clear(this.handshakeTimer);
+      this.handshakeTimer = null;
+    }
+    this.handshake = null;
+  }
+
+  private sendFrame(ws: WebSocket, frame: object): void {
+    try {
+      ws.send(JSON.stringify(frame));
+    } catch {
+      // The socket is dead. Its close, or the handshake timer, schedules the retry.
+    }
   }
 
   private transmit(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
@@ -260,13 +438,12 @@ export class RpcClient {
   }
 
   private receive(raw: string): void {
-    let msg: { id?: string; result?: unknown; error?: { message?: string }; method?: string; params?: unknown };
-    try {
-      msg = JSON.parse(raw) as typeof msg;
-    } catch {
+    const msg = parseFrame(raw);
+    if (!msg) return;
+    if (typeof msg.t === "string") {
+      this.control(msg);
       return;
     }
-    if (!msg || typeof msg !== "object") return;
     if (msg.method === "thread.event") {
       this.opts.onEvent(msg.params);
       return;
@@ -277,8 +454,52 @@ export class RpcClient {
     if (!p) return;
     this.pending.delete(id);
     if (p.timer !== null) this.timers.clear(p.timer);
-    if (msg.error) p.reject(new RelayError("rpc", msg.error.message ?? "The daemon returned an error"));
-    else p.resolve(msg.result);
+    if (msg.error) {
+      const text = typeof msg.error === "string" ? msg.error : msg.error.message;
+      p.reject(new RelayError("rpc", text ?? "The daemon returned an error"));
+    } else {
+      p.resolve(msg.result);
+    }
+  }
+
+  private control(msg: Frame): void {
+    switch (msg.t) {
+      case "ack":
+        this.onAck(msg);
+        return;
+      case "bye":
+        // Revoked means this token is dead. Other reasons (replaced, shutdown)
+        // close the socket, and the close schedules the normal retry.
+        if (msg.reason === "revoked") this.halt(unpairedError());
+        return;
+      case "status":
+        if (msg.resync) this.opts.onResync?.();
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** Advances the handshake: hello ok sends attach; attach ok means open. */
+  private onAck(msg: Frame): void {
+    const ws = this.socket;
+    if (!ws || this.handshake === null) return;
+    if (msg.ok !== true) {
+      // A refused token is final. Other refusals make the relay close the
+      // socket, and the close schedules the retry.
+      if (msg.error === "bad_token") this.halt(unpairedError());
+      return;
+    }
+    if (this.handshake === "hello") {
+      this.handshake = "attach";
+      this.sendFrame(ws, { t: "attach" });
+      return;
+    }
+    this.clearHandshake();
+    this.attempts = 0;
+    this.setStatus("open");
+    this.opts.onOpen?.();
+    this.flushQueue();
   }
 
   private failAll(err: RelayError): void {
