@@ -19,17 +19,22 @@ import (
 
 // Protocol limits and timers, from the protocol note.
 const (
-	Version           = 1
-	MaxFrameBytes     = 4 << 20
-	HelloTimeout      = 5 * time.Second
-	PingInterval      = 30 * time.Second
-	CodeTTL           = 5 * time.Minute
-	TokenTTL          = 90 * 24 * time.Hour
-	MaxFailedPerIP    = 5
-	MaxFailedPerCode  = 20
-	FailureWindow     = time.Minute
-	OutboundQueue     = 256
-	maxClientNameRune = 64
+	Version        = 1
+	MaxFrameBytes  = 4 << 20
+	HelloTimeout   = 5 * time.Second
+	PingInterval   = 30 * time.Second
+	CodeTTL        = 5 * time.Minute
+	TokenTTL       = 90 * 24 * time.Hour
+	MaxFailedPerIP = 5
+	FailureWindow  = time.Minute
+	// MaxDaemonHellosPerIP caps daemon hello attempts per source IP per window.
+	// A daemon reconnects with backoff, so honest use stays far below it.
+	MaxDaemonHellosPerIP = 30
+	// DefaultMaxInstances caps how many daemons the relay registers (trust on
+	// first use). Options.MaxInstances overrides it.
+	DefaultMaxInstances = 1000
+	OutboundQueue       = 256
+	maxClientNameRune   = 64
 )
 
 // WebSocket close codes for auth and rate limits.
@@ -49,6 +54,7 @@ const (
 	ErrEncUnsupported     = "enc_unsupported"
 	ErrUnsupportedVersion = "unsupported_version"
 	ErrNotAttached        = "not_attached"
+	ErrTooManyInstances   = "too_many_instances"
 	errCodeDaemonOffline  = -32001
 	errCodeDaemonBusy     = -32002
 	msgDaemonOffline      = "daemon_offline"
