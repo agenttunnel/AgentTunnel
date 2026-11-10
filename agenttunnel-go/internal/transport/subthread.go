@@ -33,6 +33,14 @@ func (d *Dispatcher) startSubthread(ctx context.Context, parent contracts.Thread
 	if !st.Exists {
 		return "", fmt.Errorf("%w: thread %q", domain.ErrThreadNotFound, parent)
 	}
+	// The child shares the parent's worktree, so the parent's must be live first:
+	// re-cut if it vanished. If that cannot be done, no subthread is created.
+	if err := d.ensureWorktree(ctx, parent); err != nil {
+		return "", err
+	}
+	if st, err = d.engine.State(ctx, parent); err != nil {
+		return "", err
+	}
 
 	// The spawn is validated against the parent first, so a refused subthread
 	// creates nothing.
@@ -65,7 +73,12 @@ func (d *Dispatcher) startSubthread(ctx context.Context, parent contracts.Thread
 	}
 	go func() {
 		defer done()
-		runErr := d.orch.RunTurn(turnCtx, child, task)
+		// The same gate as a user turn: if the shared directory vanished since the
+		// spawn, the child re-follows the parent's live worktree before any agent runs.
+		runErr := d.ensureWorktree(turnCtx, child)
+		if runErr == nil {
+			runErr = d.orch.RunTurn(turnCtx, child, task)
+		}
 		d.reportSubthread(turnCtx, parent, child, runErr)
 	}()
 	return child, nil
