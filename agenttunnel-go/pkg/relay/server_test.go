@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -251,29 +252,177 @@ func TestPairRateLimitAfterFiveFailures(t *testing.T) {
 	}
 }
 
-func TestPairCodeInvalidatedAfterTwentyFailures(t *testing.T) {
-	clk := &clock{t: time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)}
-	srv, err := New(Options{Now: clk.Now})
+const (
+	otherInstance = "fedcba9876543210fedcba9876543210"
+	otherSecret   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	thirdInstance = "11111111111111111111111111111111"
+	thirdSecret   = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+)
+
+// connectInstance opens a daemon socket for any instance and waits for its ack.
+func connectInstance(t *testing.T, base, instance, secret string) *websocket.Conn {
+	t.Helper()
+	d := dial(t, base+"/v1/daemon")
+	send(t, d, Hello{T: tHello, Role: "daemon", Instance: instance, Secret: secret, Name: "Other"})
+	if ack := readType(t, d, tAck); ack["ok"] != true {
+		t.Fatalf("daemon hello rejected: %v", ack["error"])
+	}
+	return d
+}
+
+// pairFrom redeems a code as if it came from forwardedFor, via the proxy header.
+func pairFrom(t *testing.T, base, code, forwardedFor string) map[string]any {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h := http.Header{"X-Forwarded-For": []string{forwardedFor}}
+	c, _, err := websocket.Dial(ctx, base+"/v1/client", &websocket.DialOptions{HTTPHeader: h})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	send(t, c, Pair{T: tPair, Code: code, Name: "Pixel 9"})
+	return readType(t, c, tAck)
+}
+
+// A failure from one address must not lock out other addresses, nor invalidate
+// codes that belong to other instances.
+func TestPairFailuresAreKeyedToSourceIP(t *testing.T) {
+	_, base, _, _ := startRelay(t, Options{TrustProxyHeader: "X-Forwarded-For"})
+	mine := connectDaemon(t, base)
+	offerCode(t, mine, "ABCDE-FGHJK")
+	theirs := connectInstance(t, base, otherInstance, otherSecret)
+	offerCode(t, theirs, "MNPQR-STVWX")
+
+	for i := 0; i < MaxFailedPerIP; i++ {
+		if got := pairFrom(t, base, "ZZZZZ-ZZZZZ", "203.0.113.7"); got["error"] != ErrBadCode {
+			t.Fatalf("attempt %d: want bad_code, got %v", i+1, got)
+		}
+	}
+	if got := pairFrom(t, base, "ABCDE-FGHJK", "203.0.113.7"); got["error"] != ErrRateLimited {
+		t.Fatalf("the failing address must be limited, got %v", got)
+	}
+	if got := pairFrom(t, base, "MNPQR-STVWX", "198.51.100.9"); got["ok"] != true {
+		t.Fatalf("another instance's code must survive, got %v", got)
+	}
+	if got := pairFrom(t, base, "ABCDE-FGHJK", "198.51.100.9"); got["ok"] != true {
+		t.Fatalf("another address must still pair with a live code, got %v", got)
+	}
+}
+
+// With a trusted proxy header, the proxy's appended (last) entry is the client.
+// Entries the client put first cannot move the failures to a fresh address.
+func TestTrustedProxyUsesLastForwardedEntry(t *testing.T) {
+	_, base, _, _ := startRelay(t, Options{TrustProxyHeader: "X-Forwarded-For"})
+	d := connectDaemon(t, base)
+	offerCode(t, d, "ABCDE-FGHJK")
+
+	for i := 0; i < MaxFailedPerIP; i++ {
+		fwd := fmt.Sprintf("10.0.0.%d, 203.0.113.7", i+1)
+		if got := pairFrom(t, base, "ZZZZZ-ZZZZZ", fwd); got["error"] != ErrBadCode {
+			t.Fatalf("attempt %d: want bad_code, got %v", i+1, got)
+		}
+	}
+	if got := pairFrom(t, base, "ABCDE-FGHJK", "10.9.9.9, 203.0.113.7"); got["error"] != ErrRateLimited {
+		t.Fatalf("spoofed leading entries must not escape the limit, got %v", got)
+	}
+}
+
+// Without the opt-in header, forwarded addresses are ignored: every attempt
+// counts against the socket's own address.
+func TestProxyHeaderIgnoredUnlessTrusted(t *testing.T) {
+	_, base, _, _ := startRelay(t, Options{})
+	d := connectDaemon(t, base)
+	offerCode(t, d, "ABCDE-FGHJK")
+
+	for i := 0; i < MaxFailedPerIP; i++ {
+		fwd := fmt.Sprintf("203.0.113.%d", i+1)
+		if got := pairFrom(t, base, "ZZZZZ-ZZZZZ", fwd); got["error"] != ErrBadCode {
+			t.Fatalf("attempt %d: want bad_code, got %v", i+1, got)
+		}
+	}
+	if got := pairFrom(t, base, "ABCDE-FGHJK", "198.51.100.9"); got["error"] != ErrRateLimited {
+		t.Fatalf("untrusted headers must not change the limited address, got %v", got)
+	}
+}
+
+// Each daemon hello counts against its source IP, valid or not, and the window
+// reopens when the injected clock moves past it.
+func TestDaemonHelloRateLimitPerIP(t *testing.T) {
+	_, base, clk, _ := startRelay(t, Options{})
+	for i := 0; i < MaxDaemonHellosPerIP; i++ {
+		connectDaemon(t, base)
+	}
+	d := dial(t, base+"/v1/daemon")
+	send(t, d, Hello{T: tHello, Role: "daemon", Instance: testInstance, Secret: testSecret})
+	if ack := readType(t, d, tAck); ack["error"] != ErrRateLimited {
+		t.Fatalf("hello past the window must be rate limited, got %v", ack)
+	}
+
+	clk.Advance(FailureWindow)
+	connectDaemon(t, base)
+}
+
+// The instance cap stops new registrations, while known daemons still connect.
+func TestInstanceCapRejectsNewDaemons(t *testing.T) {
+	_, base, _, _ := startRelay(t, Options{MaxInstances: 2})
+	connectDaemon(t, base)
+	connectInstance(t, base, otherInstance, otherSecret)
+
+	d := dial(t, base+"/v1/daemon")
+	send(t, d, Hello{T: tHello, Role: "daemon", Instance: thirdInstance, Secret: thirdSecret})
+	if ack := readType(t, d, tAck); ack["error"] != ErrTooManyInstances {
+		t.Fatalf("a third instance must be refused, got %v", ack)
+	}
+	connectDaemon(t, base)
+}
+
+// State writes must run after the global lock is released. The hook fires
+// inside the write; at that point another goroutine must be able to take mu.
+func TestStateWriteRunsOffTheGlobalLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	srv, err := New(Options{StatePath: path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.offers[testInstance] = &offer{hash: hashHex("ABCDE-FGHJK"), expires: clk.Now().Add(CodeTTL)}
-	srv.instances[testInstance] = &instanceRecord{ID: testInstance}
-
-	// Spread failures across IPs so the per-IP limit does not interfere.
-	for i := 0; i < MaxFailedPerCode; i++ {
-		srv.mu.Lock()
-		_, ok := srv.redeemLocked("ZZZZZ-ZZZZZ", clk.Now())
-		if !ok {
-			srv.recordFailureLocked("10.0.0."+string(rune('a'+i)), clk.Now())
-		}
-		srv.mu.Unlock()
-	}
 	srv.mu.Lock()
-	_, live := srv.offers[testInstance]
+	srv.instances[testInstance] = &instanceRecord{ID: testInstance, SecretHash: hashHex(testSecret)}
+	srv.tokens["cid"] = &tokenRecord{ClientID: "cid", Instance: testInstance, Hash: hashHex("tok"), Expires: time.Now().Add(TokenTTL)}
 	srv.mu.Unlock()
-	if live {
-		t.Fatal("the 20th failed attempt must invalidate the live code")
+	srv.flush(srv.snapshotLocked())
+
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv.writeHook = func() {
+		once.Do(func() {
+			close(reached)
+			<-release
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		srv.revoke(testInstance, "cid", false, false)
+		close(done)
+	}()
+	<-reached
+	if !srv.mu.TryLock() {
+		t.Fatal("state write ran while the global lock was held")
+	}
+	srv.mu.Unlock()
+	close(release)
+	<-done
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st stateFile
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Tokens) != 0 || len(st.Instances) != 1 {
+		t.Fatalf("revoke was not persisted: %+v", st)
 	}
 }
 
@@ -488,7 +637,10 @@ func TestStateSurvivesRestartAndKeepsOnlyHashes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if rec, code := restarted.authTokenLocked(token); code != "" || rec == nil {
+	restarted.mu.Lock()
+	rec, _, code := restarted.authTokenLocked(token)
+	restarted.mu.Unlock()
+	if code != "" || rec == nil {
 		t.Fatalf("restarted relay should still accept the token, got %q", code)
 	}
 }
