@@ -203,6 +203,8 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.ReviewComments = append([]ReviewComment(nil), s.ReviewComments...)
 	c.Questions = append([]Question(nil), s.Questions...)
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
+	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
+	c.Tasks = append([]TaskItem(nil), s.Tasks...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {
 		c.Turns[i] = TurnUsage{
