@@ -53,9 +53,23 @@ func addHarnessStats(acc map[contracts.Harness]*HarnessStat, st *ThreadState) {
 	}
 }
 
-// HarnessStats returns the per-harness rollup across every live thread, busiest
+// HarnessScope narrows the rollup. The zero value is the whole environment. A
+// ThreadID selects that one thread; otherwise a ProjectID selects its threads.
+type HarnessScope struct {
+	ThreadID  contracts.ThreadID
+	ProjectID string
+}
+
+func (s HarnessScope) includes(id contracts.ThreadID, st *ThreadState) bool {
+	if s.ThreadID != "" {
+		return id == s.ThreadID
+	}
+	return s.ProjectID == "" || st.ProjectID == s.ProjectID
+}
+
+// HarnessStats returns the per-harness rollup across the threads in scope, busiest
 // harness first (by agent count, then by name for a stable order).
-func (e *Engine) HarnessStats(ctx context.Context) ([]HarnessStat, error) {
+func (e *Engine) HarnessStats(ctx context.Context, scope HarnessScope) ([]HarnessStat, error) {
 	ids, err := e.Threads(ctx)
 	if err != nil {
 		return nil, err
@@ -65,6 +79,9 @@ func (e *Engine) HarnessStats(ctx context.Context) ([]HarnessStat, error) {
 		st, err := e.State(ctx, id)
 		if err != nil {
 			return nil, err
+		}
+		if !scope.includes(id, st) {
+			continue
 		}
 		addHarnessStats(acc, st)
 	}

@@ -39,7 +39,7 @@ import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
-import { HarnessStatsPanel, type HarnessStat } from "./components/HarnessStatsPanel";
+import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
@@ -515,10 +515,6 @@ export default function App() {
   const [prState, setPRState] = useState<PRSnapshot | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
-  // Environment-wide harness rollup; not thread-scoped, so it needs no thread tag.
-  const [harnessStats, setHarnessStats] = useState<HarnessStat[]>([]);
-  const [harnessLoading, setHarnessLoading] = useState(false);
-  const [harnessError, setHarnessError] = useState<string | null>(null);
   // Worktrees: per open project, live git facts from worktree.list. Every thread
   // in a git project gets one, so the UI offers no choice about it.
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
@@ -689,19 +685,6 @@ export default function App() {
     }
   }, []);
 
-  const loadHarnessStats = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setHarnessLoading(true);
-    setHarnessError(null);
-    try {
-      setHarnessStats(await rpc.call<HarnessStat[]>("stats.harnesses"));
-    } catch (e) {
-      setHarnessError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setHarnessLoading(false);
-    }
-  }, []);
 
   const loadFileTree = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
@@ -1191,12 +1174,6 @@ export default function App() {
     return () => clearInterval(timer);
   }, [asideActive, activeId, loadPR]);
 
-  // The harness rollup scans every thread, so it loads once when shown and then
-  // only on Refresh rather than on a timer.
-  useEffect(() => {
-    if (asideActive !== "stats") return;
-    loadHarnessStats().catch(() => undefined);
-  }, [asideActive, loadHarnessStats]);
 
   // Worktree facts come from live git runs, so they load when the panel is shown
   // and after each action, not on a timer.
@@ -2084,6 +2061,10 @@ export default function App() {
                 </button>
               </div>
             ))}
+          </div>
+          <div className="section stats-section">
+            <h3>Harnesses across all projects</h3>
+            <HarnessStatsView rpc={rpcRef.current} threadId={null} projectId={null} />
           </div>
         </div>
       </div>
@@ -3063,11 +3044,11 @@ export default function App() {
           </div>
         ) : asideActive === "stats" ? (
           <div className="section stats-section">
-            <HarnessStatsPanel
-              stats={harnessStats}
-              loading={harnessLoading}
-              error={harnessError}
-              onRefresh={() => loadHarnessStats().catch(() => undefined)}
+            <HarnessStatsView
+              key={activeId ?? ""}
+              rpc={rpcRef.current}
+              threadId={activeId}
+              projectId={projectId}
             />
           </div>
         ) : asideActive === "worktrees" ? (
