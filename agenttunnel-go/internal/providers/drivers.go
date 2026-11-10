@@ -4,8 +4,8 @@ import "github.com/agenttunnel/agenttunnel-go/internal/contracts"
 
 // BuiltinDrivers returns the drivers for the harnesses AgentTunnel ships.
 //
-// Each invocation mirrors upstream AgentTunnel's argv shape: the prompt is the
-// final argument, never written to stdin, and the harness is run in its
+// Each invocation mirrors upstream AgentTunnel's argv shape: the prompt is passed
+// as an argument (never written to stdin), and the harness is run in its
 // non-interactive mode so it cannot block on an approval prompt. (Upstream gates
 // the permission flags behind its "dangerously skip permissions" setting; the
 // workflow runner has no approval plumbing yet, so they are always on here.)
@@ -17,7 +17,7 @@ func BuiltinDrivers() []Driver {
 		NewGenericDriver(contracts.HarnessCursor, "cursor-agent", cursorInvocation, JSONLineTranslator{}),
 		NewGenericDriver(contracts.HarnessGrok, "grok", grokInvocation, JSONLineTranslator{}),
 		NewGenericDriver(contracts.HarnessPi, "pi", piInvocation, JSONLineTranslator{}),
-		NewGenericDriver(contracts.HarnessCommandCode, "command-code", commandCodeInvocation, JSONLineTranslator{}),
+		NewGenericDriver(contracts.HarnessCommandCode, "command-code", commandCodeInvocation, CommandCodeTranslator{}),
 	}
 }
 
@@ -121,10 +121,12 @@ func grokInvocation(spec SessionSpec) (CommandSpec, error) {
 }
 
 func commandCodeInvocation(spec SessionSpec) (CommandSpec, error) {
-	args := []string{"--print"}
+	// --print takes its query as the next argument, so the prompt must follow
+	// it directly; a trailing positional is not read as the query. Headless
+	// mode blocks writes and shell commands unless --yolo is set.
+	args := []string{"-p", spec.Prompt, "--yolo", "--output-format", "json"}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}
-	args = append(args, spec.Prompt)
 	return CommandSpec{Binary: "command-code", Args: args, PromptVia: "arg"}, nil
 }
