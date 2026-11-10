@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { openExternal } from "../lib/rpc";
 
 export type PRCheck = { name: string; state: string };
 export type PRComment = {
@@ -185,14 +184,7 @@ export function PRPanel({
       {notice && (
         <p className="hint">
           {/^https?:\/\//.test(notice) ? (
-            <a
-              className="pr-link"
-              href={notice}
-              onClick={(e) => {
-                e.preventDefault();
-                openExternal(notice);
-              }}
-            >
+            <a className="pr-link" href={notice}>
               {notice}
             </a>
           ) : (
@@ -254,14 +246,7 @@ function PRDetails({ req, provider }: { req: PRRequest; provider?: string }) {
         <span className={`pill${req.state === "merged" ? " run" : ""}`}>{req.draft ? "draft" : req.state}</span>
       </div>
       <p className="pr-heading">{req.title}</p>
-      <a
-        className="pr-url"
-        href={req.url}
-        onClick={(e) => {
-          e.preventDefault();
-          openExternal(req.url);
-        }}
-      >
+      <a className="pr-url" href={req.url}>
         {req.url}
       </a>
 
