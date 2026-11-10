@@ -6,7 +6,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Banner, Button } from "../components/ui";
 import { errorMessage } from "../lib/normalize";
-import { exchangePairCode, normalizePairCode, normalizeRelayUrl, type Pairing } from "../lib/relay";
+import {
+  defaultDeviceName,
+  exchangePairCode,
+  normalizePairCode,
+  normalizeRelayUrl,
+  type Pairing,
+} from "../lib/relay";
 import { colors, fonts, fontSize, radius, space } from "../theme";
 
 export function PairScreen({
@@ -22,6 +28,7 @@ export function PairScreen({
   const insets = useSafeAreaInsets();
   const [relayUrl, setRelayUrl] = useState(initialRelayUrl);
   const [code, setCode] = useState("");
+  const [deviceName, setDeviceName] = useState(() => defaultDeviceName(Platform.OS));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,7 +40,7 @@ export function PairScreen({
     setError(null);
     try {
       const relay = normalizeRelayUrl(relayUrl);
-      const pairing = await exchangePairCode(relay, normalizePairCode(code));
+      const pairing = await exchangePairCode(relay, normalizePairCode(code), { deviceName });
       await onPaired(pairing);
     } catch (e) {
       setError(errorMessage(e));
@@ -82,6 +89,19 @@ export function PairScreen({
           returnKeyType="go"
           style={[styles.input, styles.code]}
           accessibilityLabel="Pairing code"
+        />
+
+        <Text style={styles.label}>Device name</Text>
+        <TextInput
+          value={deviceName}
+          onChangeText={setDeviceName}
+          placeholder="Phone"
+          placeholderTextColor={colors.faint}
+          autoCorrect={false}
+          editable={!busy}
+          maxLength={64}
+          style={styles.input}
+          accessibilityLabel="Device name"
         />
 
         {error || notice ? (
