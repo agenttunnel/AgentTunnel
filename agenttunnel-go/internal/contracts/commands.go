@@ -12,6 +12,9 @@ const (
 	CmdThreadCreate     CommandType = "thread.create"
 	CmdThreadRename     CommandType = "thread.rename"
 	CmdThreadDelete     CommandType = "thread.delete"
+	CmdWorktreeAttach   CommandType = "thread.worktree.attach"
+	CmdWorktreeDetach   CommandType = "thread.worktree.detach"
+	CmdWorktreeReplace  CommandType = "thread.worktree.replace"
 	CmdTurnStart        CommandType = "thread.turn.start"
 	CmdModelSet         CommandType = "thread.model.set"
 	CmdAutoModeSet      CommandType = "thread.automode.set"
@@ -64,6 +67,7 @@ type Command struct {
 	Leads          *int                     `json:"leads,omitempty"`
 	LeadRuntime    *LeadRuntimeSet          `json:"leadRuntime,omitempty"`
 	ParentThreadID ThreadID                 `json:"parentThreadId,omitempty"`
+	Worktree       *WorktreeRef             `json:"worktree,omitempty"`
 	Subthread      *SubthreadSpawned        `json:"subthread,omitempty"`
 	TaskAdd        *TaskAdded               `json:"taskAdd,omitempty"`
 	TaskStatus     *TaskStatusChanged       `json:"taskStatus,omitempty"`

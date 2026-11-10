@@ -21,6 +21,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
+	"github.com/agenttunnel/agenttunnel-go/internal/worktree"
 )
 
 // Config controls how a runner schedules and executes work.
@@ -612,18 +613,24 @@ func (r *Runner) workdir() string {
 	return r.settings.Workdir()
 }
 
-// workdirFor resolves a thread's working directory: its project's path, falling
-// back to the environment default when the thread has no project.
+// workdirFor resolves a thread's working directory: its worktree when it has one
+// on disk, otherwise its project's path, falling back to the environment default
+// when the thread has no project.
 func (r *Runner) workdirFor(ctx context.Context, threadID contracts.ThreadID) string {
 	if r.settings == nil {
 		return ""
 	}
-	if st, err := r.engine.State(ctx, threadID); err == nil && st.ProjectID != "" {
+	base := r.settings.Workdir()
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil {
+		return base
+	}
+	if st.ProjectID != "" {
 		if project, ok := r.settings.Project(st.ProjectID); ok && project.Path != "" {
-			return project.Path
+			base = project.Path
 		}
 	}
-	return r.settings.Workdir()
+	return worktree.Resolve(st.Worktree, base)
 }
 
 // roleRuntime resolves a role's harness/model/variant, preferring a user override

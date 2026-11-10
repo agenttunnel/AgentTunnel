@@ -31,9 +31,59 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		// graph view both rely on the traffic it records. Existing threads stay
 		// as they were, and `thread.setPeerMailbox` remains the override.
 		return []contracts.EventPayload{
-			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID},
+			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree},
 			contracts.PeerMailboxSet{Enabled: true},
 		}, nil
+
+	case contracts.CmdWorktreeAttach:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Worktree == nil || cmd.Worktree.Path == "" {
+			return nil, fmt.Errorf("%w: worktree path is required", ErrInvalidCommand)
+		}
+		// A subthread only ever holds its parent's worktree, so it may attach (or
+		// refresh) an inherited ref and nothing else. A top-level thread owns at
+		// most one worktree, fixed once attached.
+		if s.ParentThreadID != "" {
+			if !cmd.Worktree.Inherited {
+				return nil, fmt.Errorf("%w: a subthread shares its parent's worktree", ErrInvalidCommand)
+			}
+		} else {
+			if cmd.Worktree.Inherited {
+				return nil, fmt.Errorf("%w: only a subthread inherits a worktree", ErrInvalidCommand)
+			}
+			if s.Worktree != nil {
+				return nil, fmt.Errorf("%w: thread already has a worktree", ErrInvalidCommand)
+			}
+		}
+		return []contracts.EventPayload{contracts.WorktreeAttached{Worktree: *cmd.Worktree}}, nil
+
+	case contracts.CmdWorktreeDetach:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if s.Worktree == nil || s.Worktree.Inherited {
+			return nil, fmt.Errorf("%w: thread owns no worktree to detach", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.WorktreeDetached{}}, nil
+
+	case contracts.CmdWorktreeReplace:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Worktree == nil || cmd.Worktree.Path == "" {
+			return nil, fmt.Errorf("%w: worktree path is required", ErrInvalidCommand)
+		}
+		if s.Worktree == nil {
+			return nil, fmt.Errorf("%w: thread has no worktree to replace", ErrInvalidCommand)
+		}
+		// Same ownership rules as attach: a subthread swaps in an inherited ref,
+		// a top-level thread swaps in one it owns.
+		if (s.ParentThreadID != "") != cmd.Worktree.Inherited {
+			return nil, fmt.Errorf("%w: replacement must match the thread's worktree ownership", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.WorktreeReplaced{Worktree: *cmd.Worktree}}, nil
 
 	case contracts.CmdThreadRename:
 		if !s.Exists {

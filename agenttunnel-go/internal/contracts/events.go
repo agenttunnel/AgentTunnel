@@ -13,6 +13,9 @@ const (
 	EvtThreadCreated      EventType = "thread.created"
 	EvtThreadRenamed      EventType = "thread.renamed"
 	EvtThreadDeleted      EventType = "thread.deleted"
+	EvtWorktreeAttached   EventType = "thread.worktree-attached"
+	EvtWorktreeDetached   EventType = "thread.worktree-detached"
+	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
 	EvtMessageSent        EventType = "thread.message-sent"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
@@ -96,6 +99,12 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ThreadRenamed](data)
 	case EvtThreadDeleted:
 		return decodePayload[ThreadDeleted](data)
+	case EvtWorktreeAttached:
+		return decodePayload[WorktreeAttached](data)
+	case EvtWorktreeDetached:
+		return decodePayload[WorktreeDetached](data)
+	case EvtWorktreeReplaced:
+		return decodePayload[WorktreeReplaced](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
 	case EvtModelSet:
@@ -148,9 +157,37 @@ type ThreadCreated struct {
 	ProjectID string `json:"projectId,omitempty"`
 	// ParentThreadID is set on a subthread: the thread that started it.
 	ParentThreadID ThreadID `json:"parentThreadId,omitempty"`
+	// Worktree is set when the thread was created with its worktree already
+	// cut, or inherits a parent's.
+	Worktree *WorktreeRef `json:"worktree,omitempty"`
 }
 
 func (ThreadCreated) eventType() EventType { return EvtThreadCreated }
+
+// WorktreeAttached gives a thread its worktree after creation, the first time a
+// turn runs in a git project. A thread has at most one worktree.
+type WorktreeAttached struct {
+	Worktree WorktreeRef `json:"worktree"`
+}
+
+func (WorktreeAttached) eventType() EventType { return EvtWorktreeAttached }
+
+// WorktreeDetached clears a thread's own worktree, so the thread can be given a
+// fresh one. It is written when the worktree was removed or its directory was
+// lost; an inherited worktree is never detached, the subthread follows its parent.
+type WorktreeDetached struct{}
+
+func (WorktreeDetached) eventType() EventType { return EvtWorktreeDetached }
+
+// WorktreeReplaced swaps a thread's worktree for a fresh one in a single event,
+// so the thread never holds no ref between the old and the new. It is written
+// when the old directory was lost and a new one was cut; the ownership rules
+// (own or inherited) are the same as for WorktreeAttached.
+type WorktreeReplaced struct {
+	Worktree WorktreeRef `json:"worktree"`
+}
+
+func (WorktreeReplaced) eventType() EventType { return EvtWorktreeReplaced }
 
 // ThreadRenamed renames a thread, typically after the model has read the first
 // exchange and picked a title.

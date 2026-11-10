@@ -40,6 +40,7 @@ import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { HarnessStatsPanel, type HarnessStat } from "./components/HarnessStatsPanel";
+import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
@@ -169,7 +170,18 @@ type SettingsView = {
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
-type AsideTabId = "agents" | "usage" | "context" | "inherited" | "files" | "diff" | "pr" | "stats" | "models" | "council";
+type AsideTabId =
+  | "agents"
+  | "usage"
+  | "context"
+  | "inherited"
+  | "files"
+  | "diff"
+  | "pr"
+  | "stats"
+  | "models"
+  | "council"
+  | "worktrees";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -182,6 +194,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   stats: { label: "Harness stats", key: "H" },
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
+  worktrees: { label: "Worktrees", key: "W" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -506,6 +519,11 @@ export default function App() {
   const [harnessStats, setHarnessStats] = useState<HarnessStat[]>([]);
   const [harnessLoading, setHarnessLoading] = useState(false);
   const [harnessError, setHarnessError] = useState<string | null>(null);
+  // Worktrees: per open project, live git facts from worktree.list. Every thread
+  // in a git project gets one, so the UI offers no choice about it.
+  const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
+  const [worktreesLoading, setWorktreesLoading] = useState(false);
+  const [worktreesError, setWorktreesError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -800,6 +818,52 @@ export default function App() {
     const fallback = next[index] ?? next[index - 1] ?? null;
     setProjectId(fallback);
     setActiveId(rememberedThread(fallback));
+  };
+
+  // --- worktree panel actions --------------------------------------------
+
+  /** Loads the worktrees of the given projects. A failing project does not hide
+   * the others; the first failure is shown in the panel. */
+  const loadWorktrees = useCallback(async (ids: string[]) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setWorktreesLoading(true);
+    setWorktreesError(null);
+    const results = await Promise.allSettled(
+      ids.map((id) => rpc.call<WorktreeInfo[]>("worktree.list", { projectId: id })),
+    );
+    setWorktrees((prev) => {
+      const next = { ...prev };
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") next[ids[i]] = r.value;
+      });
+      return next;
+    });
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed) setWorktreesError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason));
+    setWorktreesLoading(false);
+  }, []);
+
+  /** Runs one worktree mutation, then reloads that project's list. A refused
+   * remove (dirty tree) shows the daemon's reason instead of failing silently. */
+  const worktreeAction = async (projectId: string, method: string, params: Record<string, unknown>) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    let failure: string | null = null;
+    try {
+      await rpc.call(method, { projectId, ...params });
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e);
+    }
+    await loadWorktrees([projectId]);
+    if (failure) setWorktreesError(failure);
+  };
+
+  const openWorktreeThread = (projectId: string, threadId: string) => {
+    openProject(projectId);
+    lastThreadByProject.current[projectId] = threadId;
+    setActiveId(threadId);
+    setTab("chat");
   };
 
   // --- thread context-menu actions ---------------------------------------
@@ -1133,6 +1197,12 @@ export default function App() {
     if (asideActive !== "stats") return;
     loadHarnessStats().catch(() => undefined);
   }, [asideActive, loadHarnessStats]);
+
+  // Worktree facts come from live git runs, so they load when the panel is shown
+  // and after each action, not on a timer.
+  useEffect(() => {
+    if (asideActive === "worktrees") loadWorktrees(openProjectIds).catch(() => undefined);
+  }, [asideActive, openProjectIds, loadWorktrees]);
 
   // The file tree loads when its panel is shown.
   useEffect(() => {
@@ -2998,6 +3068,22 @@ export default function App() {
               loading={harnessLoading}
               error={harnessError}
               onRefresh={() => loadHarnessStats().catch(() => undefined)}
+            />
+          </div>
+        ) : asideActive === "worktrees" ? (
+          <div className="section worktrees-section">
+            <WorktreesPanel
+              projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
+              worktrees={worktrees}
+              threads={threads}
+              loading={worktreesLoading}
+              error={worktreesError}
+              onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
+              onOpenThread={openWorktreeThread}
+              onRemove={(projectId, path, force) =>
+                worktreeAction(projectId, "worktree.remove", { path, force })
+              }
+              onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
             />
           </div>
         ) : asideActive === "pr" ? (

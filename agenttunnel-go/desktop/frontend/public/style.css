@@ -1165,6 +1165,15 @@ body.is-resizing * {
 .dot.cancelled {
   background: var(--faint);
 }
+.dot.clean {
+  background: var(--ok);
+}
+.dot.dirty {
+  background: var(--warn);
+}
+.dot.missing {
+  background: var(--faint);
+}
 
 /* --- section + aside ---------------------------------------------------- */
 .section {
@@ -3483,4 +3492,73 @@ table.grid tr.rowlink:hover td {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Worktrees: one group per open project; each row is a worktree with live git facts. */
+.worktrees-section {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.wt-group {
+  margin-top: 12px;
+}
+.wt-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.wt-project {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wt-prune {
+  font-size: 12px;
+}
+.wt-row {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+.wt-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.wt-line .dot {
+  margin-top: 0;
+}
+.wt-branch {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.wt-base {
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.wt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 4px 0 6px 15px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.wt-threads {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.wt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 15px;
 }
