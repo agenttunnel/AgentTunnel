@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "AgentTunnel",
+    "slug": "agenttunnel-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b0d12",
+    "scheme": "agenttunnel",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "ios": {
+      "bundleIdentifier": "com.agenttunnel.mobile",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.agenttunnel.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#0b0d12"
+      },
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-status-bar"
+    ]
+  }
+}

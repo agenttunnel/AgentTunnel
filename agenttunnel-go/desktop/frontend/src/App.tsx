@@ -38,9 +38,12 @@ import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { MentionMenu } from "./components/MentionMenu";
+import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
+import { RelayPairing } from "./components/RelayPairing";
 import { Markdown } from "./components/Markdown";
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
@@ -638,6 +641,17 @@ export default function App() {
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
   // Pasted text per draft: draftKey -> token id -> full text.
   const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
+  // Files and folders attached per draft through @; sent with the turn as context.
+  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
+  // Caret in the composer: an @-token is the word ending at the caret.
+  const [caret, setCaret] = useState(0);
+  const [mentionActive, setMentionActive] = useState(0);
+  // Start of an @-token the user dismissed with Escape.
+  const [mentionDismissed, setMentionDismissed] = useState<number | null>(null);
+  // Matches tagged with the query they answer, so an old list never shows for a new query.
+  const [mentionResults, setMentionResults] = useState<{ query: string; matches: FileMatch[] } | null>(
+    null,
+  );
   const [settings, setSettings] = useState<SettingsView | null>(null);
 
   // Council of agents: convene several perspectives on one question and let
@@ -1612,12 +1626,21 @@ export default function App() {
       return;
     }
     const sentPastes = pastes[draftKey];
+    // A shell command takes no context; its attachments stay in the draft.
+    const sentFiles = command ? [] : (attachments[draftKey] ?? []);
     setInput("");
     setPastes((prev) => {
       const rest = { ...prev };
       delete rest[draftKey];
       return rest;
     });
+    if (sentFiles.length > 0) {
+      setAttachments((prev) => {
+        const rest = { ...prev };
+        delete rest[draftKey];
+        return rest;
+      });
+    }
     sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
     if (command) setShellThread(threadId);
@@ -1625,13 +1648,18 @@ export default function App() {
       if (command) {
         await rpc.call("thread.runCommand", { threadId, command });
       } else {
-        await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+        await rpc.call(steer ? "thread.steer" : "thread.turn.start", {
+          threadId,
+          text,
+          attachments: sentFiles.map((a) => a.path),
+        });
       }
     } catch (e) {
       // Put the typed text back into its own thread's draft, even if the user has moved on.
       const key = draftKeyOf(projectId, threadId);
       setDrafts((prev) => ({ ...prev, [key]: input }));
       setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
+      if (sentFiles.length > 0) setAttachments((prev) => ({ ...prev, [key]: sentFiles }));
       setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
       sendingRef.current.delete(sendKey);
@@ -1849,9 +1877,82 @@ export default function App() {
         ? "Steer the orchestrator — it lands on the next pass…"
         : "Ask the team to build something, or ! to run a shell command…",
   });
+  // The @ menu: an @-token ends at the caret, and is closed for commands.
+  const draftAttachments = attachments[draftKey] ?? [];
+  const mention = commandMode ? null : mentionAt(input, caret);
+  const openMention = mention && mention.start !== mentionDismissed ? mention : null;
+  const mentionQuery = openMention?.query ?? null;
+  const menuMatches =
+    openMention && mentionResults?.query === openMention.query ? mentionResults.matches : null;
+  useEffect(() => {
+    const rpc = rpcRef.current;
+    if (mentionQuery === null || !rpc || !activeId) return;
+    let stale = false;
+    // Debounced, and any keystroke after this one cancels the request.
+    const timer = window.setTimeout(() => {
+      rpc
+        .call<{ matches: FileMatch[] }>("files.search", {
+          threadId: activeId,
+          query: mentionQuery,
+          limit: 12,
+        })
+        .then((res) => {
+          if (!stale) setMentionResults({ query: mentionQuery, matches: res.matches });
+        })
+        .catch((e) => {
+          if (stale) return;
+          setMentionResults({ query: mentionQuery, matches: [] });
+          setError(e instanceof Error ? e.message : String(e));
+        });
+    }, 60);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [mentionQuery, activeId]);
+  const pickMention = (m: FileMatch) => {
+    if (!openMention) return;
+    if (draftAttachments.length >= MAX_ATTACHMENTS) {
+      setError(`Attach at most ${MAX_ATTACHMENTS} files or folders per turn.`);
+      return;
+    }
+    setInput(dropMention(input, openMention, caret));
+    pendingCaret.current = openMention.start;
+    setCaret(openMention.start);
+    setMentionDismissed(null);
+    setAttachments((prev) => {
+      const list = prev[draftKey] ?? [];
+      if (list.some((a) => a.path === m.path)) return prev;
+      return { ...prev, [draftKey]: [...list, { path: m.path, dir: m.dir }] };
+    });
+  };
+  const removeAttachment = (path: string) =>
+    setAttachments((prev) => ({
+      ...prev,
+      [draftKey]: (prev[draftKey] ?? []).filter((a) => a.path !== path),
+    }));
+
   const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Enter confirms an IME candidate during composition; it must not submit.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (openMention && menuMatches && menuMatches.length > 0) {
+      const n = menuMatches.length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickMention(menuMatches[Math.min(mentionActive, n - 1)]);
+        return;
+      }
+    }
+    if (openMention && e.key === "Escape") {
+      e.preventDefault();
+      setMentionDismissed(openMention.start);
+      return;
+    }
     // A token is one unit: Backspace/Delete at its edge removes it whole.
     const { selectionStart: pos, selectionEnd } = e.currentTarget;
     if ((e.key === "Backspace" || e.key === "Delete") && pos === selectionEnd) {
@@ -2497,7 +2598,9 @@ export default function App() {
                               ? "System"
                               : m.author === "shell"
                                 ? "Shell"
-                                : "Orchestrator"}
+                                : m.author === "subthread"
+                                  ? "Subthread"
+                                  : "Orchestrator"}
                       </span>
                     </div>
                     <div className="msg-actions">
@@ -2587,6 +2690,32 @@ export default function App() {
             <div
               className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
             >
+              {openMention && menuMatches && (
+                <MentionMenu
+                  matches={menuMatches}
+                  active={Math.min(mentionActive, Math.max(menuMatches.length - 1, 0))}
+                  onPick={pickMention}
+                  onActive={setMentionActive}
+                />
+              )}
+              {draftAttachments.length > 0 && (
+                <div className="attach-row">
+                  {draftAttachments.map((a) => (
+                    <span key={a.path} className="attach-chip" title={a.path}>
+                      <span className="attach-kind">{a.dir ? "folder" : "file"}</span>
+                      <span className="attach-name">{a.path}</span>
+                      <button
+                        type="button"
+                        className="attach-remove"
+                        onClick={() => removeAttachment(a.path)}
+                        aria-label={`Remove ${a.path}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="box">
                 <textarea
                   ref={taRef}
@@ -2594,7 +2723,12 @@ export default function App() {
                   onPaste={onComposerPaste}
                   onClick={onComposerClick}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setCaret(e.target.selectionStart);
+                    setMentionActive(0);
+                  }}
+                  onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={onComposerKeyDown}
                 />
               </div>
@@ -3518,6 +3652,11 @@ export default function App() {
                     Save environment
                   </button>
                 </div>
+              </section>
+
+              <section className="set-section">
+                <h4>Phones</h4>
+                <RelayPairing rpc={rpcRef.current} />
               </section>
 
               <section className="set-section">

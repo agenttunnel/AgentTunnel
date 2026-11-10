@@ -68,6 +68,46 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// Relay drives the outbound relay client. Nil when the daemon has no relay.
+	Relay RelayControl
+}
+
+// RelayControl is the outbound relay client as the RPC surface drives it.
+// internal/relay implements it, so the transport never imports the relay.
+type RelayControl interface {
+	// Status reports the relay configuration and whether a daemon socket is up.
+	Status() RelayStatus
+	// Enable validates a relay URL, saves it, and connects. Disable stops it.
+	Enable(url string) error
+	Disable() error
+	// PairStart mints a pairing code the relay will accept once.
+	PairStart(ctx context.Context) (PairOffer, error)
+	// Devices lists the phones paired with this instance.
+	Devices() []RelayDevice
+	// Unpair revokes one device, or every device when all is set.
+	Unpair(ctx context.Context, clientID string, all bool) error
+}
+
+// RelayStatus is the relay configuration plus live connection state.
+type RelayStatus struct {
+	Enabled   bool   `json:"enabled"`
+	URL       string `json:"url"`
+	Connected bool   `json:"connected"`
+	Instance  string `json:"instance,omitempty"`
+}
+
+// PairOffer is a pairing code and the time the relay stops accepting it.
+type PairOffer struct {
+	Code    string    `json:"code"`
+	Expires time.Time `json:"expires"`
+}
+
+// RelayDevice is a phone paired with this instance. The token lives only in
+// the relay and on the phone; this record is the desktop's view of the pairing.
+type RelayDevice struct {
+	ClientID string    `json:"clientId"`
+	Name     string    `json:"name"`
+	PairedAt time.Time `json:"pairedAt"`
 }
 
 // Dispatcher routes RPC methods to the daemon's services.
@@ -84,6 +124,7 @@ type Dispatcher struct {
 	steering *steering.Box
 	audit    actionlog.Func
 	updater  *update.Updater
+	relay    RelayControl
 	seq      atomic.Int64
 
 	// turns gates one running turn per thread and lets clients stop it.
@@ -119,6 +160,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		steering:  d.Steering,
 		audit:     d.Audit,
 		updater:   d.Updater,
+		relay:     d.Relay,
 	}
 }
 
@@ -160,6 +202,9 @@ type (
 	turnParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Text     string             `json:"text"`
+		// Attachments are workdir-relative files or folders the composer attached.
+		// They reach the agent's prompt, not the transcript.
+		Attachments []string `json:"attachments,omitempty"`
 	}
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -215,6 +260,24 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// promptWithAttachments appends the composer's attached files and folders to
+// a prompt. The transcript keeps the typed text; only the agent sees the
+// context block. Paths resolve inside the thread's workdir.
+func (d *Dispatcher) promptWithAttachments(ctx context.Context, id contracts.ThreadID, text string, attachments []string) (string, error) {
+	if len(attachments) == 0 {
+		return text, nil
+	}
+	wd := d.threadWorkdir(ctx, id)
+	if wd == "" {
+		return "", errors.New("thread has no working directory for attachments")
+	}
+	block, err := files.AttachmentBlock(wd, attachments)
+	if err != nil {
+		return "", err
+	}
+	return text + "\n\n" + block, nil
 }
 
 // beginTurn claims a thread's turn slot, returning a context that ends when the
@@ -487,7 +550,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
-		return d.runTurn(ctx, p.ThreadID, p.Text, contracts.Command{
+		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, p.Text, p.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
 		})
 
@@ -715,6 +782,10 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.steering == nil {
 			return nil, errors.New("steering is unavailable")
 		}
+		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, p.Text, p.Attachments)
+		if err != nil {
+			return nil, err
+		}
 		// Record it in the transcript, marked as steering, then queue it for the
 		// next orchestrator pass to weigh.
 		if err := d.engine.Dispatch(ctx, contracts.Command{
@@ -725,7 +796,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, p.Text)
+		d.steering.Post(p.ThreadID, prompt)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.setAutoMode":
@@ -921,6 +992,26 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			byPath[s.Path] = s.Status
 		}
 		return map[string]any{"root": wd, "entries": entries, "status": byPath}, nil
+
+	case "files.search":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
+			Query    string             `json:"query"`
+			Limit    int                `json:"limit"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		wd := p.Workdir
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
+		}
+		matches, err := files.Search(ctx, wd, p.Query, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"matches": matches}, nil
 
 	case "files.read":
 		var p struct {
@@ -1157,10 +1248,77 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		d.settings.RemoveProject(p.ID)
 		return d.projectList(ctx), nil
 
+	case "relay.status":
+		return d.relayControl().Status(), nil
+
+	case "relay.enable":
+		var p struct {
+			URL string `json:"url"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		rc := d.relayControl()
+		if err := rc.Enable(p.URL); err != nil {
+			return nil, err
+		}
+		return rc.Status(), nil
+
+	case "relay.disable":
+		rc := d.relayControl()
+		if err := rc.Disable(); err != nil {
+			return nil, err
+		}
+		return rc.Status(), nil
+
+	case "relay.pair.start":
+		return d.relayControl().PairStart(ctx)
+
+	case "relay.devices.list":
+		return map[string]any{"devices": d.relayControl().Devices()}, nil
+
+	case "relay.unpair":
+		var p struct {
+			ClientID string `json:"clientId"`
+			All      bool   `json:"all"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.ClientID == "" && !p.All {
+			return nil, errors.New("clientId or all is required")
+		}
+		rc := d.relayControl()
+		if err := rc.Unpair(ctx, p.ClientID, p.All); err != nil {
+			return nil, err
+		}
+		return map[string]any{"devices": rc.Devices()}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown method %q", req.Method)
 	}
 }
+
+// relayControl returns the relay client, or one that refuses every call when
+// the daemon was built without a relay.
+func (d *Dispatcher) relayControl() RelayControl {
+	if d.relay == nil {
+		return noRelay{}
+	}
+	return d.relay
+}
+
+// noRelay answers the relay RPCs for a daemon with no relay client wired in.
+type noRelay struct{}
+
+var errNoRelay = errors.New("relay is not available")
+
+func (noRelay) Status() RelayStatus                          { return RelayStatus{} }
+func (noRelay) Enable(string) error                          { return errNoRelay }
+func (noRelay) Disable() error                               { return errNoRelay }
+func (noRelay) PairStart(context.Context) (PairOffer, error) { return PairOffer{}, errNoRelay }
+func (noRelay) Devices() []RelayDevice                       { return []RelayDevice{} }
+func (noRelay) Unpair(context.Context, string, bool) error   { return errNoRelay }
 
 // ProjectView is a project plus the number of threads that belong to it.
 type ProjectView struct {

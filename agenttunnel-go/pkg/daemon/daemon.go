@@ -16,6 +16,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
+	relayclient "github.com/agenttunnel/agenttunnel-go/internal/relay"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
@@ -51,6 +52,7 @@ type Daemon struct {
 	Logs     *logstore.Store
 	Settings *settings.Store
 	Actions  *actionlog.Logger
+	Relay    *relayclient.Client
 	Token    string
 
 	endpoint *atomic.Value
@@ -146,6 +148,19 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	})
 	orch := orchestrator.New(runner)
 
+	// The relay client is off until enabled in settings. It dials out only and
+	// never listens; phone sessions are served by the same server as /ws.
+	relay, err := relayclient.New(relayclient.Options{
+		StateDir: opts.StateDir,
+		Settings: store,
+		Logf: func(format string, args ...any) {
+			actions.Log("relay", map[string]any{"message": fmt.Sprintf(format, args...)})
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	disp := transport.NewDispatcher(transport.DispatcherDeps{
 		Engine:       eng,
 		Runner:       runner,
@@ -159,21 +174,27 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Steering:     steerBox,
 		Audit:        actions.Func(),
 		Updater:      updater,
+		Relay:        relay,
 	})
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
 		return nil, fmt.Errorf("close stale questions: %w", err)
 	}
 
+	srv := transport.NewServer(disp, eng, runner, opts.Token, box)
+	relay.Bind(srv)
+	relay.Start(ctx)
+
 	return &Daemon{
 		Engine:   eng,
 		Runner:   runner,
 		Orch:     orch,
-		Server:   transport.NewServer(disp, eng, runner, opts.Token, box),
+		Server:   srv,
 		Ledger:   ledger,
 		Logs:     logs,
 		Settings: store,
 		Actions:  actions,
+		Relay:    relay,
 		Token:    opts.Token,
 		endpoint: &endpoint,
 	}, nil
@@ -188,6 +209,9 @@ func (d *Daemon) SetEndpoint(url string) {
 
 // Close stops the engine and flushes the action log.
 func (d *Daemon) Close() {
+	if d.Relay != nil {
+		d.Relay.Close()
+	}
 	if d.Actions != nil {
 		d.Actions.Log("daemon.stop", nil)
 		_ = d.Actions.Close()

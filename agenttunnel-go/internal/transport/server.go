@@ -2,8 +2,10 @@ package transport
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -245,14 +247,34 @@ func (s *Server) handleSubthreadCall(w http.ResponseWriter, r *http.Request, req
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "threadId": child})
 }
 
+// authorized accepts the token as "Authorization: Bearer" from any peer. The
+// ?token= query form is accepted only from a loopback peer: query strings end
+// up in proxy and access logs, so a remote client must use the header.
 func (s *Server) authorized(r *http.Request) bool {
 	if s.token == "" {
 		return true
 	}
-	if r.Header.Get("Authorization") == "Bearer "+s.token {
+	if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tokenMatches(bearer, s.token) {
 		return true
 	}
-	return r.URL.Query().Get("token") == s.token
+	return isLoopbackPeer(r) && tokenMatches(r.URL.Query().Get("token"), s.token)
+}
+
+// tokenMatches compares in constant time so a mismatch cannot reveal how much
+// of the token was right.
+func tokenMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// isLoopbackPeer reports whether the request came from this machine. An
+// unparseable peer address counts as remote.
+func isLoopbackPeer(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -323,17 +345,25 @@ func (s *Server) handleAppOpen(c *conn, req Request) {
 	c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
 }
 
+// conn is one JSON-RPC client: a /ws socket, or a Session whose frames arrive
+// through a relay. Both share the same dispatch and subscription behavior.
 type conn struct {
-	ws     *websocket.Conn
+	ws     *websocket.Conn // nil for a Session
+	sink   func(Response)  // set for a Session
 	engine *domain.Engine
 	disp   *Dispatcher
 	srv    *Server
 
 	writeMu sync.Mutex
+	subMu   sync.Mutex
 	unsubs  []func()
 }
 
 func (c *conn) send(resp Response) {
+	if c.sink != nil {
+		c.sink(resp)
+		return
+	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return
@@ -346,37 +376,49 @@ func (c *conn) send(resp Response) {
 }
 
 func (c *conn) serve(ctx context.Context) {
-	defer func() {
-		for _, u := range c.unsubs {
-			u()
-		}
-	}()
+	defer c.unsubscribeAll()
 
 	for {
 		_, data, err := c.ws.Read(ctx)
 		if err != nil {
 			return
 		}
-		var req Request
-		if err := json.Unmarshal(data, &req); err != nil {
-			continue
+		c.handleFrame(ctx, data)
+	}
+}
+
+// handleFrame dispatches one client->server JSON-RPC frame. Requests run on
+// their own goroutine so a slow turn never blocks the reader.
+func (c *conn) handleFrame(ctx context.Context, data []byte) {
+	var req Request
+	if err := json.Unmarshal(data, &req); err != nil {
+		return
+	}
+	if req.Method == "thread.subscribe" {
+		c.subscribe(ctx, req)
+		return
+	}
+	if req.Method == "app.open" {
+		c.srv.handleAppOpen(c, req)
+		return
+	}
+	go func() {
+		result, err := c.disp.Handle(ctx, req)
+		if err != nil {
+			c.send(Response{ID: req.ID, Error: &RPCError{Code: 1, Message: err.Error()}})
+			return
 		}
-		if req.Method == "thread.subscribe" {
-			c.subscribe(ctx, req)
-			continue
-		}
-		if req.Method == "app.open" {
-			c.srv.handleAppOpen(c, req)
-			continue
-		}
-		go func() {
-			result, err := c.disp.Handle(ctx, req)
-			if err != nil {
-				c.send(Response{ID: req.ID, Error: &RPCError{Code: 1, Message: err.Error()}})
-				return
-			}
-			c.send(Response{ID: req.ID, Result: result})
-		}()
+		c.send(Response{ID: req.ID, Result: result})
+	}()
+}
+
+func (c *conn) unsubscribeAll() {
+	c.subMu.Lock()
+	unsubs := c.unsubs
+	c.unsubs = nil
+	c.subMu.Unlock()
+	for _, u := range unsubs {
+		u()
 	}
 }
 
@@ -384,7 +426,9 @@ func (c *conn) subscribe(ctx context.Context, req Request) {
 	var p threadParams
 	_ = json.Unmarshal(req.Params, &p)
 	events, unsub := c.engine.Subscribe(p.ThreadID)
+	c.subMu.Lock()
 	c.unsubs = append(c.unsubs, unsub)
+	c.subMu.Unlock()
 	c.send(Response{ID: req.ID, Result: map[string]any{"subscribed": p.ThreadID}})
 	go func() {
 		for {
