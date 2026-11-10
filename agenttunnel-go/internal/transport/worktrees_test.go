@@ -394,3 +394,197 @@ func TestWorktreePruneDropsVanishedDirectory(t *testing.T) {
 		t.Fatalf("prune left %d worktrees", len(v))
 	}
 }
+
+// commitIn commits one file in dir, so a worktree's branch carries work and
+// survives its removal: the next cut then gets a new branch and path.
+func commitIn(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", name)
+	gitRun(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "work")
+}
+
+// A worktree removed through worktree.remove leaves the thread with no ref, so
+// its next turn cuts a new one. The new worktree is where the agents' work
+// resolves; the project checkout is never used.
+func TestRemovedWorktreeIsReplacedOnNextTurn(t *testing.T) {
+	f := newWorktreeFixture(t)
+	id := f.createThread("Feature", true)
+	old := *f.state(id).Worktree
+	commitIn(t, old.Path, "agent.txt")
+	f.mustCall("worktree.remove", map[string]any{"projectId": f.projectID, "path": old.Path})
+
+	if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+		t.Fatalf("next turn gate: %v", err)
+	}
+	fresh := f.state(id).Worktree
+	if fresh == nil || fresh.Inherited || fresh.Path == old.Path || fresh.Branch == old.Branch {
+		t.Fatalf("ref after removal = %+v, want a freshly cut worktree (old %+v)", fresh, old)
+	}
+	if !f.exists(fresh.Path) {
+		t.Fatalf("fresh worktree %q does not exist", fresh.Path)
+	}
+	if got := f.disp.threadWorkdir(f.ctx, id); !worktree.SamePath(got, fresh.Path) {
+		t.Fatalf("threadWorkdir = %q, want the fresh worktree %q", got, fresh.Path)
+	}
+
+	// The agent's files, shell and tree all land in the new worktree.
+	if err := os.WriteFile(filepath.Join(fresh.Path, "fresh.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repo, "main-only.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := json.Marshal(f.mustCall("files.tree", map[string]any{"threadId": id}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tree), "fresh.txt") || strings.Contains(string(tree), "main-only.txt") {
+		t.Fatalf("files.tree did not read the fresh worktree: %s", tree)
+	}
+	skipWithoutPOSIXShell(t)
+	if _, err := runCommandRPC(t, f.disp, string(id), "pwd"); err != nil {
+		t.Fatalf("thread.runCommand: %v", err)
+	}
+	msgs := f.state(id).Messages
+	if pwd := msgs[len(msgs)-1].Text; !strings.Contains(pwd, filepath.Base(fresh.Path)) {
+		t.Fatalf("shell cwd is not the fresh worktree: %q", pwd)
+	}
+
+	// The project checkout is untouched by the whole sequence.
+	if f.exists(filepath.Join(f.repo, "agent.txt")) {
+		t.Fatal("agent work leaked into the project checkout")
+	}
+}
+
+// A worktree whose directory was deleted by hand is re-cut by the gate, never
+// replaced with the project path.
+func TestHandDeletedWorktreeIsRecutNeverProjectPath(t *testing.T) {
+	f := newWorktreeFixture(t)
+	id := f.createThread("Vanished", true)
+	lost := f.state(id).Worktree.Path
+	if err := os.RemoveAll(lost); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	fresh := f.state(id).Worktree
+	if fresh == nil || fresh.Path == lost || !f.exists(fresh.Path) {
+		t.Fatalf("ref = %+v, want a re-cut directory", fresh)
+	}
+	if got := f.disp.threadWorkdir(f.ctx, id); worktree.SamePath(got, f.repo) {
+		t.Fatalf("threadWorkdir = project checkout %q", got)
+	}
+}
+
+// A failed re-cut fails the turn and keeps the thread's ref, so the next turn
+// retries. It must not degrade to the project path.
+func TestFailedRecutFailsTurnAndKeepsRef(t *testing.T) {
+	f := newWorktreeFixture(t)
+	id := f.createThread("Blocked", true)
+	lost := f.state(id).Worktree.Path
+	if err := os.RemoveAll(lost); err != nil {
+		t.Fatal(err)
+	}
+
+	// git records each worktree under .git/worktrees; with that directory read-only
+	// no new worktree can be recorded.
+	gitDir := filepath.Join(f.repo, ".git", "worktrees")
+	if !f.exists(gitDir) {
+		t.Fatalf("%s missing; the first cut should have created it", gitDir)
+	}
+	if err := os.Chmod(gitDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gitDir, 0o755) })
+
+	if err := f.disp.ensureWorktree(f.ctx, id); err == nil {
+		t.Fatal("gate passed although no worktree could be cut")
+	}
+	if ref := f.state(id).Worktree; ref == nil || ref.Path != lost {
+		t.Fatalf("failed re-cut changed the ref: %+v", ref)
+	}
+	if got := f.disp.threadWorkdir(f.ctx, id); worktree.SamePath(got, f.repo) {
+		t.Fatalf("failed re-cut resolved to the project checkout %q", got)
+	}
+
+	if err := os.Chmod(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+		t.Fatalf("retry after repair: %v", err)
+	}
+	if fresh := f.state(id).Worktree; fresh == nil || fresh.Path == lost || !f.exists(fresh.Path) {
+		t.Fatalf("retry did not re-cut: %+v", fresh)
+	}
+}
+
+// A subthread follows its parent: once the parent's worktree is removed, the
+// subthread's turn fails naming the parent until the parent's own turn cuts a
+// new one, and then the subthread re-points at it.
+func TestSubthreadFollowsParentsNewWorktree(t *testing.T) {
+	f := newWorktreeFixture(t)
+	parent := f.createThread("parent", true)
+	old := *f.state(parent).Worktree
+	child := contracts.ThreadID("th_child")
+	if err := f.eng.Dispatch(f.ctx, contracts.Command{
+		ID: "c", Type: contracts.CmdThreadCreate, ThreadID: child, ProjectID: f.projectID,
+		ParentThreadID: parent, Worktree: inheritWorktree(&old),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commitIn(t, old.Path, "parent.txt")
+	f.mustCall("worktree.remove", map[string]any{"projectId": f.projectID, "path": old.Path})
+
+	err := f.disp.ensureWorktree(f.ctx, child)
+	if err == nil || !strings.Contains(err.Error(), string(parent)) {
+		t.Fatalf("subthread gate err = %v, want a failure naming parent %s", err, parent)
+	}
+
+	if err := f.disp.ensureWorktree(f.ctx, parent); err != nil {
+		t.Fatalf("parent gate: %v", err)
+	}
+	fresh := f.state(parent).Worktree
+	if fresh == nil || fresh.Path == old.Path {
+		t.Fatalf("parent ref = %+v, want a new worktree", fresh)
+	}
+
+	if err := f.disp.ensureWorktree(f.ctx, child); err != nil {
+		t.Fatalf("subthread gate after parent recut: %v", err)
+	}
+	cst := f.state(child).Worktree
+	if cst == nil || cst.Path != fresh.Path || !cst.Inherited {
+		t.Fatalf("subthread ref = %+v, want inherited %q", cst, fresh.Path)
+	}
+}
+
+// The fallback for a project that cannot have a worktree is audited once, however
+// many turns run; the thread keeps running on the project path.
+func TestFailedCutAuditsOnceAcrossTurns(t *testing.T) {
+	f := newWorktreeFixture(t)
+	f.disp.settings.AddProject(settings.Project{ID: "plain", Name: "plain", Path: t.TempDir()})
+	out := f.mustCall("thread.create", map[string]any{"title": "x", "projectId": "plain"})
+	id := out.(map[string]any)["threadId"].(contracts.ThreadID)
+
+	var fallbacks int
+	f.disp.audit = func(kind string, _ map[string]any) {
+		if kind == "worktree.fallback" {
+			fallbacks++
+		}
+	}
+	for turn := 0; turn < 2; turn++ {
+		if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+			t.Fatalf("turn %d gate: %v", turn, err)
+		}
+	}
+	if fallbacks != 1 {
+		t.Fatalf("worktree.fallback audited %d times, want 1", fallbacks)
+	}
+	if st := f.state(id); st.Worktree != nil {
+		t.Fatalf("non-git project got a worktree %+v", st.Worktree)
+	}
+}

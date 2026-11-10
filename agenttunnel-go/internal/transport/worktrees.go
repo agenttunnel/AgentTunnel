@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -36,18 +37,138 @@ func (d *Dispatcher) projectPath(projectID string) (string, error) {
 	return project.Path, nil
 }
 
-// ensureWorktree gives a top-level thread in a git project its own worktree
-// before its first turn runs. Subthreads share their parent's worktree and
-// never get one. A failure leaves the thread on the project path: a worktree
-// is an isolation nicety, never a reason to refuse a turn.
-func (d *Dispatcher) ensureWorktree(ctx context.Context, id contracts.ThreadID) {
+// ensureWorktree is the turn-start gate: it makes the thread's worktree real
+// before the turn's agents run. It returns an error only when the thread declares
+// a worktree that cannot be restored, which fails the turn. A thread with no
+// worktree that cannot get one runs on the project path instead; that fallback is
+// audited once per thread, not on every turn.
+//
+//   - no worktree, top-level, git project: cut and attach the first one.
+//   - own worktree, directory gone: cut a fresh one and attach it in its place.
+//   - inherited worktree, directory gone: re-point at the parent's live worktree.
+//   - live worktree: nothing to do.
+func (d *Dispatcher) ensureWorktree(ctx context.Context, id contracts.ThreadID) error {
 	st, err := d.engine.State(ctx, id)
-	if err != nil || st.Worktree != nil || st.ParentThreadID != "" || st.ProjectID == "" {
+	if err != nil {
+		return err
+	}
+	if !st.Exists || st.ProjectID == "" {
+		return nil
+	}
+	switch {
+	case st.Worktree == nil:
+		d.cutFirstWorktree(ctx, id, st.ParentThreadID)
+		return nil
+	case dirExists(st.Worktree.Path):
+		return nil
+	case st.Worktree.Inherited:
+		return d.refollowParent(ctx, id, st.ParentThreadID)
+	default:
+		return d.replaceWorktree(ctx, id)
+	}
+}
+
+// cutFirstWorktree gives a top-level thread its first worktree. A subthread with
+// no ref sits in a parent that never got one, so it stays on the project path.
+func (d *Dispatcher) cutFirstWorktree(ctx context.Context, id contracts.ThreadID, parent contracts.ThreadID) {
+	if parent != "" || d.worktreeIneligible(id) {
 		return
 	}
 	if _, err := d.attachWorktree(ctx, id); err != nil {
+		d.markWorktreeIneligible(id)
 		d.auditLog("worktree.fallback", map[string]any{"threadId": string(id), "error": err.Error()})
 	}
+}
+
+// replaceWorktree cuts a fresh worktree for a thread whose own directory is gone
+// and swaps it in. The new one is cut before the old ref is cleared, so a failed
+// cut leaves the ref in place and the next turn retries; the thread never
+// degrades to the project path.
+func (d *Dispatcher) replaceWorktree(ctx context.Context, id contracts.ThreadID) error {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return err
+	}
+	lost := st.Worktree.Path
+	repo, err := d.projectPath(st.ProjectID)
+	if err != nil {
+		return fmt.Errorf("worktree %s is missing and thread %s has no project to recut it from: %w", lost, id, err)
+	}
+	ref, err := worktree.Create(ctx, repo, st.Title, string(id))
+	if err != nil {
+		return fmt.Errorf("worktree %s is missing and a new one could not be cut for thread %s: %w", lost, id, err)
+	}
+	if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeDetach, ThreadID: id}); err != nil {
+		_ = worktree.Remove(context.WithoutCancel(ctx), repo, ref.Path, false)
+		return err
+	}
+	if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeAttach, ThreadID: id, Worktree: &ref}); err != nil {
+		_ = worktree.Remove(context.WithoutCancel(ctx), repo, ref.Path, false)
+		return err
+	}
+	d.auditLog("worktree.replaced", map[string]any{"threadId": string(id), "lost": lost, "path": ref.Path})
+	return nil
+}
+
+// refollowParent re-points a subthread at its parent's live worktree. Subthreads
+// never cut their own; if the parent has no live worktree, the turn fails until the
+// parent's own turn restores it.
+func (d *Dispatcher) refollowParent(ctx context.Context, id, parentID contracts.ThreadID) error {
+	parent, err := d.engine.State(ctx, parentID)
+	if err != nil {
+		return fmt.Errorf("subthread %s shares a worktree that is missing, and parent thread %s is unavailable: %w", id, parentID, err)
+	}
+	if parent.Worktree == nil || !dirExists(parent.Worktree.Path) {
+		return fmt.Errorf("subthread %s shares a worktree that is missing, and parent thread %s has no live worktree; run the parent thread's turn first", id, parentID)
+	}
+	return d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeAttach, ThreadID: id, Worktree: inheritWorktree(parent.Worktree)})
+}
+
+// detachOwners clears the worktree from every top-level thread that owns path.
+// Subthreads keep their inherited ref; the turn-start gate re-points them.
+func (d *Dispatcher) detachOwners(ctx context.Context, path string) error {
+	ids, err := d.engine.Threads(ctx)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		st, err := d.engine.State(ctx, id)
+		if err != nil || st.Worktree == nil || st.Worktree.Inherited || !worktree.SamePath(st.Worktree.Path, path) {
+			continue
+		}
+		if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeDetach, ThreadID: id}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dispatchWorktree sends one worktree command with a fresh id.
+func (d *Dispatcher) dispatchWorktree(ctx context.Context, cmd contracts.Command) error {
+	cmd.ID = d.nextID()
+	return d.engine.Dispatch(ctx, cmd)
+}
+
+// worktreeIneligible reports whether a thread's first worktree cut already failed
+// in this daemon's life, so later turns skip git and run on the project path.
+func (d *Dispatcher) worktreeIneligible(id contracts.ThreadID) bool {
+	d.worktreeMu.Lock()
+	defer d.worktreeMu.Unlock()
+	return d.noWorktree[id]
+}
+
+func (d *Dispatcher) markWorktreeIneligible(id contracts.ThreadID) {
+	d.worktreeMu.Lock()
+	defer d.worktreeMu.Unlock()
+	if d.noWorktree == nil {
+		d.noWorktree = map[contracts.ThreadID]bool{}
+	}
+	d.noWorktree[id] = true
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // attachWorktree cuts a worktree for thread id and records it on the thread.
@@ -69,9 +190,7 @@ func (d *Dispatcher) attachWorktree(ctx context.Context, id contracts.ThreadID) 
 	if err != nil {
 		return contracts.WorktreeRef{}, err
 	}
-	if err := d.engine.Dispatch(ctx, contracts.Command{
-		ID: d.nextID(), Type: contracts.CmdWorktreeAttach, ThreadID: id, Worktree: &ref,
-	}); err != nil {
+	if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeAttach, ThreadID: id, Worktree: &ref}); err != nil {
 		_ = worktree.Remove(context.WithoutCancel(ctx), repo, ref.Path, false)
 		return contracts.WorktreeRef{}, err
 	}
@@ -190,6 +309,9 @@ func (d *Dispatcher) worktreeRemove(ctx context.Context, projectID, path string,
 		}
 	}
 	if err := worktree.Remove(ctx, repo, path, force); err != nil {
+		return nil, err
+	}
+	if err := d.detachOwners(ctx, path); err != nil {
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil

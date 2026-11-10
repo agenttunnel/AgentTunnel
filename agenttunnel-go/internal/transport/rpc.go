@@ -90,6 +90,11 @@ type Dispatcher struct {
 	turnsMu sync.Mutex
 	turns   map[contracts.ThreadID]context.CancelFunc
 
+	// noWorktree records threads whose first worktree cut failed, so later turns
+	// skip git. In memory: a restart retries once.
+	worktreeMu sync.Mutex
+	noWorktree map[contracts.ThreadID]bool
+
 	// shellStarted, when set by a test, runs once a thread.runCommand child is
 	// live. Nil in production.
 	shellStarted func()
@@ -191,9 +196,11 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	defer done()
-	// The first turn of a top-level thread in a git project cuts its worktree;
-	// the attach is dispatched before the turn so the agents' workdir is ready.
-	d.ensureWorktree(ctx, threadID)
+	// The turn-start gate runs before any agent: the thread's worktree must exist
+	// (cut on the first turn, restored if it vanished) or the turn does not run.
+	if err := d.ensureWorktree(ctx, threadID); err != nil {
+		return nil, err
+	}
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
