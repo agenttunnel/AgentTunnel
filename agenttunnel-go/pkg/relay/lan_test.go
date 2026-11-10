@@ -80,7 +80,7 @@ func TestLANURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := lanURLWith(tt.listen, func() string { return tt.host })
+			got := LANURLWith(tt.listen, func() string { return tt.host })
 			if got != tt.want {
 				t.Fatalf("LANURL = %q, want %q", got, tt.want)
 			}

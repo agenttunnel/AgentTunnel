@@ -86,6 +86,20 @@ type RelayControl interface {
 	Devices() []RelayDevice
 	// Unpair revokes one device, or every device when all is set.
 	Unpair(ctx context.Context, clientID string, all bool) error
+	// StartTunnel serves a relay on the LAN inside this daemon and points the
+	// relay client at it. It returns once the daemon socket is up. StopTunnel
+	// closes it; TunnelStatus reports it.
+	StartTunnel(ctx context.Context) (TunnelStatus, error)
+	StopTunnel() error
+	TunnelStatus() TunnelStatus
+}
+
+// TunnelStatus describes the in-app relay. LANURL is the address a phone dials
+// and is empty when the tunnel is off.
+type TunnelStatus struct {
+	Listening bool   `json:"listening"`
+	Port      int    `json:"port,omitempty"`
+	LANURL    string `json:"lanUrl,omitempty"`
 }
 
 // RelayStatus is the relay configuration plus live connection state.
@@ -1309,6 +1323,19 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 	case "relay.devices.list":
 		return map[string]any{"devices": d.relayControl().Devices()}, nil
 
+	case "relay.tunnel.start":
+		return d.relayControl().StartTunnel(ctx)
+
+	case "relay.tunnel.stop":
+		rc := d.relayControl()
+		if err := rc.StopTunnel(); err != nil {
+			return nil, err
+		}
+		return rc.TunnelStatus(), nil
+
+	case "relay.tunnel.status":
+		return d.relayControl().TunnelStatus(), nil
+
 	case "relay.unpair":
 		var p struct {
 			ClientID string `json:"clientId"`
@@ -1351,6 +1378,11 @@ func (noRelay) Disable() error                               { return errNoRelay
 func (noRelay) PairStart(context.Context) (PairOffer, error) { return PairOffer{}, errNoRelay }
 func (noRelay) Devices() []RelayDevice                       { return []RelayDevice{} }
 func (noRelay) Unpair(context.Context, string, bool) error   { return errNoRelay }
+func (noRelay) StartTunnel(context.Context) (TunnelStatus, error) {
+	return TunnelStatus{}, errNoRelay
+}
+func (noRelay) StopTunnel() error          { return errNoRelay }
+func (noRelay) TunnelStatus() TunnelStatus { return TunnelStatus{} }
 
 // ProjectView is a project plus the number of threads that belong to it.
 type ProjectView struct {

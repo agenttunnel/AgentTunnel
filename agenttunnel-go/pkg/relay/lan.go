@@ -17,10 +17,12 @@ func LANHost() string {
 // specific address is used as is, and loopback gives "" because no phone can
 // reach it.
 func LANURL(listen net.Addr) string {
-	return lanURLWith(listen, LANHost)
+	return LANURLWith(listen, LANHost)
 }
 
-func lanURLWith(listen net.Addr, lan func() string) string {
+// LANURLWith is LANURL with the LAN host lookup injected. Tests and callers
+// that own their own address source use it.
+func LANURLWith(listen net.Addr, lan func() string) string {
 	tcp, ok := listen.(*net.TCPAddr)
 	if !ok {
 		return ""

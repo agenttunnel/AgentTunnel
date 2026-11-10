@@ -49,3 +49,10 @@ export function phoneRelayUrl(relay: string, lanHost: string | undefined): strin
   u.hostname = lanHost;
   return u.toString().replace(/\/$/, "");
 }
+
+/** TunnelStatus is the in-app relay (relay.tunnel.*). lanUrl is the phone's address. */
+export type TunnelStatus = {
+  listening: boolean;
+  port?: number;
+  lanUrl?: string;
+};

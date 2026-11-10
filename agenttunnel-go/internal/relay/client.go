@@ -62,6 +62,13 @@ type Client struct {
 	// tests replace it so the answer does not depend on the host's interfaces.
 	lanHost func() string
 
+	// tunnelPort is the port the in-app relay prefers. Tests move it off the
+	// default so they never bind the real one.
+	tunnelPort int
+	// tunnelMu serializes tunnel start and stop. tunnel is the running one.
+	tunnelMu sync.Mutex
+	tunnel   *tunnelRun
+
 	mu      sync.Mutex
 	id      *identity
 	up      *uplink
@@ -78,14 +85,15 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("relay identity: %w", err)
 	}
 	c := &Client{
-		opts:    opts,
-		path:    path,
-		label:   opts.Label,
-		logf:    func(string, ...any) {},
-		kick:    make(chan struct{}, 1),
-		lanHost: relaywire.LANHost,
-		id:      id,
-		upMoved: make(chan struct{}),
+		opts:       opts,
+		path:       path,
+		label:      opts.Label,
+		logf:       func(string, ...any) {},
+		kick:       make(chan struct{}, 1),
+		lanHost:    relaywire.LANHost,
+		tunnelPort: defaultTunnelPort,
+		id:         id,
+		upMoved:    make(chan struct{}),
 	}
 	if c.label == "" {
 		c.label = "AgentTunnel"
@@ -151,8 +159,10 @@ func (c *Client) setUplinkLocked(up *uplink) {
 	c.upMoved = make(chan struct{})
 }
 
-// Close stops the loop and any live socket, and waits for it to exit.
+// Close stops the in-app relay if one runs, then the loop and any live socket,
+// and waits for the loop to exit.
 func (c *Client) Close() {
+	_ = c.StopTunnel()
 	c.mu.Lock()
 	cancel, done := c.cancel, c.done
 	c.mu.Unlock()
@@ -383,8 +393,10 @@ func (c *Client) Enable(raw string) error {
 	return nil
 }
 
-// Disable turns the relay off and closes the socket. The saved URL is kept.
+// Disable turns the relay off and closes the socket. The saved URL is kept. A
+// running in-app tunnel stops too, since its relay is no longer dialed.
 func (c *Client) Disable() error {
+	_ = c.StopTunnel()
 	cfg := c.opts.Settings.Relay()
 	cfg.Enabled = false
 	c.opts.Settings.SetRelay(cfg)
