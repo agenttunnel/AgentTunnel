@@ -1554,12 +1554,15 @@ export default function App() {
     const rpc = rpcRef.current;
     const threadId = activeId;
     const text = expandPastes(input, pastes[draftKey]).trim();
-    // The ref closes the window before React re-renders, so a second Enter on
-    // the same thread cannot submit the same draft again.
-    if (!rpc || !threadId || !text || sendingRef.current.has(threadId)) return;
+    if (!rpc || !threadId || !text) return;
     // A turn already running on this thread takes the message as a steer, so
     // Enter never drops a message while the team is working.
     const steer = running.length > 0 || busy;
+    // The ref closes the window before React re-renders, so a second Enter cannot
+    // submit the same draft again. Steers get their own key: a turn's RPC stays in
+    // flight for the whole run, so a turn key would swallow every mid-run steer.
+    const sendKey = steer ? `steer:${threadId}` : threadId;
+    if (sendingRef.current.has(sendKey)) return;
     // "! cmd" runs a shell command in the thread's project. A lone "!" is just text.
     const command = text.startsWith("!") ? text.slice(1).trim() : "";
     if (command && steer) {
@@ -1573,7 +1576,7 @@ export default function App() {
       delete rest[draftKey];
       return rest;
     });
-    sendingRef.current.add(threadId);
+    sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
     if (command) setShellThread(threadId);
     try {
@@ -1589,8 +1592,9 @@ export default function App() {
       setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
       setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
-      sendingRef.current.delete(threadId);
-      setTurnBusy(threadId, false);
+      sendingRef.current.delete(sendKey);
+      // A finished steer must not clear the busy flag of the turn it joined.
+      if (!steer) setTurnBusy(threadId, false);
       setShellThread((cur) => (cur === threadId ? null : cur));
       refresh(threadId).catch(() => undefined);
     }
