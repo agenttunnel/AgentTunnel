@@ -2461,7 +2461,9 @@ export default function App() {
                               ? "System"
                               : m.author === "shell"
                                 ? "Shell"
-                                : "Orchestrator"}
+                                : m.author === "subthread"
+                                  ? "Subthread"
+                                  : "Orchestrator"}
                       </span>
                     </div>
                     <div className="msg-actions">
