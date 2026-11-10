@@ -140,7 +140,7 @@ func TestSessionServesRPCThroughTheSink(t *testing.T) {
 	sess := srv.NewSession(func(r Response) { replies <- r })
 	t.Cleanup(sess.Close)
 
-	sess.Handle([]byte(`{"id":"s1","method":"relay.status"}`))
+	sess.Handle([]byte(`{"id":"s1","method":"thread.list"}`))
 	select {
 	case r := <-replies:
 		if r.ID != "s1" || r.Error != nil {
@@ -148,6 +148,50 @@ func TestSessionServesRPCThroughTheSink(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("session never replied")
+	}
+}
+
+// A relayed session must refuse every relay.* call before it reaches the
+// dispatcher, and the refusal is synchronous, so the reply is already queued.
+func TestSessionRefusesRelayMethods(t *testing.T) {
+	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
+	eng.Start(context.Background())
+	t.Cleanup(eng.Close)
+	rc := &fakeRelay{}
+	disp := NewDispatcher(DispatcherDeps{Engine: eng, Relay: rc})
+	srv := NewServer(disp, eng, nil, "", toolbox.New())
+
+	replies := make(chan Response, 1)
+	sess := srv.NewSession(func(r Response) { replies <- r })
+	t.Cleanup(sess.Close)
+
+	methods := []string{
+		`{"id":"r1","method":"relay.status"}`,
+		`{"id":"r2","method":"relay.enable","params":{"url":"wss://evil.example"}}`,
+		`{"id":"r3","method":"relay.pair.start"}`,
+		`{"id":"r4","method":"relay.devices.list"}`,
+		`{"id":"r5","method":"relay.unpair","params":{"all":true}}`,
+		`{"id":"r6","method":"relay.disable"}`,
+	}
+	for _, frame := range methods {
+		sess.Handle([]byte(frame))
+		select {
+		case r := <-replies:
+			if r.Error == nil || r.Error.Code != codeRelayRestricted {
+				t.Fatalf("%s: want restricted error, got %+v", frame, r)
+			}
+			if r.Result != nil {
+				t.Fatalf("%s: refused call must not return a result", frame)
+			}
+		default:
+			t.Fatalf("%s: refusal must reply synchronously", frame)
+		}
+	}
+
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.enabled || rc.url != "" || rc.unpairAll || rc.unpairID != "" {
+		t.Fatalf("relay was touched through a session: %+v", rc)
 	}
 }
 
