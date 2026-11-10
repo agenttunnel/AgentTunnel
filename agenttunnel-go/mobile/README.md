@@ -4,8 +4,8 @@ Expo app that pairs with a desktop AgentTunnel through the relay.
 
 ## iOS build and PR
 
-Requires macOS with full Xcode (Command Line Tools alone are not enough),
-CocoaPods (`brew install cocoapods`), Node, and Bun.
+Requires macOS with full Xcode 26 or newer (Swift 6.2; Command Line Tools alone
+are not enough, and older Xcode fails in ExpoModulesJSI), CocoaPods (`brew install cocoapods`), Node, and Bun.
 
 ```sh
 scripts/ios-build.sh
