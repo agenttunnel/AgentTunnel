@@ -32,6 +32,7 @@ import {
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
 import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
+import { VoiceRecorder } from "./components/VoiceRecorder";
 import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
@@ -51,6 +52,7 @@ import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
+import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads } from "./lib/threads";
 import {
@@ -1758,6 +1760,24 @@ export default function App() {
     }
   };
 
+  // A graph group's prompt goes to its thread the way a chat message does: a new
+  // turn, or a steer while one runs. The chat tab shows the result.
+  const sendGroup = async (threadId: string, text: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const steer = running.length > 0 || busy;
+    if (!steer) setTurnBusy(threadId, true);
+    setTab("chat");
+    try {
+      await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e), threadId);
+    } finally {
+      if (!steer) setTurnBusy(threadId, false);
+      refresh(threadId).catch(() => undefined);
+    }
+  };
+
   const toggle = async (field: "autoMode" | "peerMailbox", value: boolean) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
@@ -2030,11 +2050,18 @@ export default function App() {
       return { ...prev, [draftKey]: next };
     });
   };
-  const listening = useHoldToTalk({
+  const voice = useHoldToTalk({
     enabled: !!activeId,
     onText: appendDictation,
     onUnavailable: (msg) => setError(msg),
   });
+  const listening = voice.listening;
+  // The textarea stays mounted (hidden while recording), so refocus it when a take ends.
+  const wasListening = useRef(false);
+  useEffect(() => {
+    if (wasListening.current && !listening) taRef.current?.focus();
+    wasListening.current = listening;
+  }, [listening]);
   useRotatingPlaceholder(taRef, {
     rotate: tab === "chat" && !!activeId && running.length === 0 && !input,
     idle:
@@ -2670,6 +2697,7 @@ export default function App() {
           ))}
         </div>
         <div className="sidebar-foot">
+          <LimitsMeter rpc={rpcRef.current} />
           <button className="foot-btn" onClick={openSettings}>
             <svg
               viewBox="0 0 24 24"
@@ -2911,6 +2939,7 @@ export default function App() {
                 <textarea
                   ref={taRef}
                   rows={1}
+                  hidden={listening}
                   onPaste={onComposerPaste}
                   onClick={onComposerClick}
                   value={input}
@@ -2923,6 +2952,13 @@ export default function App() {
                   onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={onComposerKeyDown}
                 />
+                {listening && (
+                  <VoiceRecorder
+                    hint={`${HOLD_MOD_LABEL} + T`}
+                    onStop={voice.stop}
+                    onCancel={voice.cancel}
+                  />
+                )}
               </div>
               <div className="composer-foot">
                 {selectedProject && (
@@ -2953,12 +2989,6 @@ export default function App() {
                   </svg>
                   Model config
                 </button>
-                {listening && (
-                  <span className="rec-indicator" role="status">
-                    <span className="rec-dot" />
-                    Listening — release {HOLD_MOD_LABEL} + T to insert
-                  </span>
-                )}
               </div>
             </div>
           </>
@@ -3000,6 +3030,7 @@ export default function App() {
             mailbox={thread?.mailbox ?? null}
             peerMailbox={thread?.peerMailbox ?? false}
             onOpenAgent={setDetailId}
+            onSubmitGroup={sendGroup}
           />
         )}
       </div>
