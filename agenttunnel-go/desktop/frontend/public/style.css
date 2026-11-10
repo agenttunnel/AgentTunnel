@@ -995,23 +995,113 @@ body.is-resizing * {
   background: var(--surface-2);
 }
 
-/* Listening state for hold-to-talk: a static dot and a mono label, no animation. */
-.rec-indicator {
-  display: inline-flex;
+/* Voice recording: replaces the composer text field while hold-to-talk runs.
+   Motion is transform and opacity only; reduced motion keeps static bars. */
+.rec-ui {
+  flex: 1;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  padding-right: 4px;
-  font: 10.5px/1 var(--mono);
-  letter-spacing: 0.02em;
-  color: var(--err);
-  white-space: nowrap;
+  gap: 10px;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 4px;
+  font: 12px/1 var(--mono);
+  color: var(--dim);
 }
-.rec-dot {
-  width: 6px;
-  height: 6px;
+.rec-pulse {
+  flex: none;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--err);
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+.rec-time {
+  flex: none;
+  color: var(--err);
+  font-variant-numeric: tabular-nums;
+}
+.rec-wave {
+  flex: 1;
+  min-width: 40px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+}
+.rec-bar {
+  flex: 0 0 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--err);
+  opacity: 0.8;
+  transform: scaleY(var(--h));
+}
+/* No mic stream: each bar bobs on its own phase. Stops with the component. */
+.rec-wave.css .rec-bar {
+  animation: rec-bar-idle 0.9s ease-in-out infinite alternate;
+}
+@keyframes rec-bar-idle {
+  from {
+    transform: scaleY(0.15);
+  }
+  to {
+    transform: scaleY(var(--h));
+  }
+}
+.rec-hint {
+  flex: none;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.rec-cancel,
+.rec-stop {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.rec-cancel {
+  font: 16px/1 var(--sans);
+}
+.rec-stop {
+  border-color: var(--err);
+  color: var(--err);
+}
+.rec-stop-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.rec-cancel:hover,
+.rec-stop:hover {
+  background: var(--surface-2);
+}
+.rec-cancel:focus-visible,
+.rec-stop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .role-edit {
@@ -1141,7 +1231,9 @@ body.is-resizing * {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .act-led {
+  .act-led,
+  .rec-pulse,
+  .rec-wave.css .rec-bar {
     animation: none;
   }
   * {
