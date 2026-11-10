@@ -42,6 +42,8 @@ import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { HarnessStatsPanel, type HarnessStat } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { Markdown } from "./components/Markdown";
+import { QuestionCard } from "./components/QuestionCard";
+import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
@@ -100,6 +102,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** Agent questions for the human, oldest first. Pending ones await an answer. */
+  questions?: AgentQuestion[] | null;
   /** The agreed task list, in the order the leads added it. */
   tasks?: TaskItem[] | null;
 };
@@ -623,7 +627,12 @@ export default function App() {
     // wins over jumping.
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [thread?.messages?.length, thread?.messages?.[thread.messages.length - 1]?.text, live.length]);
+  }, [
+    thread?.messages?.length,
+    thread?.messages?.[thread.messages.length - 1]?.text,
+    thread?.questions?.length,
+    live.length,
+  ]);
 
   // Live log follows the newest output, unless the user scrolled up to read.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
@@ -646,6 +655,28 @@ export default function App() {
     setThreads(list);
     setGlobalUsage(usage);
   }, []);
+
+  // The daemon closes a question on the answer, so refresh right away: the card
+  // flips to its answered state without waiting for the event debounce. Errors
+  // reject to the card, which shows them beside its buttons.
+  const answerQuestion = useCallback(
+    async (questionId: string, selected: string[], text: string) => {
+      const rpc = rpcRef.current;
+      if (!rpc || !activeId) return;
+      await rpc.call("question.answer", { threadId: activeId, questionId, selected, text });
+      await refresh(activeId);
+    },
+    [activeId, refresh],
+  );
+  const dismissQuestion = useCallback(
+    async (questionId: string) => {
+      const rpc = rpcRef.current;
+      if (!rpc || !activeId) return;
+      await rpc.call("question.dismiss", { threadId: activeId, questionId });
+      await refresh(activeId);
+    },
+    [activeId, refresh],
+  );
 
   const installUpdate = useCallback(async () => {
     const rpc = rpcRef.current;
@@ -1323,6 +1354,11 @@ export default function App() {
     }
     return out;
   }, [thread]);
+  /** The name a question card shows for the agent that asked it. */
+  const agentLabel = (agentId: string) => {
+    const a = thread?.agents?.[agentId];
+    return a ? a.name || rolesById[a.role] || a.role : "Agent";
+  };
 
   const threadUsage = useMemo(() => deriveThreadUsage(thread), [thread]);
   const sharedEntries = useMemo(
@@ -2332,6 +2368,15 @@ export default function App() {
                   </div>
                   ))}
                 </section>
+              ))}
+              {(thread?.questions ?? []).map((q) => (
+                <QuestionCard
+                  key={q.questionId}
+                  question={q}
+                  askedBy={agentLabel(q.agentId)}
+                  onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
+                  onDismiss={() => dismissQuestion(q.questionId)}
+                />
               ))}
               {running.length > 0 && (
                 <div className="activity agents">

@@ -2887,6 +2887,87 @@ table.grid tr.rowlink:hover td {
   font-size: 9.5px;
 }
 
+/* --- agent questions ----------------------------------------------------- */
+/* A pending question is a plain card with an accent edge; closed ones recede. */
+.question-card {
+  max-width: 900px;
+  margin: 10px auto;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+}
+.question-card.closed {
+  border-color: var(--border);
+}
+.q-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+.q-asker {
+  color: var(--dim);
+  font-weight: 600;
+}
+.q-text,
+.q-answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.q-text {
+  margin-bottom: 10px;
+}
+.q-answer {
+  color: var(--text);
+}
+.q-answer.muted {
+  color: var(--faint);
+}
+.q-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.q-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.q-option:hover {
+  background: var(--surface-2);
+}
+.q-option.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.q-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.question-card textarea {
+  min-height: 56px;
+  margin-bottom: 10px;
+  resize: vertical;
+}
+.q-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.q-actions .hint {
+  margin-right: auto;
+}
+
 /* --- council ------------------------------------------------------------ */
 .council-section {
   padding: 10px 10px 12px;
