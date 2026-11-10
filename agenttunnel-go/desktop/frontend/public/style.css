@@ -3625,10 +3625,159 @@ table.grid tr.rowlink:hover td {
     transform: none;
   }
 }
+/* Agent groups: a dashed box around the members, a composer, and proximity while
+   dragging. Rings and the snap are transform/opacity only, and the rings are
+   mounted only while a dragged node is in range. */
+.graph-group {
+  position: absolute;
+  border: 1px dashed var(--accent-line);
+  border-radius: 14px;
+  background: rgba(25, 195, 200, 0.04);
+  pointer-events: none;
+}
+.graph-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 10px;
+  color: var(--faint);
+  pointer-events: auto;
+}
+.graph-group-head span {
+  margin-right: auto;
+}
+.graph-group-head button {
+  font-size: 10px;
+  padding: 1px 7px;
+}
+.graph-unlink {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 16px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--faint);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.graph-unlink:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+.graph-node.near {
+  border-color: var(--accent);
+}
+.graph-node.snap {
+  scale: 1.04;
+  transition: scale 140ms ease-out;
+}
+.graph-rings {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.graph-rings i {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--accent);
+  border-radius: inherit;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: graph-ring 1350ms ease-out infinite;
+}
+.graph-rings i:nth-child(2) {
+  animation-delay: 450ms;
+}
+.graph-rings i:nth-child(3) {
+  animation-delay: 900ms;
+}
+@keyframes graph-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+/* Keeps graph-enter in the list, finished, so dropping .merge does not replay it. */
+.graph-node.merge {
+  animation: graph-enter 240ms ease-out both, graph-merge 300ms ease-out;
+}
+@keyframes graph-merge {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.graph-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.graph-composer-to {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.graph-chip {
+  font-size: 10px;
+  padding: 1px 8px;
+  color: var(--faint);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+.graph-composer textarea {
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.graph-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.graph-hint-keys {
+  margin-right: auto;
+  font-size: 10px;
+  color: var(--faint);
+}
 @media (prefers-reduced-motion: reduce) {
   .graph-pulse,
-  .graph-node.enter {
+  .graph-node.enter,
+  .graph-node.merge {
     animation: none;
+  }
+  .graph-node.snap {
+    scale: none;
+    transition: none;
+  }
+  .graph-rings {
+    display: none;
   }
 }
 
