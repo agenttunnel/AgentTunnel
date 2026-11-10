@@ -37,6 +37,7 @@ const (
 	CmdReviewThreadStatus CommandType = "review.thread.status"
 	CmdQuestionAsk        CommandType = "thread.question.ask"
 	CmdQuestionClose      CommandType = "thread.question.close"
+	CmdPRTrack            CommandType = "thread.pr.track"
 )
 
 // DispatchTask is the orchestrator's instruction to spawn a subagent.
@@ -89,4 +90,5 @@ type Command struct {
 	ReviewStatus   *ReviewThreadStatusChanged `json:"reviewStatus,omitempty"`
 	QuestionAsk    *QuestionAsked             `json:"questionAsk,omitempty"`
 	QuestionClose  *QuestionClosed            `json:"questionClose,omitempty"`
+	PullRequest    *PullRequestRef            `json:"pullRequest,omitempty"`
 }

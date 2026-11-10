@@ -96,6 +96,9 @@ type ThreadState struct {
 	Messages   []Message            `json:"messages"`
 	// Tasks is the agreed task list, in the order the leads added them.
 	Tasks []TaskItem `json:"tasks"`
+	// PullRequests lists the pull requests this thread opened, in the order they
+	// were first seen. Keyed by URL.
+	PullRequests []contracts.PullRequestRef `json:"pullRequests,omitempty"`
 
 	// Turn counts user messages: the turn spend currently accrues to.
 	Turn  int         `json:"turn"`
@@ -228,6 +231,16 @@ func (s *ThreadState) turnFor(turn int) *TurnUsage {
 	return &s.Turns[len(s.Turns)-1]
 }
 
+// HasPullRequest reports whether the thread already tracks the request at url.
+func (s *ThreadState) HasPullRequest(url string) bool {
+	for _, ref := range s.PullRequests {
+		if ref.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
 // Clone returns a deep copy so readers cannot race the engine's worker.
 func (s *ThreadState) Clone() *ThreadState {
 	c := *s
@@ -243,6 +256,7 @@ func (s *ThreadState) Clone() *ThreadState {
 	}
 	c.Questions = append([]Question(nil), s.Questions...)
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
+	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {
 		c.Turns[i] = TurnUsage{

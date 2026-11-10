@@ -1026,6 +1026,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return scm.Fetch(ctx, wd), nil
 
+	case "pr.list":
+		return d.prList(ctx, req)
+
 	case "pr.commit", "pr.push", "pr.pull", "pr.create", "pr.ready", "pr.merge":
 		return d.prAction(ctx, req)
 

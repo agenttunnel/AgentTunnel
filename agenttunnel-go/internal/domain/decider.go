@@ -137,6 +137,19 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.AutoModeSet{Enabled: *cmd.AutoMode}}, nil
 
+	case contracts.CmdPRTrack:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		ref := cmd.PullRequest
+		if ref == nil || ref.URL == "" || ref.Number <= 0 {
+			return nil, fmt.Errorf("%w: pull request number and url are required", ErrInvalidCommand)
+		}
+		if s.HasPullRequest(ref.URL) {
+			return nil, nil // already tracked: nothing to record
+		}
+		return []contracts.EventPayload{contracts.PRTracked{PullRequest: *ref}}, nil
+
 	case contracts.CmdPeerMailboxSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
