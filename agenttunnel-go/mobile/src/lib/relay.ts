@@ -103,6 +103,7 @@ type Frame = {
   token?: string;
   reason?: string;
   resync?: boolean;
+  daemon?: string;
   id?: string | number;
   result?: unknown;
   method?: string;
@@ -129,8 +130,30 @@ function pairRefusal(code: string | undefined): RelayError {
   }
 }
 
+/** The label used when the user leaves the device name empty. */
+export const DEFAULT_DEVICE_NAME = "Phone";
+/** Matches the relay's clamp (pkg/relay maxClientNameRune). */
+const MAX_DEVICE_NAME_RUNES = 64;
+
+/**
+ * Starting value for the Pair screen's device name, from the platform alone
+ * (no device-info dependency). Editable by the user.
+ */
+export function defaultDeviceName(os: string): string {
+  if (os === "ios") return "iPhone";
+  if (os === "android") return "Android phone";
+  return DEFAULT_DEVICE_NAME;
+}
+
+/** Trims and clamps a user-entered device name; empty falls back to the default. */
+export function cleanDeviceName(raw: string | undefined): string {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return DEFAULT_DEVICE_NAME;
+  return Array.from(trimmed).slice(0, MAX_DEVICE_NAME_RUNES).join("");
+}
+
 export type PairOptions = {
-  /** The label this phone shows in the desktop's device list. */
+  /** The label this phone shows in the desktop's device list. Cleaned before sending. */
   deviceName?: string;
   timeoutMs?: number;
   /** Injection seams: the smoke test drives sockets and timers by hand. */
@@ -176,7 +199,7 @@ export async function exchangePairCode(relayUrl: string, code: string, opts: Pai
     );
     sock.onopen = () => {
       try {
-        sock.send(JSON.stringify({ t: "pair", code: pairCode, name: opts.deviceName ?? "Phone" }));
+        sock.send(JSON.stringify({ t: "pair", code: pairCode, name: cleanDeviceName(opts.deviceName) }));
       } catch {
         finish(() => reject(unreachable()));
       }
@@ -205,6 +228,7 @@ export async function exchangePairCode(relayUrl: string, code: string, opts: Pai
 // ---------- JSON-RPC client ----------
 
 export type RpcStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
+export type DaemonPresence = "online" | "offline";
 
 export type RpcOptions = {
   /** The relay's phone endpoint, from Pairing.wsUrl. */
@@ -219,6 +243,8 @@ export type RpcOptions = {
   onOpen?: () => void;
   /** The relay asked for a re-read (a daemon-side overflow dropped events). */
   onResync?: () => void;
+  /** The daemon's presence at the relay, from the attach ack and each status frame. */
+  onDaemon?: (presence: DaemonPresence) => void;
   requestTimeoutMs?: number;
   reconnect?: { baseMs: number; maxMs: number };
   maxQueue?: number;
@@ -473,11 +499,17 @@ export class RpcClient {
         if (msg.reason === "revoked") this.halt(unpairedError());
         return;
       case "status":
+        this.reportDaemon(msg);
         if (msg.resync) this.opts.onResync?.();
         return;
       default:
         return;
     }
+  }
+
+  /** Passes on a daemon presence value. Unknown values are ignored, not guessed at. */
+  private reportDaemon(msg: Frame): void {
+    if (msg.daemon === "online" || msg.daemon === "offline") this.opts.onDaemon?.(msg.daemon);
   }
 
   /** Advances the handshake: hello ok sends attach; attach ok means open. */
@@ -497,6 +529,7 @@ export class RpcClient {
     }
     this.clearHandshake();
     this.attempts = 0;
+    this.reportDaemon(msg);
     this.setStatus("open");
     this.opts.onOpen?.();
     this.flushQueue();
