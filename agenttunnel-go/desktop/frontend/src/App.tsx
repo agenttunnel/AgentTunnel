@@ -32,6 +32,7 @@ import {
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
 import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
+import { VoiceRecorder } from "./components/VoiceRecorder";
 import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
@@ -1999,11 +2000,18 @@ export default function App() {
       return { ...prev, [draftKey]: next };
     });
   };
-  const listening = useHoldToTalk({
+  const voice = useHoldToTalk({
     enabled: !!activeId,
     onText: appendDictation,
     onUnavailable: (msg) => setError(msg),
   });
+  const listening = voice.listening;
+  // The textarea stays mounted (hidden while recording), so refocus it when a take ends.
+  const wasListening = useRef(false);
+  useEffect(() => {
+    if (wasListening.current && !listening) taRef.current?.focus();
+    wasListening.current = listening;
+  }, [listening]);
   useRotatingPlaceholder(taRef, {
     rotate: tab === "chat" && !!activeId && running.length === 0 && !input,
     idle:
@@ -2881,6 +2889,7 @@ export default function App() {
                 <textarea
                   ref={taRef}
                   rows={1}
+                  hidden={listening}
                   onPaste={onComposerPaste}
                   onClick={onComposerClick}
                   value={input}
@@ -2893,6 +2902,13 @@ export default function App() {
                   onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={onComposerKeyDown}
                 />
+                {listening && (
+                  <VoiceRecorder
+                    hint={`${HOLD_MOD_LABEL} + T`}
+                    onStop={voice.stop}
+                    onCancel={voice.cancel}
+                  />
+                )}
               </div>
               <div className="composer-foot">
                 {selectedProject && (
@@ -2923,12 +2939,6 @@ export default function App() {
                   </svg>
                   Model config
                 </button>
-                {listening && (
-                  <span className="rec-indicator" role="status">
-                    <span className="rec-dot" />
-                    Listening — release {HOLD_MOD_LABEL} + T to insert
-                  </span>
-                )}
               </div>
             </div>
           </>
