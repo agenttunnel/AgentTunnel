@@ -14,6 +14,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/gitguard"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
@@ -325,6 +326,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
+	env = append(env, subagentGitEnv(role)...)
 	spec := providers.SessionSpec{
 		AgentID:  t.AgentID,
 		ThreadID: threadID,
@@ -865,6 +867,15 @@ func (r *Runner) toolEnv(threadID contracts.ThreadID, agentID contracts.AgentID)
 		env = append(env, "AT_TOKEN="+r.token)
 	}
 	return env
+}
+
+// subagentGitEnv confines a subagent to read-only git. The lead keeps the full
+// git so it can commit, branch, and merge the work its agents produced.
+func subagentGitEnv(role contracts.Role) []string {
+	if role.ID == contracts.RoleOrchestrator {
+		return nil
+	}
+	return gitguard.Env()
 }
 
 // DrainTools returns and clears the tool calls posted for a thread.
