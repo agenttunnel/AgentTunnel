@@ -43,6 +43,14 @@ type Store struct {
 	custom        map[contracts.Harness][]string
 	projects      []Project
 	staleAfterMin int
+	relay         Relay
+}
+
+// Relay is the outbound relay configuration. The zero value is off: the daemon
+// opens no relay socket until a client enables it.
+type Relay struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
 }
 
 const (
@@ -60,6 +68,7 @@ type fileConfig struct {
 	CustomModels      map[string][]string       `json:"customModels"`
 	Projects          []Project                 `json:"projects"`
 	StaleAfterMinutes int                       `json:"staleAfterMinutes"`
+	Relay             Relay                     `json:"relay"`
 }
 
 type fileRoleConfig struct {
@@ -146,6 +155,7 @@ func (s *Store) apply(fc fileConfig) {
 	}
 
 	s.projects = append([]Project(nil), fc.Projects...)
+	s.relay = fc.Relay
 }
 
 // --- reads ---
@@ -226,6 +236,22 @@ func clampStaleMinutes(minutes int) int {
 		return maxStaleAfterMinutes
 	}
 	return minutes
+}
+
+// Relay returns the outbound relay configuration.
+func (s *Store) Relay() Relay {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.relay
+}
+
+// SetRelay replaces the outbound relay configuration.
+func (s *Store) SetRelay(r Relay) {
+	r.URL = strings.TrimSpace(r.URL)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relay = r
+	s.persistLocked()
 }
 
 // Projects returns the configured projects.
@@ -363,6 +389,7 @@ func (s *Store) snapshotLocked() fileConfig {
 		CustomModels:      make(map[string][]string, len(s.custom)),
 		Projects:          append([]Project(nil), s.projects...),
 		StaleAfterMinutes: s.staleAfterMin,
+		Relay:             s.relay,
 	}
 	for m := range s.approved {
 		fc.ApprovedModels = append(fc.ApprovedModels, m)

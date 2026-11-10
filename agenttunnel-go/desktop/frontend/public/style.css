@@ -3622,3 +3622,78 @@ table.grid tr.rowlink:hover td {
   gap: 6px;
   margin-left: 15px;
 }
+
+/* --- phone relay pairing (Settings) ------------------------------------- */
+.relay-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.relay-state {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.relay-state.ok {
+  color: var(--ok);
+}
+.relay-url {
+  display: flex;
+  gap: 8px;
+}
+.relay-url input {
+  flex: 1;
+  min-width: 0;
+}
+.relay-sub {
+  margin: 16px 0 8px;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.relay-pair {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.relay-qr {
+  flex: none;
+  padding: 8px;
+  background: #fff;
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+.relay-code-col {
+  min-width: 0;
+  padding-top: 4px;
+}
+.relay-code {
+  font-family: var(--mono);
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.relay-device {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.relay-device:last-child {
+  border-bottom: 0;
+}
+.relay-device .rn {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relay-device .rd {
+  font-size: 10.5px;
+  color: var(--faint);
+}
