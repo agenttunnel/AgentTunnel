@@ -30,6 +30,13 @@ type Options struct {
 	// Logf receives connection events and error codes. It never receives frame
 	// contents or secrets. Nil discards.
 	Logf func(format string, args ...any)
+	// MaxInstances caps registered daemons. Zero uses DefaultMaxInstances.
+	MaxInstances int
+	// TrustProxyHeader names a request header a TLS proxy you run sets to the
+	// client's address, e.g. "X-Forwarded-For". The last entry is used for the
+	// per-IP limits. Empty (the default) ignores such headers, so a client
+	// cannot dodge the limits by choosing its own address.
+	TrustProxyHeader string
 }
 
 // Server routes frames between daemons and their paired phones.
@@ -38,6 +45,10 @@ type Server struct {
 	logf func(string, ...any)
 	path string
 
+	maxInstances int
+	trustHeader  string
+
+	// mu guards the maps and gen. It is never held across file I/O.
 	mu        sync.Mutex
 	instances map[string]*instanceRecord // by instance id
 	tokens    map[string]*tokenRecord    // by client id
@@ -45,6 +56,16 @@ type Server struct {
 	daemons   map[string]*link           // live daemon socket, by instance id
 	clients   map[string]*link           // live client socket, by client id
 	ipFails   map[string][]time.Time     // failed pair attempts, by source IP
+	hellos    map[string][]time.Time     // daemon hello attempts, by source IP
+	gen       uint64                     // bumped by every state snapshot
+
+	// persistMu serializes state file writes. written is the newest snapshot
+	// generation on disk, so a slow writer never overwrites a newer state.
+	persistMu sync.Mutex
+	written   uint64
+	// writeHook runs inside a state write, holding persistMu but not mu. Tests
+	// use it to prove the write happens off the global lock.
+	writeHook func()
 }
 
 // instanceRecord is a daemon the relay has seen. Only the secret's hash is kept.
@@ -68,9 +89,8 @@ type tokenRecord struct {
 // offer is a live pairing code. It exists in memory only and is never written
 // to the state file.
 type offer struct {
-	hash     string
-	expires  time.Time
-	failures int
+	hash    string
+	expires time.Time
 }
 
 type stateFile struct {
@@ -78,18 +98,31 @@ type stateFile struct {
 	Tokens    []*tokenRecord    `json:"tokens"`
 }
 
+// snapshot is state file contents captured under s.mu. Write it with flush
+// after unlocking. The zero value is a no-op.
+type snapshot struct {
+	gen  uint64
+	data []byte
+}
+
 // New builds a Server, loading persisted instances and tokens from StatePath.
 func New(opts Options) (*Server, error) {
 	s := &Server{
-		now:       time.Now,
-		logf:      func(string, ...any) {},
-		path:      opts.StatePath,
-		instances: map[string]*instanceRecord{},
-		tokens:    map[string]*tokenRecord{},
-		offers:    map[string]*offer{},
-		daemons:   map[string]*link{},
-		clients:   map[string]*link{},
-		ipFails:   map[string][]time.Time{},
+		now:          time.Now,
+		logf:         func(string, ...any) {},
+		path:         opts.StatePath,
+		maxInstances: opts.MaxInstances,
+		trustHeader:  opts.TrustProxyHeader,
+		instances:    map[string]*instanceRecord{},
+		tokens:       map[string]*tokenRecord{},
+		offers:       map[string]*offer{},
+		daemons:      map[string]*link{},
+		clients:      map[string]*link{},
+		ipFails:      map[string][]time.Time{},
+		hellos:       map[string][]time.Time{},
+	}
+	if s.maxInstances <= 0 {
+		s.maxInstances = DefaultMaxInstances
 	}
 	if opts.Now != nil {
 		s.now = opts.Now
@@ -142,6 +175,17 @@ func (s *Server) handleDaemon(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.CloseNow()
 
+	// Every hello counts, valid or not, so a flood of sockets is bounded before
+	// any secret is compared.
+	s.mu.Lock()
+	admitted := s.admitHelloLocked(s.clientIP(r), s.now())
+	s.mu.Unlock()
+	if !admitted {
+		s.logf("relay: daemon hello rate limited")
+		reject(ws, ErrRateLimited, CloseRateLimited)
+		return
+	}
+
 	data, err := readWithin(ws, HelloTimeout)
 	if err != nil {
 		return
@@ -157,7 +201,7 @@ func (s *Server) handleDaemon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	inst, code := s.authDaemonLocked(h)
+	inst, snap, code := s.authDaemonLocked(h)
 	if code != "" {
 		s.mu.Unlock()
 		s.logf("relay: daemon rejected: %s", code)
@@ -170,6 +214,7 @@ func (s *Server) handleDaemon(w http.ResponseWriter, r *http.Request) {
 	devices := s.devicesLocked(inst.ID)
 	watchers := s.clientsOfLocked(inst.ID)
 	s.mu.Unlock()
+	s.flush(snap)
 
 	if old != nil {
 		old.stop(frame(Bye{T: tBye, Reason: reasonReplaced}), websocket.StatusNormalClosure, reasonReplaced)
@@ -194,26 +239,29 @@ func (s *Server) handleDaemon(w http.ResponseWriter, r *http.Request) {
 }
 
 // authDaemonLocked checks a daemon hello and registers the instance on first
-// sight (trust on first use). Callers hold s.mu.
-func (s *Server) authDaemonLocked(h Hello) (*instanceRecord, string) {
+// sight (trust on first use), up to the instance cap. It returns the state
+// snapshot to flush when it registered something. Callers hold s.mu.
+func (s *Server) authDaemonLocked(h Hello) (*instanceRecord, snapshot, string) {
 	if !validHex(h.Instance, 32) {
-		return nil, ErrBadHello
+		return nil, snapshot{}, ErrBadHello
 	}
 	if !validHex(h.Secret, 64) {
-		return nil, ErrBadSecret
+		return nil, snapshot{}, ErrBadSecret
 	}
 	secretHash := hashHex(h.Secret)
 	rec, ok := s.instances[h.Instance]
 	if !ok {
+		if len(s.instances) >= s.maxInstances {
+			return nil, snapshot{}, ErrTooManyInstances
+		}
 		rec = &instanceRecord{ID: h.Instance, SecretHash: secretHash, Name: clampName(h.Name, "AgentTunnel")}
 		s.instances[h.Instance] = rec
-		s.persistLocked()
-		return rec, ""
+		return rec, s.snapshotLocked(), ""
 	}
 	if subtle.ConstantTimeCompare([]byte(rec.SecretHash), []byte(secretHash)) != 1 {
-		return nil, ErrBadSecret
+		return nil, snapshot{}, ErrBadSecret
 	}
-	return rec, ""
+	return rec, snapshot{}, ""
 }
 
 // routeDaemonFrame handles one frame from a daemon. A frame with `c` goes to
@@ -328,7 +376,7 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 			reject(ws, ErrBadCode, CloseAuth)
 			return
 		}
-		s.servePair(ws, clientIP(r), p)
+		s.servePair(ws, s.clientIP(r), p)
 		return
 	case tHello:
 	default:
@@ -346,8 +394,9 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	rec, code := s.authTokenLocked(h.Token)
+	rec, snap, code := s.authTokenLocked(h.Token)
 	s.mu.Unlock()
+	s.flush(snap)
 	if code != "" {
 		s.logf("relay: client rejected: %s", code)
 		reject(ws, code, CloseAuth)
@@ -537,10 +586,11 @@ func (s *Server) servePair(ws *websocket.Conn, ip string, p Pair) {
 		LastSeen: now,
 	}
 	s.tokens[clientID] = rec
-	s.persistLocked()
+	snap := s.snapshotLocked()
 	inst := s.instances[instanceID]
 	daemon := s.daemons[instanceID]
 	s.mu.Unlock()
+	s.flush(snap)
 
 	if daemon != nil {
 		daemon.send(frame(Paired{T: tPaired, Device: Device{ClientID: clientID, Name: rec.Name, PairedAt: now.UTC().Format(time.RFC3339)}}))
@@ -584,23 +634,42 @@ func (s *Server) redeemLocked(code string, now time.Time) (string, bool) {
 	return matched, true
 }
 
-// recordFailureLocked counts a failed pair attempt against its source IP and
-// against every live code. The 20th failure invalidates the code. Callers hold s.mu.
+// recordFailureLocked counts a failed pair attempt against its source IP only.
+// Live codes are not touched: a failure cannot be tied to one code, so charging
+// every code would let one address lock out other instances' pairings. The
+// per-IP limit already makes guessing a 50-bit code impractical. Callers hold s.mu.
 func (s *Server) recordFailureLocked(ip string, now time.Time) {
-	s.ipFails[ip] = append(pruneBefore(s.ipFails[ip], now.Add(-FailureWindow)), now)
-	for instance, o := range s.offers {
-		o.failures++
-		if o.failures >= MaxFailedPerCode {
-			delete(s.offers, instance)
-		}
-	}
+	s.ipFails[ip] = append(s.pruneLocked(s.ipFails, ip, now), now)
 }
 
 // limitedLocked reports whether ip has used up its failed attempts this
 // minute. Callers hold s.mu.
 func (s *Server) limitedLocked(ip string, now time.Time) bool {
-	s.ipFails[ip] = pruneBefore(s.ipFails[ip], now.Add(-FailureWindow))
-	return len(s.ipFails[ip]) >= MaxFailedPerIP
+	return len(s.pruneLocked(s.ipFails, ip, now)) >= MaxFailedPerIP
+}
+
+// admitHelloLocked records a daemon hello from ip and reports whether it fits
+// the per-IP window. Callers hold s.mu.
+func (s *Server) admitHelloLocked(ip string, now time.Time) bool {
+	kept := s.pruneLocked(s.hellos, ip, now)
+	if len(kept) >= MaxDaemonHellosPerIP {
+		return false
+	}
+	s.hellos[ip] = append(kept, now)
+	return true
+}
+
+// pruneLocked drops events older than the failure window for key and forgets
+// keys with nothing left, so the maps do not grow with every address seen.
+// Callers hold s.mu.
+func (s *Server) pruneLocked(m map[string][]time.Time, key string, now time.Time) []time.Time {
+	kept := pruneBefore(m[key], now.Add(-FailureWindow))
+	if len(kept) == 0 {
+		delete(m, key)
+		return nil
+	}
+	m[key] = kept
+	return kept
 }
 
 func pruneBefore(times []time.Time, cutoff time.Time) []time.Time {
@@ -615,10 +684,10 @@ func pruneBefore(times []time.Time, cutoff time.Time) []time.Time {
 
 // authTokenLocked finds the token's record and slides its expiry. The loop
 // visits every token without an early exit, so timing does not reveal a match.
-// Callers hold s.mu.
-func (s *Server) authTokenLocked(token string) (*tokenRecord, string) {
+// It returns the snapshot to flush after unlocking. Callers hold s.mu.
+func (s *Server) authTokenLocked(token string) (*tokenRecord, snapshot, string) {
 	if token == "" {
-		return nil, ErrBadToken
+		return nil, snapshot{}, ErrBadToken
 	}
 	want := []byte(hashHex(token))
 	var found *tokenRecord
@@ -629,12 +698,11 @@ func (s *Server) authTokenLocked(token string) (*tokenRecord, string) {
 	}
 	now := s.now()
 	if found == nil || !now.Before(found.Expires) {
-		return nil, ErrBadToken
+		return nil, snapshot{}, ErrBadToken
 	}
 	found.LastSeen = now
 	found.Expires = now.Add(TokenTTL)
-	s.persistLocked()
-	return found, ""
+	return found, s.snapshotLocked(), ""
 }
 
 // revoke deletes the named tokens for an instance (or all of them), closes any
@@ -656,11 +724,13 @@ func (s *Server) revoke(instance, clientID string, all, fromPhone bool) {
 			victims = append(victims, l)
 		}
 	}
+	var snap snapshot
 	if len(removed) > 0 {
-		s.persistLocked()
+		snap = s.snapshotLocked()
 	}
 	daemon := s.daemons[instance]
 	s.mu.Unlock()
+	s.flush(snap)
 
 	for _, l := range victims {
 		l.stop(frame(Bye{T: tBye, Reason: reasonRevoked}), websocket.StatusNormalClosure, reasonRevoked)
@@ -698,11 +768,12 @@ func (s *Server) load() error {
 	return nil
 }
 
-// persistLocked rewrites the state file atomically. Only instance and token
-// hashes are written. Callers hold s.mu.
-func (s *Server) persistLocked() {
+// snapshotLocked captures the state file contents under s.mu and numbers them.
+// Only instance and token hashes are included. Callers hold s.mu and pass the
+// result to flush once they have unlocked.
+func (s *Server) snapshotLocked() snapshot {
 	if s.path == "" {
-		return
+		return snapshot{}
 	}
 	st := stateFile{}
 	for _, rec := range s.instances {
@@ -713,33 +784,59 @@ func (s *Server) persistLocked() {
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
+		return snapshot{}
+	}
+	s.gen++
+	return snapshot{gen: s.gen, data: data}
+}
+
+// flush writes a snapshot to disk. It must run without s.mu held, so file I/O
+// never stalls routing or pairing. Writes are serialized, and a snapshot older
+// than what is already on disk is dropped.
+func (s *Server) flush(snap snapshot) {
+	if snap.data == nil {
 		return
 	}
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	if s.writeHook != nil {
+		s.writeHook()
+	}
+	if snap.gen <= s.written {
+		return
+	}
+	if err := writeStateFile(s.path, snap.data); err != nil {
 		s.logf("relay: persist: %v", err)
 		return
+	}
+	s.written = snap.gen
+}
+
+// writeStateFile replaces path atomically with data.
+func writeStateFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(dir, "relay-*.tmp")
 	if err != nil {
-		s.logf("relay: persist: %v", err)
-		return
+		return err
 	}
 	name := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(name)
-		s.logf("relay: persist: %v", err)
-		return
+		return err
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(name)
-		return
+		return err
 	}
-	if err := os.Rename(name, s.path); err != nil {
+	if err := os.Rename(name, path); err != nil {
 		os.Remove(name)
-		s.logf("relay: persist: %v", err)
+		return err
 	}
+	return nil
 }
 
 // --- helpers ---
@@ -780,12 +877,30 @@ func reject(ws *websocket.Conn, code string, closeCode websocket.StatusCode) {
 	_ = ws.Close(closeCode, code)
 }
 
-func clientIP(r *http.Request) string {
+// clientIP is the address the per-IP limits count against. With a trusted
+// proxy header configured, its last entry wins: a proxy appends the address it
+// saw, so earlier entries are whatever the client sent. Without one, or when
+// the header holds no valid address, it is the socket's peer address.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.trustHeader != "" {
+		if ip := lastListIP(r.Header.Get(s.trustHeader)); ip != "" {
+			return ip
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func lastListIP(list string) string {
+	parts := strings.Split(list, ",")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if net.ParseIP(last) == nil {
+		return ""
+	}
+	return last
 }
 
 func newClientID() string {
