@@ -2,8 +2,10 @@ package transport
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -236,14 +238,34 @@ func (s *Server) handleSubthreadCall(w http.ResponseWriter, r *http.Request, req
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "threadId": child})
 }
 
+// authorized accepts the token as "Authorization: Bearer" from any peer. The
+// ?token= query form is accepted only from a loopback peer: query strings end
+// up in proxy and access logs, so a remote client must use the header.
 func (s *Server) authorized(r *http.Request) bool {
 	if s.token == "" {
 		return true
 	}
-	if r.Header.Get("Authorization") == "Bearer "+s.token {
+	if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tokenMatches(bearer, s.token) {
 		return true
 	}
-	return r.URL.Query().Get("token") == s.token
+	return isLoopbackPeer(r) && tokenMatches(r.URL.Query().Get("token"), s.token)
+}
+
+// tokenMatches compares in constant time so a mismatch cannot reveal how much
+// of the token was right.
+func tokenMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// isLoopbackPeer reports whether the request came from this machine. An
+// unparseable peer address counts as remote.
+func isLoopbackPeer(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
