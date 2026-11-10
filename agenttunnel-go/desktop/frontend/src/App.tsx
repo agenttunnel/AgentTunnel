@@ -47,6 +47,15 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads } from "./lib/threads";
+import {
+  buildCommands,
+  matchCommands,
+  parseSlash,
+  slashQuery,
+  type SlashCommand,
+} from "./lib/commands";
+import { SlashMenu } from "./components/SlashMenu";
+import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
 
 type Role = {
   id: string;
@@ -1557,6 +1566,20 @@ export default function App() {
     // The ref closes the window before React re-renders, so a second Enter on
     // the same thread cannot submit the same draft again.
     if (!rpc || !threadId || !text || sendingRef.current.has(threadId)) return;
+    // A registered "/name" runs its command. Commands never start or steer a
+    // turn; an unknown "/word" is sent as ordinary text.
+    const slash = parseSlash(text);
+    const slashCmd = slash && slashCommands().find((c) => c.name === slash.name);
+    if (slash && slashCmd) {
+      setInput("");
+      setPastes((prev) => {
+        const rest = { ...prev };
+        delete rest[draftKey];
+        return rest;
+      });
+      slashCmd.run(slash.arg);
+      return;
+    }
     // A turn already running on this thread takes the message as a steer, so
     // Enter never drops a message while the team is working.
     const steer = running.length > 0 || busy;
@@ -1737,6 +1760,81 @@ export default function App() {
     })();
   }, [modelsOpen, settings]);
 
+  // /btw side answers, one per thread (ephemeral: never a thread event or message).
+  const [btw, setBtw] = useState<Record<string, BtwEntry>>({});
+  const btwSeq = useRef(0);
+  // Slash popup: highlighted row, and the input it was dismissed on with Esc.
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [slashClosed, setSlashClosed] = useState<string | null>(null);
+
+  /** Asks the daemon a side question. It runs beside any running turn: no turn
+   * slot, no steer, no message. Only the newest ask on a thread may settle. */
+  const askBtw = (question: string) => {
+    const rpc = rpcRef.current;
+    const threadId = activeIdRef.current;
+    const q = question.trim();
+    if (!rpc || !threadId) return;
+    if (!q) {
+      setError("Usage: /btw <question>");
+      return;
+    }
+    const id = ++btwSeq.current;
+    const settle = (patch: Partial<BtwEntry>) =>
+      setBtw((prev) => {
+        const cur = prev[threadId];
+        if (!cur || cur.id !== id) return prev;
+        return { ...prev, [threadId]: { ...cur, ...patch } };
+      });
+    setBtw((prev) => ({ ...prev, [threadId]: { id, question: q, answer: null, error: null } }));
+    rpc
+      .call<{ answer: string }>("thread.btw", { threadId, question: q })
+      .then((r) => settle({ answer: r.answer }))
+      .catch((e: unknown) => settle({ error: e instanceof Error ? e.message : String(e) }));
+  };
+
+  const closeBtw = useCallback(() => {
+    const threadId = activeIdRef.current;
+    if (!threadId) return;
+    setBtw((prev) => {
+      if (!(threadId in prev)) return prev;
+      const next = { ...prev };
+      delete next[threadId];
+      return next;
+    });
+  }, []);
+
+  // Built per use: every action is an arrow, so it resolves the handler at call time.
+  const slashCommands = (): SlashCommand[] =>
+    buildCommands<AsideTabId>({
+      panels: ASIDE_META,
+      openPanel: (id) => openPanel(id),
+      setTab: (t) => setTab(t),
+      openSettings: () => openSettings(),
+      askBtw: (q) => askBtw(q),
+      toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
+      togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
+      stopTurn: () => stopTurn(),
+      newThread: () => newThread(),
+      saveDefaults: () => saveThreadDefaults(),
+    });
+  const slashQ = slashQuery(input);
+  const slashMatches: SlashCommand[] =
+    slashQ !== null && slashClosed !== input ? matchCommands(slashCommands(), slashQ) : [];
+  const slashOpen = slashMatches.length > 0;
+  const slashSel = Math.min(slashIdx, slashMatches.length - 1);
+  const btwEntry = activeId ? (btw[activeId] ?? null) : null;
+
+  /** Tab and Enter on a command that takes text complete its name; a bare
+   * command runs at once (Enter or click). */
+  const pickSlash = (cmd: SlashCommand, runNow: boolean) => {
+    if (cmd.args || !runNow) {
+      setInput(`/${cmd.name}${cmd.args ? " " : ""}`);
+      return;
+    }
+    setInput("");
+    cmd.run("");
+  };
+
   const taRef = useRef<HTMLTextAreaElement>(null);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
@@ -1806,6 +1904,24 @@ export default function App() {
   const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Enter confirms an IME candidate during composition; it must not submit.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (slashOpen) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = slashMatches.length;
+        setSlashIdx((slashSel + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashClosed(input);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickSlash(slashMatches[slashSel], e.key === "Enter");
+        return;
+      }
+    }
     // A token is one unit: Backspace/Delete at its edge removes it whole.
     const { selectionStart: pos, selectionEnd } = e.currentTarget;
     if ((e.key === "Backspace" || e.key === "Delete") && pos === selectionEnd) {
@@ -2508,6 +2624,14 @@ export default function App() {
             <div
               className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
             >
+              {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
+              {slashOpen && (
+                <SlashMenu
+                  items={slashMatches}
+                  index={slashSel}
+                  onPick={(cmd) => pickSlash(cmd, true)}
+                />
+              )}
               <div className="box">
                 <textarea
                   ref={taRef}
@@ -2515,7 +2639,10 @@ export default function App() {
                   onPaste={onComposerPaste}
                   onClick={onComposerClick}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setSlashIdx(0);
+                  }}
                   onKeyDown={onComposerKeyDown}
                 />
               </div>
