@@ -197,3 +197,83 @@ func TestSubthreadRefreshReplacesInheritedRef(t *testing.T) {
 		t.Fatalf("top-level inherited attach err = %v, want ErrInvalidCommand", err)
 	}
 }
+
+// A replace swaps the ref in one event: the thread holds a ref before and after,
+// never none, and the replayed log agrees with the live state.
+func TestWorktreeReplaceSwapsRefInOneEvent(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	eng := NewEngine(store, nil)
+	eng.Start(ctx)
+	t.Cleanup(eng.Close)
+
+	const id = contracts.ThreadID("th_replace")
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: id, ProjectID: "p1"}); err != nil {
+		t.Fatal(err)
+	}
+	old := contracts.WorktreeRef{Path: "/tmp/old", Branch: "agenttunnel/old", Base: "main"}
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c2", Type: contracts.CmdWorktreeAttach, ThreadID: id, Worktree: &old}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := contracts.WorktreeRef{Path: "/tmp/fresh", Branch: "agenttunnel/fresh", Base: "main"}
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c3", Type: contracts.CmdWorktreeReplace, ThreadID: id, Worktree: &fresh}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	st, _ := eng.State(ctx, id)
+	if st.Worktree == nil || *st.Worktree != fresh {
+		t.Fatalf("worktree after replace = %+v, want %+v", st.Worktree, fresh)
+	}
+	events, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1].Payload
+	if _, ok := last.(contracts.WorktreeReplaced); !ok {
+		t.Fatalf("last event is %T, want one WorktreeReplaced (no detach/attach pair)", last)
+	}
+	var replayed ThreadState
+	for _, ev := range events {
+		if err := Project(&replayed, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if replayed.Worktree == nil || *replayed.Worktree != fresh {
+		t.Fatalf("replayed worktree = %+v, want %+v", replayed.Worktree, fresh)
+	}
+}
+
+func TestWorktreeReplaceDecisionRules(t *testing.T) {
+	ref := contracts.WorktreeRef{Path: "/tmp/wt", Branch: "agenttunnel/x", Base: "main"}
+	inherited := ref
+	inherited.Inherited = true
+
+	cases := []struct {
+		name   string
+		state  ThreadState
+		cmd    contracts.Command
+		wantOK bool
+	}{
+		{"missing thread", ThreadState{}, contracts.Command{Worktree: &ref}, false},
+		{"no ref to replace", ThreadState{Exists: true}, contracts.Command{Worktree: &ref}, false},
+		{"empty path", ThreadState{Exists: true, Worktree: &ref}, contracts.Command{Worktree: &contracts.WorktreeRef{}}, false},
+		{"top-level swaps owned ref", ThreadState{Exists: true, Worktree: &ref}, contracts.Command{Worktree: &ref}, true},
+		{"top-level may not take inherited", ThreadState{Exists: true, Worktree: &ref}, contracts.Command{Worktree: &inherited}, false},
+		{"subthread swaps inherited ref", ThreadState{Exists: true, ParentThreadID: "th_p", Worktree: &inherited}, contracts.Command{Worktree: &inherited}, true},
+		{"subthread may not take own ref", ThreadState{Exists: true, ParentThreadID: "th_p", Worktree: &inherited}, contracts.Command{Worktree: &ref}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.state
+			cmd := tc.cmd
+			cmd.Type = contracts.CmdWorktreeReplace
+			_, err := Decide(cmd, &s)
+			if tc.wantOK && err != nil {
+				t.Fatalf("err = %v, want accepted", err)
+			}
+			if !tc.wantOK && !errors.Is(err, ErrInvalidCommand) && !errors.Is(err, ErrThreadNotFound) {
+				t.Fatalf("err = %v, want refused", err)
+			}
+		})
+	}
+}
