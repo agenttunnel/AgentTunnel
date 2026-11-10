@@ -65,6 +65,7 @@ damage the AgentTunnel instance the contributor is using.
 - **environment** — one running AgentTunnel daemon and the machine, filesystem, provider credentials, and state it owns.
 - **thread** — the durable conversation and work history for a project.
 - **turn** — one user-to-agent cycle.
+- **worktree** — isolated git checkout a thread's agents run in.
 - **lead / orchestrator** — the agent that plans and dispatches subagents.
 
 ## The two ways to hurt yourself
@@ -93,6 +94,12 @@ Everything is Go plus one TypeScript frontend. Layout (all under
 - `internal/transport/` — JSON-RPC over WebSocket; streamed thread events.
 - `pkg/daemon/` — public assembly (engine + orchestrator + HTTP surface).
 - `desktop/` — Wails v3 client (embeds the daemon; `frontend/` is React+Vite).
+- Per-thread worktrees are the default workflow (`internal/worktree/`). Each
+  project's worktrees live in a sibling `<repo>.worktrees/<slug>-<id8>` on
+  branch `agenttunnel/<slug>-<id8>`. Every top-level thread in a git project
+  gets one on its first turn; subthreads inherit their parent's. The Worktrees
+  aside tab manages them. `thread.delete` keeps one unless `removeWorktree` is
+  set. A declared worktree never resolves back to the project checkout.
 
 Taste:
 
