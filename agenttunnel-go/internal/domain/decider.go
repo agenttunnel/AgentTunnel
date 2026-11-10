@@ -68,6 +68,23 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.WorktreeDetached{}}, nil
 
+	case contracts.CmdWorktreeReplace:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Worktree == nil || cmd.Worktree.Path == "" {
+			return nil, fmt.Errorf("%w: worktree path is required", ErrInvalidCommand)
+		}
+		if s.Worktree == nil {
+			return nil, fmt.Errorf("%w: thread has no worktree to replace", ErrInvalidCommand)
+		}
+		// Same ownership rules as attach: a subthread swaps in an inherited ref,
+		// a top-level thread swaps in one it owns.
+		if (s.ParentThreadID != "") != cmd.Worktree.Inherited {
+			return nil, fmt.Errorf("%w: replacement must match the thread's worktree ownership", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.WorktreeReplaced{Worktree: *cmd.Worktree}}, nil
+
 	case contracts.CmdThreadRename:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
