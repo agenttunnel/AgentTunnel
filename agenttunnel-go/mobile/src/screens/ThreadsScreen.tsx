@@ -44,7 +44,7 @@ export function ThreadsScreen({
             {title}
           </Text>
           <Text style={styles.subtitle} numberOfLines={1}>
-            {state.status === "open" ? "Connected" : statusLabel(state.status)}
+            {state.status === "open" ? (state.daemon === "offline" ? "Computer offline" : "Connected") : statusLabel(state.status)}
           </Text>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel="Settings" onPress={onOpenSettings} style={styles.headerButton}>
@@ -56,6 +56,9 @@ export function ThreadsScreen({
         <Banner tone={state.status === "closed" ? "err" : "warn"}>
           {state.statusError?.message ?? statusLabel(state.status)}
         </Banner>
+      ) : null}
+      {state.status === "open" && state.daemon === "offline" ? (
+        <Banner tone="warn">Your computer is offline. Sends fail until it reconnects.</Banner>
       ) : null}
       {state.listError ? <Banner tone="err">{state.listError}</Banner> : null}
 
