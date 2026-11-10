@@ -415,6 +415,45 @@ async function main() {
     assert.deepEqual(h.opened, [1, 2]);
   });
 
+  await test("thread.event frames reach the handler on the reconnected socket", () => {
+    const h = harness();
+    h.client.start();
+    h.sockets[0]!.open();
+    h.sockets[0]!.push({ method: "thread.event", params: { type: "agent.output", threadId: "t1" } });
+    assert.equal(h.events.length, 1);
+    // The socket drops and the client reconnects.
+    h.sockets[0]!.onclose?.();
+    h.t.fire(100);
+    h.sockets[1]!.open();
+    h.sockets[1]!.push({ method: "thread.event", params: { type: "agent.output", threadId: "t1" } });
+    h.sockets[1]!.push({ method: "thread.event", params: { type: "thread.message-sent", threadId: "t1" } });
+    assert.equal(h.events.length, 3, "frames pushed after reconnect still reach the handler");
+  });
+
+  await test("the connect URL carries the token, URL-encoded", () => {
+    // Documents the current auth shape: the token rides the query string
+    // (mirroring the desktop) and must survive encoding.
+    const urls: string[] = [];
+    const t = fakeTimers();
+    const client = new RpcClient({
+      wsUrl: "wss://relay.test/ws",
+      token: "a b&c",
+      onEvent: () => undefined,
+      onStatus: () => undefined,
+      requestTimeoutMs: 1000,
+      reconnect: { baseMs: 100, maxMs: 400 },
+      timers: t.api,
+      socketFactory: (url: string) => {
+        urls.push(url);
+        const s = new FakeSocket();
+        return s as unknown as WebSocket;
+      },
+    });
+    client.start();
+    client.stop();
+    assert.deepEqual(urls, ["wss://relay.test/ws?token=a%20b%26c"]);
+  });
+
   await test("backoff doubles and is capped", () => {
     const h = harness();
     h.client.start();
