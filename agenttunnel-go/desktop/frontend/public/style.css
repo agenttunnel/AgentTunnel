@@ -1682,6 +1682,25 @@ table.grid tr.rowlink:hover td {
   padding-right: 12px;
 }
 /* Harness stats: a plain table with one bar per harness, scaled by agent count. */
+.stats-scope {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.stats-scope button {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+.stats-scope button.on {
+  color: var(--text);
+  border-color: var(--accent-line);
+  background: var(--panel-2);
+}
 .stats-table {
   width: 100%;
   border-collapse: collapse;

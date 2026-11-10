@@ -54,7 +54,7 @@ func TestHarnessStatsRollsUpAcrossThreads(t *testing.T) {
 	recordOn(t, e, "t1", "agent-a-1", contracts.TokenUsage{InputTokens: 300, OutputTokens: 30, CostUSD: 0.25})
 	recordOn(t, e, "t2", "agent-orchestrator", contracts.TokenUsage{InputTokens: 1, OutputTokens: 2})
 
-	got, err := e.HarnessStats(ctx)
+	got, err := e.HarnessStats(ctx, HarnessScope{})
 	if err != nil {
 		t.Fatalf("HarnessStats: %v", err)
 	}
@@ -75,11 +75,53 @@ func TestHarnessStatsRollsUpAcrossThreads(t *testing.T) {
 
 func TestHarnessStatsEmptyEnvironment(t *testing.T) {
 	e, ctx := newTestEngine(t)
-	got, err := e.HarnessStats(ctx)
+	got, err := e.HarnessStats(ctx, HarnessScope{})
 	if err != nil {
 		t.Fatalf("HarnessStats: %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("HarnessStats on empty environment = %+v, want none", got)
+	}
+}
+
+func TestHarnessStatsScopesToProjectAndThread(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	for _, c := range []struct {
+		id      contracts.ThreadID
+		project string
+	}{{"t1", "p1"}, {"t2", "p1"}, {"t3", "p2"}} {
+		mustDispatch(t, e, ctx, contracts.Command{
+			ID: "c-" + string(c.id), Type: contracts.CmdThreadCreate, ThreadID: c.id, ProjectID: c.project,
+		})
+	}
+	dispatchOn(t, e, "t1", "agent-orchestrator", "", contracts.HarnessClaude)
+	dispatchOn(t, e, "t2", "agent-orchestrator", "", contracts.HarnessCodex)
+	dispatchOn(t, e, "t3", "agent-orchestrator", "", contracts.HarnessClaude)
+
+	agents := func(scope HarnessScope) map[contracts.Harness]int {
+		t.Helper()
+		stats, err := e.HarnessStats(ctx, scope)
+		if err != nil {
+			t.Fatalf("HarnessStats(%+v): %v", scope, err)
+		}
+		out := map[contracts.Harness]int{}
+		for _, s := range stats {
+			out[s.Harness] = s.Agents
+		}
+		return out
+	}
+	cases := []struct {
+		name  string
+		scope HarnessScope
+		want  map[contracts.Harness]int
+	}{
+		{"environment", HarnessScope{}, map[contracts.Harness]int{contracts.HarnessClaude: 2, contracts.HarnessCodex: 1}},
+		{"project p1", HarnessScope{ProjectID: "p1"}, map[contracts.Harness]int{contracts.HarnessClaude: 1, contracts.HarnessCodex: 1}},
+		{"thread t3", HarnessScope{ThreadID: "t3"}, map[contracts.Harness]int{contracts.HarnessClaude: 1}},
+	}
+	for _, c := range cases {
+		if got := agents(c.scope); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }
