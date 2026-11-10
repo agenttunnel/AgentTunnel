@@ -24,14 +24,16 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:7777", "address to listen on (put TLS in front for public use)")
 	state := flag.String("state", defaultStatePath(), "file for instance and token hashes (empty keeps state in memory)")
+	trustProxy := flag.String("trust-proxy-header", "", "header a TLS proxy you run sets to the client address, e.g. X-Forwarded-For (empty ignores such headers)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	srv, err := relay.New(relay.Options{
-		StatePath: *state,
-		Logf:      log.Printf,
+		StatePath:        *state,
+		Logf:             log.Printf,
+		TrustProxyHeader: *trustProxy,
 	})
 	if err != nil {
 		log.Fatalf("atrelay: %v", err)
