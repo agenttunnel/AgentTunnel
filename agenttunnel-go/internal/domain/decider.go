@@ -39,18 +39,34 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if !s.Exists {
 			return nil, ErrThreadNotFound
 		}
-		// A subthread works in its parent's worktree and never owns one; a thread
-		// has at most one worktree, fixed once attached.
-		if s.ParentThreadID != "" {
-			return nil, fmt.Errorf("%w: a subthread shares its parent's worktree", ErrInvalidCommand)
-		}
-		if s.Worktree != nil {
-			return nil, fmt.Errorf("%w: thread already has a worktree", ErrInvalidCommand)
-		}
 		if cmd.Worktree == nil || cmd.Worktree.Path == "" {
 			return nil, fmt.Errorf("%w: worktree path is required", ErrInvalidCommand)
 		}
+		// A subthread only ever holds its parent's worktree, so it may attach (or
+		// refresh) an inherited ref and nothing else. A top-level thread owns at
+		// most one worktree, fixed once attached.
+		if s.ParentThreadID != "" {
+			if !cmd.Worktree.Inherited {
+				return nil, fmt.Errorf("%w: a subthread shares its parent's worktree", ErrInvalidCommand)
+			}
+		} else {
+			if cmd.Worktree.Inherited {
+				return nil, fmt.Errorf("%w: only a subthread inherits a worktree", ErrInvalidCommand)
+			}
+			if s.Worktree != nil {
+				return nil, fmt.Errorf("%w: thread already has a worktree", ErrInvalidCommand)
+			}
+		}
 		return []contracts.EventPayload{contracts.WorktreeAttached{Worktree: *cmd.Worktree}}, nil
+
+	case contracts.CmdWorktreeDetach:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if s.Worktree == nil || s.Worktree.Inherited {
+			return nil, fmt.Errorf("%w: thread owns no worktree to detach", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.WorktreeDetached{}}, nil
 
 	case contracts.CmdThreadRename:
 		if !s.Exists {
