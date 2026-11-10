@@ -1348,8 +1348,8 @@ export default function App() {
   // Worktree facts come from live git runs, so they load when the section is shown
   // and after each action, not on a timer.
   useEffect(() => {
-    if (!activeId && showWorktrees) loadWorktrees(openProjectIds).catch(() => undefined);
-  }, [activeId, showWorktrees, openProjectIds, loadWorktrees]);
+    if (projectId && !activeId && showWorktrees) loadWorktrees([projectId]).catch(() => undefined);
+  }, [projectId, activeId, showWorktrees, loadWorktrees]);
 
   // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
   // would otherwise render the diff fallback with no tab highlighted.
@@ -2381,12 +2381,12 @@ export default function App() {
           {showWorktrees && (
             <div className="section worktrees-section">
               <WorktreesPanel
-                projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
+                projects={selectedProject ? [{ id: selectedProject.id, name: selectedProject.name }] : []}
                 worktrees={worktrees}
                 threads={threads}
                 loading={worktreesLoading}
                 error={worktreesError}
-                onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
+                onRefresh={() => projectId && loadWorktrees([projectId]).catch(() => undefined)}
                 onOpenThread={openWorktreeThread}
                 onRemove={(projectId, path, force) =>
                   worktreeAction(projectId, "worktree.remove", { path, force })
