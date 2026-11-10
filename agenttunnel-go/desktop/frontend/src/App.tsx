@@ -50,6 +50,7 @@ import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
+import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads } from "./lib/threads";
 import {
@@ -2638,6 +2639,7 @@ export default function App() {
           ))}
         </div>
         <div className="sidebar-foot">
+          <LimitsMeter rpc={rpcRef.current} />
           <button className="foot-btn" onClick={openSettings}>
             <svg
               viewBox="0 0 24 24"

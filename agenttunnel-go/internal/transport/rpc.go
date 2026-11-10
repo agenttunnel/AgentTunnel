@@ -68,6 +68,8 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// Limits reports subscription usage left per harness. Nil reports none.
+	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
 }
@@ -124,6 +126,7 @@ type Dispatcher struct {
 	steering *steering.Box
 	audit    actionlog.Func
 	updater  *update.Updater
+	limits   *providers.LimitsProvider
 	relay    RelayControl
 	seq      atomic.Int64
 
@@ -160,6 +163,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		steering:  d.Steering,
 		audit:     d.Audit,
 		updater:   d.Updater,
+		limits:    d.Limits,
 		relay:     d.Relay,
 	}
 }
@@ -940,6 +944,19 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 
 	case "usage.get":
 		return d.ledger.Snapshot(), nil
+
+	case "usage.limits":
+		// refresh bypasses the provider cache; the UI sends it on a manual refresh.
+		var p struct {
+			Refresh bool `json:"refresh"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.limits == nil {
+			return []contracts.HarnessLimits{}, nil
+		}
+		return d.limits.Get(ctx, p.Refresh), nil
 
 	case "stats.harnesses":
 		// No params is the whole environment; a threadId or projectId narrows it.
