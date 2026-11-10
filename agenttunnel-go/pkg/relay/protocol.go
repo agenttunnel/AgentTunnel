@@ -127,12 +127,18 @@ type (
 		T       string   `json:"t"`
 		Devices []Device `json:"devices"`
 	}
-	// Paired and Unpaired keep the daemon's device list live.
+	// Paired and Unpaired keep the daemon's device list live. Detach tells the
+	// daemon a phone's socket closed, so it can tear down that client's
+	// subscriptions.
 	Paired struct {
 		T string `json:"t"`
 		Device
 	}
 	Unpaired struct {
+		T        string `json:"t"`
+		ClientID string `json:"clientId"`
+	}
+	Detach struct {
 		T        string `json:"t"`
 		ClientID string `json:"clientId"`
 	}
@@ -159,6 +165,7 @@ const (
 	tDevices   = "devices"
 	tPaired    = "paired"
 	tUnpaired  = "unpaired"
+	tDetach    = "detach"
 )
 
 // Reasons carried in bye frames.

@@ -462,12 +462,19 @@ func replyError(l *link, id json.RawMessage, code int, msg string) {
 	l.send(frame(resp))
 }
 
+// detachClient forgets a client socket that closed and tells the daemon, so
+// the daemon can drop that client's thread subscriptions.
 func (s *Server) detachClient(l *link) {
 	s.mu.Lock()
-	if s.clients[l.clientID] == l {
+	removed := s.clients[l.clientID] == l
+	if removed {
 		delete(s.clients, l.clientID)
 	}
+	daemon := s.daemons[l.instance]
 	s.mu.Unlock()
+	if removed && daemon != nil {
+		daemon.send(frame(Detach{T: tDetach, ClientID: l.clientID}))
+	}
 }
 
 // clientsOfLocked lists the attached clients of an instance. Callers hold s.mu.
