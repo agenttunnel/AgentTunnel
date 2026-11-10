@@ -127,3 +127,59 @@ func TestSubthreadRunsItsOwnTurnAndReportsToParentLead(t *testing.T) {
 		t.Fatalf("subagent subthread: status %d (%s), want 403", status, body)
 	}
 }
+
+// waitForTranscriptReport waits on the parent's committed events until a
+// transcript message from the subthread lands.
+func waitForTranscriptReport(t *testing.T, events <-chan contracts.Event) contracts.MessageSent {
+	t.Helper()
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if m, ok := ev.Payload.(contracts.MessageSent); ok && m.Author == "subthread" {
+				return m
+			}
+		case <-deadline:
+			t.Fatal("no subthread report reached the parent transcript")
+		}
+	}
+}
+
+// TestSubthreadReportReachesParentTranscript covers a parent whose turn is over
+// when its subthread finishes. The lead only reads its mailbox on a pass, so the
+// outcome must also land in the parent's transcript, or the user never sees it.
+func TestSubthreadReportReachesParentTranscript(t *testing.T) {
+	d := newTestDaemon(t)
+	c, base := dialWS(t, d)
+
+	var created struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+	}
+	json.Unmarshal(call(t, c, "1", "thread.create", map[string]any{
+		"title": "parent", "projectId": "proj-sub",
+	}), &created)
+	parent := created.ThreadID
+
+	events, unsub := d.Engine.Subscribe(parent)
+	defer unsub()
+
+	if status, body := postToolKind(t, base, map[string]any{
+		"threadId": parent, "agentId": "agent-orchestrator", "kind": "subthread",
+		"task": "write the release notes",
+	}); status != http.StatusOK {
+		t.Fatalf("subthread call: status %d: %s", status, body)
+	}
+
+	msg := waitForTranscriptReport(t, events)
+	if !strings.Contains(msg.Text, "finished") || !strings.Contains(msg.Text, "report-") {
+		t.Fatalf("transcript report = %q, want the subthread's own summary", msg.Text)
+	}
+	top, err := d.Engine.State(context.Background(), parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := top.Messages[len(top.Messages)-1]
+	if last.Author != "subthread" || last.Text != msg.Text {
+		t.Fatalf("parent's last message = %+v, want the subthread report", last)
+	}
+}

@@ -535,7 +535,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		PendingSpawns:  renderPendingSpawns(state, o.runner.spawns.list(t.threadID)),
 		PeerMessages:   peerMessages,
 		PeerMailbox:    peerMailbox,
-		Subthreads:     peerMailbox && state.ParentThreadID == "",
+		Subthreads:     subthreadsOffered(state, peerMailbox),
 		Team:           teamBrief(t.leads, i, peerMailbox),
 		Pass:           pass,
 		Steering:       steering,
@@ -585,6 +585,13 @@ func (o *Orchestrator) leadsHaveMail(t turn) bool {
 		}
 	}
 	return false
+}
+
+// subthreadsOffered reports whether a lead may be offered the subthread tool: a
+// top-level thread with peer messaging on and a slot left. The daemon refuses a
+// call past the limit, so offering the tool there would only earn an error.
+func subthreadsOffered(state *domain.ThreadState, peerMailbox bool) bool {
+	return peerMailbox && state.ParentThreadID == "" && len(state.Subthreads) < contracts.MaxSubthreads
 }
 
 // teamBrief tells lead i how its team is organized and what it must agree on

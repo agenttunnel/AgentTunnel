@@ -106,6 +106,17 @@ func Run(args []string) int {
 		fmt.Println(strings.TrimSpace(string(out)))
 		return 0
 	}
+	if kind == "subthread" {
+		// The new thread's id is the only handle on the subthread the lead can
+		// quote back, so it is printed instead of a bare ok.
+		var started struct {
+			ThreadID string `json:"threadId"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&started); err == nil && started.ThreadID != "" {
+			fmt.Println(started.ThreadID)
+			return 0
+		}
+	}
 	fmt.Println("ok")
 	return 0
 }
