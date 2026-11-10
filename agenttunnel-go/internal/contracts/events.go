@@ -356,12 +356,16 @@ type MailboxPosted struct {
 
 func (MailboxPosted) eventType() EventType { return EvtMailboxPosted }
 
-// ReviewCommentAdded is a human review comment anchored to a diff line. Pending
-// comments are handed to the agents on the next turn.
+// ReviewCommentAdded is a human review comment anchored to a diff range. Pending
+// comments are handed to the agents on the next turn. EndLine is zero for
+// comments recorded before ranges existed; the projector reads it as Line. Side
+// is "old" for removed lines and empty or "new" otherwise.
 type ReviewCommentAdded struct {
 	ID        string    `json:"id"`
 	File      string    `json:"file"`
 	Line      int       `json:"line"`
+	EndLine   int       `json:"endLine,omitempty"`
+	Side      string    `json:"side,omitempty"`
 	Body      string    `json:"body"`
 	AuthorID  AgentID   `json:"authorId"`
 	CreatedAt time.Time `json:"createdAt"`

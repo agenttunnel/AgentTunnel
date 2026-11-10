@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { wordDiff, type TokSpan } from "../lib/worddiff";
 
 // Local structural types matching the review.diff wire shape (same approach
@@ -12,8 +12,17 @@ export type DiffFileLike = {
   lines: DiffLineLike[] | null;
 };
 export type DiffLike = { files: DiffFileLike[] | null; raw: string; empty: boolean };
-export type CommentLike = { id: string; file: string; line: number; body: string };
-export type DraftLike = { file: string; line: number; body: string };
+/** "old" numbers removed lines; "new" numbers added and context lines. */
+export type Side = "old" | "new";
+export type CommentLike = {
+  id: string;
+  file: string;
+  line: number;
+  endLine: number;
+  side?: Side;
+  body: string;
+};
+export type DraftLike = { file: string; line: number; endLine: number; side: Side; body: string };
 
 type FileStatus = "added" | "deleted" | "modified";
 
@@ -29,7 +38,26 @@ export function fileStatus(f: DiffFileLike): FileStatus {
   return "modified";
 }
 
-const lineNumber = (l: DiffLineLike) => l.new ?? l.old ?? 0;
+/** "12" for a single line, "12-14" for a range. */
+export function lineRange(line: number, endLine: number): string {
+  return endLine > line ? `${line}-${endLine}` : `${line}`;
+}
+
+/** A pointer selection in progress: one file and side, numbered from..to. */
+type Picking = { file: string; side: Side; from: number; to: number };
+
+const sideOf = (l: DiffLineLike): Side => (l.kind === "delete" ? "old" : "new");
+const numberOf = (l: DiffLineLike): number => (sideOf(l) === "old" ? l.old : l.new) ?? 0;
+
+/** Whether a comment or draft span covers line n on this side of file. */
+function covers(
+  s: { file: string; side?: Side; line: number; endLine: number },
+  file: string,
+  side: Side,
+  n: number,
+): boolean {
+  return s.file === file && (s.side ?? "new") === side && n >= s.line && n <= s.endLine;
+}
 
 function renderSpans(spans: TokSpan[], side: "add" | "del") {
   return spans.map((s, i) =>
@@ -70,8 +98,9 @@ function groupHunks(lines: DiffLineLike[]): { meta: DiffLineLike[]; hunks: HunkG
 /**
  * DiffView renders a working-tree diff opencode-style: a file jump list with
  * status badges and counts, then unified hunks with dual line-number gutters
- * and word-level change highlighting. Clicking a code line opens the comment
- * draft for review comments back to the agents.
+ * and word-level change highlighting. Press a code line and drag (or
+ * shift-click) to pick a range on one side of one file; releasing opens the
+ * comment draft for review comments back to the agents.
  */
 export function DiffView({
   diff,
@@ -93,7 +122,7 @@ export function DiffView({
   emptyText: string;
   /** Prefix for file anchor ids, so two mounted views never share one. */
   idPrefix: string;
-  onLineClick: (file: string, line: number) => void;
+  onLineClick: (file: string, line: number, endLine: number, side: Side) => void;
   onDraftBody: (body: string) => void;
   onAddComment: () => void;
   onCancelDraft: () => void;
@@ -108,6 +137,38 @@ export function DiffView({
       }),
     [files],
   );
+  // The ref is read by the window mouseup handler; state only drives the highlight.
+  const pickRef = useRef<Picking | null>(null);
+  const [picking, setPicking] = useState<Picking | null>(null);
+
+  const press = (file: string, side: Side, n: number, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    // Keep the browser from selecting code text while the user picks lines.
+    e.preventDefault();
+    if (e.shiftKey && draft && draft.file === file && draft.side === side) {
+      onLineClick(file, Math.min(draft.line, n), Math.max(draft.line, n), side);
+      return;
+    }
+    const start: Picking = { file, side, from: n, to: n };
+    pickRef.current = start;
+    setPicking(start);
+    const up = () => {
+      window.removeEventListener("mouseup", up);
+      const p = pickRef.current;
+      pickRef.current = null;
+      setPicking(null);
+      if (p) onLineClick(p.file, Math.min(p.from, p.to), Math.max(p.from, p.to), p.side);
+    };
+    window.addEventListener("mouseup", up);
+  };
+
+  const enter = (file: string, side: Side, n: number) => {
+    const p = pickRef.current;
+    if (!p || p.file !== file || p.side !== side) return;
+    const next = { ...p, to: n };
+    pickRef.current = next;
+    setPicking(next);
+  };
 
   return (
     <div className="diff-view">
@@ -146,6 +207,14 @@ export function DiffView({
 
       {files.map((f, fi) => {
         const { hunks } = groupHunks(f.lines ?? []);
+        const ctx: LineCtx = {
+          file: f.path,
+          comments,
+          draft,
+          picking,
+          onPress: (side, n, e) => press(f.path, side, n, e),
+          onEnter: (side, n) => enter(f.path, side, n),
+        };
         return (
           <div className="diff-file" id={`${idPrefix}diff-file-${fi}`} key={f.path}>
             <div className="diff-head">
@@ -165,13 +234,13 @@ export function DiffView({
                     <span className="code">{hunk.header.text}</span>
                   </div>
                 )}
-                {renderHunkLines(hunk.lines, f.path, comments, draft, onLineClick)}
+                {renderHunkLines(hunk.lines, ctx)}
               </div>
             ))}
             {draft && draft.file === f.path && (
               <div className="comment-box">
                 <div className="cb-head">
-                  Commenting on {draft.file}:{draft.line}
+                  Commenting on {draft.file}:{lineRange(draft.line, draft.endLine)}
                 </div>
                 <textarea
                   rows={2}
@@ -195,14 +264,17 @@ export function DiffView({
   );
 }
 
+type LineCtx = {
+  file: string;
+  comments: CommentLike[];
+  draft: DraftLike | null;
+  picking: Picking | null;
+  onPress: (side: Side, n: number, e: React.MouseEvent) => void;
+  onEnter: (side: Side, n: number) => void;
+};
+
 /** Renders one hunk's lines, pairing delete/add blocks for word highlighting. */
-function renderHunkLines(
-  lines: { line: DiffLineLike; index: number }[],
-  file: string,
-  comments: CommentLike[],
-  draft: DraftLike | null,
-  onLineClick: (file: string, line: number) => void,
-) {
+function renderHunkLines(lines: { line: DiffLineLike; index: number }[], ctx: LineCtx) {
   const out: React.ReactNode[] = [];
   let k = 0;
   while (k < lines.length) {
@@ -217,19 +289,13 @@ function renderHunkLines(
       const n = Math.min(dels.length, adds.length);
       for (let p = 0; p < n; p++) {
         const { oldSpans, newSpans } = wordDiff(dels[p].line.text, adds[p].line.text);
-        out.push(
-          renderLine(dels[p], file, comments, draft, onLineClick, renderSpans(oldSpans, "del")),
-        );
-        out.push(
-          renderLine(adds[p], file, comments, draft, onLineClick, renderSpans(newSpans, "add")),
-        );
+        out.push(renderLine(dels[p], ctx, renderSpans(oldSpans, "del")));
+        out.push(renderLine(adds[p], ctx, renderSpans(newSpans, "add")));
       }
-      for (let p = n; p < dels.length; p++)
-        out.push(renderLine(dels[p], file, comments, draft, onLineClick, null));
-      for (let p = n; p < adds.length; p++)
-        out.push(renderLine(adds[p], file, comments, draft, onLineClick, null));
+      for (let p = n; p < dels.length; p++) out.push(renderLine(dels[p], ctx, null));
+      for (let p = n; p < adds.length; p++) out.push(renderLine(adds[p], ctx, null));
     } else {
-      out.push(renderLine(lines[k], file, comments, draft, onLineClick, null));
+      out.push(renderLine(lines[k], ctx, null));
       k++;
     }
   }
@@ -238,25 +304,46 @@ function renderHunkLines(
 
 function renderLine(
   entry: { line: DiffLineLike; index: number },
-  file: string,
-  comments: CommentLike[],
-  draft: DraftLike | null,
-  onLineClick: (file: string, line: number) => void,
+  ctx: LineCtx,
   content: React.ReactNode,
 ) {
   const { line, index } = entry;
-  const n = lineNumber(line);
-  const commented = comments.some((c) => c.file === file && c.line === n);
-  const commentable = line.kind !== "meta" && line.kind !== "hunk";
+  const side = sideOf(line);
+  const n = numberOf(line);
+  const commentable = line.kind !== "meta" && line.kind !== "hunk" && n > 0;
+  const covering = ctx.comments.filter((c) => covers(c, ctx.file, side, n));
+  const drafting = ctx.draft !== null && covers(ctx.draft, ctx.file, side, n);
+  const p = ctx.picking;
+  const picked =
+    p !== null &&
+    p.file === ctx.file &&
+    p.side === side &&
+    n >= Math.min(p.from, p.to) &&
+    n <= Math.max(p.from, p.to);
+  const classes = [
+    "diff-line",
+    line.kind,
+    covering.length > 0 && "ranged",
+    drafting && "drafting",
+    picked && "picking",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <div key={index} className={`diff-line ${line.kind}`}>
+    <div key={index} className={classes}>
       <span className="ln">{line.old ?? ""}</span>
       <span className="ln">{line.new ?? ""}</span>
-      <span className="code" onClick={() => commentable && n > 0 && onLineClick(file, n)}>
+      <span
+        className="code"
+        onMouseDown={(e) => commentable && ctx.onPress(side, n, e)}
+        onMouseEnter={() => commentable && ctx.onEnter(side, n)}
+      >
         {content ?? (line.text || " ")}
       </span>
-      {commented && <span className="chip">●</span>}
-      {draft && draft.file === file && draft.line === n && <span className="chip draft">○</span>}
+      {covering.some((c) => c.endLine === n) && <span className="chip">●</span>}
+      {drafting && ctx.draft?.endLine === n && (
+        <span className="chip draft">○</span>
+      )}
     </div>
   );
 }

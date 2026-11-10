@@ -325,6 +325,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			strings.TrimSpace(cmd.ReviewComment.Body) == "" {
 			return nil, fmt.Errorf("%w: review comment requires file and body", ErrInvalidCommand)
 		}
+		c := cmd.ReviewComment
+		if c.EndLine != 0 && c.EndLine < c.Line {
+			return nil, fmt.Errorf("%w: review comment range ends before it starts", ErrInvalidCommand)
+		}
+		if c.Side != "" && c.Side != "old" && c.Side != "new" {
+			return nil, fmt.Errorf("%w: review comment side must be old or new", ErrInvalidCommand)
+		}
 		return []contracts.EventPayload{*cmd.ReviewComment}, nil
 
 	case contracts.CmdReviewSubmit:

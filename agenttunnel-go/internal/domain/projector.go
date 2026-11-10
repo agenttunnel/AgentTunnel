@@ -137,6 +137,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 		}
 
 	case contracts.ReviewCommentAdded:
+		if p.EndLine == 0 {
+			p.EndLine = p.Line
+		}
 		s.ReviewComments = append(s.ReviewComments, ReviewComment{ReviewCommentAdded: p})
 
 	case contracts.ReviewCommentsSubmitted:

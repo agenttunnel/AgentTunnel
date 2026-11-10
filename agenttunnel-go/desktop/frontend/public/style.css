@@ -2080,6 +2080,14 @@ table.grid tr.rowlink:hover td {
 .diff-line:not(.meta):not(.hunk) .code:hover {
   background: var(--accent-soft);
 }
+/* Multi-line review ranges: every covered line is marked, the chip sits on the last. */
+.diff-line.ranged {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.diff-line.drafting,
+.diff-line.picking {
+  background: var(--accent-soft);
+}
 .chip {
   color: var(--accent);
   padding: 0 8px;

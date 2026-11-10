@@ -1033,6 +1033,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ThreadID contracts.ThreadID `json:"threadId"`
 			File     string             `json:"file"`
 			Line     int                `json:"line"`
+			EndLine  int                `json:"endLine"`
+			Side     string             `json:"side"`
 			Body     string             `json:"body"`
 		}
 		if err := decode(req.Params, &p); err != nil {
@@ -1042,6 +1044,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID:        d.nextID(),
 			File:      p.File,
 			Line:      p.Line,
+			EndLine:   p.EndLine,
+			Side:      p.Side,
 			Body:      p.Body,
 			AuthorID:  "user",
 			CreatedAt: time.Now().UTC(),

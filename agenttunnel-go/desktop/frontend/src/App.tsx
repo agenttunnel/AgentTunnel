@@ -35,7 +35,7 @@ import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
 import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
-import { DiffView } from "./components/DiffView";
+import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { MentionMenu } from "./components/MentionMenu";
@@ -82,7 +82,15 @@ function isFailedBlock(m: Message): boolean {
   return m.author === "shell" && SHELL_FAILED.test(m.text.trimEnd());
 }
 /** submitted comments were already handed to the team in a review turn. */
-type ReviewComment = { id: string; file: string; line: number; body: string; submitted: boolean };
+type ReviewComment = {
+  id: string;
+  file: string;
+  line: number;
+  endLine: number;
+  side?: "old" | "new";
+  body: string;
+  submitted: boolean;
+};
 /** One lead's runtime override. Empty fields inherit the Orchestrator role's runtime. */
 type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
 
@@ -604,10 +612,7 @@ export default function App() {
   );
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
-  const [draft, setDraft] = useThreadScoped<{ file: string; line: number; body: string } | null>(
-    activeId,
-    null,
-  );
+  const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
 
   // File browser state for the aside Files panel.
   const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
@@ -1773,6 +1778,8 @@ export default function App() {
       threadId: activeId,
       file: draft.file,
       line: draft.line,
+      endLine: draft.endLine,
+      side: draft.side,
       body: draft.body,
     });
     setDraft(null);
@@ -2255,7 +2262,7 @@ export default function App() {
       {pendingComments.map((c) => (
         <div className="comment-item" key={c.id}>
           <div className="comment-file">
-            {c.file}:{c.line}
+            {c.file}:{lineRange(c.line, c.endLine)}
           </div>
           <div className="comment-body">{c.body}</div>
         </div>
@@ -2780,7 +2787,9 @@ export default function App() {
               comments={comments}
               draft={draft}
               emptyText="No changes in the working tree."
-              onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+              onLineClick={(file, line, endLine, side) =>
+                setDraft({ file, line, endLine, side, body: "" })
+              }
               onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
               onAddComment={() => addComment().catch(() => undefined)}
               onCancelDraft={() => setDraft(null)}
@@ -3561,7 +3570,9 @@ export default function App() {
                 comments={comments}
                 draft={draft}
                 emptyText="No changes in the working tree."
-                onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+                onLineClick={(file, line, endLine, side) =>
+                  setDraft({ file, line, endLine, side, body: "" })
+                }
                 onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
                 onAddComment={() => addComment().catch(() => undefined)}
                 onCancelDraft={() => setDraft(null)}
