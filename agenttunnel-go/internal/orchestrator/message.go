@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -14,14 +15,18 @@ import (
 // `--to orchestrator`; the runtime inbox it drains is keyed by the same id.
 const orchestratorAgentID = contracts.AgentID("agent-orchestrator")
 
+// leadIDPrefix starts every lead id after the first. Later leads end in
+// "-lead<n>" rather than "-<n>": subagent ids always end in a sequence number,
+// so no subagent can ever take a lead's id.
+const leadIDPrefix = "agent-orchestrator-lead"
+
 // leadAgentID is the id of the i-th lead on a thread's team. Lead zero keeps the
-// original id. Later leads end in "-lead<n>" rather than "-<n>": subagent ids
-// always end in a sequence number, so no subagent can ever take a lead's id.
+// original id.
 func leadAgentID(i int) contracts.AgentID {
 	if i == 0 {
 		return orchestratorAgentID
 	}
-	return contracts.AgentID(fmt.Sprintf("agent-orchestrator-lead%d", i+1))
+	return contracts.AgentID(leadIDPrefix + strconv.Itoa(i+1))
 }
 
 // leadName is the roster name the i-th lead is addressed by. Lead zero is the
@@ -33,14 +38,19 @@ func leadName(i int) string {
 	return fmt.Sprintf("orchestrator-%d", i+1)
 }
 
-// isLeadID reports whether id is a lead on any team size up to MaxLeads.
+// isLeadID reports whether id is a lead on a team of any size. The id itself
+// carries the lead number, so no team size is needed: an id is a lead exactly
+// when it is the id leadAgentID mints for some index.
 func isLeadID(id contracts.AgentID) bool {
-	for i := 0; i < contracts.MaxLeads; i++ {
-		if id == leadAgentID(i) {
-			return true
-		}
+	if id == orchestratorAgentID {
+		return true
 	}
-	return false
+	digits, ok := strings.CutPrefix(string(id), leadIDPrefix)
+	if !ok {
+		return false
+	}
+	n, err := strconv.Atoi(digits)
+	return err == nil && n >= 2 && leadAgentID(n-1) == id
 }
 
 // IsLead reports whether id names a team lead. Leads are the only agents that
