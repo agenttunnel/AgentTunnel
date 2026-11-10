@@ -519,8 +519,9 @@ export default function App() {
   const [harnessStats, setHarnessStats] = useState<HarnessStat[]>([]);
   const [harnessLoading, setHarnessLoading] = useState(false);
   const [harnessError, setHarnessError] = useState<string | null>(null);
-  // Worktrees: per open project, live git facts from worktree.list. The toggle
-  // is a local preference; thread.create receives it as `worktree`.
+  // Worktrees: per open project, live git facts from worktree.list. The "Create
+  // worktree now" toggle is a local preference sent as `worktree` on thread.create;
+  // it changes only when a worktree is cut, never whether one is.
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);

@@ -85,13 +85,15 @@ export function WorktreesPanel({
           {loading ? "Loading…" : "Refresh"}
         </button>
       </div>
-      <label className="wt-toggle">
+      {/* Worktrees are the default for every thread in a git project: this only
+          decides whether a new thread cuts its worktree now, or on its first turn. */}
+      <label className="wt-toggle" title="Off: a new thread's worktree is cut on its first turn.">
         <input
           type="checkbox"
           checked={newThreadsUseWorktree}
           onChange={(e) => onToggleNewThreads(e.target.checked)}
         />
-        New threads get their own worktree
+        Create worktree now
       </label>
       {error && <p className="hint err-text">{error}</p>}
       {projects.length === 0 && <p className="hint">Open a project to see its worktrees.</p>}
