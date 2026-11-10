@@ -175,3 +175,47 @@ never in any URL (assert on handshake request lines); instance binding; unpair
 closes live sockets and blocks reconnect; daemon opens no listener when relay
 is off; overflow drops events but not RPC replies; relay persists nothing from
 data frames.
+
+## As built (v1)
+
+The first implementation (`pkg/relay`, `internal/relay`, `cmd/atrelay`) needed
+these additions. They are control frames with a `t` field and do not change
+any frame above.
+
+- **Daemon hello** may carry `name` (the label phones see; default
+  `AgentTunnel`) and `v` (must be `1` when present).
+- **Pairing**: the daemon mints the code (CSPRNG) and sends it as `pair-offer`.
+  The relay keeps only its hash, in memory. A successful `pair` closes the
+  socket after its ack; a failed one closes it with 4401, or 4429 when rate
+  limited.
+- **Relay → daemon**: `devices` (a snapshot of that instance's phones, sent
+  after every daemon ack), `paired` and `unpaired` (live deltas), and `detach`
+  (a phone's socket closed, so the daemon drops that client's subscriptions).
+- **Daemon → relay**: `revoke` with `clientId`, or `all: true` for unpair-all.
+  A phone revoking itself sends `{"t":"revoke"}`, and the daemon gets
+  `unpaired`.
+- **Extra error codes**: `bad_hello` (malformed first frame), `bad_instance`
+  (attach names another instance), `not_attached` (data before attach), and
+  the JSON-RPC errors `-32001 daemon_offline` and `-32002 daemon_busy`.
+- **Daemon RPCs**: `relay.status`, `relay.enable {url}`, `relay.disable`,
+  `relay.pair.start`, `relay.devices.list`, `relay.unpair {clientId | all}`.
+  `atd --relay <url>` enables the relay the same way the desktop does, and the
+  setting persists.
+- **Secrets on disk**: the daemon keeps its instance id, secret, and device
+  list in `<stateDir>/relay.json` (mode 0600). The relay keeps only hashes.
+
+Not built in v1. These are deliberate cuts, and the spec above still describes
+the intent:
+
+- No 64-frame, 10 s relay buffer during a daemon reconnect. A phone whose
+  daemon is offline gets `daemon_offline` at once and re-reads after it
+  reconnects.
+- Keepalive pings run both ways every 30 s, but no liveness timeout is
+  enforced. TCP and the proxy decide when an idle socket dies.
+- Bounded outbound queues are per daemon socket, shared by its sessions, not
+  per client. Overflow drops the oldest `thread.event` and leaves one resync
+  hint per affected client. RPC replies are never dropped. On the relay, a
+  phone whose 256-frame queue overflows is disconnected.
+- `Authorization: Bearer` on the upgrade is not accepted. The first-frame
+  `hello` is the only client auth path.
+- `hello.resume` is ignored. `daemonSecret` rotation is not implemented.
