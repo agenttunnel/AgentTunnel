@@ -55,6 +55,7 @@ func main() {
 	workdir := flag.String("workdir", ".", "working directory handed to agents")
 	maxPasses := flag.Int("max-passes", 3, "orchestrator passes per turn")
 	concurrency := flag.Int("concurrency", 4, "max concurrent subagents")
+	relayURL := flag.String("relay", "", "enable the outbound relay at this wss:// (or loopback ws://) URL")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -81,6 +82,12 @@ func main() {
 		log.Fatalf("atd: %v", err)
 	}
 	defer d.Close()
+	if *relayURL != "" {
+		// Saved to settings like a desktop enable, so it persists across restarts.
+		if err := d.Relay.Enable(*relayURL); err != nil {
+			log.Fatalf("atd: --relay: %v", err)
+		}
+	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(*host, fmt.Sprint(*port)))
 	if err != nil {
