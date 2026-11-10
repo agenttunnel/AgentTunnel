@@ -630,6 +630,9 @@ export default function App() {
   const [prState, setPRState] = useState<PRSnapshot | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
+  // The PR-tab write in flight (e.g. "pr.push") and the last one's result, both thread-tagged.
+  const [prBusy, setPRBusy] = useState<string | null>(null);
+  const [prNotice, setPRNotice] = useState<{ threadId: string; text: string } | null>(null);
   // Worktrees: per open project, live git facts from worktree.list. Every thread
   // in a git project gets one, so the UI offers no choice about it. Shown in the
   // threads view (no thread open), not the aside.
@@ -840,6 +843,31 @@ export default function App() {
       if (activeIdRef.current === id) setPRLoading(false);
     }
   }, []);
+
+  /** Runs one PR-tab write (pr.commit, pr.push, ...) for the active thread, then re-reads the snapshot. */
+  const runPRAction = useCallback(
+    async (method: string, params: Record<string, unknown> = {}) => {
+      const rpc = rpcRef.current;
+      const id = activeIdRef.current;
+      if (!rpc || !id) return false;
+      setPRBusy(method);
+      setPRError(null);
+      setPRNotice(null);
+      let ok = false;
+      try {
+        const result = await rpc.call<{ message?: string }>(method, { ...params, threadId: id });
+        ok = true;
+        if (activeIdRef.current === id) setPRNotice({ threadId: id, text: result?.message || "Done" });
+      } catch (e) {
+        if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setPRBusy(null);
+      }
+      void loadPR(id);
+      return ok;
+    },
+    [loadPR],
+  );
 
 
   const loadFileTree = useCallback(async (id: string | null) => {
@@ -3423,7 +3451,10 @@ export default function App() {
               snapshot={prState?.threadId === activeId ? prState : null}
               loading={prLoading}
               error={prError}
+              busy={prBusy}
+              notice={prNotice?.threadId === activeId ? prNotice.text : null}
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
+              onAction={runPRAction}
             />
           </div>
         ) : asideActive === "files" ? (

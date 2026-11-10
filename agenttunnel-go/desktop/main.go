@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -159,6 +160,17 @@ func main() {
 			}
 			app.Event.Emit("at:folder", map[string]any{"path": path})
 		}()
+	})
+	// Open a link in the user's default browser. Only web links pass, so page
+	// content can never launch a local file or another app.
+	app.Event.On("at:open-url", func(e *application.CustomEvent) {
+		data, _ := e.Data.(map[string]any)
+		raw, _ := data["url"].(string)
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+			return
+		}
+		_ = app.Browser.OpenURL(u.String())
 	})
 	go func() {
 		for i := 0; i < 40; i++ {

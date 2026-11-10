@@ -3543,6 +3543,42 @@ table.grid tr.rowlink:hover td {
   overflow-wrap: anywhere;
   user-select: text;
 }
+.pr-url,
+.pr-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.pr-url:hover,
+.pr-link:hover {
+  text-decoration: underline;
+}
+.pr-git {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+.pr-git-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pr-git-form textarea {
+  width: 100%;
+  resize: vertical;
+}
+.pr-check-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .pr-row {
   display: flex;
   align-items: center;

@@ -970,6 +970,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return scm.Fetch(ctx, wd), nil
 
+	case "pr.commit", "pr.push", "pr.pull", "pr.create", "pr.ready", "pr.merge":
+		return d.prAction(ctx, req)
+
 	case "files.tree":
 		var p struct {
 			ThreadID contracts.ThreadID `json:"threadId"`
@@ -1350,6 +1353,51 @@ func (d *Dispatcher) threadWorkdir(ctx context.Context, id contracts.ThreadID) s
 		}
 	}
 	return worktree.Resolve(st.Worktree, base)
+}
+
+// prAction runs one git or forge write from the PR tab in the thread's worktree.
+// It takes only a threadId, never a workdir: a write must not land in a
+// directory the client chose. Agent tool calls do not reach it.
+func (d *Dispatcher) prAction(ctx context.Context, req Request) (any, error) {
+	var p struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Message  string             `json:"message"`
+		All      bool               `json:"all"`
+		Title    string             `json:"title"`
+	}
+	if err := decode(req.Params, &p); err != nil {
+		return nil, err
+	}
+	if p.ThreadID == "" {
+		return nil, errors.New("threadId is required")
+	}
+	wd := d.threadWorkdir(ctx, p.ThreadID)
+	if wd == "" {
+		return nil, errors.New("thread has no workdir")
+	}
+	c := scm.Live()
+	var (
+		msg string
+		err error
+	)
+	switch req.Method {
+	case "pr.commit":
+		msg, err = c.Commit(ctx, wd, p.Message, p.All)
+	case "pr.push":
+		msg, err = c.Push(ctx, wd)
+	case "pr.pull":
+		msg, err = c.Pull(ctx, wd)
+	case "pr.create":
+		msg, err = c.CreateRequest(ctx, wd, p.Title)
+	case "pr.ready":
+		msg, err = c.MarkReady(ctx, wd)
+	case "pr.merge":
+		msg, err = c.Merge(ctx, wd)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"message": msg}, nil
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {
