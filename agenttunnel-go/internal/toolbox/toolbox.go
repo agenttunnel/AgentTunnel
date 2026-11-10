@@ -47,6 +47,9 @@ const (
 	// KindSubthread starts a subthread for the lead's thread. It is answered at
 	// once, not queued, so the lead learns of a refusal in the same pass.
 	KindSubthread Kind = "subthread"
+	// KindAsk asks the human a question and blocks until they answer. Like
+	// subthread it is answered at once rather than queued; see question.go.
+	KindAsk Kind = "ask"
 )
 
 // Call is one recorded tool invocation.

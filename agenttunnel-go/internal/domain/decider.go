@@ -325,6 +325,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			strings.TrimSpace(cmd.ReviewComment.Body) == "" {
 			return nil, fmt.Errorf("%w: review comment requires file and body", ErrInvalidCommand)
 		}
+		c := cmd.ReviewComment
+		if c.EndLine != 0 && c.EndLine < c.Line {
+			return nil, fmt.Errorf("%w: review comment range ends before it starts", ErrInvalidCommand)
+		}
+		if c.Side != "" && c.Side != "old" && c.Side != "new" {
+			return nil, fmt.Errorf("%w: review comment side must be old or new", ErrInvalidCommand)
+		}
 		return []contracts.EventPayload{*cmd.ReviewComment}, nil
 
 	case contracts.CmdReviewSubmit:
@@ -349,6 +356,75 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text},
 			*cmd.ReviewSubmit,
 		}, nil
+
+	case contracts.CmdQuestionAsk:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		q := cmd.QuestionAsk
+		if q == nil {
+			return nil, fmt.Errorf("%w: question payload is required", ErrInvalidCommand)
+		}
+		text := strings.TrimSpace(q.Question)
+		if text == "" || len(text) > contracts.MaxQuestionLength {
+			return nil, fmt.Errorf("%w: question must be 1 to %d characters", ErrInvalidCommand, contracts.MaxQuestionLength)
+		}
+		if !q.Kind.Valid() {
+			return nil, fmt.Errorf("%w: unknown question kind %q", ErrInvalidCommand, q.Kind)
+		}
+		if q.QuestionID == "" {
+			return nil, fmt.Errorf("%w: question id is required", ErrInvalidCommand)
+		}
+		if s.question(q.QuestionID) != nil {
+			return nil, fmt.Errorf("%w: question %q already exists", ErrInvalidCommand, q.QuestionID)
+		}
+		options, err := normalizeOptions(q.Kind, q.Options)
+		if err != nil {
+			return nil, err
+		}
+		if s.pendingQuestions() >= contracts.MaxQuestionPending {
+			return nil, fmt.Errorf("%w: a thread holds at most %d unanswered questions", ErrInvalidCommand, contracts.MaxQuestionPending)
+		}
+		return []contracts.EventPayload{contracts.QuestionAsked{
+			QuestionID: q.QuestionID,
+			AgentID:    q.AgentID,
+			Kind:       q.Kind,
+			Question:   text,
+			Options:    options,
+			Notify:     strings.TrimSpace(q.Notify),
+		}}, nil
+
+	case contracts.CmdQuestionClose:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		c := cmd.QuestionClose
+		if c == nil {
+			return nil, fmt.Errorf("%w: question close payload is required", ErrInvalidCommand)
+		}
+		q := s.question(c.QuestionID)
+		if q == nil {
+			return nil, fmt.Errorf("%w: no question %q", ErrInvalidCommand, c.QuestionID)
+		}
+		// Only one close can win: an answer, a dismissal and a timeout racing
+		// for the same question resolve to the first one recorded.
+		if q.Status != QuestionPending {
+			return nil, fmt.Errorf("%w: question %q is already %s", ErrInvalidCommand, c.QuestionID, q.Status)
+		}
+		if !c.Answered {
+			reason := strings.TrimSpace(c.Reason)
+			if reason == "" {
+				return nil, fmt.Errorf("%w: a question closed without an answer needs a reason", ErrInvalidCommand)
+			}
+			return []contracts.EventPayload{contracts.QuestionClosed{QuestionID: c.QuestionID, Reason: reason}}, nil
+		}
+		selected, text, err := validateAnswer(q.QuestionAsked, c.Selected, c.Text)
+		if err != nil {
+			return nil, err
+		}
+		return []contracts.EventPayload{contracts.QuestionClosed{
+			QuestionID: c.QuestionID, Answered: true, Selected: selected, Text: text,
+		}}, nil
 
 	case contracts.CmdUsageRecord:
 		if !s.Exists {

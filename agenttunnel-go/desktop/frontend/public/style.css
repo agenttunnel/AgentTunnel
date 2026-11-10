@@ -813,6 +813,107 @@ body.is-resizing * {
   align-items: center;
   gap: 4px;
 }
+/* @ menu: fuzzy file and folder matches, opening above the composer. */
+.mention-menu {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 4px);
+  transform: translateX(-50%);
+  z-index: 5;
+  width: min(900px, calc(100% - 40px));
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.mention-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font: 12px/1.4 var(--mono);
+  color: var(--dim);
+}
+.mention-item.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.mention-kind {
+  flex: none;
+  width: 40px;
+  font-size: 10px;
+  color: var(--faint);
+}
+.mention-name {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-parent {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+}
+.mention-empty {
+  padding: 8px;
+  font: 12px/1.4 var(--mono);
+  color: var(--faint);
+}
+/* Attached files and folders, shown above the box until the turn is sent. */
+.attach-row {
+  max-width: 900px;
+  margin: 0 auto 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  height: 22px;
+  padding: 0 3px 0 7px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  font: 11px/1 var(--mono);
+  color: var(--dim);
+}
+.attach-kind {
+  flex: none;
+  font-size: 10px;
+  color: var(--faint);
+}
+.attach-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-remove {
+  flex: none;
+  padding: 0 4px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.attach-remove:hover {
+  color: var(--text);
+}
 .model-btn {
   background: transparent;
   border-color: transparent;
@@ -1979,6 +2080,14 @@ table.grid tr.rowlink:hover td {
 .diff-line:not(.meta):not(.hunk) .code:hover {
   background: var(--accent-soft);
 }
+/* Multi-line review ranges: every covered line is marked, the chip sits on the last. */
+.diff-line.ranged {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.diff-line.drafting,
+.diff-line.picking {
+  background: var(--accent-soft);
+}
 .chip {
   color: var(--accent);
   padding: 0 8px;
@@ -3043,6 +3152,87 @@ table.grid tr.rowlink:hover td {
   font-size: 9.5px;
 }
 
+/* --- agent questions ----------------------------------------------------- */
+/* A pending question is a plain card with an accent edge; closed ones recede. */
+.question-card {
+  max-width: 900px;
+  margin: 10px auto;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+}
+.question-card.closed {
+  border-color: var(--border);
+}
+.q-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+.q-asker {
+  color: var(--dim);
+  font-weight: 600;
+}
+.q-text,
+.q-answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.q-text {
+  margin-bottom: 10px;
+}
+.q-answer {
+  color: var(--text);
+}
+.q-answer.muted {
+  color: var(--faint);
+}
+.q-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.q-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.q-option:hover {
+  background: var(--surface-2);
+}
+.q-option.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.q-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.question-card textarea {
+  min-height: 56px;
+  margin-bottom: 10px;
+  resize: vertical;
+}
+.q-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.q-actions .hint {
+  margin-right: auto;
+}
+
 /* --- council ------------------------------------------------------------ */
 .council-section {
   padding: 10px 10px 12px;
@@ -3465,6 +3655,42 @@ table.grid tr.rowlink:hover td {
   overflow-wrap: anywhere;
   user-select: text;
 }
+.pr-url,
+.pr-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.pr-url:hover,
+.pr-link:hover {
+  text-decoration: underline;
+}
+.pr-git {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+.pr-git-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pr-git-form textarea {
+  width: 100%;
+  resize: vertical;
+}
+.pr-check-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .pr-row {
   display: flex;
   align-items: center;
@@ -3734,4 +3960,79 @@ table.grid tr.rowlink:hover td {
   flex-wrap: wrap;
   gap: 6px;
   margin-left: 15px;
+}
+
+/* --- phone relay pairing (Settings) ------------------------------------- */
+.relay-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.relay-state {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.relay-state.ok {
+  color: var(--ok);
+}
+.relay-url {
+  display: flex;
+  gap: 8px;
+}
+.relay-url input {
+  flex: 1;
+  min-width: 0;
+}
+.relay-sub {
+  margin: 16px 0 8px;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.relay-pair {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.relay-qr {
+  flex: none;
+  padding: 8px;
+  background: #fff;
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+.relay-code-col {
+  min-width: 0;
+  padding-top: 4px;
+}
+.relay-code {
+  font-family: var(--mono);
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.relay-device {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.relay-device:last-child {
+  border-bottom: 0;
+}
+.relay-device .rn {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relay-device .rd {
+  font-size: 10.5px;
+  color: var(--faint);
 }

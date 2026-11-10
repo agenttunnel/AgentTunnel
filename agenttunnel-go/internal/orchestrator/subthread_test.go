@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 )
 
 // The subthread tool is offered to the lead only when the thread may start one.
@@ -35,5 +36,30 @@ func TestNotebooksArePerThread(t *testing.T) {
 	}
 	if r.notebookFor("parent") != r.notebookFor("parent") {
 		t.Fatal("a thread must keep one notebook across calls")
+	}
+}
+
+// The lead is offered the subthread tool only while the thread has a free slot:
+// a child thread, or a full set of subthreads, gets no offer.
+func TestSubthreadsOfferedWhileASlotIsFree(t *testing.T) {
+	full := make([]contracts.ThreadID, contracts.MaxSubthreads)
+	for i := range full {
+		full[i] = contracts.ThreadID("sub-" + string(rune('a'+i)))
+	}
+	cases := []struct {
+		name  string
+		state domain.ThreadState
+		peer  bool
+		want  bool
+	}{
+		{"top-level with a free slot", domain.ThreadState{Subthreads: full[:1]}, true, true},
+		{"peer mailbox off", domain.ThreadState{}, false, false},
+		{"a subthread cannot start its own", domain.ThreadState{ParentThreadID: "parent"}, true, false},
+		{"all slots used", domain.ThreadState{Subthreads: full}, true, false},
+	}
+	for _, c := range cases {
+		if got := subthreadsOffered(&c.state, c.peer); got != c.want {
+			t.Errorf("%s: subthreadsOffered = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

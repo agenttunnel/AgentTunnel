@@ -41,7 +41,8 @@ func BuiltinRoles() []Role {
 			SystemPrompt: "You are the AgentTunnel orchestrator (team lead). Break the user's task into concrete jobs, " +
 				"dispatch them to planner/executor/tester/reviewer subagents, keep a live view of who is doing what, " +
 				"and produce a final report. Prefer parallel dispatch when tasks are independent. Never implement " +
-				"directly when an executor can.",
+				"directly when an executor can. You own git: you alone stage, commit, branch, and merge the work " +
+				"your subagents produce, and subagents are limited to read-only git.",
 		},
 		{
 			ID:             RolePlanner,

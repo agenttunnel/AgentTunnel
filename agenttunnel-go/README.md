@@ -157,6 +157,11 @@ Agents coordinate beyond the turn loop:
   `"$AT_TOOL" tool spawn --role executor --name <short-name> --task "..."`.
   The proposal pends until the lead runs `tool approve`/`tool reject`; an
   approved child runs parented on its proposer (visible in the graph).
+- **Asking the human** — an agent blocked on a decision only the user can make
+  runs `"$AT_TOOL" tool ask --kind choice|multi|text --question "..."`. The
+  command holds until the user answers (`question.answer` over the socket, or
+  `question.dismiss`) and prints the answer. A question is pending only while
+  that command waits; a turn that ends or a daemon that restarts closes it.
 - **Council** — `thread.council.start` runs a set of roles through parallel
   rounds of debate and synthesizes an outcome.
 

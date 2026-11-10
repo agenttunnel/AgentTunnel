@@ -114,6 +114,28 @@ export function discover(): Promise<Conn> {
   });
 }
 
+/** inDesktopShell mirrors the Wails runtime's own transport check: outside the shell there is no native bridge. */
+function inDesktopShell(): boolean {
+  const w = window as Window & {
+    chrome?: { webview?: unknown };
+    webkit?: { messageHandlers?: { external?: unknown } };
+  };
+  return Boolean(w.chrome?.webview || w.webkit?.messageHandlers?.external);
+}
+
+/**
+ * openExternal opens a web link in the user's default browser. The desktop shell
+ * does it natively; a plain browser (headless daemon UI) opens a new tab.
+ */
+export function openExternal(url: string): void {
+  if (!/^https?:\/\//.test(url)) return;
+  if (inDesktopShell()) {
+    Promise.resolve(Events.Emit("at:open-url", { url })).catch(() => window.open(url, "_blank", "noopener,noreferrer"));
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 /**
  * pickFolder opens the native folder picker in the desktop shell and resolves to
  * the chosen path, or null when cancelled or when not running in the shell.

@@ -85,6 +85,9 @@ func (e *Engine) Start(ctx context.Context) {
 }
 
 func (e *Engine) loop(ctx context.Context) {
+	// However the loop ends, the engine is done: waiting callers must not block
+	// on a loop that no longer runs.
+	defer e.Close()
 	for {
 		select {
 		case <-ctx.Done():
@@ -116,6 +119,15 @@ func (e *Engine) Dispatch(ctx context.Context, cmd contracts.Command) error {
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-e.done:
+		// The loop exited after taking the command, or never will take it: the
+		// result is returned if it already landed, otherwise the engine is gone.
+		select {
+		case err := <-res:
+			return err
+		default:
+			return errors.New("engine closed")
+		}
 	}
 }
 

@@ -33,6 +33,8 @@ const (
 	EvtReviewCommentAdded EventType = "review.comment-added"
 	EvtReviewSubmitted    EventType = "review.comments-submitted"
 	EvtAgentOutput        EventType = "agent.output"
+	EvtQuestionAsked      EventType = "thread.question-asked"
+	EvtQuestionClosed     EventType = "thread.question-closed"
 )
 
 // EventPayload is implemented by every concrete event payload. The unexported
@@ -137,6 +139,10 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ReviewCommentAdded](data)
 	case EvtReviewSubmitted:
 		return decodePayload[ReviewCommentsSubmitted](data)
+	case EvtQuestionAsked:
+		return decodePayload[QuestionAsked](data)
+	case EvtQuestionClosed:
+		return decodePayload[QuestionClosed](data)
 	default:
 		return nil, fmt.Errorf("unknown event type %q", t)
 	}
@@ -350,12 +356,16 @@ type MailboxPosted struct {
 
 func (MailboxPosted) eventType() EventType { return EvtMailboxPosted }
 
-// ReviewCommentAdded is a human review comment anchored to a diff line. Pending
-// comments are handed to the agents on the next turn.
+// ReviewCommentAdded is a human review comment anchored to a diff range. Pending
+// comments are handed to the agents on the next turn. EndLine is zero for
+// comments recorded before ranges existed; the projector reads it as Line. Side
+// is "old" for removed lines and empty or "new" otherwise.
 type ReviewCommentAdded struct {
 	ID        string    `json:"id"`
 	File      string    `json:"file"`
 	Line      int       `json:"line"`
+	EndLine   int       `json:"endLine,omitempty"`
+	Side      string    `json:"side,omitempty"`
 	Body      string    `json:"body"`
 	AuthorID  AgentID   `json:"authorId"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -370,6 +380,73 @@ type ReviewCommentsSubmitted struct {
 }
 
 func (ReviewCommentsSubmitted) eventType() EventType { return EvtReviewSubmitted }
+
+// QuestionKind is the shape of an answer an agent asks the human for.
+type QuestionKind string
+
+const (
+	// QuestionChoice takes exactly one of the options (or free text as "other").
+	QuestionChoice QuestionKind = "choice"
+	// QuestionMulti takes any non-empty subset of the options (or free text).
+	QuestionMulti QuestionKind = "multi"
+	// QuestionText takes free text only.
+	QuestionText QuestionKind = "text"
+)
+
+// Valid reports whether k is a known question kind.
+func (k QuestionKind) Valid() bool {
+	switch k {
+	case QuestionChoice, QuestionMulti, QuestionText:
+		return true
+	}
+	return false
+}
+
+// Question limits. Options are bounded so the question card stays readable;
+// the pending cap keeps an agent from parking a pile of questions on the human.
+const (
+	MaxQuestionOptions      = 12
+	MaxQuestionPending      = 5
+	MaxQuestionLength       = 2000
+	MaxQuestionOptionLength = 200
+)
+
+// QuestionAsked is an agent's question for the human. It stays pending until a
+// QuestionClosed for the same id: the agent's blocked tool call is the only
+// thing that keeps it pending.
+type QuestionAsked struct {
+	QuestionID string       `json:"questionId"`
+	AgentID    AgentID      `json:"agentId"`
+	Kind       QuestionKind `json:"kind"`
+	Question   string       `json:"question"`
+	Options    []string     `json:"options,omitempty"`
+	// Notify names the agent (or "orchestrator") that also hears the answer as
+	// a peer message. Empty means no extra recipient.
+	Notify string `json:"notify,omitempty"`
+}
+
+func (QuestionAsked) eventType() EventType { return EvtQuestionAsked }
+
+// QuestionClosed ends a pending question, either with the human's answer or with
+// the reason it could not be answered. One closing event carries both shapes, so
+// replay never has to reconcile two events.
+type QuestionClosed struct {
+	QuestionID string `json:"questionId"`
+	Answered   bool   `json:"answered"`
+	// Selected holds chosen options for choice and multi kinds.
+	Selected []string `json:"selected,omitempty"`
+	// Text is free text: the whole answer for a text question, or an "other"
+	// answer for a choice or multi question.
+	Text string `json:"text,omitempty"`
+	// Reason says why an unanswered question closed.
+	Reason string `json:"reason,omitempty"`
+}
+
+func (QuestionClosed) eventType() EventType { return EvtQuestionClosed }
+
+// ReasonQuestionDeclined closes a question the human dismissed. It is not a
+// failure: the asking agent is told so it can carry on without the answer.
+const ReasonQuestionDeclined = "declined by user"
 
 // AgentOutput is a transient progress line streamed to clients while an agent
 // runs. It is never appended to the event log — it exists only so a running turn

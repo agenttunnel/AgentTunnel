@@ -137,6 +137,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 		}
 
 	case contracts.ReviewCommentAdded:
+		if p.EndLine == 0 {
+			p.EndLine = p.Line
+		}
 		s.ReviewComments = append(s.ReviewComments, ReviewComment{ReviewCommentAdded: p})
 
 	case contracts.ReviewCommentsSubmitted:
@@ -149,6 +152,23 @@ func Project(s *ThreadState, e contracts.Event) error {
 				s.ReviewComments[i].Submitted = true
 			}
 		}
+
+	case contracts.QuestionAsked:
+		s.Questions = append(s.Questions, Question{QuestionAsked: p, Status: QuestionPending, At: e.At})
+		s.trimQuestions()
+
+	case contracts.QuestionClosed:
+		q := s.question(p.QuestionID)
+		if q == nil {
+			return fmt.Errorf("project: close for unknown question %q", p.QuestionID)
+		}
+		q.Status = QuestionClosedStatus
+		if p.Answered {
+			q.Status = QuestionAnswered
+		}
+		q.Selected = p.Selected
+		q.Text = p.Text
+		q.Reason = p.Reason
 
 	default:
 		return fmt.Errorf("project: unknown event payload %T", e.Payload)

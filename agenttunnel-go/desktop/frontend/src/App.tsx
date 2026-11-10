@@ -35,13 +35,18 @@ import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
 import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
-import { DiffView } from "./components/DiffView";
+import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { MentionMenu } from "./components/MentionMenu";
+import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
+import { RelayPairing } from "./components/RelayPairing";
 import { Markdown } from "./components/Markdown";
+import { QuestionCard } from "./components/QuestionCard";
+import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
@@ -86,7 +91,15 @@ function isFailedBlock(m: Message): boolean {
   return m.author === "shell" && SHELL_FAILED.test(m.text.trimEnd());
 }
 /** submitted comments were already handed to the team in a review turn. */
-type ReviewComment = { id: string; file: string; line: number; body: string; submitted: boolean };
+type ReviewComment = {
+  id: string;
+  file: string;
+  line: number;
+  endLine: number;
+  side?: "old" | "new";
+  body: string;
+  submitted: boolean;
+};
 /** One lead's runtime override. Empty fields inherit the Orchestrator role's runtime. */
 type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
 
@@ -109,6 +122,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** Agent questions for the human, oldest first. Pending ones await an answer. */
+  questions?: AgentQuestion[] | null;
   /** The agreed task list, in the order the leads added it. */
   tasks?: TaskItem[] | null;
 };
@@ -189,8 +204,7 @@ type AsideTabId =
   | "pr"
   | "stats"
   | "models"
-  | "council"
-  | "worktrees";
+  | "council";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -203,7 +217,6 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   stats: { label: "Harness stats", key: "H" },
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
-  worktrees: { label: "Worktrees", key: "W" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -608,10 +621,7 @@ export default function App() {
   );
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
-  const [draft, setDraft] = useThreadScoped<{ file: string; line: number; body: string } | null>(
-    activeId,
-    null,
-  );
+  const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
 
   // File browser state for the aside Files panel.
   const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
@@ -629,11 +639,16 @@ export default function App() {
   const [prState, setPRState] = useState<PRSnapshot | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
+  // The PR-tab write in flight (e.g. "pr.push") and the last one's result, both thread-tagged.
+  const [prBusy, setPRBusy] = useState<string | null>(null);
+  const [prNotice, setPRNotice] = useState<{ threadId: string; text: string } | null>(null);
   // Worktrees: per open project, live git facts from worktree.list. Every thread
-  // in a git project gets one, so the UI offers no choice about it.
+  // in a git project gets one, so the UI offers no choice about it. Shown in the
+  // threads view (no thread open), not the aside.
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
+  const [showWorktrees, setShowWorktrees] = useState(false);
   const [selectedFile, setSelectedFile] = useThreadScoped<string | null>(activeId, null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -643,6 +658,17 @@ export default function App() {
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
   // Pasted text per draft: draftKey -> token id -> full text.
   const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
+  // Files and folders attached per draft through @; sent with the turn as context.
+  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
+  // Caret in the composer: an @-token is the word ending at the caret.
+  const [caret, setCaret] = useState(0);
+  const [mentionActive, setMentionActive] = useState(0);
+  // Start of an @-token the user dismissed with Escape.
+  const [mentionDismissed, setMentionDismissed] = useState<number | null>(null);
+  // Matches tagged with the query they answer, so an old list never shows for a new query.
+  const [mentionResults, setMentionResults] = useState<{ query: string; matches: FileMatch[] } | null>(
+    null,
+  );
   const [settings, setSettings] = useState<SettingsView | null>(null);
 
   // Council of agents: convene several perspectives on one question and let
@@ -725,7 +751,12 @@ export default function App() {
     const near = nearBottom(el);
     if (near) el.scrollTop = el.scrollHeight;
     setAtBottom(near);
-  }, [thread?.messages?.length, thread?.messages?.[thread.messages.length - 1]?.text, live.length]);
+  }, [
+    thread?.messages?.length,
+    thread?.messages?.[thread.messages.length - 1]?.text,
+    thread?.questions?.length,
+    live.length,
+  ]);
 
   const scrollToBottom = () => {
     const el = streamRef.current;
@@ -754,6 +785,28 @@ export default function App() {
     setThreads(list);
     setGlobalUsage(usage);
   }, []);
+
+  // The daemon closes a question on the answer, so refresh right away: the card
+  // flips to its answered state without waiting for the event debounce. Errors
+  // reject to the card, which shows them beside its buttons.
+  const answerQuestion = useCallback(
+    async (questionId: string, selected: string[], text: string) => {
+      const rpc = rpcRef.current;
+      if (!rpc || !activeId) return;
+      await rpc.call("question.answer", { threadId: activeId, questionId, selected, text });
+      await refresh(activeId);
+    },
+    [activeId, refresh],
+  );
+  const dismissQuestion = useCallback(
+    async (questionId: string) => {
+      const rpc = rpcRef.current;
+      if (!rpc || !activeId) return;
+      await rpc.call("question.dismiss", { threadId: activeId, questionId });
+      await refresh(activeId);
+    },
+    [activeId, refresh],
+  );
 
   const installUpdate = useCallback(async () => {
     const rpc = rpcRef.current;
@@ -799,6 +852,31 @@ export default function App() {
       if (activeIdRef.current === id) setPRLoading(false);
     }
   }, []);
+
+  /** Runs one PR-tab write (pr.commit, pr.push, ...) for the active thread, then re-reads the snapshot. */
+  const runPRAction = useCallback(
+    async (method: string, params: Record<string, unknown> = {}) => {
+      const rpc = rpcRef.current;
+      const id = activeIdRef.current;
+      if (!rpc || !id) return false;
+      setPRBusy(method);
+      setPRError(null);
+      setPRNotice(null);
+      let ok = false;
+      try {
+        const result = await rpc.call<{ message?: string }>(method, { ...params, threadId: id });
+        ok = true;
+        if (activeIdRef.current === id) setPRNotice({ threadId: id, text: result?.message || "Done" });
+      } catch (e) {
+        if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setPRBusy(null);
+      }
+      void loadPR(id);
+      return ok;
+    },
+    [loadPR],
+  );
 
 
   const loadFileTree = useCallback(async (id: string | null) => {
@@ -1309,11 +1387,17 @@ export default function App() {
   }, [asideActive, activeId, loadPR]);
 
 
-  // Worktree facts come from live git runs, so they load when the panel is shown
+  // Worktree facts come from live git runs, so they load when the section is shown
   // and after each action, not on a timer.
   useEffect(() => {
-    if (asideActive === "worktrees") loadWorktrees(openProjectIds).catch(() => undefined);
-  }, [asideActive, openProjectIds, loadWorktrees]);
+    if (projectId && !activeId && showWorktrees) loadWorktrees([projectId]).catch(() => undefined);
+  }, [projectId, activeId, showWorktrees, loadWorktrees]);
+
+  // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
+  // would otherwise render the diff fallback with no tab highlighted.
+  useEffect(() => {
+    if (!(asideActive in ASIDE_META)) setAsideActive("agents");
+  }, [asideActive, setAsideActive]);
 
   // The file tree loads when its panel is shown.
   useEffect(() => {
@@ -1425,6 +1509,11 @@ export default function App() {
     }
     return out;
   }, [thread]);
+  /** The name a question card shows for the agent that asked it. */
+  const agentLabel = (agentId: string) => {
+    const a = thread?.agents?.[agentId];
+    return a ? a.name || rolesById[a.role] || a.role : "Agent";
+  };
 
   const threadUsage = useMemo(() => deriveThreadUsage(thread), [thread]);
   const sharedEntries = useMemo(
@@ -1563,9 +1652,7 @@ export default function App() {
     const rpc = rpcRef.current;
     const threadId = activeId;
     const text = expandPastes(input, pastes[draftKey]).trim();
-    // The ref closes the window before React re-renders, so a second Enter on
-    // the same thread cannot submit the same draft again.
-    if (!rpc || !threadId || !text || sendingRef.current.has(threadId)) return;
+    if (!rpc || !threadId || !text) return;
     // A registered "/name" runs its command. Commands never start or steer a
     // turn; an unknown "/word" is sent as ordinary text.
     const slash = parseSlash(text);
@@ -1583,6 +1670,11 @@ export default function App() {
     // A turn already running on this thread takes the message as a steer, so
     // Enter never drops a message while the team is working.
     const steer = running.length > 0 || busy;
+    // The ref closes the window before React re-renders, so a second Enter cannot
+    // submit the same draft again. Steers get their own key: a turn's RPC stays in
+    // flight for the whole run, so a turn key would swallow every mid-run steer.
+    const sendKey = steer ? `steer:${threadId}` : threadId;
+    if (sendingRef.current.has(sendKey)) return;
     // "! cmd" runs a shell command in the thread's project. A lone "!" is just text.
     const command = text.startsWith("!") ? text.slice(1).trim() : "";
     if (command && steer) {
@@ -1590,30 +1682,45 @@ export default function App() {
       return;
     }
     const sentPastes = pastes[draftKey];
+    // A shell command takes no context; its attachments stay in the draft.
+    const sentFiles = command ? [] : (attachments[draftKey] ?? []);
     setInput("");
     setPastes((prev) => {
       const rest = { ...prev };
       delete rest[draftKey];
       return rest;
     });
-    sendingRef.current.add(threadId);
+    if (sentFiles.length > 0) {
+      setAttachments((prev) => {
+        const rest = { ...prev };
+        delete rest[draftKey];
+        return rest;
+      });
+    }
+    sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
     if (command) setShellThread(threadId);
     try {
       if (command) {
         await rpc.call("thread.runCommand", { threadId, command });
       } else {
-        await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+        await rpc.call(steer ? "thread.steer" : "thread.turn.start", {
+          threadId,
+          text,
+          attachments: sentFiles.map((a) => a.path),
+        });
       }
     } catch (e) {
       // Put the typed text back into its own thread's draft, even if the user has moved on.
       const key = draftKeyOf(projectId, threadId);
       setDrafts((prev) => ({ ...prev, [key]: input }));
       setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
+      if (sentFiles.length > 0) setAttachments((prev) => ({ ...prev, [key]: sentFiles }));
       setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
-      sendingRef.current.delete(threadId);
-      setTurnBusy(threadId, false);
+      sendingRef.current.delete(sendKey);
+      // A finished steer must not clear the busy flag of the turn it joined.
+      if (!steer) setTurnBusy(threadId, false);
       setShellThread((cur) => (cur === threadId ? null : cur));
       refresh(threadId).catch(() => undefined);
     }
@@ -1722,6 +1829,8 @@ export default function App() {
       threadId: activeId,
       file: draft.file,
       line: draft.line,
+      endLine: draft.endLine,
+      side: draft.side,
       body: draft.body,
     });
     setDraft(null);
@@ -1901,6 +2010,61 @@ export default function App() {
         ? "Steer the orchestrator — it lands on the next pass…"
         : "Ask the team to build something, or ! to run a shell command…",
   });
+  // The @ menu: an @-token ends at the caret, and is closed for commands.
+  const draftAttachments = attachments[draftKey] ?? [];
+  const mention = commandMode ? null : mentionAt(input, caret);
+  const openMention = mention && mention.start !== mentionDismissed ? mention : null;
+  const mentionQuery = openMention?.query ?? null;
+  const menuMatches =
+    openMention && mentionResults?.query === openMention.query ? mentionResults.matches : null;
+  useEffect(() => {
+    const rpc = rpcRef.current;
+    if (mentionQuery === null || !rpc || !activeId) return;
+    let stale = false;
+    // Debounced, and any keystroke after this one cancels the request.
+    const timer = window.setTimeout(() => {
+      rpc
+        .call<{ matches: FileMatch[] }>("files.search", {
+          threadId: activeId,
+          query: mentionQuery,
+          limit: 12,
+        })
+        .then((res) => {
+          if (!stale) setMentionResults({ query: mentionQuery, matches: res.matches });
+        })
+        .catch((e) => {
+          if (stale) return;
+          setMentionResults({ query: mentionQuery, matches: [] });
+          setError(e instanceof Error ? e.message : String(e));
+        });
+    }, 60);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [mentionQuery, activeId]);
+  const pickMention = (m: FileMatch) => {
+    if (!openMention) return;
+    if (draftAttachments.length >= MAX_ATTACHMENTS) {
+      setError(`Attach at most ${MAX_ATTACHMENTS} files or folders per turn.`);
+      return;
+    }
+    setInput(dropMention(input, openMention, caret));
+    pendingCaret.current = openMention.start;
+    setCaret(openMention.start);
+    setMentionDismissed(null);
+    setAttachments((prev) => {
+      const list = prev[draftKey] ?? [];
+      if (list.some((a) => a.path === m.path)) return prev;
+      return { ...prev, [draftKey]: [...list, { path: m.path, dir: m.dir }] };
+    });
+  };
+  const removeAttachment = (path: string) =>
+    setAttachments((prev) => ({
+      ...prev,
+      [draftKey]: (prev[draftKey] ?? []).filter((a) => a.path !== path),
+    }));
+
   const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Enter confirms an IME candidate during composition; it must not submit.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -1921,6 +2085,24 @@ export default function App() {
         pickSlash(slashMatches[slashSel], e.key === "Enter");
         return;
       }
+    }
+    if (openMention && menuMatches && menuMatches.length > 0) {
+      const n = menuMatches.length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickMention(menuMatches[Math.min(mentionActive, n - 1)]);
+        return;
+      }
+    }
+    if (openMention && e.key === "Escape") {
+      e.preventDefault();
+      setMentionDismissed(openMention.start);
+      return;
     }
     // A token is one unit: Backspace/Delete at its edge removes it whole.
     const { selectionStart: pos, selectionEnd } = e.currentTarget;
@@ -2224,7 +2406,7 @@ export default function App() {
       {pendingComments.map((c) => (
         <div className="comment-item" key={c.id}>
           <div className="comment-file">
-            {c.file}:{c.line}
+            {c.file}:{lineRange(c.line, c.endLine)}
           </div>
           <div className="comment-body">{c.body}</div>
         </div>
@@ -2338,8 +2520,32 @@ export default function App() {
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
+              <button
+                className={showWorktrees ? "primary" : undefined}
+                aria-pressed={showWorktrees}
+                onClick={() => setShowWorktrees((v) => !v)}
+              >
+                Worktrees
+              </button>
             </div>
           </div>
+          {showWorktrees && (
+            <div className="section worktrees-section">
+              <WorktreesPanel
+                projects={selectedProject ? [{ id: selectedProject.id, name: selectedProject.name }] : []}
+                worktrees={worktrees}
+                threads={threads}
+                loading={worktreesLoading}
+                error={worktreesError}
+                onRefresh={() => projectId && loadWorktrees([projectId]).catch(() => undefined)}
+                onOpenThread={openWorktreeThread}
+                onRemove={(projectId, path, force) =>
+                  worktreeAction(projectId, "worktree.remove", { path, force })
+                }
+                onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
+              />
+            </div>
+          )}
           {projectThreads.length === 0 && needle && (
             <div className="empty">No threads match that filter.</div>
           )}
@@ -2543,7 +2749,9 @@ export default function App() {
                               ? "System"
                               : m.author === "shell"
                                 ? "Shell"
-                                : "Orchestrator"}
+                                : m.author === "subthread"
+                                  ? "Subthread"
+                                  : "Orchestrator"}
                       </span>
                     </div>
                     <div className="msg-actions">
@@ -2562,6 +2770,15 @@ export default function App() {
                   </div>
                   ))}
                 </section>
+              ))}
+              {(thread?.questions ?? []).map((q) => (
+                <QuestionCard
+                  key={q.questionId}
+                  question={q}
+                  askedBy={agentLabel(q.agentId)}
+                  onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
+                  onDismiss={() => dismissQuestion(q.questionId)}
+                />
               ))}
               {running.length > 0 && (
                 <div className="activity agents">
@@ -2632,6 +2849,32 @@ export default function App() {
                   onPick={(cmd) => pickSlash(cmd, true)}
                 />
               )}
+              {openMention && menuMatches && (
+                <MentionMenu
+                  matches={menuMatches}
+                  active={Math.min(mentionActive, Math.max(menuMatches.length - 1, 0))}
+                  onPick={pickMention}
+                  onActive={setMentionActive}
+                />
+              )}
+              {draftAttachments.length > 0 && (
+                <div className="attach-row">
+                  {draftAttachments.map((a) => (
+                    <span key={a.path} className="attach-chip" title={a.path}>
+                      <span className="attach-kind">{a.dir ? "folder" : "file"}</span>
+                      <span className="attach-name">{a.path}</span>
+                      <button
+                        type="button"
+                        className="attach-remove"
+                        onClick={() => removeAttachment(a.path)}
+                        aria-label={`Remove ${a.path}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="box">
                 <textarea
                   ref={taRef}
@@ -2642,7 +2885,10 @@ export default function App() {
                   onChange={(e) => {
                     setInput(e.target.value);
                     setSlashIdx(0);
+                    setCaret(e.target.selectionStart);
+                    setMentionActive(0);
                   }}
+                  onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={onComposerKeyDown}
                 />
               </div>
@@ -2694,7 +2940,9 @@ export default function App() {
               comments={comments}
               draft={draft}
               emptyText="No changes in the working tree."
-              onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+              onLineClick={(file, line, endLine, side) =>
+                setDraft({ file, line, endLine, side, body: "" })
+              }
               onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
               onAddComment={() => addComment().catch(() => undefined)}
               onCancelDraft={() => setDraft(null)}
@@ -3322,29 +3570,16 @@ export default function App() {
               projectId={projectId}
             />
           </div>
-        ) : asideActive === "worktrees" ? (
-          <div className="section worktrees-section">
-            <WorktreesPanel
-              projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
-              worktrees={worktrees}
-              threads={threads}
-              loading={worktreesLoading}
-              error={worktreesError}
-              onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
-              onOpenThread={openWorktreeThread}
-              onRemove={(projectId, path, force) =>
-                worktreeAction(projectId, "worktree.remove", { path, force })
-              }
-              onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
-            />
-          </div>
         ) : asideActive === "pr" ? (
           <div className="section pr-section">
             <PRPanel
               snapshot={prState?.threadId === activeId ? prState : null}
               loading={prLoading}
               error={prError}
+              busy={prBusy}
+              notice={prNotice?.threadId === activeId ? prNotice.text : null}
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
+              onAction={runPRAction}
             />
           </div>
         ) : asideActive === "files" ? (
@@ -3491,7 +3726,9 @@ export default function App() {
                 comments={comments}
                 draft={draft}
                 emptyText="No changes in the working tree."
-                onLineClick={(file, line) => setDraft({ file, line, body: "" })}
+                onLineClick={(file, line, endLine, side) =>
+                  setDraft({ file, line, endLine, side, body: "" })
+                }
                 onDraftBody={(body) => setDraft((d) => (d ? { ...d, body } : d))}
                 onAddComment={() => addComment().catch(() => undefined)}
                 onCancelDraft={() => setDraft(null)}
@@ -3582,6 +3819,11 @@ export default function App() {
                     Save environment
                   </button>
                 </div>
+              </section>
+
+              <section className="set-section">
+                <h4>Phones</h4>
+                <RelayPairing rpc={rpcRef.current} />
               </section>
 
               <section className="set-section">

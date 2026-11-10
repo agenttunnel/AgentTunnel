@@ -1,0 +1,74 @@
+name: AgentTunnel iOS
+
+# Typechecks, smoke-tests, and builds the Expo mobile app for the iOS simulator
+# with no signing. Runs the same script developers run locally:
+# agenttunnel-go/mobile/scripts/ios-build.sh.
+#
+# No secrets and no signing. Later, to publish builds:
+#   - Add an EAS job (eas build --platform ios --profile preview) that runs
+#     after this one. It needs EXPO_TOKEN as a repo secret and an eas.json.
+#   - For TestFlight, use `eas submit --platform ios` with an App Store Connect
+#     API key stored as secrets. Gate it on push to main and workflow_dispatch
+#     so pull requests never receive signing credentials.
+#   - Keep this unsigned build job as the cheap pre-check; don't replace it.
+# None of that is implemented here.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "agenttunnel-go/mobile/**"
+      - ".github/workflows/agenttunnel-ios.yml"
+  pull_request:
+    paths:
+      - "agenttunnel-go/mobile/**"
+      - ".github/workflows/agenttunnel-ios.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: agenttunnel-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: Build iOS simulator app
+    # macos-26, not macos-15: macos-15 ships Xcode 26.0-26.3 only, and all of
+    # them fail to compile expo-modules-jsi 58.0.22 ("sending 'slot' risks
+    # causing data races", runs 42895746893 and 42896629929). macos-26 ships
+    # Xcode 26.4.1, the version Expo's own macOS CI pins.
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: agenttunnel-go/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: agenttunnel-go/mobile/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      # ExpoModulesJSI needs Swift tools 6.2+. Pin the Xcode that Expo's own
+      # macOS CI uses, so an image default change cannot change this build's
+      # toolchain.
+      - name: Select Xcode 26.4.1
+        run: |
+          xcode=/Applications/Xcode_26.4.1.app
+          test -d "$xcode" || { echo "$xcode not installed on this runner image"; exit 1; }
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: scripts/ios-build.sh

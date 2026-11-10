@@ -110,6 +110,9 @@ type ThreadState struct {
 
 	ReviewComments []ReviewComment `json:"reviewComments"`
 
+	// Questions are the agent questions asked of the human, oldest first.
+	Questions []Question `json:"questions"`
+
 	Shared      map[string]string `json:"shared"`
 	SharedOrder []string          `json:"sharedOrder"`
 
@@ -198,6 +201,7 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.SharedOrder = append([]string(nil), s.SharedOrder...)
 	c.Mailbox = append([]MailboxMessage(nil), s.Mailbox...)
 	c.ReviewComments = append([]ReviewComment(nil), s.ReviewComments...)
+	c.Questions = append([]Question(nil), s.Questions...)
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {

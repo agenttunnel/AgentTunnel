@@ -8,6 +8,12 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
+// askHelp documents the ask tool for every agent. Asking is not gated on the peer
+// mailbox: a blocked agent needs the human whatever the team's messaging is set to.
+const askHelp = "Ask the human only when you are blocked on a decision only they can make, and use it sparingly:\n\n" +
+	"  \"$AT_TOOL\" tool ask --kind choice|multi|text --question \"<question>\" [--option \"<answer>\" ...] [--notify <agent>]\n\n" +
+	"choice takes one option, multi takes several, text takes a free answer. The command blocks until the human answers and prints the answer, so run it as a normal foreground command. If it reports no answer, carry on on a stated assumption."
+
 // BuildSubagentPrompt assembles a subagent's prompt from its role prompt, its
 // task, the inherited context, and the shared notebook, so every subagent starts
 // informed by what the others have done. The peer message tool is documented only
@@ -33,11 +39,15 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
 		}
 	}
-	b.WriteString("\n\nIf your task splits into smaller pieces you may propose your own subagents with:\n")
+	b.WriteString("\n\nGit is the team lead's. Do not run state-changing git (add, commit, push, branch, checkout, switch, reset, restore, rebase, merge, stash, worktree, tag, fetch, pull, clean); the lead commits your work. Read-only git (status, diff, log, show) is fine, and a guard refuses the rest.\n")
+	b.WriteString("\nIf your task splits into smaller pieces you may propose your own subagents with:\n")
 	b.WriteString("  \"$AT_TOOL\" tool spawn --role executor --name <short-name> --task \"<what it should do>\"\n")
 	b.WriteString("A proposal only runs after the team lead approves it; keep working on your own task while you wait. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
 	b.WriteString(" lines. Record durable, project-agnostic learnings (conventions, gotchas worth keeping) with: \"$AT_TOOL\" tool learn --text \"...\"\n")
+	b.WriteString("\n")
+	b.WriteString(askHelp)
+	b.WriteString("\n")
 	if peerMailbox {
 		b.WriteString("\nYou can also message another agent (or the team lead) while work is running:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name or 'orchestrator'> --text \"<what to tell them>\"\n")
@@ -130,6 +140,8 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("  \"$AT_TOOL\" tool task-create --name <short-name> --task \"<task title>\"\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-update --name <short-name> --status todo|doing|done\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-list\n")
+	b.WriteString("\n\n## Asking the human\n")
+	b.WriteString(askHelp)
 	if in.Subthreads {
 		b.WriteString("\n\n## Subthreads\n")
 		b.WriteString("Start a subthread only for work that is genuinely unrelated to this thread's plan and better kept in its own context. ")
