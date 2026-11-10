@@ -1,6 +1,7 @@
 package toolbox
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -42,6 +43,11 @@ func ParseCommandLine(line string) (Call, bool) {
 	args := tokens[start+2:]
 	for i := 0; i < len(args); i++ {
 		flag := args[i]
+		if flag == "--reopen" {
+			// A switch takes no value, so it must not swallow the next flag.
+			call.Reopen = true
+			continue
+		}
 		value := ""
 		if j := strings.IndexByte(flag, '='); j > 0 {
 			value = flag[j+1:]
@@ -69,6 +75,16 @@ func ParseCommandLine(line string) (Call, bool) {
 			call.Text = value
 		case "--to":
 			call.To = value
+		case "--file":
+			call.File = value
+		case "--line":
+			call.Line, _ = strconv.Atoi(value)
+		case "--end-line":
+			call.EndLine, _ = strconv.Atoi(value)
+		case "--side":
+			call.Side = value
+		case "--thread":
+			call.Thread = value
 		case "--depends-on":
 			for _, dep := range strings.Split(value, ",") {
 				if dep = strings.TrimSpace(dep); dep != "" {
@@ -91,6 +107,12 @@ func ParseCommandLine(line string) (Call, bool) {
 		return call, strings.TrimSpace(call.Text) != "" && strings.TrimSpace(call.To) != ""
 	case KindApprove, KindReject:
 		return call, strings.TrimSpace(call.Name) != ""
+	case KindReviewComment:
+		return call, strings.TrimSpace(call.File) != "" && call.Line > 0 && strings.TrimSpace(call.Text) != ""
+	case KindReviewReply:
+		return call, strings.TrimSpace(call.Thread) != "" && strings.TrimSpace(call.Text) != ""
+	case KindReviewResolve:
+		return call, strings.TrimSpace(call.Thread) != ""
 	default:
 		return Call{}, false
 	}
@@ -99,7 +121,7 @@ func ParseCommandLine(line string) (Call, bool) {
 func knownKind(s string) bool {
 	switch Kind(s) {
 	case KindDispatch, KindNote, KindProgress, KindDone, KindLearn, KindMessage,
-		KindSpawn, KindApprove, KindReject:
+		KindSpawn, KindApprove, KindReject, KindReviewComment, KindReviewReply, KindReviewResolve:
 		return true
 	default:
 		return false

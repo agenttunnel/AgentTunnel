@@ -30,7 +30,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread|ask> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -53,6 +53,12 @@ func Run(args []string) int {
 	fs.Var(&options, "option", "an answer option; repeat for each (for ask)")
 	notify := fs.String("notify", "", "agent or 'orchestrator' that also hears the answer (for ask)")
 	timeout := fs.Int("timeout", 0, "seconds to wait for the answer, default 600, max 3600 (for ask)")
+	file := fs.String("file", "", "file a review comment is anchored to (for review-comment)")
+	line := fs.Int("line", 0, "line a review comment is anchored to (for review-comment)")
+	endLine := fs.Int("end-line", 0, "last line of a review comment's range (for review-comment)")
+	side := fs.String("side", "", "old or new: which side of the diff a review comment is on (for review-comment)")
+	thread := fs.String("thread", "", "review thread id (for review-reply and review-resolve)")
+	reopen := fs.Bool("reopen", false, "move a resolved review thread back to open (for review-resolve)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -70,6 +76,12 @@ func Run(args []string) int {
 		"text":     *text,
 		"to":       *to,
 		"status":   *status,
+		"file":     *file,
+		"line":     *line,
+		"endLine":  *endLine,
+		"side":     *side,
+		"thread":   *thread,
+		"reopen":   *reopen,
 	}
 	if *summary != "" {
 		payload["text"] = *summary

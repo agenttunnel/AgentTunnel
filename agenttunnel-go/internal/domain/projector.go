@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -151,6 +152,38 @@ func Project(s *ThreadState, e contracts.Event) error {
 			if sent[s.ReviewComments[i].ID] {
 				s.ReviewComments[i].Submitted = true
 			}
+		}
+
+	case contracts.ReviewThreadOpened:
+		c := p.ReviewCommentAdded
+		if c.EndLine == 0 {
+			c.EndLine = c.Line
+		}
+		s.ReviewThreads = append(s.ReviewThreads, ReviewThread{
+			ID: c.ID, File: c.File, Line: c.Line, EndLine: c.EndLine, Side: c.Side,
+			Body: c.Body, AuthorID: c.AuthorID, Status: contracts.ReviewStatusOpen,
+			OpenedAt: c.CreatedAt, UpdatedAt: c.CreatedAt,
+		})
+
+	case contracts.ReviewThreadReplied:
+		i := s.reviewThreadIndex(p.ThreadID)
+		if i < 0 {
+			return fmt.Errorf("project: reply to unknown review thread %q", p.ThreadID)
+		}
+		t := &s.ReviewThreads[i]
+		t.Replies = append(t.Replies, ReviewReply{AuthorID: p.AuthorID, Body: p.Body, At: p.CreatedAt})
+		t.UpdatedAt = p.CreatedAt
+
+	case contracts.ReviewThreadStatusChanged:
+		i := s.reviewThreadIndex(p.ThreadID)
+		if i < 0 {
+			return fmt.Errorf("project: status for unknown review thread %q", p.ThreadID)
+		}
+		t := &s.ReviewThreads[i]
+		t.Status = p.Status
+		t.UpdatedAt = p.CreatedAt
+		if body := strings.TrimSpace(p.Body); body != "" {
+			t.Replies = append(t.Replies, ReviewReply{AuthorID: p.AuthorID, Body: p.Body, At: p.CreatedAt})
 		}
 
 	case contracts.QuestionAsked:

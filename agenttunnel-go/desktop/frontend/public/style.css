@@ -2109,6 +2109,110 @@ table.grid tr.rowlink:hover td {
   gap: 8px;
   margin-top: 8px;
 }
+/* Inline review threads under a diff line. Static: no transitions. */
+.review-threads {
+  margin: 4px 12px 8px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--sans);
+}
+.review-thread,
+.rt-collapsed {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  padding: 8px 10px;
+}
+.review-thread.resolved {
+  border-left-color: var(--border-strong);
+}
+.rt-collapsed > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.rt-collapsed > summary::-webkit-details-marker {
+  display: none;
+}
+.rt-collapsed > .review-thread {
+  margin-top: 8px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.rt-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+.rt-author {
+  color: var(--text);
+  font-weight: 550;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rt-role {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--agent-line);
+  background: var(--agent-soft);
+  color: var(--agent);
+  font-weight: 550;
+}
+.rt-status {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--faint);
+}
+.rt-status.open {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.rt-status.resolved {
+  color: var(--ok);
+  border-color: rgba(95, 211, 155, 0.28);
+  background: rgba(95, 211, 155, 0.08);
+}
+.rt-anchor {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.rt-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.rt-body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.rt-reply {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
+}
 .comment-item {
   padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);

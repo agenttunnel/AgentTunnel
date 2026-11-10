@@ -357,6 +357,77 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			*cmd.ReviewSubmit,
 		}, nil
 
+	case contracts.CmdReviewThreadOpen:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		o := cmd.ReviewOpen
+		if o == nil || strings.TrimSpace(o.ID) == "" ||
+			strings.TrimSpace(o.File) == "" || strings.TrimSpace(o.Body) == "" {
+			return nil, fmt.Errorf("%w: review thread requires id, file and body", ErrInvalidCommand)
+		}
+		if o.EndLine != 0 && o.EndLine < o.Line {
+			return nil, fmt.Errorf("%w: review thread range ends before it starts", ErrInvalidCommand)
+		}
+		if o.Side != "" && o.Side != "old" && o.Side != "new" {
+			return nil, fmt.Errorf("%w: review thread side must be old or new", ErrInvalidCommand)
+		}
+		if a, ok := s.Agents[o.AuthorID]; !ok || a.Role != contracts.RoleReviewer {
+			return nil, fmt.Errorf("%w: only a reviewer opens review threads", ErrInvalidCommand)
+		}
+		if s.reviewThreadIndex(o.ID) >= 0 {
+			return nil, fmt.Errorf("%w: review thread %q already exists", ErrInvalidCommand, o.ID)
+		}
+		if len(s.ReviewThreads) >= maxReviewThreads {
+			return nil, fmt.Errorf("%w: a thread holds at most %d review threads", ErrInvalidCommand, maxReviewThreads)
+		}
+		return []contracts.EventPayload{*o}, nil
+
+	case contracts.CmdReviewThreadReply:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		r := cmd.ReviewReply
+		if r == nil || strings.TrimSpace(r.Body) == "" {
+			return nil, fmt.Errorf("%w: review reply requires a thread and body", ErrInvalidCommand)
+		}
+		if _, ok := s.Agents[r.AuthorID]; !ok {
+			return nil, fmt.Errorf("%w: only an agent replies on a review thread", ErrInvalidCommand)
+		}
+		i := s.reviewThreadIndex(r.ThreadID)
+		if i < 0 {
+			return nil, fmt.Errorf("%w: no review thread %q", ErrInvalidCommand, r.ThreadID)
+		}
+		if len(s.ReviewThreads[i].Replies) >= maxReviewReplies {
+			return nil, fmt.Errorf("%w: a review thread holds at most %d replies", ErrInvalidCommand, maxReviewReplies)
+		}
+		return []contracts.EventPayload{*r}, nil
+
+	case contracts.CmdReviewThreadStatus:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		st := cmd.ReviewStatus
+		if st == nil {
+			return nil, fmt.Errorf("%w: review thread status is required", ErrInvalidCommand)
+		}
+		i := s.reviewThreadIndex(st.ThreadID)
+		if i < 0 {
+			return nil, fmt.Errorf("%w: no review thread %q", ErrInvalidCommand, st.ThreadID)
+		}
+		if st.Status != contracts.ReviewStatusOpen && st.Status != contracts.ReviewStatusResolved {
+			return nil, fmt.Errorf("%w: unknown review status %q", ErrInvalidCommand, st.Status)
+		}
+		thread := s.ReviewThreads[i]
+		if st.AuthorID != thread.AuthorID {
+			return nil, fmt.Errorf("%w: only the reviewer who opened the thread changes its status", ErrInvalidCommand)
+		}
+		// A non-empty status note is recorded as a reply, so it needs room too.
+		if strings.TrimSpace(st.Body) != "" && len(thread.Replies) >= maxReviewReplies {
+			return nil, fmt.Errorf("%w: a review thread holds at most %d replies", ErrInvalidCommand, maxReviewReplies)
+		}
+		return []contracts.EventPayload{*st}, nil
+
 	case contracts.CmdQuestionAsk:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
