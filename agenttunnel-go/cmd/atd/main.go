@@ -102,7 +102,13 @@ func main() {
 	}
 
 	log.Printf("atd listening on http://%s", ln.Addr())
-	log.Printf("pairing URL: http://%s/?token=%s", ln.Addr(), tok)
+	if isLoopbackListener(ln) {
+		log.Printf("pairing URL: http://%s/?token=%s", ln.Addr(), tok)
+	} else {
+		// The token stays out of logs off loopback. Set --token and send it as
+		// an Authorization: Bearer header.
+		log.Printf("atd is bound off loopback; pairing URL omitted so the token stays out of logs (set --token and send Authorization: Bearer)")
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -122,6 +128,14 @@ func defaultStateDir() string {
 		return ".agenttunnel"
 	}
 	return filepath.Join(home, ".agenttunnel")
+}
+
+// isLoopbackListener reports whether the listener is bound to loopback only. It
+// checks the address the kernel actually bound, so a host name like "localhost"
+// is judged by its resolved IP.
+func isLoopbackListener(ln net.Listener) bool {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	return ok && addr.IP.IsLoopback()
 }
 
 func mustToken() string {
