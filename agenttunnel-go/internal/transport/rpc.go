@@ -849,7 +849,15 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return d.ledger.Snapshot(), nil
 
 	case "stats.harnesses":
-		return d.engine.HarnessStats(ctx)
+		// No params is the whole environment; a threadId or projectId narrows it.
+		var p struct {
+			ThreadID  contracts.ThreadID `json:"threadId"`
+			ProjectID string             `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.engine.HarnessStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
 
 	case "update.check":
 		if d.updater == nil {

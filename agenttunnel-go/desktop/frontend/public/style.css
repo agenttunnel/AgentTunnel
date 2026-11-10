@@ -570,6 +570,30 @@ body.is-resizing * {
   padding: 24px 28px 8px;
   min-height: 0;
 }
+/* Sits at the end of the stream; sticky keeps it on screen while scrolled up. */
+.scroll-bottom {
+  position: sticky;
+  bottom: 12px;
+  z-index: 1;
+  display: block;
+  width: 32px;
+  height: 32px;
+  margin: 8px auto 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 30px;
+  text-align: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+.scroll-bottom:hover {
+  border-color: var(--accent-line);
+  background: var(--panel-2);
+}
 .msg {
   position: relative;
   max-width: 900px;
@@ -1658,6 +1682,25 @@ table.grid tr.rowlink:hover td {
   padding-right: 12px;
 }
 /* Harness stats: a plain table with one bar per harness, scaled by agent count. */
+.stats-scope {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.stats-scope button {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+.stats-scope button.on {
+  color: var(--text);
+  border-color: var(--accent-line);
+  background: var(--panel-2);
+}
 .stats-table {
   width: 100%;
   border-collapse: collapse;
@@ -3118,11 +3161,28 @@ table.grid tr.rowlink:hover td {
   border: 1px solid var(--border);
   border-radius: 10px;
   text-align: left;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 .graph-node:hover {
   border-color: var(--accent-line);
   background: var(--panel-2);
+}
+.graph-node:active {
+  cursor: grabbing;
+}
+.graph-reset {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--faint);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.graph-reset:hover {
+  color: var(--text);
 }
 .graph-node-head {
   display: flex;

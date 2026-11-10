@@ -39,7 +39,7 @@ import { DiffView } from "./components/DiffView";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
-import { HarnessStatsPanel, type HarnessStat } from "./components/HarnessStatsPanel";
+import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { Markdown } from "./components/Markdown";
 import { QuestionCard } from "./components/QuestionCard";
@@ -184,8 +184,7 @@ type AsideTabId =
   | "pr"
   | "stats"
   | "models"
-  | "council"
-  | "worktrees";
+  | "council";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -198,7 +197,6 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   stats: { label: "Harness stats", key: "H" },
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
-  worktrees: { label: "Worktrees", key: "W" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -456,94 +454,48 @@ function ThreadClock({ t }: { t: ThreadSummary }) {
   return <span className="pill live">○ Stale in {fmtIdleDuration(afterMs - idleMs)}</span>;
 }
 
-export default function App() {
-  const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
-  const [error, setError] = useState<string | null>(null);
-
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [harnesses, setHarnesses] = useState<HarnessInfo>({
-    all: [],
-    available: [],
-    enabled: null,
-    models: null,
-  });
-  const [threads, setThreads] = useState<ThreadSummary[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [thread, setThread] = useState<ThreadState | null>(null);
-  const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
-  const [update, setUpdate] = useState<UpdateStatus | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-
-  const [busy, setBusy] = useState(false);
-  const sendingRef = useRef(false);
-  /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
-  const [shellThread, setShellThread] = useState<string | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
-  // Aside panel tabs: agents + usage are pinned; context, files, and diff can
-  // be added via the "+" menu (or single-letter shortcuts) and closed again.
-  const [asideTabs, setAsideTabs] = useState<AsideTabId[]>(loadAsideTabs);
-  const [asideActive, setAsideActive] = useState<AsideTabId>("agents");
-  // Side panels: width (dragged via the split handles) and collapsed state.
-  const [layout, setLayout] = useState<PanelLayout>(loadLayout);
-  const shellRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("at.layout", JSON.stringify(layout));
-    } catch {
-      /* private mode: the layout just resets next launch */
+/** UI state that belongs to one thread. A thread with no value of its own reads
+ * the global default; writing sets only that thread's value. Writing while no
+ * thread is selected changes the default. `storageKey` keeps the default across
+ * launches; a thread's own values live for the session. */
+function useThreadScoped<T>(threadId: string | null, initial: T | (() => T), storageKey?: string) {
+  const [fallback, setFallback] = useState<T>(() => {
+    if (storageKey) {
+      try {
+        const raw = window.localStorage.getItem(storageKey);
+        if (raw !== null) return JSON.parse(raw) as T;
+      } catch {
+        /* corrupt or private mode: use the built-in default */
+      }
     }
-  }, [layout]);
-  const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
+    return typeof initial === "function" ? (initial as () => T)() : initial;
+  });
+  const [byThread, setByThread] = useState<Record<string, T>>({});
+  const threadRef = useRef(threadId);
+  threadRef.current = threadId;
+  const fallbackRef = useRef(fallback);
+  fallbackRef.current = fallback;
+  useEffect(() => {
+    if (!storageKey) return;
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(fallback));
+    } catch {
+      /* private mode: the default resets next launch */
+    }
+  }, [fallback, storageKey]);
+  const value = threadId !== null && threadId in byThread ? byThread[threadId] : fallback;
+  const set = useCallback((next: T | ((prev: T) => T)) => {
+    const id = threadRef.current;
+    const apply = (prev: T) => (typeof next === "function" ? (next as (p: T) => T)(prev) : next);
+    if (id === null) setFallback((prev) => apply(prev));
+    else setByThread((prev) => ({ ...prev, [id]: apply(id in prev ? prev[id] : fallbackRef.current) }));
+  }, []);
+  return [value, set, setFallback] as const;
+}
 
-  const [tab, setTab] = useState<"chat" | "review" | "graph" | "board">("chat");
-  const [diff, setDiff] = useState<Diff | null>(null);
-  const [diffError, setDiffError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<{ file: string; line: number; body: string } | null>(null);
-
-  // File browser state for the aside Files panel.
-  const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
-  const [fileTreeLoading, setFileTreeLoading] = useState(false);
-
-  // Inherited context panel state: the environment's shared memory.
-  const [inherited, setInherited] = useState<InheritedView | null>(null);
-  const [inheritedGuide, setInheritedGuide] = useState("");
-  const [inheritedLog, setInheritedLog] = useState("");
-  const [inheritedDirty, setInheritedDirty] = useState(false);
-  const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
-  const [newRuleName, setNewRuleName] = useState("");
-  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
-  // PR/MR status for the active thread; tagged with its thread so a late reply never shows elsewhere.
-  const [prState, setPRState] = useState<PRSnapshot | null>(null);
-  const [prLoading, setPRLoading] = useState(false);
-  const [prError, setPRError] = useState<string | null>(null);
-  // Environment-wide harness rollup; not thread-scoped, so it needs no thread tag.
-  const [harnessStats, setHarnessStats] = useState<HarnessStat[]>([]);
-  const [harnessLoading, setHarnessLoading] = useState(false);
-  const [harnessError, setHarnessError] = useState<string | null>(null);
-  // Worktrees: per open project, live git facts from worktree.list. Every thread
-  // in a git project gets one, so the UI offers no choice about it.
-  const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
-  const [worktreesLoading, setWorktreesLoading] = useState(false);
-  const [worktreesError, setWorktreesError] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
-  const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [fileContentError, setFileContentError] = useState<string | null>(null);
-
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const modelsOpen = asideActive === "models" && asideTabs.includes("models");
-  // Pasted text per draft: draftKey -> token id -> full text.
-  const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
-  const [settings, setSettings] = useState<SettingsView | null>(null);
-
-  // Council of agents: convene several perspectives on one question and let
-  // them debate to a synthesized outcome.
-  const [councilTopic, setCouncilTopic] = useState("");
-  const [councilRounds, setCouncilRounds] = useState(2);
-  const [councilMembers, setCouncilMembers] = useState<CouncilMemberRow[]>([
+const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } => ({
+  rounds: 2,
+  members: [
     {
       name: "planner",
       role: "planner",
@@ -565,7 +517,144 @@ export default function App() {
       model: "",
       perspective: "hunt risk, edge cases, and hidden cost",
     },
-  ]);
+  ],
+});
+
+export default function App() {
+  const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
+  // Errors are kept per thread (key = thread id; "" = environment-wide), so a
+  // failure in one thread never shows in another.
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [harnesses, setHarnesses] = useState<HarnessInfo>({
+    all: [],
+    available: [],
+    enabled: null,
+    models: null,
+  });
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [thread, setThread] = useState<ThreadState | null>(null);
+  const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  // Threads with a turn, council, or review in flight. Keyed by thread so a turn
+  // running in one thread never gates or steers another.
+  const [turnThreads, setTurnThreads] = useState<Record<string, true>>({});
+  const setTurnBusy = useCallback((threadId: string, on: boolean) => {
+    setTurnThreads((prev) => {
+      const next = { ...prev };
+      if (on) next[threadId] = true;
+      else delete next[threadId];
+      return next;
+    });
+  }, []);
+  // Threads with a send in its RPC window; stops a double Enter from submitting twice.
+  const sendingRef = useRef(new Set<string>());
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
+  const busy = !!activeId && !!turnThreads[activeId];
+  // Defaults to the thread on screen; pass a thread to file the error elsewhere.
+  const setError = useCallback((message: string | null, thread: string | null = activeIdRef.current) => {
+    const key = thread ?? "";
+    setErrors((prev) => {
+      const next = { ...prev };
+      if (message === null) delete next[key];
+      else next[key] = message;
+      return next;
+    });
+  }, []);
+  const error = (activeId && errors[activeId]) || errors[""] || null;
+  /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
+  const [shellThread, setShellThread] = useState<string | null>(null);
+  const [detailId, setDetailId] = useThreadScoped<string | null>(activeId, null);
+  // Aside panel tabs: agents + usage are pinned; context, files, and diff can
+  // be added via the "+" menu (or single-letter shortcuts) and closed again.
+  const [asideTabs, setAsideTabs, setAsideTabsDefault] = useThreadScoped<AsideTabId[]>(
+    activeId,
+    loadAsideTabs,
+    "at.asideTabs",
+  );
+  const [asideActive, setAsideActive, setAsideActiveDefault] = useThreadScoped<AsideTabId>(
+    activeId,
+    "agents",
+    "at.asideActive",
+  );
+  // Side panels: width (dragged via the split handles) and collapsed state.
+  const [layout, setLayout, setLayoutDefault] = useThreadScoped<PanelLayout>(
+    activeId,
+    loadLayout,
+    "at.layout",
+  );
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
+
+  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board">(
+    activeId,
+    "chat",
+    "at.tab",
+  );
+  const [diff, setDiff] = useState<Diff | null>(null);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [draft, setDraft] = useThreadScoped<{ file: string; line: number; body: string } | null>(
+    activeId,
+    null,
+  );
+
+  // File browser state for the aside Files panel.
+  const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
+  const [fileTreeLoading, setFileTreeLoading] = useState(false);
+
+  // Inherited context panel state: the environment's shared memory.
+  const [inherited, setInherited] = useState<InheritedView | null>(null);
+  const [inheritedGuide, setInheritedGuide] = useState("");
+  const [inheritedLog, setInheritedLog] = useState("");
+  const [inheritedDirty, setInheritedDirty] = useState(false);
+  const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
+  const [newRuleName, setNewRuleName] = useState("");
+  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
+  // PR/MR status for the active thread; tagged with its thread so a late reply never shows elsewhere.
+  const [prState, setPRState] = useState<PRSnapshot | null>(null);
+  const [prLoading, setPRLoading] = useState(false);
+  const [prError, setPRError] = useState<string | null>(null);
+  // Worktrees: per open project, live git facts from worktree.list. Every thread
+  // in a git project gets one, so the UI offers no choice about it. Shown in the
+  // threads view (no thread open), not the aside.
+  const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
+  const [worktreesLoading, setWorktreesLoading] = useState(false);
+  const [worktreesError, setWorktreesError] = useState<string | null>(null);
+  const [showWorktrees, setShowWorktrees] = useState(false);
+  const [selectedFile, setSelectedFile] = useThreadScoped<string | null>(activeId, null);
+  const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
+  const [fileContentLoading, setFileContentLoading] = useState(false);
+  const [fileContentError, setFileContentError] = useState<string | null>(null);
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const modelsOpen = asideActive === "models" && asideTabs.includes("models");
+  // Pasted text per draft: draftKey -> token id -> full text.
+  const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
+  const [settings, setSettings] = useState<SettingsView | null>(null);
+
+  // Council of agents: convene several perspectives on one question and let
+  // them debate to a synthesized outcome.
+  // The topic is per thread; rounds and seats default globally and can be saved
+  // as the default for new threads.
+  const [councilTopic, setCouncilTopic] = useThreadScoped<string>(activeId, "");
+  const [councilSetup, setCouncilSetup, setCouncilSetupDefault] = useThreadScoped(
+    activeId,
+    defaultCouncilSetup,
+    "at.councilSetup",
+  );
+  const councilRounds = councilSetup.rounds;
+  const councilMembers = councilSetup.members;
+  const setCouncilRounds = (rounds: number) => setCouncilSetup((s) => ({ ...s, rounds }));
+  const setCouncilMembers = (update: (prev: CouncilMemberRow[]) => CouncilMemberRow[]) =>
+    setCouncilSetup((s) => ({ ...s, members: update(s.members) }));
   const [workdirInput, setWorkdirInput] = useState("");
   const [approvedInput, setApprovedInput] = useState("");
   const [staleAfterInput, setStaleAfterInput] = useState("30");
@@ -619,20 +708,29 @@ export default function App() {
   const debounce = useRef<number | undefined>(undefined);
   // Chat stream auto-scroll: pinned to bottom while the user is already there.
   const streamRef = useRef<HTMLDivElement | null>(null);
+  // Only the edge is stored, so scrolling re-renders when the user crosses it.
+  const [atBottom, setAtBottom] = useState(true);
+  const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 120;
 
   useEffect(() => {
     const el = streamRef.current;
     if (!el) return;
     // Follow the stream only when the user is near the bottom; reading history
     // wins over jumping.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
+    const near = nearBottom(el);
+    if (near) el.scrollTop = el.scrollHeight;
+    setAtBottom(near);
   }, [
     thread?.messages?.length,
     thread?.messages?.[thread.messages.length - 1]?.text,
     thread?.questions?.length,
     live.length,
   ]);
+
+  const scrollToBottom = () => {
+    const el = streamRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   // Live log follows the newest output, unless the user scrolled up to read.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
@@ -651,7 +749,8 @@ export default function App() {
       rpc.call<ThreadSummary[]>("thread.list"),
       rpc.call<ThreadUsage>("usage.get"),
     ]);
-    setThread(state);
+    // A reply for a thread the user has since left must not replace the one on screen.
+    if (activeIdRef.current === id) setThread(state);
     setThreads(list);
     setGlobalUsage(usage);
   }, []);
@@ -699,9 +798,11 @@ export default function App() {
       // Thread-scoped: the daemon diffs the thread's project directory, not
       // the global fallback workdir.
       const d = await rpc.call<Diff>("review.diff", { threadId: id });
+      if (activeIdRef.current !== id) return;
       setDiff(d);
       setDiffError(null);
     } catch (e) {
+      if (activeIdRef.current !== id) return;
       setDiffError(e instanceof Error ? e.message : String(e));
     }
   }, []);
@@ -712,27 +813,15 @@ export default function App() {
     setPRLoading(true);
     setPRError(null);
     try {
-      setPRState({ ...(await rpc.call<PRSnapshot>("pr.status", { threadId: id })), threadId: id });
+      const snapshot = await rpc.call<PRSnapshot>("pr.status", { threadId: id });
+      if (activeIdRef.current === id) setPRState({ ...snapshot, threadId: id });
     } catch (e) {
-      setPRError(e instanceof Error ? e.message : String(e));
+      if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPRLoading(false);
+      if (activeIdRef.current === id) setPRLoading(false);
     }
   }, []);
 
-  const loadHarnessStats = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setHarnessLoading(true);
-    setHarnessError(null);
-    try {
-      setHarnessStats(await rpc.call<HarnessStat[]>("stats.harnesses"));
-    } catch (e) {
-      setHarnessError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setHarnessLoading(false);
-    }
-  }, []);
 
   const loadFileTree = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
@@ -740,14 +829,16 @@ export default function App() {
     setFileTreeLoading(true);
     setFileTreeError(null);
     try {
-      setFileTree(await rpc.call<FileTreeState>("files.tree", { threadId: id }));
+      const tree = await rpc.call<FileTreeState>("files.tree", { threadId: id });
+      if (activeIdRef.current !== id) return;
+      setFileTree(tree);
       setSelectedFile(null);
       setFileContent(null);
       setFileContentError(null);
     } catch (e) {
-      setFileTreeError(e instanceof Error ? e.message : String(e));
+      if (activeIdRef.current === id) setFileTreeError(e instanceof Error ? e.message : String(e));
     } finally {
-      setFileTreeLoading(false);
+      if (activeIdRef.current === id) setFileTreeLoading(false);
     }
   }, []);
 
@@ -759,11 +850,12 @@ export default function App() {
     setFileContentError(null);
     setFileContentLoading(true);
     try {
-      setFileContent(await rpc.call<FileContentLike>("files.read", { threadId: id, path }));
+      const content = await rpc.call<FileContentLike>("files.read", { threadId: id, path });
+      if (activeIdRef.current === id) setFileContent(content);
     } catch (e) {
-      setFileContentError(e instanceof Error ? e.message : String(e));
+      if (activeIdRef.current === id) setFileContentError(e instanceof Error ? e.message : String(e));
     } finally {
-      setFileContentLoading(false);
+      if (activeIdRef.current === id) setFileContentLoading(false);
     }
   }, []);
 
@@ -894,7 +986,6 @@ export default function App() {
     openProject(projectId);
     lastThreadByProject.current[projectId] = threadId;
     setActiveId(threadId);
-    setTab("chat");
   };
 
   // --- thread context-menu actions ---------------------------------------
@@ -1155,6 +1246,23 @@ export default function App() {
   // Subscribe to the active thread and keep the local view fresh. The activity
   // log box restores this thread's persisted output on switch, then appends
   // "agent.output" frames for this thread as they stream.
+  // Switching threads drops what was on screen. Each thread's own data is
+  // reloaded for it, and late replies for the old thread are ignored by the loaders.
+  useEffect(() => {
+    setThread(null);
+    setLogs([]);
+    setDiff(null);
+    setDiffError(null);
+    setPRState(null);
+    setPRError(null);
+    setPRLoading(false);
+    setFileTree(null);
+    setFileTreeError(null);
+    setFileTreeLoading(false);
+    setFileContent(null);
+    setFileContentError(null);
+    setFileContentLoading(false);
+  }, [activeId]);
   useEffect(() => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
@@ -1222,18 +1330,18 @@ export default function App() {
     return () => clearInterval(timer);
   }, [asideActive, activeId, loadPR]);
 
-  // The harness rollup scans every thread, so it loads once when shown and then
-  // only on Refresh rather than on a timer.
-  useEffect(() => {
-    if (asideActive !== "stats") return;
-    loadHarnessStats().catch(() => undefined);
-  }, [asideActive, loadHarnessStats]);
 
-  // Worktree facts come from live git runs, so they load when the panel is shown
+  // Worktree facts come from live git runs, so they load when the section is shown
   // and after each action, not on a timer.
   useEffect(() => {
-    if (asideActive === "worktrees") loadWorktrees(openProjectIds).catch(() => undefined);
-  }, [asideActive, openProjectIds, loadWorktrees]);
+    if (!activeId && showWorktrees) loadWorktrees(openProjectIds).catch(() => undefined);
+  }, [activeId, showWorktrees, openProjectIds, loadWorktrees]);
+
+  // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
+  // would otherwise render the diff fallback with no tab highlighted.
+  useEffect(() => {
+    if (!(asideActive in ASIDE_META)) setAsideActive("agents");
+  }, [asideActive, setAsideActive]);
 
   // The file tree loads when its panel is shown.
   useEffect(() => {
@@ -1245,15 +1353,6 @@ export default function App() {
   useEffect(() => {
     if (asideActive === "inherited") loadInherited();
   }, [asideActive, activeId, loadInherited]);
-
-  // Remember the open panels across restarts.
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("at.asideTabs", JSON.stringify(asideTabs));
-    } catch {
-      /* private mode: stay in memory */
-    }
-  }, [asideTabs]);
 
   // Remember composer drafts across restarts; empty drafts are dropped.
   useEffect(() => {
@@ -1331,7 +1430,7 @@ export default function App() {
       const l = await rpc
         .call<LogEntry[]>("agents.logs", { threadId: activeId, agentId: detailId })
         .catch(() => null);
-      if (l) setLogs(l);
+      if (l && activeIdRef.current === activeId) setLogs(l);
     };
     load();
     const timer = window.setInterval(load, 800);
@@ -1495,15 +1594,19 @@ export default function App() {
 
   const send = async () => {
     const rpc = rpcRef.current;
+    const threadId = activeId;
     const text = expandPastes(input, pastes[draftKey]).trim();
-    // The ref closes the window before React re-renders with busy=true, so a
-    // second Enter in that gap cannot submit the same draft again.
-    if (!rpc || !activeId || !text || busy || sendingRef.current) return;
+    if (!rpc || !threadId || !text) return;
+    // A turn already running on this thread takes the message as a steer, so
+    // Enter never drops a message while the team is working.
+    const steer = running.length > 0 || busy;
+    // The ref closes the window before React re-renders, so a second Enter cannot
+    // submit the same draft again. Steers get their own key: a turn's RPC stays in
+    // flight for the whole run, so a turn key would swallow every mid-run steer.
+    const sendKey = steer ? `steer:${threadId}` : threadId;
+    if (sendingRef.current.has(sendKey)) return;
     // "! cmd" runs a shell command in the thread's project. A lone "!" is just text.
     const command = text.startsWith("!") ? text.slice(1).trim() : "";
-    // While a turn is running, a message steers the orchestrator's next pass
-    // rather than starting a competing turn.
-    const steer = running.length > 0;
     if (command && steer) {
       setError("Stop the running turn before running a shell command.");
       return;
@@ -1515,25 +1618,27 @@ export default function App() {
       delete rest[draftKey];
       return rest;
     });
-    sendingRef.current = true;
-    setBusy(true);
-    if (command) setShellThread(activeId);
+    sendingRef.current.add(sendKey);
+    if (!steer) setTurnBusy(threadId, true);
+    if (command) setShellThread(threadId);
     try {
       if (command) {
-        await rpc.call("thread.runCommand", { threadId: activeId, command });
+        await rpc.call("thread.runCommand", { threadId, command });
       } else {
-        await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId: activeId, text });
+        await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
       }
     } catch (e) {
-      // Put the typed text back so a failed send does not lose it.
-      setInput(input);
-      setPastes((prev) => ({ ...prev, [draftKey]: sentPastes ?? {} }));
-      setError(e instanceof Error ? e.message : String(e));
+      // Put the typed text back into its own thread's draft, even if the user has moved on.
+      const key = draftKeyOf(projectId, threadId);
+      setDrafts((prev) => ({ ...prev, [key]: input }));
+      setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
+      setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
-      sendingRef.current = false;
-      setBusy(false);
-      setShellThread(null);
-      refresh(activeId).catch(() => undefined);
+      sendingRef.current.delete(sendKey);
+      // A finished steer must not clear the busy flag of the turn it joined.
+      if (!steer) setTurnBusy(threadId, false);
+      setShellThread((cur) => (cur === threadId ? null : cur));
+      refresh(threadId).catch(() => undefined);
     }
   };
 
@@ -1608,12 +1713,13 @@ export default function App() {
   const startCouncil = async () => {
     const rpc = rpcRef.current;
     const topic = councilTopic.trim();
-    if (!rpc || !activeId || !topic) return;
+    const threadId = activeId;
+    if (!rpc || !threadId || !topic || turnThreads[threadId]) return;
     setInput("");
-    setBusy(true);
+    setTurnBusy(threadId, true);
     try {
       await rpc.call("thread.council.start", {
-        threadId: activeId,
+        threadId,
         topic,
         rounds: councilRounds,
         members: councilMembers.map((m) => ({
@@ -1625,10 +1731,10 @@ export default function App() {
         })),
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
-      setBusy(false);
-      refresh(activeId).catch(() => undefined);
+      setTurnBusy(threadId, false);
+      refresh(threadId).catch(() => undefined);
     }
   };
 
@@ -1648,15 +1754,16 @@ export default function App() {
   /** Hands every pending review comment to the team as one review turn. */
   const submitReview = async () => {
     const rpc = rpcRef.current;
-    if (!rpc || !activeId || pendingComments.length === 0) return;
-    setBusy(true);
+    const threadId = activeId;
+    if (!rpc || !threadId || pendingComments.length === 0 || turnThreads[threadId]) return;
+    setTurnBusy(threadId, true);
     try {
-      await rpc.call("review.submit", { threadId: activeId });
+      await rpc.call("review.submit", { threadId });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
-      setBusy(false);
-      refresh(activeId).catch(() => undefined);
+      setTurnBusy(threadId, false);
+      refresh(threadId).catch(() => undefined);
     }
   };
 
@@ -1761,6 +1868,15 @@ export default function App() {
       e.preventDefault();
       send();
     }
+  };
+
+  /** Makes the view on screen the default for threads that have not set their own. */
+  const saveThreadDefaults = () => {
+    setTabDefault(tab);
+    setAsideTabsDefault(asideTabs);
+    setAsideActiveDefault(asideActive);
+    setLayoutDefault(layout);
+    setCouncilSetupDefault(councilSetup);
   };
 
   const openSettings = () => {
@@ -2121,6 +2237,10 @@ export default function App() {
               </div>
             ))}
           </div>
+          <div className="section stats-section">
+            <h3>Harnesses across all projects</h3>
+            <HarnessStatsView rpc={rpcRef.current} threadId={null} projectId={null} />
+          </div>
         </div>
       </div>
     );
@@ -2148,8 +2268,32 @@ export default function App() {
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
+              <button
+                className={showWorktrees ? "primary" : undefined}
+                aria-pressed={showWorktrees}
+                onClick={() => setShowWorktrees((v) => !v)}
+              >
+                Worktrees
+              </button>
             </div>
           </div>
+          {showWorktrees && (
+            <div className="section worktrees-section">
+              <WorktreesPanel
+                projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
+                worktrees={worktrees}
+                threads={threads}
+                loading={worktreesLoading}
+                error={worktreesError}
+                onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
+                onOpenThread={openWorktreeThread}
+                onRemove={(projectId, path, force) =>
+                  worktreeAction(projectId, "worktree.remove", { path, force })
+                }
+                onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
+              />
+            </div>
+          )}
           {projectThreads.length === 0 && needle && (
             <div className="empty">No threads match that filter.</div>
           )}
@@ -2322,7 +2466,11 @@ export default function App() {
 
         {tab === "chat" ? (
           <>
-            <div className="stream" ref={streamRef}>
+            <div
+              className="stream"
+              ref={streamRef}
+              onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
+            >
               {(!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
                 <div className="stream-empty">
                   <img src="/brand-mark.svg" alt="" />
@@ -2423,6 +2571,17 @@ export default function App() {
                 </div>
               )}
               {error && <div className="empty err-text">{error}</div>}
+              {!atBottom && (
+                <button
+                  type="button"
+                  className="scroll-bottom"
+                  onClick={scrollToBottom}
+                  aria-label="Scroll to latest message"
+                  title="Scroll to latest"
+                >
+                  ↓
+                </button>
+              )}
             </div>
 
             <div
@@ -3108,27 +3267,11 @@ export default function App() {
           </div>
         ) : asideActive === "stats" ? (
           <div className="section stats-section">
-            <HarnessStatsPanel
-              stats={harnessStats}
-              loading={harnessLoading}
-              error={harnessError}
-              onRefresh={() => loadHarnessStats().catch(() => undefined)}
-            />
-          </div>
-        ) : asideActive === "worktrees" ? (
-          <div className="section worktrees-section">
-            <WorktreesPanel
-              projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
-              worktrees={worktrees}
-              threads={threads}
-              loading={worktreesLoading}
-              error={worktreesError}
-              onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
-              onOpenThread={openWorktreeThread}
-              onRemove={(projectId, path, force) =>
-                worktreeAction(projectId, "worktree.remove", { path, force })
-              }
-              onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
+            <HarnessStatsView
+              key={activeId ?? ""}
+              rpc={rpcRef.current}
+              threadId={activeId}
+              projectId={projectId}
             />
           </div>
         ) : asideActive === "pr" ? (
@@ -3318,6 +3461,16 @@ export default function App() {
               </div>
             </div>
             <div className="sheet-body">
+              <section className="set-section">
+                <h4>New thread defaults</h4>
+                <p className="hint">
+                  New threads open with the tab, panels, layout, and council setup saved here. A
+                  thread you change keeps its own view.
+                </p>
+                <div className="sheet-actions">
+                  <button onClick={saveThreadDefaults}>Save this view as default</button>
+                </div>
+              </section>
               <section className="set-section">
                 <h4>Environment</h4>
                 <label className="field">
