@@ -382,15 +382,27 @@ func (c *Client) Status() transport.RelayStatus {
 	return st
 }
 
-// Enable validates and saves the relay URL, then connects.
+// Enable validates and saves the relay URL, then connects. A running in-app
+// tunnel stops first when the URL is not its own, so its saved settings can
+// never be restored over this one.
 func (c *Client) Enable(raw string) error {
 	url, err := relaywire.ValidateURL(raw)
 	if err != nil {
 		return err
 	}
+	c.tunnelMu.Lock()
+	defer c.tunnelMu.Unlock()
+	if c.tunnel != nil && c.tunnel.url != url {
+		c.stopTunnelLocked()
+	}
+	c.saveRelay(url)
+	return nil
+}
+
+// saveRelay turns the relay on at url and wakes the loop to dial it.
+func (c *Client) saveRelay(url string) {
 	c.opts.Settings.SetRelay(settings.Relay{Enabled: true, URL: url})
 	c.kickLoop()
-	return nil
 }
 
 // Disable turns the relay off and closes the socket. The saved URL is kept. A

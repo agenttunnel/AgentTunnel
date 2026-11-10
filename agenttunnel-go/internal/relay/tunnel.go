@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
@@ -22,12 +23,17 @@ const defaultTunnelPort = 7777
 // to reach the relay it just started.
 const tunnelConnectWait = 10 * time.Second
 
-// tunnelRun is one in-app relay: the server, its address, and the relay
-// settings it replaced, so Stop can put them back.
+// winsockAddrInUse is WSAEADDRINUSE. Windows reports a busy port with this code,
+// not with the POSIX EADDRINUSE value Go defines.
+const winsockAddrInUse = syscall.Errno(10048)
+
+// tunnelRun is one in-app relay: the server, its address and loopback URL, and
+// the relay settings it replaced, so Stop can put them back.
 type tunnelRun struct {
 	ln     net.Listener
 	port   int
 	lanURL string
+	url    string
 	cancel context.CancelFunc
 	done   chan struct{}
 	prev   settings.Relay
@@ -64,9 +70,15 @@ func (c *Client) StartTunnel(ctx context.Context) (transport.TunnelStatus, error
 func (c *Client) StopTunnel() error {
 	c.tunnelMu.Lock()
 	defer c.tunnelMu.Unlock()
+	c.stopTunnelLocked()
+	return nil
+}
+
+// stopTunnelLocked is StopTunnel for callers that already hold tunnelMu.
+func (c *Client) stopTunnelLocked() {
 	t := c.tunnel
 	if t == nil {
-		return nil
+		return
 	}
 	c.tunnel = nil
 	c.opts.Settings.SetRelay(t.prev)
@@ -74,7 +86,6 @@ func (c *Client) StopTunnel() error {
 	t.cancel()
 	_ = t.ln.Close()
 	<-t.done
-	return nil
 }
 
 // TunnelStatus reports whether the in-app relay is listening and its phone URL.
@@ -123,30 +134,31 @@ func (c *Client) openTunnel() (bool, error) {
 	}()
 
 	port := ln.Addr().(*net.TCPAddr).Port
+	url := "ws://127.0.0.1:" + strconv.Itoa(port)
 	c.tunnel = &tunnelRun{
 		ln:     ln,
 		port:   port,
 		lanURL: lan,
+		url:    url,
 		cancel: cancel,
 		done:   done,
 		prev:   c.opts.Settings.Relay(),
 	}
-	if err := c.Enable("ws://127.0.0.1:" + strconv.Itoa(port)); err != nil {
-		c.tunnel = nil
-		cancel()
-		_ = ln.Close()
-		<-done
-		return false, err
-	}
+	// Save directly rather than through Enable: Enable stops a tunnel whose URL
+	// differs, and this is the tunnel's own URL, which must keep it running.
+	c.saveRelay(url)
 	return true, nil
 }
 
-// listenTunnel binds the default port on every interface, or any free port
-// when that one is taken.
+// listenTunnel binds the default port on every interface. Only a busy port
+// falls back to any free one; other bind errors are returned.
 func (c *Client) listenTunnel() (net.Listener, error) {
 	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(c.tunnelPort)))
 	if err == nil {
 		return ln, nil
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) && !errors.Is(err, winsockAddrInUse) {
+		return nil, err
 	}
 	return net.Listen("tcp", "0.0.0.0:0")
 }
