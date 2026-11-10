@@ -14,6 +14,7 @@ const (
 	CmdThreadDelete     CommandType = "thread.delete"
 	CmdWorktreeAttach   CommandType = "thread.worktree.attach"
 	CmdWorktreeDetach   CommandType = "thread.worktree.detach"
+	CmdWorktreeReplace  CommandType = "thread.worktree.replace"
 	CmdTurnStart        CommandType = "thread.turn.start"
 	CmdModelSet         CommandType = "thread.model.set"
 	CmdAutoModeSet      CommandType = "thread.automode.set"
