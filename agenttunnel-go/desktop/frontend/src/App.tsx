@@ -37,6 +37,7 @@ import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
+import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { MentionMenu } from "./components/MentionMenu";
@@ -102,6 +103,20 @@ type ReviewComment = {
   body: string;
   submitted: boolean;
 };
+/** A reviewer's inline thread on a diff line; replies run oldest first. */
+type ReviewThread = {
+  id: string;
+  file: string;
+  line: number;
+  endLine: number;
+  side?: "old" | "new";
+  body: string;
+  authorId: string;
+  status: "open" | "resolved";
+  replies?: { authorId: string; body: string; at: string }[] | null;
+  openedAt: string;
+  updatedAt: string;
+};
 /** One lead's runtime override. Empty fields inherit the Orchestrator role's runtime. */
 type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
 
@@ -124,6 +139,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** Reviewer threads on diff lines. Absent on daemons that predate them. */
+  reviewThreads?: ReviewThread[] | null;
   /** Agent questions for the human, oldest first. Pending ones await an answer. */
   questions?: AgentQuestion[] | null;
   /** The agreed task list, in the order the leads added it. */
@@ -1585,6 +1602,21 @@ export default function App() {
   );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  /** Review threads by file|side|line so each diff line finds its thread without a scan. */
+  const reviewAnchors = useMemo(() => {
+    const map = new Map<string, ReviewThreadLike[]>();
+    for (const t of thread?.reviewThreads ?? []) {
+      const key = reviewAnchorKey(t.file, t.side ?? "new", t.line);
+      const list = map.get(key);
+      if (list) list.push(t);
+      else map.set(key, [t]);
+    }
+    return map;
+  }, [thread?.reviewThreads]);
+  const reviewPeople = useMemo(
+    () => ({ agents: thread?.agents ?? null, roleNames: rolesById }),
+    [thread?.agents, rolesById],
+  );
   const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
@@ -2977,6 +3009,8 @@ export default function App() {
               onAddComment={() => addComment().catch(() => undefined)}
               onCancelDraft={() => setDraft(null)}
               onRefresh={() => loadDiff(activeId)}
+              threads={reviewAnchors}
+              people={reviewPeople}
             />
             {reviewComments}
           </div>
@@ -3764,6 +3798,8 @@ export default function App() {
                 onAddComment={() => addComment().catch(() => undefined)}
                 onCancelDraft={() => setDraft(null)}
                 onRefresh={() => loadDiff(activeId)}
+                threads={reviewAnchors}
+                people={reviewPeople}
               />
             </div>
             {reviewComments}

@@ -32,6 +32,9 @@ const (
 	EvtMailboxPosted      EventType = "mailbox.posted"
 	EvtReviewCommentAdded EventType = "review.comment-added"
 	EvtReviewSubmitted    EventType = "review.comments-submitted"
+	EvtReviewThreadOpened EventType = "review.thread-opened"
+	EvtReviewThreadReply  EventType = "review.thread-replied"
+	EvtReviewThreadStatus EventType = "review.thread-status-changed"
 	EvtAgentOutput        EventType = "agent.output"
 	EvtQuestionAsked      EventType = "thread.question-asked"
 	EvtQuestionClosed     EventType = "thread.question-closed"
@@ -139,6 +142,12 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ReviewCommentAdded](data)
 	case EvtReviewSubmitted:
 		return decodePayload[ReviewCommentsSubmitted](data)
+	case EvtReviewThreadOpened:
+		return decodePayload[ReviewThreadOpened](data)
+	case EvtReviewThreadReply:
+		return decodePayload[ReviewThreadReplied](data)
+	case EvtReviewThreadStatus:
+		return decodePayload[ReviewThreadStatusChanged](data)
 	case EvtQuestionAsked:
 		return decodePayload[QuestionAsked](data)
 	case EvtQuestionClosed:
@@ -380,6 +389,48 @@ type ReviewCommentsSubmitted struct {
 }
 
 func (ReviewCommentsSubmitted) eventType() EventType { return EvtReviewSubmitted }
+
+// ReviewStatus is where a review thread stands. Only the reviewer who opened a
+// thread moves it between open and resolved.
+type ReviewStatus string
+
+const (
+	ReviewStatusOpen     ReviewStatus = "open"
+	ReviewStatusResolved ReviewStatus = "resolved"
+)
+
+// ReviewThreadOpened starts a reviewer's comment thread on a diff range. The
+// embedded comment carries the anchor; its ID is the thread ID every later
+// reply and status change refers to. Only a reviewer-role agent may open one.
+type ReviewThreadOpened struct {
+	ReviewCommentAdded
+}
+
+func (ReviewThreadOpened) eventType() EventType { return EvtReviewThreadOpened }
+
+// ReviewThreadReplied is a reply on an existing review thread, from any agent.
+// ThreadID names the review thread (the opening comment's ID), not the
+// conversation thread the event belongs to.
+type ReviewThreadReplied struct {
+	ThreadID  string    `json:"threadId"`
+	AuthorID  AgentID   `json:"authorId"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+func (ReviewThreadReplied) eventType() EventType { return EvtReviewThreadReply }
+
+// ReviewThreadStatusChanged moves a review thread to open or resolved. A
+// non-empty Body is recorded as a reply by the same author.
+type ReviewThreadStatusChanged struct {
+	ThreadID  string       `json:"threadId"`
+	AuthorID  AgentID      `json:"authorId"`
+	Status    ReviewStatus `json:"status"`
+	Body      string       `json:"body,omitempty"`
+	CreatedAt time.Time    `json:"createdAt"`
+}
+
+func (ReviewThreadStatusChanged) eventType() EventType { return EvtReviewThreadStatus }
 
 // QuestionKind is the shape of an answer an agent asks the human for.
 type QuestionKind string

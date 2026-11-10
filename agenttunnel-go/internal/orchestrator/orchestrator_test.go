@@ -158,7 +158,7 @@ printf '{"type":"text","text":"report-%s"}\n' "$AT_PASS"`
 // nesting outright: the proposal wording and the approval gate are both pinned.
 func TestSubagentPromptOffersSpawnProposals(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleExecutor)
-	prompt := BuildSubagentPrompt(role, "implement X", "", "", false, nil)
+	prompt := BuildSubagentPrompt(role, "implement X", "", "", "", false, nil)
 	for _, want := range []string{
 		`"$AT_TOOL" tool spawn --role executor --name <short-name>`,
 		"only runs after the team lead approves",
@@ -187,10 +187,10 @@ func TestExecutorRolePromptOffersSpawnProposals(t *testing.T) {
 
 func TestSubagentPromptDocumentsMessageToolOnlyWhenEnabled(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleExecutor)
-	if prompt := BuildSubagentPrompt(role, "implement X", "", "", false, nil); strings.Contains(prompt, "tool message") {
+	if prompt := BuildSubagentPrompt(role, "implement X", "", "", "", false, nil); strings.Contains(prompt, "tool message") {
 		t.Fatalf("message tool must stay undocumented while the peer mailbox is off:\n%s", prompt)
 	}
-	prompt := BuildSubagentPrompt(role, "implement X", "", "", true, nil)
+	prompt := BuildSubagentPrompt(role, "implement X", "", "", "", true, nil)
 	if !strings.Contains(prompt, `tool message --to <agent name or 'orchestrator'>`) {
 		t.Fatalf("message tool missing from the prompt:\n%s", prompt)
 	}
@@ -198,14 +198,14 @@ func TestSubagentPromptDocumentsMessageToolOnlyWhenEnabled(t *testing.T) {
 
 func TestSubagentPromptCarriesTeammateMessages(t *testing.T) {
 	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleExecutor)
-	prompt := BuildSubagentPrompt(role, "implement X", "", "", true, []contracts.MailboxPosted{
+	prompt := BuildSubagentPrompt(role, "implement X", "", "", "", true, []contracts.MailboxPosted{
 		{From: "agent-researcher", To: "agent-impl", Kind: "message", Body: "the flaky test is payment.e2e"},
 	})
 	if !strings.Contains(prompt, "## Messages from teammates") ||
 		!strings.Contains(prompt, "from agent-researcher: the flaky test is payment.e2e") {
 		t.Fatalf("teammate messages missing from the prompt:\n%s", prompt)
 	}
-	if plain := BuildSubagentPrompt(role, "implement X", "", "", true, nil); strings.Contains(plain, "Messages from teammates") {
+	if plain := BuildSubagentPrompt(role, "implement X", "", "", "", true, nil); strings.Contains(plain, "Messages from teammates") {
 		t.Fatalf("no teammates should render no section:\n%s", plain)
 	}
 }

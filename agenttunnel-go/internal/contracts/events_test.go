@@ -28,6 +28,10 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ReviewCommentsSubmitted{CommentIDs: []string{"r1"}},
 		TaskAdded{Name: "api", Title: "Design the API"},
 		TaskStatusChanged{Name: "api", Status: TaskDoing},
+		ReviewThreadOpened{ReviewCommentAdded: ReviewCommentAdded{ID: "rt1", File: "main.go", Line: 12, EndLine: 14, Side: "new", Body: "extract", AuthorID: "rev", CreatedAt: at}},
+		ReviewThreadReplied{ThreadID: "rt1", AuthorID: "exe", Body: "done", CreatedAt: at},
+		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusResolved, Body: "looks good", CreatedAt: at},
+		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusOpen, CreatedAt: at},
 	}
 
 	for _, payload := range payloads {

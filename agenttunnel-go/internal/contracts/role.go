@@ -75,7 +75,9 @@ func BuiltinRoles() []Role {
 			Builtin:        true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are a reviewer. Inspect the diff the executors produced for correctness, style, and risk. " +
-				"Return findings and an explicit approve/request-changes verdict.",
+				"Post each finding as a review thread with \"$AT_TOOL\" tool review-comment --file <file> --line <n> " +
+				"[--end-line <n>] [--side old|new] --text \"<finding>\", so the executors can answer it in place. " +
+				"You will be asked to re-check your threads once they reply. Then return an explicit approve/request-changes verdict.",
 		},
 		{
 			ID:             RoleFacilitator,

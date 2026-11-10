@@ -50,7 +50,23 @@ const (
 	// KindAsk asks the human a question and blocks until they answer. Like
 	// subthread it is answered at once rather than queued; see question.go.
 	KindAsk Kind = "ask"
+	// KindReviewComment opens a reviewer's comment thread on a diff range,
+	// KindReviewReply answers one, and KindReviewResolve closes or reopens one.
+	// They apply at once rather than queueing; see orchestrator/review.go.
+	KindReviewComment Kind = "review-comment"
+	KindReviewReply   Kind = "review-reply"
+	KindReviewResolve Kind = "review-resolve"
 )
+
+// IsReview reports whether a kind is a review-thread call.
+func (k Kind) IsReview() bool {
+	switch k {
+	case KindReviewComment, KindReviewReply, KindReviewResolve:
+		return true
+	default:
+		return false
+	}
+}
 
 // Call is one recorded tool invocation.
 type Call struct {
@@ -65,6 +81,14 @@ type Call struct {
 	DependsOn []string          `json:"dependsOn,omitempty"`
 	Text      string            `json:"text,omitempty"`
 	To        string            `json:"to,omitempty"`
+	// File, Line, EndLine and Side anchor a review comment; Thread names the
+	// review thread a reply or resolution answers; Reopen moves it back to open.
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+	EndLine int    `json:"endLine,omitempty"`
+	Side    string `json:"side,omitempty"`
+	Thread  string `json:"thread,omitempty"`
+	Reopen  bool   `json:"reopen,omitempty"`
 }
 
 // Box holds pending tool calls, partitioned by thread.
