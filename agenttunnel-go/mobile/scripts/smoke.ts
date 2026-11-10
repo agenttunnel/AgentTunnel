@@ -89,17 +89,39 @@ const thread = (over: Partial<ThreadSummary> & { id: string }): ThreadSummary =>
 
 // ---------- fake socket + manual timers ----------
 
+/**
+ * Stands in for an atrelay socket. It answers hello, attach, and pair the way
+ * the relay does, synchronously. Data frames land in `sent`; control frames
+ * (hello, attach, pair) land in `control`.
+ */
 class FakeSocket {
   readyState = 0;
   sent: { id: string; method: string; params: unknown }[] = [];
+  control: Record<string, unknown>[] = [];
   closed = false;
+  /** When set, the next hello is refused with this error code. */
+  refuse: string | null = null;
+  /** When true, the fake never answers the handshake or pair (a hung relay). */
+  silent = false;
+  /** The ack the relay gives a pair frame. */
+  pairReply: Record<string, unknown> = { t: "ack", ok: true, token: "tok-paired", instance: "inst-1", clientId: "c-1" };
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   send(data: string): void {
-    const m = JSON.parse(data) as { id: string; method: string; params: unknown };
-    this.sent.push(m);
+    const m = JSON.parse(data) as Record<string, unknown>;
+    if (typeof m.method !== "string") {
+      this.control.push(m);
+      if (this.silent) return;
+      if (m.t === "pair") this.onmessage?.({ data: JSON.stringify(this.pairReply) });
+      else if (m.t === "hello") {
+        const reply = this.refuse ? { t: "ack", ok: false, error: this.refuse } : { t: "ack", ok: true, clientId: "c-1" };
+        this.onmessage?.({ data: JSON.stringify(reply) });
+      } else if (m.t === "attach") this.onmessage?.({ data: JSON.stringify({ t: "ack", ok: true, daemon: "online" }) });
+      return;
+    }
+    this.sent.push(m as { id: string; method: string; params: unknown });
   }
   close(): void {
     this.closed = true;
@@ -157,8 +179,9 @@ function harness(opts: { requestTimeoutMs?: number; maxQueue?: number } = {}) {
   const errors: (RelayError | undefined)[] = [];
   const opened: number[] = [];
   const t = fakeTimers();
+  const resyncs = { count: 0 };
   const client = new RpcClient({
-    wsUrl: "wss://relay.test/ws",
+    wsUrl: "wss://relay.test/v1/client",
     token: "tok-secret",
     onEvent: (f) => events.push(f),
     onStatus: (s, e) => {
@@ -166,6 +189,7 @@ function harness(opts: { requestTimeoutMs?: number; maxQueue?: number } = {}) {
       errors.push(e);
     },
     onOpen: () => opened.push(sockets.length),
+    onResync: () => resyncs.count++,
     requestTimeoutMs: opts.requestTimeoutMs ?? 1000,
     reconnect: { baseMs: 100, maxMs: 400 },
     maxQueue: opts.maxQueue,
@@ -176,7 +200,7 @@ function harness(opts: { requestTimeoutMs?: number; maxQueue?: number } = {}) {
       return s as unknown as WebSocket;
     },
   });
-  return { client, sockets, events, statuses, errors, opened, t };
+  return { client, sockets, events, statuses, errors, opened, resyncs, t };
 }
 
 async function main() {
@@ -332,11 +356,47 @@ async function main() {
     assert.throws(() => normalizePairCode("  -  "), RelayError);
   });
 
-  await test("pairing exchange fails with a typed unpublished error until the protocol lands", async () => {
+  /** A pairing socket that opens on the next microtask, as a real one would. */
+  function pairSocket(sockets: FakeSocket[], configure: (s: FakeSocket) => void = () => undefined) {
+    return (url: string): WebSocket => {
+      assert.equal(url, "wss://relay.test/v1/client");
+      const s = new FakeSocket();
+      configure(s);
+      sockets.push(s);
+      void Promise.resolve().then(() => s.open());
+      return s as unknown as WebSocket;
+    };
+  }
+
+  await test("pairing sends the code in a pair frame and keeps the token the relay acks", async () => {
+    const sockets: FakeSocket[] = [];
+    const paired = await exchangePairCode("https://relay.test/", "abcd-efgh-12", {
+      socketFactory: pairSocket(sockets),
+      timers: fakeTimers().api,
+    });
+    assert.deepEqual(sockets[0]!.control, [{ t: "pair", code: "ABCDEFGH12", name: "Phone" }]);
+    assert.deepEqual(paired, { relayUrl: "https://relay.test", wsUrl: "wss://relay.test/v1/client", token: "tok-paired" });
+  });
+
+  await test("a refused code surfaces a plain message, not the relay's error code", async () => {
     await assert.rejects(
-      exchangePairCode("https://relay.test", "ABCD1234"),
-      (e) => e instanceof RelayError && e.code === "unpublished",
+      exchangePairCode("https://relay.test", "ABCDEFGH12", {
+        socketFactory: pairSocket([], (s) => (s.pairReply = { t: "ack", ok: false, error: "bad_code" })),
+        timers: fakeTimers().api,
+      }),
+      (e) => e instanceof RelayError && e.code === "rejected" && e.message.includes("didn't work"),
     );
+  });
+
+  await test("a relay that never answers the pair frame times out", async () => {
+    const t = fakeTimers();
+    const p = exchangePairCode("https://relay.test", "ABCDEFGH12", {
+      timeoutMs: 5000,
+      socketFactory: pairSocket([], (s) => (s.silent = true)),
+      timers: t.api,
+    });
+    t.fire(5000);
+    await assert.rejects(p, (e: unknown) => e instanceof RelayError && e.code === "timeout");
   });
 
   // ---------- RPC client ----------
@@ -430,13 +490,14 @@ async function main() {
     assert.equal(h.events.length, 3, "frames pushed after reconnect still reach the handler");
   });
 
-  await test("the connect URL carries the token, URL-encoded", () => {
-    // Documents the current auth shape: the token rides the query string
-    // (mirroring the desktop) and must survive encoding.
+  await test("the token never rides the URL: it goes in the first hello frame", () => {
+    // Proxies log URLs. The socket opens on the bare relay endpoint, and the
+    // token (with characters that would need encoding) travels in hello.
     const urls: string[] = [];
+    const socks: FakeSocket[] = [];
     const t = fakeTimers();
     const client = new RpcClient({
-      wsUrl: "wss://relay.test/ws",
+      wsUrl: "wss://relay.test/v1/client",
       token: "a b&c",
       onEvent: () => undefined,
       onStatus: () => undefined,
@@ -446,12 +507,15 @@ async function main() {
       socketFactory: (url: string) => {
         urls.push(url);
         const s = new FakeSocket();
+        socks.push(s);
         return s as unknown as WebSocket;
       },
     });
     client.start();
+    socks[0]!.open();
     client.stop();
-    assert.deepEqual(urls, ["wss://relay.test/ws?token=a%20b%26c"]);
+    assert.deepEqual(urls, ["wss://relay.test/v1/client"]);
+    assert.deepEqual(socks[0]!.control[0], { t: "hello", role: "client", token: "a b&c" });
   });
 
   await test("backoff doubles and is capped", () => {
@@ -509,6 +573,55 @@ async function main() {
     assert.equal(h.client.getStatus(), "closed");
     assert.equal(h.t.liveDelays().length, 0, "no retry armed after stop");
     assert.equal(h.sockets.length, 1);
+  });
+
+  await test("relay addresses: any host and path prefix; ws and wss read as http and https", () => {
+    assert.equal(normalizeRelayUrl("wss://relay.test/base/"), "https://relay.test/base");
+    assert.equal(normalizeRelayUrl("wss://relay.test:8443"), "https://relay.test:8443");
+    assert.equal(normalizeRelayUrl("https://relay.example.org:9443"), "https://relay.example.org:9443");
+  });
+
+  await test("plaintext is refused off-network, and no secret may sit in a relay URL", () => {
+    assert.equal(normalizeRelayUrl("http://127.0.0.1:7777"), "http://127.0.0.1:7777");
+    assert.equal(normalizeRelayUrl("http://192.168.1.20:7777/"), "http://192.168.1.20:7777");
+    assert.throws(() => normalizeRelayUrl("http://relay.test"), RelayError);
+    assert.throws(() => normalizeRelayUrl("https://relay.test/?token=x"), RelayError);
+    assert.throws(() => normalizeRelayUrl("https://user@relay.test"), RelayError);
+    assert.throws(() => normalizeRelayUrl("https://relay.test/#frag"), RelayError);
+  });
+
+  await test("a revoked token is final: no retry, and waiting sends reject as unpaired", async () => {
+    const h = harness();
+    h.client.start();
+    const queued = h.client.send("thread.steer", { threadId: "t1", text: "x" });
+    h.sockets[0]!.refuse = "bad_token";
+    h.sockets[0]!.open();
+    await assert.rejects(queued, (e: unknown) => e instanceof RelayError && e.code === "unpaired");
+    assert.equal(h.client.getStatus(), "closed");
+    assert.equal(lastOf(h.errors)?.code, "unpaired");
+    assert.equal(h.t.liveDelays().length, 0, "no retry armed for a revoked token");
+    assert.equal(h.sockets.length, 1);
+  });
+
+  await test("a socket that never finishes the handshake is dropped and retried", () => {
+    const h = harness();
+    h.client.start();
+    h.sockets[0]!.silent = true;
+    h.sockets[0]!.open();
+    assert.equal(h.client.getStatus(), "connecting");
+    h.t.fire(10_000);
+    assert.equal(h.client.getStatus(), "reconnecting");
+    h.t.fire(100);
+    assert.equal(h.sockets.length, 2);
+  });
+
+  await test("a resync hint from the relay asks the client to re-read", () => {
+    const h = harness();
+    h.client.start();
+    h.sockets[0]!.open();
+    h.sockets[0]!.push({ t: "status", resync: true });
+    assert.equal(h.resyncs.count, 1);
+    assert.equal(h.events.length, 0, "a resync is not a thread event");
   });
 
   console.log(`\n${passed} smoke checks passed`);
