@@ -156,6 +156,9 @@ type (
 	turnParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Text     string             `json:"text"`
+		// Attachments are workdir-relative files or folders the composer attached.
+		// They reach the agent's prompt, not the transcript.
+		Attachments []string `json:"attachments,omitempty"`
 	}
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -211,6 +214,24 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// promptWithAttachments appends the composer's attached files and folders to
+// a prompt. The transcript keeps the typed text; only the agent sees the
+// context block. Paths resolve inside the thread's workdir.
+func (d *Dispatcher) promptWithAttachments(ctx context.Context, id contracts.ThreadID, text string, attachments []string) (string, error) {
+	if len(attachments) == 0 {
+		return text, nil
+	}
+	wd := d.threadWorkdir(ctx, id)
+	if wd == "" {
+		return "", errors.New("thread has no working directory for attachments")
+	}
+	block, err := files.AttachmentBlock(wd, attachments)
+	if err != nil {
+		return "", err
+	}
+	return text + "\n\n" + block, nil
 }
 
 // beginTurn claims a thread's turn slot, returning a context that ends when the
@@ -481,7 +502,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
-		return d.runTurn(ctx, p.ThreadID, p.Text, contracts.Command{
+		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, p.Text, p.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
 		})
 
@@ -709,6 +734,10 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.steering == nil {
 			return nil, errors.New("steering is unavailable")
 		}
+		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, p.Text, p.Attachments)
+		if err != nil {
+			return nil, err
+		}
 		// Record it in the transcript, marked as steering, then queue it for the
 		// next orchestrator pass to weigh.
 		if err := d.engine.Dispatch(ctx, contracts.Command{
@@ -719,7 +748,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, p.Text)
+		d.steering.Post(p.ThreadID, prompt)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.setAutoMode":
@@ -883,6 +912,26 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			byPath[s.Path] = s.Status
 		}
 		return map[string]any{"root": wd, "entries": entries, "status": byPath}, nil
+
+	case "files.search":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Workdir  string             `json:"workdir"`
+			Query    string             `json:"query"`
+			Limit    int                `json:"limit"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		wd := p.Workdir
+		if wd == "" {
+			wd = d.threadWorkdir(ctx, p.ThreadID)
+		}
+		matches, err := files.Search(ctx, wd, p.Query, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"matches": matches}, nil
 
 	case "files.read":
 		var p struct {
