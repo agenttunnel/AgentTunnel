@@ -270,3 +270,48 @@ func TestResolveNeverFallsBackWhileRefIsSet(t *testing.T) {
 		}
 	}
 }
+
+// List fills live facts through a bounded pool. With more worktrees than pool
+// slots, each row must still carry its own facts, in the order git lists them.
+func TestListKeepsGitOrderWithMoreWorktreesThanWorkers(t *testing.T) {
+	repo := initRepo(t)
+	ctx := context.Background()
+	const n = listWorkers*2 + 1
+	for i := 0; i < n; i++ {
+		// The thread id's last letter names the branch, so row i is i commits ahead.
+		ref, err := Create(ctx, repo, "feature", "th_0000000"+string(rune('a'+i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for c := 0; c < i; c++ {
+			name := filepath.Join(ref.Path, "f"+string(rune('a'+c))+".txt")
+			if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, ref.Path, "add", ".")
+			runGit(t, ref.Path, "commit", "-q", "-m", "c")
+		}
+	}
+
+	infos, err := List(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != n {
+		t.Fatalf("got %d worktrees, want %d", len(infos), n)
+	}
+	var want []string
+	for _, rec := range parsePorcelain(runGit(t, repo, "worktree", "list", "--porcelain")) {
+		if within(canonical(rec.path), canonical(Dir(repo))) {
+			want = append(want, rec.path)
+		}
+	}
+	for i, info := range infos {
+		if !SamePath(info.Path, want[i]) {
+			t.Fatalf("row %d = %q, want git's order %q", i, info.Path, want[i])
+		}
+		if wantAhead := int(info.Branch[len(info.Branch)-1] - 'a'); info.Ahead != wantAhead || !info.Exists {
+			t.Fatalf("row %d (%s) ahead = %d, want %d", i, info.Branch, info.Ahead, wantAhead)
+		}
+	}
+}
