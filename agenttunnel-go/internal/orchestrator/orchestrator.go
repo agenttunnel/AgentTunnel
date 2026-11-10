@@ -386,11 +386,15 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	seed := make([]contracts.DispatchTask, 0, len(t.leads))
 	for i := range t.leads {
 		t.leads[i] = leadAgentID(i)
+		// Record the lead's resolved harness, per-lead override included, so the
+		// agent is not listed as unknown.
+		harness, _, _ := o.runner.leadRuntime(ctx, threadID, i, role)
 		seed = append(seed, contracts.DispatchTask{
 			AgentID: t.leads[i],
 			Name:    leadName(i),
 			Role:    contracts.RoleOrchestrator,
 			Task:    userMessage,
+			Harness: harness,
 		})
 	}
 	if err := o.runner.Dispatch(ctx, threadID, seed); err != nil {
