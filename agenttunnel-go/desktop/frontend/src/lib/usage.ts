@@ -41,7 +41,8 @@ export const addUsage = (a: TokenUsage, b: TokenUsage): TokenUsage => ({
 });
 
 export const totalTokens = (u: TokenUsage) => u.inputTokens + u.outputTokens;
-export const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+export const fmtTokens = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 export const fmtCost = (c: number) => `$${c.toFixed(4)}`;
 
 /** Splits one thread's spend into orchestrator vs subagents, in agent order.

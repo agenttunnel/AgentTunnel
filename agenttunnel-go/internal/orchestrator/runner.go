@@ -149,6 +149,9 @@ func (r *Runner) Logs() *logstore.Store { return r.logs }
 func (r *Runner) Dispatch(ctx context.Context, threadID contracts.ThreadID, tasks []contracts.DispatchTask) error {
 	for _, t := range tasks {
 		task := t
+		if task.Harness == "" {
+			task.Harness = r.dispatchHarness(task.Role)
+		}
 		if err := r.engine.Dispatch(ctx, contracts.Command{
 			ID:       r.nextID(),
 			Type:     contracts.CmdTaskDispatch,
@@ -159,6 +162,24 @@ func (r *Runner) Dispatch(ctx context.Context, threadID contracts.ThreadID, task
 		}
 	}
 	return nil
+}
+
+// dispatchHarness is the harness a task with none requested will run on, so the
+// agent record names it instead of reading as unknown in harness stats. It is the
+// same role runtime run uses, so the recorded harness matches what executes.
+func (r *Runner) dispatchHarness(role contracts.RoleID) contracts.Harness {
+	if r.roles == nil {
+		return ""
+	}
+	if role == "" {
+		role = contracts.RoleExecutor
+	}
+	rl, ok := r.roles.Get(role)
+	if !ok {
+		return ""
+	}
+	h, _, _ := r.roleRuntime(rl)
+	return h
 }
 
 // Run executes the tasks with wave-based dependency scheduling: each wave starts
