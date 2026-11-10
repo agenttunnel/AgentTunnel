@@ -1,0 +1,60 @@
+name: AgentTunnel iOS
+
+# Typechecks, smoke-tests, and builds the Expo mobile app for the iOS simulator
+# with no signing. Runs the same script developers run locally:
+# agenttunnel-go/mobile/scripts/ios-build.sh.
+#
+# No secrets and no signing. Later, to publish builds:
+#   - Add an EAS job (eas build --platform ios --profile preview) that runs
+#     after this one. It needs EXPO_TOKEN as a repo secret and an eas.json.
+#   - For TestFlight, use `eas submit --platform ios` with an App Store Connect
+#     API key stored as secrets. Gate it on push to main and workflow_dispatch
+#     so pull requests never receive signing credentials.
+#   - Keep this unsigned build job as the cheap pre-check; don't replace it.
+# None of that is implemented here.
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+    paths:
+      - "agenttunnel-go/mobile/**"
+      - ".github/workflows/agenttunnel-ios.yml"
+  pull_request:
+    paths:
+      - "agenttunnel-go/mobile/**"
+      - ".github/workflows/agenttunnel-ios.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: agenttunnel-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: Build iOS simulator app
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: agenttunnel-go/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: agenttunnel-go/mobile/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build
+        run: scripts/ios-build.sh
