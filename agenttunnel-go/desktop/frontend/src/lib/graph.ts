@@ -88,8 +88,8 @@ type GraphAgentInput = {
 // redesign of the node chrome.
 const NODE_W = 200;
 const NODE_H = 56;
-const ROW_GAP = 96;
-const COL_GAP = 32;
+const ROW_GAP = 130;
+const COL_GAP = 64;
 const PAD = 32;
 // Headroom above row 0 for self-loop arcs, which rise above their node.
 const PAD_TOP = 48;
@@ -150,13 +150,15 @@ export function aggregateMailbox(mailbox: MailboxMessage[] | null): Map<string, 
  * "agent-orchestrator" id); each parent's children stack in the row beneath,
  * in agentOrder sequence. A missing or cyclic parent demotes the agent to a
  * root so it is never dropped. */
+/** `positions` pins nodes the user dragged; every other node keeps its row slot. */
 export function computeGraph(input: {
   agents: GraphAgentInput[];
   roleNames: Record<string, string>;
   usage: Record<string, { usage: TokenUsage }> | null;
   mailbox: MailboxMessage[] | null;
+  positions?: Record<string, { x: number; y: number }>;
 }): GraphLayout {
-  const { agents, roleNames, usage, mailbox } = input;
+  const { agents, roleNames, usage, mailbox, positions } = input;
   const byId = new Map(agents.map((a) => [a.id, a]));
 
   // Spawn depth: 0 for the orchestrator, parent depth + 1 below. The
@@ -216,8 +218,9 @@ export function computeGraph(input: {
   rows.forEach((row, depth) => {
     row.forEach((id, col) => {
       const a = byId.get(id)!;
-      const x = PAD + col * (NODE_W + COL_GAP);
-      const y = PAD_TOP + depth * (NODE_H + ROW_GAP);
+      const pinned = positions?.[id];
+      const x = pinned ? pinned.x : PAD + col * (NODE_W + COL_GAP);
+      const y = pinned ? pinned.y : PAD_TOP + depth * (NODE_H + ROW_GAP);
       rects.set(id, { x, y, w: NODE_W, h: NODE_H, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
       const u = usage?.[id]?.usage;
       nodes.push({
