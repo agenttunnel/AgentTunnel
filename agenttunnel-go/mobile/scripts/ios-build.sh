@@ -9,7 +9,7 @@
 # React Native app. The generated ios/ directory is gitignored and rebuilt on
 # every run.
 #
-# Requires macOS with full Xcode (not just Command Line Tools), CocoaPods
+# Requires macOS with full Xcode 26+ (Swift 6.2; not just Command Line Tools), CocoaPods
 # (`brew install cocoapods`), Node, and Bun.
 #
 # Usage: scripts/ios-build.sh
@@ -37,6 +37,16 @@ command -v pod >/dev/null 2>&1 || fail "pod not found; brew install cocoapods"
 # xcodebuild exists under Command Line Tools too, but it refuses to run there.
 if ! xcodebuild -version >/dev/null 2>&1; then
   fail "xcodebuild needs full Xcode; run 'sudo xcode-select -s /Applications/Xcode.app' after installing it"
+fi
+
+# Expo's prebuilt ExpoModulesJSI needs Swift tools 6.2 (Xcode 26); older
+# toolchains die later with a cryptic SwiftPM error.
+swift_version="$(xcrun swift --version 2>/dev/null | sed -n 's/.*Swift version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+[ -n "$swift_version" ] || fail "could not read the Swift version from xcrun swift"
+swift_major="${swift_version%%.*}"
+swift_minor="${swift_version#*.}"
+if [ "$swift_major" -lt 6 ] || { [ "$swift_major" -eq 6 ] && [ "$swift_minor" -lt 2 ]; }; then
+  fail "ExpoModulesJSI needs Swift 6.2+ (active: $swift_version); select Xcode 26: sudo xcode-select -s /Applications/Xcode_26.x.app"
 fi
 
 # Derived data goes to a temp dir so the build never touches ~/Library/Developer.
