@@ -41,6 +41,7 @@ import { FilesPanel, type FileContentLike, type FileEntryLike } from "./componen
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
+import { RelayPairing } from "./components/RelayPairing";
 import { Markdown } from "./components/Markdown";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
@@ -3455,6 +3456,11 @@ export default function App() {
                     Save environment
                   </button>
                 </div>
+              </section>
+
+              <section className="set-section">
+                <h4>Phones</h4>
+                <RelayPairing rpc={rpcRef.current} />
               </section>
 
               <section className="set-section">
