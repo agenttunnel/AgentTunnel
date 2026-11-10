@@ -14,7 +14,7 @@ import {
   type ThreadSnapshot,
   type ThreadSummary,
 } from "./normalize";
-import { RelayError, RpcClient, type Pairing, type RpcStatus } from "./relay";
+import { RelayError, RpcClient, type DaemonPresence, type Pairing, type RpcStatus } from "./relay";
 
 /** Refreshes coalesce: a burst of state frames costs one list and one snapshot read. */
 const REFRESH_DEBOUNCE_MS = 250;
@@ -24,6 +24,11 @@ type LogRow = { agentId: string; kind: string; text: string };
 export type DaemonState = {
   status: RpcStatus;
   statusError: RelayError | null;
+  /**
+   * The daemon's presence at the relay. "unknown" whenever the phone's own
+   * socket is not open, since the relay cannot tell us then.
+   */
+  daemon: DaemonPresence | "unknown";
   queued: number;
   projects: ProjectView[];
   threads: ThreadSummary[];
@@ -60,6 +65,7 @@ export function useDaemon(
 ): [DaemonState, DaemonActions] {
   const [status, setStatus] = useState<RpcStatus>("idle");
   const [statusError, setStatusError] = useState<RelayError | null>(null);
+  const [daemon, setDaemon] = useState<DaemonPresence | "unknown">("unknown");
   const [queued, setQueued] = useState(0);
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -173,7 +179,9 @@ export function useDaemon(
     setSnapshotError(null);
     setLive([]);
     setQueued(0);
+    setDaemon("unknown");
     if (!pairing) return;
+    let presence: DaemonPresence | "unknown" = "unknown";
     const rpc = new RpcClient({
       wsUrl: pairing.wsUrl,
       token: pairing.token,
@@ -181,6 +189,11 @@ export function useDaemon(
         setStatus(next);
         setStatusError(error ?? null);
         setQueued(rpc.queuedCount());
+        if (next !== "open") {
+          // The relay cannot report the daemon while our socket is down.
+          presence = "unknown";
+          setDaemon("unknown");
+        }
         if (next === "open") {
           // Reconnect: refresh the list and snapshot, and reattach the thread.
           refreshListRef.current().catch(() => undefined);
@@ -207,6 +220,17 @@ export function useDaemon(
           return;
         }
         if (isStateFrame(frame)) scheduleRefresh();
+      },
+      onDaemon: (next) => {
+        const was = presence;
+        presence = next;
+        setDaemon(next);
+        // The daemon came back: its state may have moved while it was away.
+        if (next === "online" && was === "offline") {
+          refreshListRef.current().catch(() => undefined);
+          const id = activeRef.current;
+          if (id) refreshSnapshotRef.current(id).catch(() => undefined);
+        }
       },
       // The daemon dropped events for this phone. Re-read, as after a reconnect.
       onResync: () => {
@@ -289,6 +313,7 @@ export function useDaemon(
     {
       status,
       statusError,
+      daemon,
       queued,
       projects,
       threads,
