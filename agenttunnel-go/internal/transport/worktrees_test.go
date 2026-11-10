@@ -588,3 +588,107 @@ func TestFailedCutAuditsOnceAcrossTurns(t *testing.T) {
 		t.Fatalf("non-git project got a worktree %+v", st.Worktree)
 	}
 }
+
+// A plain folder that later becomes a repository gets its worktree on the next
+// turn, with no restart. The fallback stays audited once across the change: the
+// retry is silent while the reason is unchanged.
+func TestPlainFolderBecomesRepoAndGetsWorktreeOnNextTurn(t *testing.T) {
+	f := newWorktreeFixture(t)
+	plain := t.TempDir()
+	if err := os.WriteFile(filepath.Join(plain, "notes.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.disp.settings.AddProject(settings.Project{ID: "plain", Name: "plain", Path: plain})
+	out := f.mustCall("thread.create", map[string]any{"title": "later", "projectId": "plain"})
+	id := out.(map[string]any)["threadId"].(contracts.ThreadID)
+
+	var fallbacks int
+	f.disp.audit = func(kind string, _ map[string]any) {
+		if kind == "worktree.fallback" {
+			fallbacks++
+		}
+	}
+	for turn := 0; turn < 2; turn++ {
+		if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+			t.Fatalf("plain turn %d: %v", turn, err)
+		}
+	}
+	if st := f.state(id); st.Worktree != nil {
+		t.Fatalf("plain folder got a worktree %+v", st.Worktree)
+	}
+
+	gitRun(t, plain, "init", "-q", "-b", "main")
+	gitRun(t, plain, "add", "notes.txt")
+	gitRun(t, plain, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "init")
+
+	if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+		t.Fatalf("turn after git init: %v", err)
+	}
+	ref := f.state(id).Worktree
+	if ref == nil || ref.Inherited || !worktree.SamePath(filepath.Dir(ref.Path), worktree.Dir(plain)) {
+		t.Fatalf("worktree after git init = %+v, want a cut beside the project", ref)
+	}
+	if fallbacks != 1 {
+		t.Fatalf("worktree.fallback audited %d times across the change, want 1", fallbacks)
+	}
+}
+
+// A provisional thread (created with worktree:true, never turned yet) still owns
+// its worktree in memory. Removing that worktree must clear the ref on it too.
+func TestRemoveDetachesProvisionalOwner(t *testing.T) {
+	f := newWorktreeFixture(t)
+	out := f.mustCall("thread.create", map[string]any{"title": "eager", "projectId": f.projectID, "worktree": true})
+	id := out.(map[string]any)["threadId"].(contracts.ThreadID)
+	ref := f.state(id).Worktree
+	if ref == nil {
+		t.Fatal("eager create cut no worktree")
+	}
+	if st := f.state(id); !st.Provisional {
+		t.Fatalf("thread is durable (%+v); the test needs a provisional owner", st)
+	}
+
+	f.mustCall("worktree.remove", map[string]any{"projectId": f.projectID, "path": ref.Path})
+	if st := f.state(id); st.Worktree != nil {
+		t.Fatalf("provisional owner still holds %+v after its worktree was removed", st.Worktree)
+	}
+}
+
+// Re-cutting a vanished worktree is one replace event in the durable log. A
+// detach-then-attach pair would leave a moment with no ref, so neither event
+// type may appear for the recut.
+func TestRecutWritesOneReplaceEventAndNoDetach(t *testing.T) {
+	f := newWorktreeFixture(t)
+	id := f.createThread("Window", true)
+	lost := f.state(id).Worktree.Path
+	if err := os.RemoveAll(lost); err != nil {
+		t.Fatal(err)
+	}
+	// Make the thread durable first, so the log holds every event the recut writes.
+	if err := f.disp.engine.Dispatch(f.ctx, contracts.Command{ID: "t1", Type: contracts.CmdTurnStart, ThreadID: id, Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.store.Load(f.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.disp.ensureWorktree(f.ctx, id); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	after, err := f.store.Load(f.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detached, replaced int
+	for _, ev := range after[len(before):] {
+		switch ev.Payload.(type) {
+		case contracts.WorktreeDetached:
+			detached++
+		case contracts.WorktreeReplaced:
+			replaced++
+		}
+	}
+	if detached != 0 || replaced != 1 {
+		t.Fatalf("recut wrote %d detach and %d replace events, want 0 and 1", detached, replaced)
+	}
+}
