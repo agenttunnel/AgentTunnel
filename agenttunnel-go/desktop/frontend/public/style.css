@@ -3037,11 +3037,28 @@ table.grid tr.rowlink:hover td {
   border: 1px solid var(--border);
   border-radius: 10px;
   text-align: left;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 .graph-node:hover {
   border-color: var(--accent-line);
   background: var(--panel-2);
+}
+.graph-node:active {
+  cursor: grabbing;
+}
+.graph-reset {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--faint);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.graph-reset:hover {
+  color: var(--text);
 }
 .graph-node-head {
   display: flex;

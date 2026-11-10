@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   computeGraph,
+  type GraphNode,
   conversationBetween,
   conversationKey,
   type MailboxMessage,
@@ -91,6 +92,20 @@ export function AgentGraph({
   const [turn, setTurn] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
+  // Nodes the user dragged, by agent id. The graph remounts per thread (keyed by
+  // the App), so the positions are scoped to the thread on screen.
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const drag = useRef<{
+    id: string;
+    pointer: number;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
+  // Set when a drag ends, so the click that follows the release does not open details.
+  const dragEnded = useRef<string | null>(null);
 
   const ranges = useMemo(() => turnRanges(events), [events]);
   const markers = useMemo(() => markersOf(events), [events]);
@@ -129,10 +144,47 @@ export function AgentGraph({
         roleNames,
         usage: folded ? folded.usage : usage,
         mailbox: folded ? folded.mailbox : mailbox,
+        positions,
       }),
-    [folded, agents, roleNames, usage, mailbox],
+    [folded, agents, roleNames, usage, mailbox, positions],
   );
   const byId = useMemo(() => new Map(members.map((a) => [a.id, a])), [members]);
+
+  // Dragging pins a node at the pointer's offset from where the press began.
+  // Positions are clamped to the canvas origin so a node cannot leave the
+  // scrollable area.
+  const DRAG_SLOP = 4;
+  const startDrag = (e: ReactPointerEvent<HTMLButtonElement>, n: GraphNode) => {
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragEnded.current = null;
+    drag.current = {
+      id: n.id,
+      pointer: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: n.x,
+      y: n.y,
+      moved: false,
+    };
+  };
+  const moveDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.pointer) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.moved && Math.hypot(dx, dy) < DRAG_SLOP) return;
+    d.moved = true;
+    const x = Math.max(0, d.x + dx);
+    const y = Math.max(0, d.y + dy);
+    setPositions((prev) => ({ ...prev, [d.id]: { x, y } }));
+  };
+  const endDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.pointer) return;
+    drag.current = null;
+    if (d.moved) dragEnded.current = d.id;
+  };
   const nameOf = (id: string) => {
     const a = byId.get(id);
     return a ? a.name || roleNames[a.role] || a.role : id;
@@ -371,7 +423,13 @@ export function AgentGraph({
         <span>
           <i className="graph-lg message" /> message
         </span>
+        {Object.keys(positions).length > 0 && (
+          <button className="graph-reset" onClick={() => setPositions({})}>
+            Reset layout
+          </button>
+        )}
       </div>
+      {/* A press that moves past the slop drags the node; one that does not is a click. */}
       <div className="graph-canvas" style={{ width: layout.width, height: layout.height }}>
         <svg className="graph-edges" width={layout.width} height={layout.height}>
           <defs>
@@ -426,7 +484,17 @@ export function AgentGraph({
             key={n.id}
             className="graph-node enter"
             style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
-            onClick={() => onOpenAgent(n.id)}
+            onPointerDown={(e) => startDrag(e, n)}
+            onPointerMove={moveDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onClick={() => {
+              if (dragEnded.current === n.id) {
+                dragEnded.current = null;
+                return;
+              }
+              onOpenAgent(n.id);
+            }}
             aria-label={`${n.name} (${n.role}) — open details`}
           >
             <div className="graph-node-head">
