@@ -180,8 +180,7 @@ type AsideTabId =
   | "pr"
   | "stats"
   | "models"
-  | "council"
-  | "worktrees";
+  | "council";
 const ASIDE_PINNED: AsideTabId[] = ["agents", "usage"];
 const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   agents: { label: "Agents", key: "A" },
@@ -194,7 +193,6 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   stats: { label: "Harness stats", key: "H" },
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
-  worktrees: { label: "Worktrees", key: "W" },
 };
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
@@ -621,10 +619,12 @@ export default function App() {
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
   // Worktrees: per open project, live git facts from worktree.list. Every thread
-  // in a git project gets one, so the UI offers no choice about it.
+  // in a git project gets one, so the UI offers no choice about it. Shown in the
+  // threads view (no thread open), not the aside.
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
+  const [showWorktrees, setShowWorktrees] = useState(false);
   const [selectedFile, setSelectedFile] = useThreadScoped<string | null>(activeId, null);
   const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
@@ -1300,11 +1300,17 @@ export default function App() {
   }, [asideActive, activeId, loadPR]);
 
 
-  // Worktree facts come from live git runs, so they load when the panel is shown
+  // Worktree facts come from live git runs, so they load when the section is shown
   // and after each action, not on a timer.
   useEffect(() => {
-    if (asideActive === "worktrees") loadWorktrees(openProjectIds).catch(() => undefined);
-  }, [asideActive, openProjectIds, loadWorktrees]);
+    if (!activeId && showWorktrees) loadWorktrees(openProjectIds).catch(() => undefined);
+  }, [activeId, showWorktrees, openProjectIds, loadWorktrees]);
+
+  // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
+  // would otherwise render the diff fallback with no tab highlighted.
+  useEffect(() => {
+    if (!(asideActive in ASIDE_META)) setAsideActive("agents");
+  }, [asideActive, setAsideActive]);
 
   // The file tree loads when its panel is shown.
   useEffect(() => {
@@ -2222,8 +2228,32 @@ export default function App() {
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
+              <button
+                className={showWorktrees ? "primary" : undefined}
+                aria-pressed={showWorktrees}
+                onClick={() => setShowWorktrees((v) => !v)}
+              >
+                Worktrees
+              </button>
             </div>
           </div>
+          {showWorktrees && (
+            <div className="section worktrees-section">
+              <WorktreesPanel
+                projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
+                worktrees={worktrees}
+                threads={threads}
+                loading={worktreesLoading}
+                error={worktreesError}
+                onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
+                onOpenThread={openWorktreeThread}
+                onRemove={(projectId, path, force) =>
+                  worktreeAction(projectId, "worktree.remove", { path, force })
+                }
+                onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
+              />
+            </div>
+          )}
           {projectThreads.length === 0 && needle && (
             <div className="empty">No threads match that filter.</div>
           )}
@@ -3193,22 +3223,6 @@ export default function App() {
               rpc={rpcRef.current}
               threadId={activeId}
               projectId={projectId}
-            />
-          </div>
-        ) : asideActive === "worktrees" ? (
-          <div className="section worktrees-section">
-            <WorktreesPanel
-              projects={openProjects.map((p) => ({ id: p.id, name: p.name }))}
-              worktrees={worktrees}
-              threads={threads}
-              loading={worktreesLoading}
-              error={worktreesError}
-              onRefresh={() => loadWorktrees(openProjectIds).catch(() => undefined)}
-              onOpenThread={openWorktreeThread}
-              onRemove={(projectId, path, force) =>
-                worktreeAction(projectId, "worktree.remove", { path, force })
-              }
-              onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
             />
           </div>
         ) : asideActive === "pr" ? (
