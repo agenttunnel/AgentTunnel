@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -122,19 +123,42 @@ func List(ctx context.Context, repo string) ([]Info, error) {
 		} else {
 			info.Prunable = true
 		}
-		if info.Exists {
-			status, _ := git(ctx, rec.path, "status", "--porcelain")
-			info.Dirty = strings.TrimSpace(status) != ""
-			if base != "" && rec.branch != "" {
-				counts, err := git(ctx, rec.path, "rev-list", "--left-right", "--count", base+"..."+rec.branch)
-				if err == nil {
-					info.Behind, info.Ahead = parseCounts(counts)
-				}
-			}
-		}
 		infos = append(infos, info)
 	}
+
+	// Each live worktree costs two git processes. They run through a small pool;
+	// every worker writes only its own slot, so the output keeps git's order.
+	sem := make(chan struct{}, listWorkers)
+	var wg sync.WaitGroup
+	for i := range infos {
+		if !infos[i].Exists {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(info *Info) {
+			defer func() { <-sem; wg.Done() }()
+			fillFacts(ctx, info)
+		}(&infos[i])
+	}
+	wg.Wait()
 	return infos, nil
+}
+
+// listWorkers bounds the git processes List runs at once, so a project with many
+// worktrees does not fork a flood of git children.
+const listWorkers = 4
+
+// fillFacts sets the live git facts of one existing worktree.
+func fillFacts(ctx context.Context, info *Info) {
+	status, _ := git(ctx, info.Path, "status", "--porcelain")
+	info.Dirty = strings.TrimSpace(status) != ""
+	if info.Base != "" && info.Branch != "" {
+		counts, err := git(ctx, info.Path, "rev-list", "--left-right", "--count", info.Base+"..."+info.Branch)
+		if err == nil {
+			info.Behind, info.Ahead = parseCounts(counts)
+		}
+	}
 }
 
 // Remove deletes a managed worktree. A dirty worktree is refused unless force is
@@ -188,6 +212,12 @@ func Prune(ctx context.Context, repo string) error {
 // checkRepoRoot requires repo to be the top of a git repository: a subdirectory
 // would put the agent in a different place than the project path names.
 func checkRepoRoot(ctx context.Context, repo string) error {
+	// A repository root always has a .git entry. Checking it first means a project
+	// that is not a repo costs a stat, not a git process, so callers may retry on
+	// every turn and pick up a project that was git init'ed since.
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		return ErrNotRepoRoot
+	}
 	top, err := git(ctx, repo, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ErrNotRepoRoot
