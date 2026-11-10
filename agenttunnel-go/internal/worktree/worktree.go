@@ -5,6 +5,10 @@
 // Worktrees live in a sibling directory, <repo>.worktrees/, rather than inside
 // the project tree: the project's git status, file tree and searches stay
 // clean, and nothing lands in the daemon's StateDir.
+//
+// A worktree is a clean checkout of its branch. Files git ignores (node_modules,
+// .env, build output) are absent from a new worktree, so project setup must run
+// in it before agents need those files.
 package worktree
 
 import (
@@ -49,13 +53,14 @@ func Dir(repo string) string {
 	return filepath.Clean(repo) + ".worktrees"
 }
 
-// Resolve picks the directory agents run in: the thread's worktree when it is
-// still on disk, otherwise the fallback (the project path).
+// Resolve picks the directory agents run in. A thread that declares a worktree
+// always resolves to it, even when the directory is gone: running in the project
+// checkout instead would put agents in the user's own files. The fallback (the
+// project path) applies only to a thread with no worktree at all. The turn-start
+// gate restores a missing directory before any agent runs.
 func Resolve(ref *contracts.WorktreeRef, fallback string) string {
 	if ref != nil && ref.Path != "" {
-		if fi, err := os.Stat(ref.Path); err == nil && fi.IsDir() {
-			return ref.Path
-		}
+		return ref.Path
 	}
 	return fallback
 }
@@ -83,6 +88,9 @@ func Create(ctx context.Context, repo, title, threadID string) (contracts.Worktr
 	}
 
 	if _, err := git(ctx, repo, "worktree", "add", "-b", branch, path, baseRef); err != nil {
+		// Drop the sibling directory we may have just made. Remove only succeeds
+		// on an empty directory, so a populated one is left alone.
+		_ = os.Remove(Dir(repo))
 		return contracts.WorktreeRef{}, err
 	}
 	return contracts.WorktreeRef{Path: path, Branch: branch, Base: base}, nil

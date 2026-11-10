@@ -71,7 +71,9 @@ func TestWorkdirForPrefersThreadWorktree(t *testing.T) {
 	if err := os.RemoveAll(ref.Path); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.workdirFor(ctx, wt); got != repo {
-		t.Fatalf("worktree gone from disk: workdir = %q, want project path %q", got, repo)
+	// A declared worktree never degrades to the project checkout, even when its
+	// directory is gone: the turn-start gate restores it before any agent runs.
+	if got := r.workdirFor(ctx, wt); got != ref.Path {
+		t.Fatalf("worktree gone from disk: workdir = %q, want declared path %q", got, ref.Path)
 	}
 }

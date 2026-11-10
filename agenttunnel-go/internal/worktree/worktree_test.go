@@ -249,7 +249,24 @@ func TestResolvePrefersExistingWorktree(t *testing.T) {
 		t.Fatalf("Resolve(nil) = %q, want fallback", got)
 	}
 	missing := &contracts.WorktreeRef{Path: filepath.Join(wt, "gone")}
-	if got := Resolve(missing, fallback); got != fallback {
-		t.Fatalf("Resolve(missing) = %q, want fallback", got)
+	// A declared worktree never degrades to the fallback, even when its
+	// directory is gone: the turn-start gate restores it.
+	if got := Resolve(missing, fallback); got != missing.Path {
+		t.Fatalf("Resolve(missing) = %q, want the declared path %q", got, missing.Path)
+	}
+}
+
+// Resolve never hands back the project path while a thread declares a worktree,
+// whether or not that worktree's directory still exists.
+func TestResolveNeverFallsBackWhileRefIsSet(t *testing.T) {
+	project := t.TempDir()
+	refs := []*contracts.WorktreeRef{
+		{Path: filepath.Join(project+".worktrees", "live")},
+		{Path: filepath.Join(project+".worktrees", "gone"), Inherited: true},
+	}
+	for _, ref := range refs {
+		if got := Resolve(ref, project); got == project || got != ref.Path {
+			t.Fatalf("Resolve(%+v) = %q, want the declared path", ref, got)
+		}
 	}
 }
