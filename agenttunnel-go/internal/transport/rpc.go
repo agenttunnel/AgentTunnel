@@ -98,23 +98,27 @@ type Dispatcher struct {
 	// shellStarted, when set by a test, runs once a thread.runCommand child is
 	// live. Nil in production.
 	shellStarted func()
+
+	// questions holds the blocked `tool ask` calls, keyed by thread and question.
+	questions *questionBroker
 }
 
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
 	return &Dispatcher{
-		engine:   d.Engine,
-		runner:   d.Runner,
-		orch:     d.Orchestrator,
-		ledger:   d.Ledger,
-		logs:     d.Logs,
-		roles:    d.Roles,
-		registry: d.Registry,
-		settings: d.Settings,
-		models:   d.Models,
-		steering: d.Steering,
-		audit:    d.Audit,
-		updater:  d.Updater,
+		questions: newQuestionBroker(),
+		engine:    d.Engine,
+		runner:    d.Runner,
+		orch:      d.Orchestrator,
+		ledger:    d.Ledger,
+		logs:      d.Logs,
+		roles:     d.Roles,
+		registry:  d.Registry,
+		settings:  d.Settings,
+		models:    d.Models,
+		steering:  d.Steering,
+		audit:     d.Audit,
+		updater:   d.Updater,
 	}
 }
 
@@ -229,6 +233,8 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 	d.turns[threadID] = cancel
 	return turnCtx, func() {
 		cancel()
+		// Nothing is left to hear an answer once the turn is over.
+		d.closeOpenQuestions(threadID, "turn ended")
 		d.turnsMu.Lock()
 		defer d.turnsMu.Unlock()
 		// The slot is released only here, never in stopTurn: a stopped turn
@@ -757,6 +763,38 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				Index:   p.Index,
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "question.answer":
+		var p struct {
+			ThreadID   contracts.ThreadID `json:"threadId"`
+			QuestionID string             `json:"questionId"`
+			Selected   []string           `json:"selected"`
+			Text       string             `json:"text"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.resolveQuestion(ctx, p.ThreadID, p.QuestionID, contracts.QuestionClosed{
+			Answered: true, Selected: p.Selected, Text: p.Text,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "question.dismiss":
+		var p struct {
+			ThreadID   contracts.ThreadID `json:"threadId"`
+			QuestionID string             `json:"questionId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.resolveQuestion(ctx, p.ThreadID, p.QuestionID, contracts.QuestionClosed{
+			Reason: contracts.ReasonQuestionDeclined,
 		}); err != nil {
 			return nil, err
 		}

@@ -82,6 +82,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindSubthread:
 		s.handleSubthreadCall(w, r, req)
 		return
+	case toolbox.KindAsk:
+		s.handleAskCall(w, r, req)
+		return
 	}
 
 	// Peer messages are delivered immediately rather than queued in the tool
@@ -162,8 +165,14 @@ type toolCallRequest struct {
 	Model     string             `json:"model"`
 	DependsOn []string           `json:"dependsOn"`
 	Status    string             `json:"status"`
-	Text      string             `json:"text"`
-	To        string             `json:"to"`
+	// Text is the question for an ask; To names the agent that also hears the
+	// answer.
+	Text string `json:"text"`
+	To   string `json:"to"`
+	// QuestionKind, Options and TimeoutSec shape an ask.
+	QuestionKind string   `json:"questionKind"`
+	Options      []string `json:"options"`
+	TimeoutSec   int      `json:"timeoutSec"`
 }
 
 // handleTaskCall applies a task-create, task-update or task-list call to the

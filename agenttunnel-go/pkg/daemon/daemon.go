@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,6 +160,10 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Audit:        actions.Func(),
 		Updater:      updater,
 	})
+	// Questions left open by a previous run have no caller to answer them.
+	if err := disp.CloseStaleQuestions(ctx); err != nil {
+		return nil, fmt.Errorf("close stale questions: %w", err)
+	}
 
 	return &Daemon{
 		Engine:   eng,

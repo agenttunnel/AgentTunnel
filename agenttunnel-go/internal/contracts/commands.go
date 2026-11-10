@@ -32,6 +32,8 @@ const (
 	CmdMessageAppend    CommandType = "thread.message.append"
 	CmdReviewCommentAdd CommandType = "review.comment.add"
 	CmdReviewSubmit     CommandType = "review.submit"
+	CmdQuestionAsk      CommandType = "thread.question.ask"
+	CmdQuestionClose    CommandType = "thread.question.close"
 )
 
 // DispatchTask is the orchestrator's instruction to spawn a subagent.
@@ -79,4 +81,6 @@ type Command struct {
 	Message        *MessageSent             `json:"message,omitempty"`
 	ReviewComment  *ReviewCommentAdded      `json:"reviewComment,omitempty"`
 	ReviewSubmit   *ReviewCommentsSubmitted `json:"reviewSubmit,omitempty"`
+	QuestionAsk    *QuestionAsked           `json:"questionAsk,omitempty"`
+	QuestionClose  *QuestionClosed          `json:"questionClose,omitempty"`
 }
