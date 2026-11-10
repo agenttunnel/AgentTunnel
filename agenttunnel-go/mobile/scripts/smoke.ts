@@ -59,6 +59,8 @@ import {
   type ThreadSummary,
 } from "../src/lib/normalize";
 import {
+  cleanDeviceName,
+  defaultDeviceName,
   exchangePairCode,
   normalizePairCode,
   normalizeRelayUrl,
@@ -180,6 +182,7 @@ function harness(opts: { requestTimeoutMs?: number; maxQueue?: number } = {}) {
   const opened: number[] = [];
   const t = fakeTimers();
   const resyncs = { count: 0 };
+  const daemons: string[] = [];
   const client = new RpcClient({
     wsUrl: "wss://relay.test/v1/client",
     token: "tok-secret",
@@ -190,6 +193,7 @@ function harness(opts: { requestTimeoutMs?: number; maxQueue?: number } = {}) {
     },
     onOpen: () => opened.push(sockets.length),
     onResync: () => resyncs.count++,
+    onDaemon: (p) => daemons.push(p),
     requestTimeoutMs: opts.requestTimeoutMs ?? 1000,
     reconnect: { baseMs: 100, maxMs: 400 },
     maxQueue: opts.maxQueue,
@@ -200,7 +204,7 @@ function harness(opts: { requestTimeoutMs?: number; maxQueue?: number } = {}) {
       return s as unknown as WebSocket;
     },
   });
-  return { client, sockets, events, statuses, errors, opened, resyncs, t };
+  return { client, sockets, events, statuses, errors, opened, resyncs, daemons, t };
 }
 
 async function main() {
@@ -622,6 +626,64 @@ async function main() {
     h.sockets[0]!.push({ t: "status", resync: true });
     assert.equal(h.resyncs.count, 1);
     assert.equal(h.events.length, 0, "a resync is not a thread event");
+  });
+
+  await test("the attach ack and status frames report daemon presence; the last one wins", () => {
+    const h = harness();
+    h.client.start();
+    h.sockets[0]!.open();
+    assert.deepEqual(h.daemons, ["online"]);
+    h.sockets[0]!.push({ t: "status", daemon: "offline" });
+    assert.deepEqual(h.daemons, ["online", "offline"]);
+    h.sockets[0]!.push({ t: "status", daemon: "sideways" });
+    assert.deepEqual(h.daemons, ["online", "offline"]);
+    assert.equal(h.client.getStatus(), "open", "presence does not change the phone's own socket state");
+  });
+
+  await test("unknown control frames, including the relay's 30s ping, are ignored and never answered", () => {
+    const h = harness();
+    h.client.start();
+    const s = h.sockets[0]!;
+    s.open();
+    const before = s.control.length;
+    const statusesBefore = h.statuses.length;
+    const errorsBefore = h.errors.length;
+    s.push({ t: "ping" });
+    s.push({ t: "pong" });
+    s.push({ t: "some-future-frame", detail: 1 });
+    s.push({});
+    assert.equal(s.control.length, before, "the client sends no control reply to these");
+    assert.equal(h.client.getStatus(), "open", "none of them moves the socket state");
+    assert.equal(h.statuses.length, statusesBefore, "no status change fired");
+    assert.equal(h.errors.length, errorsBefore, "no error was raised");
+    assert.equal(h.events.length, 0);
+    assert.equal(h.resyncs.count, 0);
+    assert.equal(h.daemons.length, 1, "no presence was reported from them");
+    // The socket still works after the unknown frames.
+    const call = h.client.call<string>("thread.list");
+    const id = s.sent[0]!.id;
+    s.reply(id, "ok");
+    return call.then((v) => assert.equal(v, "ok"));
+  });
+
+  await test("device names: the default follows the platform, empty falls back, long names are clamped", () => {
+    assert.equal(defaultDeviceName("ios"), "iPhone");
+    assert.equal(defaultDeviceName("android"), "Android phone");
+    assert.equal(defaultDeviceName("web"), "Phone");
+    assert.equal(cleanDeviceName("  Work iPad  "), "Work iPad");
+    assert.equal(cleanDeviceName("   "), "Phone");
+    assert.equal(cleanDeviceName(undefined), "Phone");
+    assert.equal(cleanDeviceName("x".repeat(70)).length, 64);
+  });
+
+  await test("the pair frame carries the cleaned device name the user typed", async () => {
+    const sockets: FakeSocket[] = [];
+    await exchangePairCode("https://relay.test", "ABCDEFGH12", {
+      deviceName: "  Work iPad ",
+      socketFactory: pairSocket(sockets),
+      timers: fakeTimers().api,
+    });
+    assert.deepEqual(sockets[0]!.control, [{ t: "pair", code: "ABCDEFGH12", name: "Work iPad" }]);
   });
 
   console.log(`\n${passed} smoke checks passed`);
