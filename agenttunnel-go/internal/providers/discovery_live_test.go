@@ -67,14 +67,14 @@ func TestOpenCodeDiscoveryAgainstInstalledCLI(t *testing.T) {
 func TestCommandCodeDiscoveryAgainstInstalledCLI(t *testing.T) {
 	requireLive(t)
 	bin := ""
-	for _, candidate := range []string{"command-code", "cmd"} {
+	for _, candidate := range []string{"commandcode", "cmd"} {
 		if _, err := exec.LookPath(candidate); err == nil {
 			bin = candidate
 			break
 		}
 	}
 	if bin == "" {
-		t.Skip("command-code/cmd not installed")
+		t.Skip("commandcode/cmd not installed")
 	}
 	d := NewCommandDiscoverer(bin, "--list-models").WithParser(ParseCommandCodeModels)
 	d.Timeout = liveProbeTimeout

@@ -17,7 +17,7 @@ func BuiltinDrivers() []Driver {
 		NewGenericDriver(contracts.HarnessCursor, "cursor-agent", cursorInvocation, JSONLineTranslator{}),
 		NewGenericDriver(contracts.HarnessGrok, "grok", grokInvocation, JSONLineTranslator{}),
 		NewGenericDriver(contracts.HarnessPi, "pi", piInvocation, JSONLineTranslator{}),
-		NewGenericDriver(contracts.HarnessCommandCode, "command-code", commandCodeInvocation, CommandCodeTranslator{}),
+		NewGenericDriver(contracts.HarnessCommandCode, "commandcode", commandCodeInvocation, CommandCodeTranslator{}),
 	}
 }
 
@@ -27,7 +27,7 @@ func BuiltinDrivers() []Driver {
 // Only harnesses with a real, non-interactive listing command are probed:
 //   - opencode:            `opencode models`
 //   - pi:                  `pi --list-models` (a fixed-width table, on stderr)
-//   - command-code / cmd:  `--list-models` (provider/model slugs)
+//   - commandcode / cmd:   `--list-models` (provider/model slugs)
 //   - cursor-agent:        `--list-models` ("<slug> - <description>" rows)
 //
 // The rest fall back to the seed catalog: claude rejects `--list-models`, and
@@ -41,10 +41,10 @@ func BuiltinRegistry() *Registry {
 	// `pi --list-models` prints a fixed-width table, on stderr.
 	r.RegisterDiscoverer(contracts.HarnessPi,
 		NewCommandDiscoverer("pi", "--list-models").WithParser(ParsePiModelListTable))
-	// Command Code's CLI is `command-code`, also installed as `cmd`; both print
+	// Command Code's CLI is installed as `commandcode` and `cmd`; both print
 	// provider/model slugs and bare short model names from `--list-models`.
 	r.RegisterDiscoverer(contracts.HarnessCommandCode, NewChainDiscoverer(
-		NewCommandDiscoverer("command-code", "--list-models").WithParser(ParseCommandCodeModels),
+		NewCommandDiscoverer("commandcode", "--list-models").WithParser(ParseCommandCodeModels),
 		NewCommandDiscoverer("cmd", "--list-models").WithParser(ParseCommandCodeModels),
 	))
 	// `cursor-agent --list-models` prints "<slug> - <description>" rows.
@@ -128,5 +128,5 @@ func commandCodeInvocation(spec SessionSpec) (CommandSpec, error) {
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}
-	return CommandSpec{Binary: "command-code", Args: args, PromptVia: "arg"}, nil
+	return CommandSpec{Binary: "commandcode", Args: args, PromptVia: "arg"}, nil
 }

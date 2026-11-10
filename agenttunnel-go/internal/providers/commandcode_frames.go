@@ -7,7 +7,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
-// CommandCodeTranslator maps `command-code -p --output-format json` NDJSON.
+// CommandCodeTranslator maps `commandcode -p --output-format json` NDJSON.
 //
 // The CLI emits "event" frames for tool progress (`{"type":"event","event":{...}}`)
 // and one final "result" frame that carries the answer in finalText. There are
