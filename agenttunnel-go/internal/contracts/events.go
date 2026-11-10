@@ -14,6 +14,7 @@ const (
 	EvtThreadRenamed      EventType = "thread.renamed"
 	EvtThreadDeleted      EventType = "thread.deleted"
 	EvtWorktreeAttached   EventType = "thread.worktree-attached"
+	EvtWorktreeDetached   EventType = "thread.worktree-detached"
 	EvtMessageSent        EventType = "thread.message-sent"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
@@ -99,6 +100,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ThreadDeleted](data)
 	case EvtWorktreeAttached:
 		return decodePayload[WorktreeAttached](data)
+	case EvtWorktreeDetached:
+		return decodePayload[WorktreeDetached](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
 	case EvtModelSet:
@@ -165,6 +168,13 @@ type WorktreeAttached struct {
 }
 
 func (WorktreeAttached) eventType() EventType { return EvtWorktreeAttached }
+
+// WorktreeDetached clears a thread's own worktree, so the thread can be given a
+// fresh one. It is written when the worktree was removed or its directory was
+// lost; an inherited worktree is never detached, the subthread follows its parent.
+type WorktreeDetached struct{}
+
+func (WorktreeDetached) eventType() EventType { return EvtWorktreeDetached }
 
 // ThreadRenamed renames a thread, typically after the model has read the first
 // exchange and picked a title.
