@@ -105,9 +105,10 @@ secret is rejected (`ack` `bad_secret`, close 4401).
    `{"t":"pair","code":"XXXXX-XXXXX","name":"Pixel 9"}`.
 5. Relay verifies in constant time, enforces limits, and replies
    `{"t":"ack","ok":true,"instance":"<id>","instanceName":"<label>","token":"<clientToken>","expires":"<RFC3339>","clientId":"<id>"}`.
-6. **Rate limit**: 5 failed `pair` attempts per source IP per minute and 20
-   per code lifetime globally; the 20th invalidates the live code. Failures
-   are uniform (`bad_code`) whether the code is wrong, expired, or used.
+6. **Rate limit**: 5 failed `pair` attempts per source IP per minute. Failures
+   count only against that address; no live code is invalidated, so one
+   address cannot lock out another instance's pairing. Failures are uniform
+   (`bad_code`) whether the code is wrong, expired, or used.
 
 **Instance binding**: a client token is bound to exactly one `instance` id.
 `attach` to any other instance fails.
@@ -201,6 +202,16 @@ any frame above.
   `relay.pair.start`, `relay.devices.list`, `relay.unpair {clientId | all}`.
   `atd --relay <url>` enables the relay the same way the desktop does, and the
   setting persists.
+- **Daemon hello limits**: at most 30 hellos per source IP per minute
+  (`rate_limited`), and at most 1000 registered instances by default
+  (`too_many_instances`). The cap is `Options.MaxInstances`; `atrelay` has no
+  flag for it yet. Known daemons still connect at the cap.
+- **Behind a TLS proxy**: `atrelay -trust-proxy-header X-Forwarded-For` makes
+  the per-IP limits read the last entry of that header. Off by default. Enable
+  it only when your proxy sets the header itself, since otherwise clients can
+  choose their own address.
+- **Relayed phones cannot configure the relay**: a relayed connection refuses
+  every `relay.*` RPC with `-32003`. Only the desktop app can pair or unpair.
 - **Secrets on disk**: the daemon keeps its instance id, secret, and device
   list in `<stateDir>/relay.json` (mode 0600). The relay keeps only hashes.
 
