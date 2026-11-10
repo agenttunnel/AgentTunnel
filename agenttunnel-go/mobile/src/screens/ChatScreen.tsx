@@ -184,6 +184,9 @@ export function ChatScreen({
           {state.queued > 0 ? ` ${state.queued} message${state.queued === 1 ? "" : "s"} waiting.` : ""}
         </Banner>
       ) : null}
+      {state.status === "open" && state.daemon === "offline" ? (
+        <Banner tone="warn">Your computer is offline. Sends fail until it reconnects.</Banner>
+      ) : null}
       {state.snapshotError ? <Banner tone="err">{state.snapshotError}</Banner> : null}
       {state.sendError ? (
         <Pressable onPress={actions.clearSendError} accessibilityRole="button" accessibilityLabel="Dismiss error">
@@ -225,7 +228,7 @@ export function ChatScreen({
             </>
           ) : (
             <Text style={styles.statusText} numberOfLines={1}>
-              {connected ? "Idle" : "Waiting for connection"}
+              {connected ? (state.daemon === "offline" ? "Computer offline" : "Idle") : "Waiting for connection"}
             </Text>
           )}
         </View>
