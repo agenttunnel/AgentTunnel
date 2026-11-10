@@ -17,11 +17,21 @@ func setLeadRuntime(s *ThreadState, index int, rt contracts.LeadRuntime) ([]cont
 func TestDecideLeadRuntimeSetRejectsBadIndexAndHarness(t *testing.T) {
 	s := NewThreadState("t1")
 	s.Exists = true
-	for _, idx := range []int{-1, contracts.MaxLeads} {
+	// The default team has one lead, so index 0 is lead 1 and index 1 is the
+	// append slot; anything past that needs a larger team first.
+	for _, idx := range []int{-1, 2} {
 		if _, err := setLeadRuntime(s, idx, contracts.LeadRuntime{}); err == nil {
-			t.Fatalf("index %d should be rejected", idx)
+			t.Fatalf("index %d should be rejected on a one-lead team", idx)
 		}
 	}
+	s.Leads = 5
+	if _, err := setLeadRuntime(s, 5, contracts.LeadRuntime{Model: "m"}); err != nil {
+		t.Fatalf("append slot on a five-lead team should be accepted: %v", err)
+	}
+	if _, err := setLeadRuntime(s, 6, contracts.LeadRuntime{Model: "m"}); err == nil {
+		t.Fatal("index past the append slot should be rejected")
+	}
+	s.Leads = 0
 	if _, err := setLeadRuntime(s, 0, contracts.LeadRuntime{Harness: "not-a-harness"}); err == nil {
 		t.Fatal("an unknown harness should be rejected")
 	}
