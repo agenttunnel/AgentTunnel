@@ -137,6 +137,25 @@ export function openExternal(url: string): void {
 }
 
 /**
+ * installExternalLinks sends every http(s) link click to openExternal, so no link
+ * navigates the AgentTunnel window. The capture listener runs before any component
+ * handler and covers markdown, diffs, and target="_blank" links alike.
+ */
+export function installExternalLinks(): void {
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (!(event.target instanceof Element)) return;
+      const link = event.target.closest<HTMLAnchorElement>("a[href]");
+      if (!link || (link.protocol !== "https:" && link.protocol !== "http:")) return;
+      event.preventDefault();
+      openExternal(link.href);
+    },
+    true,
+  );
+}
+
+/**
  * pickFolder opens the native folder picker in the desktop shell and resolves to
  * the chosen path, or null when cancelled or when not running in the shell.
  */
