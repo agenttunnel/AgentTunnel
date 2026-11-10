@@ -125,6 +125,41 @@ func TestPairingNeedsALiveConnection(t *testing.T) {
 	}
 }
 
+// Status reports the LAN host read on each call, and that read happens outside
+// c.mu so a slow interface lookup never blocks other relay RPCs.
+func TestStatusReportsLANHostOutsideTheLock(t *testing.T) {
+	store := settings.New("")
+	store.SetRelay(settings.Relay{Enabled: true, URL: "ws://127.0.0.1:7777"})
+	c, err := New(Options{StateDir: t.TempDir(), Settings: store})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	host := "192.168.1.42"
+	calls := 0
+	lockFree := true
+	c.lanHost = func() string {
+		calls++
+		if !c.mu.TryLock() {
+			lockFree = false
+		} else {
+			c.mu.Unlock()
+		}
+		return host
+	}
+
+	st := c.Status()
+	if st.LANHost != "192.168.1.42" {
+		t.Fatalf("LANHost = %q, want 192.168.1.42", st.LANHost)
+	}
+	if !lockFree {
+		t.Fatal("the LAN lookup ran while c.mu was held")
+	}
+	host = "10.0.0.7"
+	if st := c.Status(); st.LANHost != "10.0.0.7" || calls != 2 {
+		t.Fatalf("LANHost = %q after %d lookups, want 10.0.0.7 after 2", st.LANHost, calls)
+	}
+}
+
 func TestEnableRefusesInsecureRemoteURL(t *testing.T) {
 	store := settings.New("")
 	c, err := New(Options{StateDir: t.TempDir(), Settings: store})

@@ -3,9 +3,11 @@ import qrcode from "qrcode-generator";
 import type { Rpc } from "../lib/rpc";
 import {
   pairUri,
+  phoneRelayUrl,
   type PairOffer,
   type RelayDevice,
   type RelayStatus,
+  type TunnelStatus,
 } from "../lib/relayPairing";
 
 /** Relay state changes arrive only by polling, so poll while something is pending. */
@@ -27,6 +29,7 @@ function errorText(e: unknown): string {
  */
 export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
   const [status, setStatus] = useState<RelayStatus | null>(null);
+  const [tunnel, setTunnel] = useState<TunnelStatus>({ listening: false });
   const [devices, setDevices] = useState<RelayDevice[]>([]);
   const [urlInput, setUrlInput] = useState("");
   const [offer, setOffer] = useState<LiveOffer | null>(null);
@@ -38,12 +41,14 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
   const refresh = useCallback(async () => {
     if (!rpc) return;
     try {
-      const [s, d] = await Promise.all([
+      const [s, d, t] = await Promise.all([
         rpc.call<RelayStatus>("relay.status"),
         rpc.call<{ devices: RelayDevice[] }>("relay.devices.list"),
+        rpc.call<TunnelStatus>("relay.tunnel.status"),
       ]);
       setStatus(s);
       setDevices(d.devices);
+      setTunnel(t);
       setUrlInput((cur) => cur || s.url);
     } catch (e) {
       setError(errorText(e));
@@ -75,13 +80,23 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
     }
   }, [devices, offer]);
 
+  // The phone dials the in-app tunnel's LAN URL when it runs. Otherwise a
+  // loopback saved URL is swapped for the LAN host. Only the QR and the hint
+  // below use it; the saved URL stays as the user set it.
+  const phoneUrl = tunnel.listening && tunnel.lanUrl
+    ? tunnel.lanUrl
+    : status?.url
+      ? phoneRelayUrl(status.url, status.lanHost)
+      : "";
+  const phoneUrlDiffers = !tunnel.listening && !!status?.url && phoneUrl !== status.url;
+
   const qr = useMemo(() => {
-    if (!offer || !status?.url) return "";
+    if (!offer || !phoneUrl) return "";
     const q = qrcode(0, "M");
-    q.addData(pairUri(status.url, offer.code));
+    q.addData(pairUri(phoneUrl, offer.code));
     q.make();
     return q.createDataURL(4, 2);
-  }, [offer, status?.url]);
+  }, [offer, phoneUrl]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -115,15 +130,34 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
       setUrlInput(s.url);
     });
 
-  const newCode = () =>
+  const mintCode = async () => {
+    if (!rpc) return;
+    const [o, d] = await Promise.all([
+      rpc.call<PairOffer>("relay.pair.start"),
+      rpc.call<{ devices: RelayDevice[] }>("relay.devices.list"),
+    ]);
+    setDevices(d.devices);
+    setOffer({ ...o, deviceCount: d.devices.length });
+  };
+
+  const newCode = () => act(mintCode);
+
+  // Starting the tunnel serves the relay in the daemon and waits for its socket,
+  // so a code can be minted straight away and the QR shows the LAN address.
+  const startTunnel = () =>
     act(async () => {
       if (!rpc) return;
-      const [o, d] = await Promise.all([
-        rpc.call<PairOffer>("relay.pair.start"),
-        rpc.call<{ devices: RelayDevice[] }>("relay.devices.list"),
-      ]);
-      setDevices(d.devices);
-      setOffer({ ...o, deviceCount: d.devices.length });
+      setTunnel(await rpc.call<TunnelStatus>("relay.tunnel.start"));
+      setStatus(await rpc.call<RelayStatus>("relay.status"));
+      await mintCode();
+    });
+
+  const stopTunnel = () =>
+    act(async () => {
+      if (!rpc) return;
+      setTunnel(await rpc.call<TunnelStatus>("relay.tunnel.stop"));
+      setStatus(await rpc.call<RelayStatus>("relay.status"));
+      setOffer(null);
     });
 
   const unpair = (target: string | "all") => {
@@ -148,10 +182,24 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
   return (
     <>
       <p className="hint">
-        Pair a phone through a relay. Off by default. The daemon only dials out, so nothing new
-        listens on your network. The relay operator can read traffic, so self-host it if that
-        matters to you.
+        Pair a phone through a relay. Off by default. The relay operator can read traffic, so
+        self-host it if that matters to you. The phone tunnel runs the relay inside this app and
+        listens on your local network until you stop it.
       </p>
+      <div className="sheet-actions" style={{ marginTop: 0, marginBottom: 12 }}>
+        {tunnel.listening ? (
+          <button onClick={stopTunnel} disabled={busy || !rpc}>
+            Stop phone tunnel
+          </button>
+        ) : (
+          <button onClick={startTunnel} disabled={busy || !rpc}>
+            Start phone tunnel
+          </button>
+        )}
+      </div>
+      {tunnel.listening && tunnel.lanUrl && (
+        <p className="hint">Phones on this network connect to {tunnel.lanUrl}.</p>
+      )}
       <div className="relay-row">
         <div
           className={`toggle ${enabled ? "on" : ""}`}
@@ -178,9 +226,9 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             placeholder="wss://relay.example.com"
-            disabled={busy}
+            disabled={busy || tunnel.listening}
           />
-          {urlChanged && (
+          {urlChanged && !tunnel.listening && (
             <button onClick={saveUrl} disabled={busy}>
               Save URL
             </button>
@@ -204,6 +252,13 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
               <img className="relay-qr" src={qr} alt="Pairing QR code" width={176} height={176} />
               <div className="relay-code-col">
                 <div className="relay-code">{offer.code}</div>
+                {phoneUrlDiffers && (
+                  <p className="hint">
+                    The phone must reach {phoneUrl}. Start the relay with{" "}
+                    <code>-listen 0.0.0.0:{new URL(phoneUrl).port || "7777"}</code> so it accepts LAN connections.
+                    Your saved relay address only works from this computer.
+                  </p>
+                )}
                 <p className="hint">
                   Scan with a QR app, or type the code in the phone app. Single use. Expires at{" "}
                   {new Date(offer.expires).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.

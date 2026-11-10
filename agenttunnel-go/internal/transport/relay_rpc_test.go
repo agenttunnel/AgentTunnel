@@ -19,6 +19,7 @@ type fakeRelay struct {
 	url       string
 	unpairAll bool
 	unpairID  string
+	tunnel    TunnelStatus
 }
 
 func (f *fakeRelay) Status() RelayStatus {
@@ -54,6 +55,26 @@ func (f *fakeRelay) Unpair(_ context.Context, clientID string, all bool) error {
 	defer f.mu.Unlock()
 	f.unpairID, f.unpairAll = clientID, all
 	return nil
+}
+
+func (f *fakeRelay) StartTunnel(context.Context) (TunnelStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tunnel = TunnelStatus{Listening: true, Port: 7777, LANURL: "ws://192.168.1.5:7777"}
+	return f.tunnel, nil
+}
+
+func (f *fakeRelay) StopTunnel() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tunnel = TunnelStatus{}
+	return nil
+}
+
+func (f *fakeRelay) TunnelStatus() TunnelStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tunnel
 }
 
 func relayDispatcher(t *testing.T, rc RelayControl) *Dispatcher {
@@ -103,6 +124,35 @@ func TestRelayRPCsDriveTheClient(t *testing.T) {
 	}
 	if !fr.unpairAll {
 		t.Fatal("unpair with all=true should reach the relay client")
+	}
+}
+
+// The tunnel RPCs start, report, and stop the in-app relay through RelayControl.
+func TestRelayRPCsDriveTheTunnel(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRelay{}
+	disp := relayDispatcher(t, fr)
+
+	res, err := disp.Handle(ctx, Request{ID: "1", Method: "relay.tunnel.start"})
+	if err != nil {
+		t.Fatalf("relay.tunnel.start: %v", err)
+	}
+	if st := res.(TunnelStatus); !st.Listening || st.LANURL != "ws://192.168.1.5:7777" {
+		t.Fatalf("start must report the listening tunnel, got %+v", st)
+	}
+	res, err = disp.Handle(ctx, Request{ID: "2", Method: "relay.tunnel.status"})
+	if err != nil {
+		t.Fatalf("relay.tunnel.status: %v", err)
+	}
+	if st := res.(TunnelStatus); !st.Listening {
+		t.Fatalf("status must show the tunnel listening, got %+v", st)
+	}
+	res, err = disp.Handle(ctx, Request{ID: "3", Method: "relay.tunnel.stop"})
+	if err != nil {
+		t.Fatalf("relay.tunnel.stop: %v", err)
+	}
+	if st := res.(TunnelStatus); st.Listening {
+		t.Fatalf("stop must report the tunnel closed, got %+v", st)
 	}
 }
 

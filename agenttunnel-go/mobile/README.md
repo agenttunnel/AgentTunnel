@@ -2,6 +2,21 @@
 
 Expo app that pairs with a desktop AgentTunnel through the relay.
 
+## Pairing on your LAN
+
+1. Run the relay where both devices can reach it, bound to the LAN:
+   `atrelay -listen 0.0.0.0:7777`. It prints a `reachable on the LAN at ws://…`
+   line with the address to use. The default `127.0.0.1` bind is loopback only.
+2. In the desktop app's Settings, turn on the phone relay and use that
+   `ws://` address. The pairing QR then points the phone at this machine's LAN
+   address, and the saved URL is unchanged.
+3. On the phone, tap **Scan QR code** and point the camera at the desktop QR.
+   The scan fills in the relay address and code. Tap **Pair** to finish. Typing
+   the code still works.
+
+Plain `ws://` is accepted only for loopback and private addresses. Use `wss://`
+behind TLS for anything on the internet.
+
 ## iOS build and PR
 
 Requires macOS with full Xcode 26 or newer (Swift 6.2; Command Line Tools alone
