@@ -1728,6 +1728,24 @@ export default function App() {
     }
   };
 
+  // A graph group's prompt goes to its thread the way a chat message does: a new
+  // turn, or a steer while one runs. The chat tab shows the result.
+  const sendGroup = async (threadId: string, text: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const steer = running.length > 0 || busy;
+    if (!steer) setTurnBusy(threadId, true);
+    setTab("chat");
+    try {
+      await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e), threadId);
+    } finally {
+      if (!steer) setTurnBusy(threadId, false);
+      refresh(threadId).catch(() => undefined);
+    }
+  };
+
   const toggle = async (field: "autoMode" | "peerMailbox", value: boolean) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
@@ -2978,6 +2996,7 @@ export default function App() {
             mailbox={thread?.mailbox ?? null}
             peerMailbox={thread?.peerMailbox ?? false}
             onOpenAgent={setDetailId}
+            onSubmitGroup={sendGroup}
           />
         )}
       </div>
