@@ -4,16 +4,19 @@
 # to main. Dry-run by default: it prints what it would do and changes nothing
 # remote. Pass --create to push the branch and open the PR.
 #
-# The PR needs a conventional title (taken from the branch's latest commit
-# unless --title is given) and a body file written by you, covering the
+# A PR needs a conventional title and a body file written by you, covering the
 # problem, the fix, and the model and harness that did the work (AGENTS.md).
-# The Claude Code attribution line is appended for you.
+# The Claude Code attribution line is appended for you. The dry run may default
+# the title to the branch's latest commit subject, but --create requires an
+# explicit --title, because that subject does not describe the whole PR.
+#
+# A branch more than one commit ahead of main carries all of those commits into
+# the PR. Branch from main first for an iOS-only PR; the script warns otherwise.
 #
 # Usage:
 #   scripts/ios-pr.sh                          # dry run
 #   scripts/ios-pr.sh --body-file body.md      # dry run with body preview
-#   scripts/ios-pr.sh --create --body-file body.md
-#   scripts/ios-pr.sh --create --title "feat(mobile): ..." --body-file body.md
+#   scripts/ios-pr.sh --create --title "ci(mobile): ..." --body-file body.md
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +46,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+if [ "$MODE" = create ]; then
+  [ -n "$TITLE" ] || fail "--create needs --title; the default title is the latest commit subject, which does not describe the whole PR"
+  [ -n "$BODY_FILE" ] || fail "--create needs --body-file"
+fi
+
 repo="$(git -C "$here" rev-parse --show-toplevel)"
 branch="$(git -C "$repo" branch --show-current)"
 [ -n "$branch" ] || fail "detached HEAD; check out a branch first"
@@ -62,6 +70,10 @@ if [ "$ahead" -eq 0 ]; then
   echo "ios-pr: $branch has no commits beyond $base; nothing to open a PR for"
   exit 0
 fi
+if [ "$ahead" -gt 1 ]; then
+  echo "ios-pr: warning: $branch is $ahead commits beyond $base, so the PR carries non-iOS commits too." >&2
+  echo "ios-pr: for an iOS-only PR, branch from main first (one concern per PR)." >&2
+fi
 
 if [ -z "$TITLE" ]; then
   TITLE="$(git -C "$repo" log -1 --format=%s)"
@@ -70,7 +82,6 @@ conventional='^(feat|fix|docs|test|chore|refactor|perf|build|ci|style|revert)(\(
 [[ "$TITLE" =~ $conventional ]] || fail "title is not a conventional commit title: '$TITLE' (pass --title)"
 
 if [ -z "$BODY_FILE" ]; then
-  [ "$MODE" = "dry-run" ] || fail "--create needs --body-file"
   echo "ios-pr: no --body-file given; a real run needs one (problem, fix, model and harness)"
 else
   [ -r "$BODY_FILE" ] || fail "cannot read body file: $BODY_FILE"
