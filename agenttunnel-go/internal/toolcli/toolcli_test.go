@@ -184,3 +184,24 @@ func TestToolSubthreadPostsTheBrief(t *testing.T) {
 		t.Fatalf("posted body = %+v", got)
 	}
 }
+
+// A started subthread prints the new thread's id, the only handle the lead has
+// on it beyond the sidebar.
+func TestToolSubthreadPrintsTheThreadID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true,"threadId":"thread-sub-7"}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AT_THREAD_ID", "t1")
+	t.Setenv("AT_AGENT_ID", "agent-orchestrator")
+	t.Setenv("AT_DAEMON_URL", srv.URL)
+
+	var code int
+	out := captureStdout(t, func() { code = Run([]string{"subthread", "--task", "write the release notes"}) })
+	if code != 0 {
+		t.Fatalf("subthread exit = %d, want 0", code)
+	}
+	if out != "thread-sub-7\n" {
+		t.Fatalf("stdout = %q, want the subthread's thread id", out)
+	}
+}
