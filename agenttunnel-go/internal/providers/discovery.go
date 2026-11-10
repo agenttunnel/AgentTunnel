@@ -239,7 +239,7 @@ func parsePiBool(s string) (bool, bool) {
 	return false, false
 }
 
-// ParseCommandCodeModels parses `command-code --list-models` (also `cmd`). Each
+// ParseCommandCodeModels parses `commandcode --list-models` (also `cmd`). Each
 // row is a model id followed by a description. The CLI accepts both a
 // provider/model slug and the bare short name after the last "/", and prints both
 // forms, so a slash-only parser silently drops half the catalog. Provider
