@@ -314,17 +314,25 @@ func (s *Server) handleAppOpen(c *conn, req Request) {
 	c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
 }
 
+// conn is one JSON-RPC client: a /ws socket, or a Session whose frames arrive
+// through a relay. Both share the same dispatch and subscription behavior.
 type conn struct {
-	ws     *websocket.Conn
+	ws     *websocket.Conn // nil for a Session
+	sink   func(Response)  // set for a Session
 	engine *domain.Engine
 	disp   *Dispatcher
 	srv    *Server
 
 	writeMu sync.Mutex
+	subMu   sync.Mutex
 	unsubs  []func()
 }
 
 func (c *conn) send(resp Response) {
+	if c.sink != nil {
+		c.sink(resp)
+		return
+	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return
@@ -337,37 +345,49 @@ func (c *conn) send(resp Response) {
 }
 
 func (c *conn) serve(ctx context.Context) {
-	defer func() {
-		for _, u := range c.unsubs {
-			u()
-		}
-	}()
+	defer c.unsubscribeAll()
 
 	for {
 		_, data, err := c.ws.Read(ctx)
 		if err != nil {
 			return
 		}
-		var req Request
-		if err := json.Unmarshal(data, &req); err != nil {
-			continue
+		c.handleFrame(ctx, data)
+	}
+}
+
+// handleFrame dispatches one client->server JSON-RPC frame. Requests run on
+// their own goroutine so a slow turn never blocks the reader.
+func (c *conn) handleFrame(ctx context.Context, data []byte) {
+	var req Request
+	if err := json.Unmarshal(data, &req); err != nil {
+		return
+	}
+	if req.Method == "thread.subscribe" {
+		c.subscribe(ctx, req)
+		return
+	}
+	if req.Method == "app.open" {
+		c.srv.handleAppOpen(c, req)
+		return
+	}
+	go func() {
+		result, err := c.disp.Handle(ctx, req)
+		if err != nil {
+			c.send(Response{ID: req.ID, Error: &RPCError{Code: 1, Message: err.Error()}})
+			return
 		}
-		if req.Method == "thread.subscribe" {
-			c.subscribe(ctx, req)
-			continue
-		}
-		if req.Method == "app.open" {
-			c.srv.handleAppOpen(c, req)
-			continue
-		}
-		go func() {
-			result, err := c.disp.Handle(ctx, req)
-			if err != nil {
-				c.send(Response{ID: req.ID, Error: &RPCError{Code: 1, Message: err.Error()}})
-				return
-			}
-			c.send(Response{ID: req.ID, Result: result})
-		}()
+		c.send(Response{ID: req.ID, Result: result})
+	}()
+}
+
+func (c *conn) unsubscribeAll() {
+	c.subMu.Lock()
+	unsubs := c.unsubs
+	c.unsubs = nil
+	c.subMu.Unlock()
+	for _, u := range unsubs {
+		u()
 	}
 }
 
@@ -375,7 +395,9 @@ func (c *conn) subscribe(ctx context.Context, req Request) {
 	var p threadParams
 	_ = json.Unmarshal(req.Params, &p)
 	events, unsub := c.engine.Subscribe(p.ThreadID)
+	c.subMu.Lock()
 	c.unsubs = append(c.unsubs, unsub)
+	c.subMu.Unlock()
 	c.send(Response{ID: req.ID, Result: map[string]any{"subscribed": p.ThreadID}})
 	go func() {
 		for {
