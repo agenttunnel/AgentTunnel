@@ -799,6 +799,28 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		d.steering.Post(p.ThreadID, prompt)
 		return map[string]any{"ok": true}, nil
 
+	case "thread.btw":
+		// A side question is answered from a snapshot and recorded nowhere: it
+		// takes no turn slot, so it works while a turn runs without steering it.
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Question string             `json:"question"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Question) == "" {
+			return nil, errors.New("question is required")
+		}
+		if d.runner == nil {
+			return nil, errors.New("side questions are unavailable")
+		}
+		answer, err := d.runner.Btw(ctx, p.ThreadID, p.Question)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"answer": answer}, nil
+
 	case "thread.setAutoMode":
 		var p setBoolParams
 		if err := decode(req.Params, &p); err != nil {
