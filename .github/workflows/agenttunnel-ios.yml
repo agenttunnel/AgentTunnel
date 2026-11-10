@@ -55,5 +55,14 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      # macos-15 defaults to Xcode 16.4 (Swift 6.1). ExpoModulesJSI needs
+      # Swift tools 6.2, which the image ships as Xcode 26.x. Select the newest.
+      - name: Select the newest Xcode
+        run: |
+          xcode="$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          swift --version
+
       - name: Build
         run: scripts/ios-build.sh
