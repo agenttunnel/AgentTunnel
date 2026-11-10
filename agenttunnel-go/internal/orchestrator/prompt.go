@@ -33,7 +33,8 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
 		}
 	}
-	b.WriteString("\n\nIf your task splits into smaller pieces you may propose your own subagents with:\n")
+	b.WriteString("\n\nGit is the team lead's. Do not run state-changing git (add, commit, push, branch, checkout, switch, reset, restore, rebase, merge, stash, worktree, tag, fetch, pull, clean); the lead commits your work. Read-only git (status, diff, log, show) is fine, and a guard refuses the rest.\n")
+	b.WriteString("\nIf your task splits into smaller pieces you may propose your own subagents with:\n")
 	b.WriteString("  \"$AT_TOOL\" tool spawn --role executor --name <short-name> --task \"<what it should do>\"\n")
 	b.WriteString("A proposal only runs after the team lead approves it; keep working on your own task while you wait. Report progress and findings with ")
 	b.WriteString(ToolPrefix)
