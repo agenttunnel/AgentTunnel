@@ -70,14 +70,17 @@ func (d *Dispatcher) ensureWorktree(ctx context.Context, id contracts.ThreadID) 
 
 // cutFirstWorktree gives a top-level thread its first worktree. A subthread with
 // no ref sits in a parent that never got one, so it stays on the project path.
+// A failed cut is retried on the next turn, so a project that became a repository
+// since is picked up without any restart.
 func (d *Dispatcher) cutFirstWorktree(ctx context.Context, id contracts.ThreadID, parent contracts.ThreadID) {
-	if parent != "" || d.worktreeIneligible(id) {
+	if parent != "" {
 		return
 	}
 	if _, err := d.attachWorktree(ctx, id); err != nil {
-		d.markWorktreeIneligible(id)
-		d.auditLog("worktree.fallback", map[string]any{"threadId": string(id), "error": err.Error()})
+		d.noteWorktreeFailure(id, err)
+		return
 	}
+	d.clearWorktreeFailure(id)
 }
 
 // replaceWorktree cuts a fresh worktree for a thread whose own directory is gone
@@ -98,11 +101,8 @@ func (d *Dispatcher) replaceWorktree(ctx context.Context, id contracts.ThreadID)
 	if err != nil {
 		return fmt.Errorf("worktree %s is missing and a new one could not be cut for thread %s: %w", lost, id, err)
 	}
-	if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeDetach, ThreadID: id}); err != nil {
-		_ = worktree.Remove(context.WithoutCancel(ctx), repo, ref.Path, false)
-		return err
-	}
-	if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeAttach, ThreadID: id, Worktree: &ref}); err != nil {
+	// One event swaps the ref: there is no moment where the thread holds none.
+	if err := d.dispatchWorktree(ctx, contracts.Command{Type: contracts.CmdWorktreeReplace, ThreadID: id, Worktree: &ref}); err != nil {
 		_ = worktree.Remove(context.WithoutCancel(ctx), repo, ref.Path, false)
 		return err
 	}
@@ -149,21 +149,30 @@ func (d *Dispatcher) dispatchWorktree(ctx context.Context, cmd contracts.Command
 	return d.engine.Dispatch(ctx, cmd)
 }
 
-// worktreeIneligible reports whether a thread's first worktree cut already failed
-// in this daemon's life, so later turns skip git and run on the project path.
-func (d *Dispatcher) worktreeIneligible(id contracts.ThreadID) bool {
+// noteWorktreeFailure audits a failed first cut, but only when its reason differs
+// from the last one recorded for the thread. Every turn retries, so an unchanged
+// failure (a plain folder, an empty repo) is logged once, not on every turn.
+func (d *Dispatcher) noteWorktreeFailure(id contracts.ThreadID, err error) {
+	reason := err.Error()
 	d.worktreeMu.Lock()
-	defer d.worktreeMu.Unlock()
-	return d.noWorktree[id]
+	if d.worktreeFailures == nil {
+		d.worktreeFailures = map[contracts.ThreadID]string{}
+	}
+	if d.worktreeFailures[id] == reason {
+		d.worktreeMu.Unlock()
+		return
+	}
+	d.worktreeFailures[id] = reason
+	d.worktreeMu.Unlock()
+	d.auditLog("worktree.fallback", map[string]any{"threadId": string(id), "error": reason})
 }
 
-func (d *Dispatcher) markWorktreeIneligible(id contracts.ThreadID) {
+// clearWorktreeFailure forgets a thread's recorded failure once its cut succeeds,
+// so a later failure is audited again.
+func (d *Dispatcher) clearWorktreeFailure(id contracts.ThreadID) {
 	d.worktreeMu.Lock()
 	defer d.worktreeMu.Unlock()
-	if d.noWorktree == nil {
-		d.noWorktree = map[contracts.ThreadID]bool{}
-	}
-	d.noWorktree[id] = true
+	delete(d.worktreeFailures, id)
 }
 
 func dirExists(p string) bool {

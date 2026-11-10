@@ -90,10 +90,10 @@ type Dispatcher struct {
 	turnsMu sync.Mutex
 	turns   map[contracts.ThreadID]context.CancelFunc
 
-	// noWorktree records threads whose first worktree cut failed, so later turns
-	// skip git. In memory: a restart retries once.
-	worktreeMu sync.Mutex
-	noWorktree map[contracts.ThreadID]bool
+	// worktreeFailures holds, per thread, the reason its last first-worktree cut
+	// failed. It only dedupes the audit line: every turn still retries the cut.
+	worktreeMu       sync.Mutex
+	worktreeFailures map[contracts.ThreadID]string
 
 	// shellStarted, when set by a test, runs once a thread.runCommand child is
 	// live. Nil in production.
