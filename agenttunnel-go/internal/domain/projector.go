@@ -24,6 +24,10 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.WorktreeDetached:
 		s.Worktree = nil
 
+	case contracts.WorktreeReplaced:
+		ref := p.Worktree
+		s.Worktree = &ref
+
 	case contracts.ThreadRenamed:
 		s.Title = p.Title
 
