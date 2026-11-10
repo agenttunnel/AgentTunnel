@@ -615,15 +615,24 @@ export default function App() {
   const debounce = useRef<number | undefined>(undefined);
   // Chat stream auto-scroll: pinned to bottom while the user is already there.
   const streamRef = useRef<HTMLDivElement | null>(null);
+  // Only the edge is stored, so scrolling re-renders when the user crosses it.
+  const [atBottom, setAtBottom] = useState(true);
+  const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 120;
 
   useEffect(() => {
     const el = streamRef.current;
     if (!el) return;
     // Follow the stream only when the user is near the bottom; reading history
     // wins over jumping.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
+    const near = nearBottom(el);
+    if (near) el.scrollTop = el.scrollHeight;
+    setAtBottom(near);
   }, [thread?.messages?.length, thread?.messages?.[thread.messages.length - 1]?.text, live.length]);
+
+  const scrollToBottom = () => {
+    const el = streamRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   // Live log follows the newest output, unless the user scrolled up to read.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
@@ -2286,7 +2295,11 @@ export default function App() {
 
         {tab === "chat" ? (
           <>
-            <div className="stream" ref={streamRef}>
+            <div
+              className="stream"
+              ref={streamRef}
+              onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
+            >
               {(!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
                 <div className="stream-empty">
                   <img src="/brand-mark.svg" alt="" />
@@ -2378,6 +2391,17 @@ export default function App() {
                 </div>
               )}
               {error && <div className="empty err-text">{error}</div>}
+              {!atBottom && (
+                <button
+                  type="button"
+                  className="scroll-bottom"
+                  onClick={scrollToBottom}
+                  aria-label="Scroll to latest message"
+                  title="Scroll to latest"
+                >
+                  ↓
+                </button>
+              )}
             </div>
 
             <div

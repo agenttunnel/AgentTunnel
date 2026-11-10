@@ -570,6 +570,30 @@ body.is-resizing * {
   padding: 24px 28px 8px;
   min-height: 0;
 }
+/* Sits at the end of the stream; sticky keeps it on screen while scrolled up. */
+.scroll-bottom {
+  position: sticky;
+  bottom: 12px;
+  z-index: 1;
+  display: block;
+  width: 32px;
+  height: 32px;
+  margin: 8px auto 0;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 30px;
+  text-align: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+.scroll-bottom:hover {
+  border-color: var(--accent-line);
+  background: var(--panel-2);
+}
 .msg {
   position: relative;
   max-width: 900px;
