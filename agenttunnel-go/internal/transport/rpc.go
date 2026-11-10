@@ -94,6 +94,9 @@ type RelayStatus struct {
 	URL       string `json:"url"`
 	Connected bool   `json:"connected"`
 	Instance  string `json:"instance,omitempty"`
+	// LANHost is this machine's private IPv4 address, for the pairing QR when
+	// the saved relay URL points at loopback. Empty when there is none.
+	LANHost string `json:"lanHost,omitempty"`
 }
 
 // PairOffer is a pairing code and the time the relay stops accepting it.

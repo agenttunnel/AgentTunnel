@@ -5,6 +5,8 @@ export type RelayStatus = {
   url: string;
   connected: boolean;
   instance?: string;
+  /** This machine's private IPv4 address, when it has one. */
+  lanHost?: string;
 };
 
 export type PairOffer = {
@@ -25,4 +27,25 @@ export type RelayDevice = {
  */
 export function pairUri(relay: string, code: string): string {
   return `agenttunnel://pair?relay=${encodeURIComponent(relay)}&code=${encodeURIComponent(code)}`;
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * phoneRelayUrl is the relay address a phone should dial. A saved loopback
+ * address is unreachable from a phone, so it swaps in this machine's LAN host,
+ * keeping the port. Any other address, or no LAN host, is returned unchanged.
+ * The saved URL itself never changes.
+ */
+export function phoneRelayUrl(relay: string, lanHost: string | undefined): string {
+  if (!lanHost) return relay;
+  let u: URL;
+  try {
+    u = new URL(relay);
+  } catch {
+    return relay;
+  }
+  if (!LOOPBACK_HOSTS.has(u.hostname)) return relay;
+  u.hostname = lanHost;
+  return u.toString().replace(/\/$/, "");
 }

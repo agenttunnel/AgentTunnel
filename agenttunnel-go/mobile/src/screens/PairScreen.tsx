@@ -1,6 +1,7 @@
-// Pair: relay address plus the code shown on the desktop. Code entry is the
-// only path; QR scanning is out of scope (no camera dependency).
-import { useState } from "react";
+// Pair: relay address plus the code shown on the desktop. The desktop's QR
+// code fills both fields when scanned; typing them stays the fallback.
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -11,6 +12,7 @@ import {
   exchangePairCode,
   normalizePairCode,
   normalizeRelayUrl,
+  parsePairUri,
   type Pairing,
 } from "../lib/relay";
 import { colors, fonts, fontSize, radius, space } from "../theme";
@@ -31,6 +33,38 @@ export function PairScreen({
   const [deviceName, setDeviceName] = useState(() => defaultDeviceName(Platform.OS));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
+  // A camera can report the same code several times before the view unmounts.
+  const scanDone = useRef(false);
+
+  const startScan = async () => {
+    setError(null);
+    if (!permission?.granted) {
+      const answer = await requestPermission();
+      if (!answer.granted) {
+        setError("Camera access is off. Allow it in Settings, or type the code instead.");
+        return;
+      }
+    }
+    scanDone.current = false;
+    setScanning(true);
+  };
+
+  // Scanning only fills the fields. The user still taps Pair, so a stray code
+  // in view cannot start a pairing.
+  const onScanned = ({ data }: BarcodeScanningResult) => {
+    if (scanDone.current) return;
+    scanDone.current = true;
+    setScanning(false);
+    try {
+      const parsed = parsePairUri(data);
+      setRelayUrl(parsed.relay);
+      setCode(parsed.code);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
 
   const canSubmit = !busy && relayUrl.trim() !== "" && code.trim() !== "";
 
@@ -49,6 +83,23 @@ export function PairScreen({
     }
   };
 
+  if (scanning) {
+    return (
+      <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <CameraView
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+          onBarcodeScanned={onScanned}
+        />
+        <View style={styles.scanBar}>
+          <Text style={styles.lead}>Point the camera at the QR code on your desktop.</Text>
+          <Button label="Cancel" onPress={() => setScanning(false)} />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
@@ -57,8 +108,8 @@ export function PairScreen({
       <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
         <Text style={styles.brand}>AgentTunnel</Text>
         <Text style={styles.lead}>
-          Pair this phone with your desktop. Open AgentTunnel on your computer, turn on remote access, and enter
-          the code it shows.
+          Pair this phone with your desktop. Open AgentTunnel on your computer, turn on the phone relay, and scan
+          the QR code it shows, or enter the code.
         </Text>
 
         <Text style={styles.label}>Relay address</Text>
@@ -90,6 +141,7 @@ export function PairScreen({
           style={[styles.input, styles.code]}
           accessibilityLabel="Pairing code"
         />
+        <Button label="Scan QR code" onPress={startScan} disabled={busy} style={styles.scan} />
 
         <Text style={styles.label}>Device name</Text>
         <TextInput
@@ -171,5 +223,18 @@ const styles = StyleSheet.create({
   submit: {
     marginTop: space.lg,
     minHeight: 44,
+  },
+  scan: {
+    marginTop: space.sm,
+    minHeight: 44,
+  },
+  scanBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: space.xxl,
+    gap: space.sm,
+    backgroundColor: colors.bg,
   },
 });

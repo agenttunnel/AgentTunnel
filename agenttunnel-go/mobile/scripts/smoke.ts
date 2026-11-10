@@ -64,6 +64,7 @@ import {
   exchangePairCode,
   normalizePairCode,
   normalizeRelayUrl,
+  parsePairUri,
   RelayError,
   RpcClient,
   type RpcStatus,
@@ -684,6 +685,42 @@ async function main() {
       timers: fakeTimers().api,
     });
     assert.deepEqual(sockets[0]!.control, [{ t: "pair", code: "ABCDEFGH12", name: "Work iPad" }]);
+  });
+
+  await test("a desktop pairing QR parses to the relay and code the manual form takes", () => {
+    const got = parsePairUri("agenttunnel://pair?relay=ws%3A%2F%2F192.168.1.42%3A7777&code=ABCD-1234");
+    assert.deepEqual(got, { relay: "http://192.168.1.42:7777", code: "ABCD1234" });
+    // The desktop encodes with encodeURIComponent; an unknown extra parameter is ignored.
+    const extra = parsePairUri("AGENTTUNNEL://pair?code=abcd-efgh&relay=wss%3A%2F%2Frelay.example.com&v=2");
+    assert.deepEqual(extra, { relay: "https://relay.example.com", code: "ABCDEFGH" });
+  });
+
+  await test("a QR code that is not an AgentTunnel pairing link is refused", () => {
+    const refused = (e: unknown) => e instanceof RelayError && e.code === "rejected";
+    for (const bad of [
+      "https://example.com/pair?relay=ws%3A%2F%2F192.168.1.42%3A7777&code=ABCD-1234",
+      "agenttunnel://thread?id=1",
+      "agenttunnel://pair?relay=ws%3A%2F%2F192.168.1.42%3A7777",
+      "agenttunnel://pair?code=ABCD-1234",
+      "agenttunnel://pair?relay=ws%3A%2F%2F192.168.1.42%3A7777&code=%E0%A4%A",
+      "",
+      "just some text",
+    ]) {
+      assert.throws(() => parsePairUri(bad), RelayError);
+      try {
+        parsePairUri(bad);
+      } catch (e) {
+        assert.ok(refused(e), `refused with the wrong code for ${bad}`);
+      }
+    }
+  });
+
+  await test("a relay address in the QR code gets the same checks as manual entry", () => {
+    // A credential or query would leak in a QR, so both are refused like they are when typed.
+    assert.throws(() => parsePairUri("agenttunnel://pair?relay=https%3A%2F%2Fuser%40relay.example.com&code=ABCD-1234"), RelayError);
+    assert.throws(() => parsePairUri("agenttunnel://pair?relay=https%3A%2F%2Frelay.example.com%3Ftoken%3Dx&code=ABCD-1234"), RelayError);
+    // Plain ws:// to a public host is refused, as it is for manual entry.
+    assert.throws(() => parsePairUri("agenttunnel://pair?relay=ws%3A%2F%2Frelay.example.com&code=ABCD-1234"), RelayError);
   });
 
   console.log(`\n${passed} smoke checks passed`);

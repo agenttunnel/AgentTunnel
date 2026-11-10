@@ -58,6 +58,10 @@ type Client struct {
 
 	srv *transport.Server
 
+	// lanHost reads this machine's LAN address. Status calls it on every read;
+	// tests replace it so the answer does not depend on the host's interfaces.
+	lanHost func() string
+
 	mu      sync.Mutex
 	id      *identity
 	up      *uplink
@@ -79,6 +83,7 @@ func New(opts Options) (*Client, error) {
 		label:   opts.Label,
 		logf:    func(string, ...any) {},
 		kick:    make(chan struct{}, 1),
+		lanHost: relaywire.LANHost,
 		id:      id,
 		upMoved: make(chan struct{}),
 	}
@@ -356,9 +361,11 @@ func keepalive(up *uplink, stop <-chan struct{}) {
 // Status reports the saved configuration and whether a socket is up.
 func (c *Client) Status() transport.RelayStatus {
 	cfg := c.opts.Settings.Relay()
+	// Interface lookup is a syscall, so it runs before the lock other RPCs wait on.
+	lan := c.lanHost()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st := transport.RelayStatus{Enabled: cfg.Enabled, URL: cfg.URL, Connected: c.up != nil}
+	st := transport.RelayStatus{Enabled: cfg.Enabled, URL: cfg.URL, Connected: c.up != nil, LANHost: lan}
 	if c.id != nil {
 		st.Instance = c.id.Instance
 	}

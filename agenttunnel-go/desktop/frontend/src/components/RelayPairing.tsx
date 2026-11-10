@@ -3,6 +3,7 @@ import qrcode from "qrcode-generator";
 import type { Rpc } from "../lib/rpc";
 import {
   pairUri,
+  phoneRelayUrl,
   type PairOffer,
   type RelayDevice,
   type RelayStatus,
@@ -75,13 +76,18 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
     }
   }, [devices, offer]);
 
+  // The phone dials the LAN address when the saved URL is loopback. Only the
+  // QR and the hint below use it; the saved URL stays as the user set it.
+  const phoneUrl = status?.url ? phoneRelayUrl(status.url, status.lanHost) : "";
+  const phoneUrlDiffers = !!status?.url && phoneUrl !== status.url;
+
   const qr = useMemo(() => {
-    if (!offer || !status?.url) return "";
+    if (!offer || !phoneUrl) return "";
     const q = qrcode(0, "M");
-    q.addData(pairUri(status.url, offer.code));
+    q.addData(pairUri(phoneUrl, offer.code));
     q.make();
     return q.createDataURL(4, 2);
-  }, [offer, status?.url]);
+  }, [offer, phoneUrl]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -204,6 +210,13 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
               <img className="relay-qr" src={qr} alt="Pairing QR code" width={176} height={176} />
               <div className="relay-code-col">
                 <div className="relay-code">{offer.code}</div>
+                {phoneUrlDiffers && (
+                  <p className="hint">
+                    The phone must reach {phoneUrl}. Start the relay with{" "}
+                    <code>-listen 0.0.0.0:{new URL(phoneUrl).port || "7777"}</code> so it accepts LAN connections.
+                    Your saved relay address only works from this computer.
+                  </p>
+                )}
                 <p className="hint">
                   Scan with a QR app, or type the code in the phone app. Single use. Expires at{" "}
                   {new Date(offer.expires).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.

@@ -44,6 +44,9 @@ func main() {
 		log.Fatalf("atrelay: %v", err)
 	}
 	log.Printf("atrelay listening on %s", ln.Addr())
+	if lan := relay.LANURL(ln.Addr()); lan != "" {
+		log.Printf("atrelay reachable on the LAN at %s (use it as the desktop relay URL)", lan)
+	}
 	if err := srv.Serve(ctx, ln); err != nil {
 		log.Fatalf("atrelay: %v", err)
 	}

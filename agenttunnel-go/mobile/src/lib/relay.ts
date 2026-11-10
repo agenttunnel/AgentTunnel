@@ -85,6 +85,36 @@ export function normalizePairCode(input: string): string {
   return code;
 }
 
+const PAIR_URI = /^agenttunnel:\/\/pair\?(.*)$/i;
+
+/**
+ * Reads the QR payload the desktop shows: agenttunnel://pair?relay=<ws-url>&code=<code>.
+ * The relay and code go through the same checks as manual entry. Parsing is
+ * done by hand because React Native's URL support is partial, and any other
+ * scheme or host is refused rather than guessed at.
+ */
+export function parsePairUri(input: string): { relay: string; code: string } {
+  const refused = () => new RelayError("rejected", "That QR code is not an AgentTunnel pairing code.");
+  const m = PAIR_URI.exec(input.trim());
+  if (!m) throw refused();
+  const params = new Map<string, string>();
+  for (const part of (m[1] ?? "").split("&")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    let value: string;
+    try {
+      value = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, " "));
+    } catch {
+      throw refused();
+    }
+    params.set(part.slice(0, eq), value);
+  }
+  const relay = params.get("relay");
+  const code = params.get("code");
+  if (!relay || !code) throw refused();
+  return { relay: normalizeRelayUrl(relay), code: normalizePairCode(code) };
+}
+
 export type RpcTimers = {
   set(fn: () => void, ms: number): unknown;
   clear(handle: unknown): void;
