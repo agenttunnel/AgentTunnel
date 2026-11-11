@@ -99,7 +99,7 @@ type Agent = {
   endedAt?: string;
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
-type Message = { id: string; author: string; text: string; at: string };
+type Message = { id: string; author: string; text: string; at: string; consumed?: boolean };
 /** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
 const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
 function isFailedBlock(m: Message): boolean {
@@ -3236,14 +3236,16 @@ export default function App() {
                   {turn.map((m) => (
                   <div
                     key={m.id}
-                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${isFailedBlock(m) ? " failed" : ""}`}
+                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
                   >
                     <div className="who">
                       <span className="role">
                         {m.author === "user"
                           ? "You"
                           : m.author === "steering"
-                            ? "Steering"
+                            ? m.consumed
+                              ? "Steering"
+                              : "Steering · queued"
                             : m.author === "system"
                               ? "System"
                               : m.author === "shell"

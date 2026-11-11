@@ -987,16 +987,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		// Record it in the transcript, marked as steering, then queue it for the
-		// next orchestrator pass to weigh.
+		// next orchestrator pass to weigh. The message id lets that pass report
+		// back that it was consumed.
+		messageID := d.nextID()
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID:       d.nextID(),
 			Type:     contracts.CmdMessageAppend,
 			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "steering", Text: p.Text},
+			Message:  &contracts.MessageSent{MessageID: messageID, Author: "steering", Text: p.Text},
 		}); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, prompt)
+		d.steering.Post(p.ThreadID, messageID, prompt)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.btw":
