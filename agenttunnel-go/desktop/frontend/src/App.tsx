@@ -313,6 +313,16 @@ const START_VERBS = [
   "Dreaming",
 ];
 
+/** The activity log box is shown unless the viewer collapsed it; the choice persists. */
+function loadLogsOpen(): boolean {
+  try {
+    return window.localStorage.getItem("at.logsOpen") !== "false";
+  } catch {
+    /* private mode: default to shown */
+  }
+  return true;
+}
+
 function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
   if (a.dirty !== b.dirty) return false;
   const p = a.pr;
@@ -739,6 +749,17 @@ export default function App() {
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
+  // The live log box can be collapsed to a header; the choice persists per viewer.
+  const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
+  const toggleLogs = () => {
+    const next = !logsOpen;
+    setLogsOpen(next);
+    try {
+      window.localStorage.setItem("at.logsOpen", String(next));
+    } catch {
+      /* private mode: the choice lasts this session */
+    }
+  };
 
   const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board">(
     activeId,
@@ -892,13 +913,18 @@ export default function App() {
   };
 
   // Live log follows the newest output, unless the user scrolled up to read.
+  // Reopening a collapsed box jumps back to the newest output.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
+  const logsWasOpen = useRef(logsOpen);
   useEffect(() => {
+    const opening = !logsWasOpen.current && logsOpen;
+    logsWasOpen.current = logsOpen;
     const el = actBodyRef.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [live]);
+    if (opening || el.scrollHeight - el.scrollTop - el.clientHeight < 48) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [live, logsOpen]);
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -3305,7 +3331,7 @@ export default function App() {
                 />
               ))}
               {running.length > 0 && (
-                <div className="activity agents">
+                <div className={`activity agents${logsOpen ? "" : " collapsed"}`}>
                   <div className="act-head">
                     <span className="act-led" />
                     <span className="act-label">
@@ -3314,6 +3340,15 @@ export default function App() {
                     </span>
                     <Elapsed since={running[0]?.startedAt} />
                     <button
+                      className="act-toggle"
+                      onClick={toggleLogs}
+                      aria-expanded={logsOpen}
+                      aria-label={logsOpen ? "Hide logs" : "Show logs"}
+                      title={logsOpen ? "Hide logs" : "Show logs"}
+                    >
+                      {logsOpen ? "▾" : "▸"} Logs
+                    </button>
+                    <button
                       className="stop-btn"
                       onClick={stopTurn}
                       title="Stop this turn — running agents are cancelled"
@@ -3321,20 +3356,22 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  <div className="act-body" ref={actBodyRef}>
-                    {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
-                    {live.slice(-60).map((l, i) =>
-                      l.kind === "text" || l.kind === "reasoning" ? (
-                        <div key={i} className={`act-md ${l.kind}`}>
-                          <Markdown text={l.text} />
-                        </div>
-                      ) : (
-                        <div key={i} className={`log-line ${l.kind}`}>
-                          {l.text}
-                        </div>
-                      ),
-                    )}
-                  </div>
+                  {logsOpen && (
+                    <div className="act-body" ref={actBodyRef}>
+                      {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
+                      {live.slice(-60).map((l, i) =>
+                        l.kind === "text" || l.kind === "reasoning" ? (
+                          <div key={i} className={`act-md ${l.kind}`}>
+                            <Markdown text={l.text} />
+                          </div>
+                        ) : (
+                          <div key={i} className={`log-line ${l.kind}`}>
+                            {l.text}
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               {shellThread === activeId && shellThread !== null && (

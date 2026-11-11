@@ -30,8 +30,8 @@ func (CommandCodeTranslator) Translate(line string) []Event {
 	return JSONLineTranslator{}.Translate(line)
 }
 
-// commandCodeToolEvent shows a tool as it starts. Other event types are not
-// user-visible and are ignored, as the CLI documents.
+// commandCodeToolEvent shows a tool as it starts, with its arguments. Other
+// event types are not user-visible and are ignored, as the CLI documents.
 func commandCodeToolEvent(ev map[string]any) []Event {
 	if firstString(ev, "type") != "tool_running" {
 		return nil
@@ -44,7 +44,11 @@ func commandCodeToolEvent(ev map[string]any) []Event {
 	if desc := firstString(ev, "description"); desc != "" {
 		summary += " " + desc
 	}
-	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name}}
+	args, _ := ev["args"].(map[string]any)
+	if len(args) == 0 {
+		args, _ = ev["input"].(map[string]any)
+	}
+	return []Event{{Kind: contracts.LogTool, Text: summary + toolDetail(args, []string{"description"}), ToolName: name}}
 }
 
 // commandCodeResult emits the final answer (or the failure) and the run's usage.

@@ -1296,6 +1296,24 @@ body.is-resizing * {
 .activity.agents .act-head {
   flex: none;
 }
+/* Collapsed, the box shrinks to its header and keeps the working state visible. */
+.activity.agents.collapsed {
+  height: auto;
+  min-height: 0;
+}
+.act-toggle {
+  flex: none;
+  padding: 1px 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+}
+.act-toggle:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+}
 @keyframes act-pulse {
   0%,
   100% {
