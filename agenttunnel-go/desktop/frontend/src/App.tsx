@@ -11,7 +11,7 @@ import {
   type MouseEvent,
 } from "react";
 import { Window } from "@wailsio/runtime";
-import { discover, pickFolder, Rpc, type Conn } from "./lib/rpc";
+import { discover, pickFolder, Rpc, setKeepRunning as emitKeepRunning, type Conn } from "./lib/rpc";
 import {
   addUsage,
   deriveThreadUsage,
@@ -722,6 +722,14 @@ export default function App() {
     null,
   );
   const [settings, setSettings] = useState<SettingsView | null>(null);
+  // Shell capability state: where the daemon lives and whether it should
+  // outlive the window. Connection data only — thread data stays on the
+  // daemon WebSocket.
+  const [conn, setConn] = useState<Conn | null>(null);
+  const [keepRunning, setKeepRunningState] = useState(false);
+  // Send turns detached (daemon-scoped) so closing the window cannot cancel
+  // them. Defaults on when the daemon already outlives this window.
+  const [runInBackground, setRunInBackground] = useState(false);
 
   // Council of agents: convene several perspectives on one question and let
   // them debate to a synthesized outcome.
@@ -1257,6 +1265,11 @@ export default function App() {
       if (cancelled) return;
       rpcRef.current = rpc;
       setStatus("online");
+      setConn(conn);
+      setKeepRunningState(!!conn.keepRunning);
+      // A daemon that outlives this window (external, or kept running) makes
+      // detached turns the sane default.
+      if (conn.attached || conn.keepRunning) setRunInBackground(true);
       // Not awaited: a slow GitHub lookup must not hold up startup.
       rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
       try {
@@ -1789,12 +1802,22 @@ export default function App() {
     try {
       if (command) {
         await rpc.call("thread.runCommand", { threadId, command });
-      } else {
-        await rpc.call(steer ? "thread.steer" : "thread.turn.start", {
+      } else if (steer) {
+        await rpc.call("thread.steer", {
           threadId,
           text,
           attachments: sentFiles.map((a) => a.path),
         });
+      } else {
+        const params: Record<string, unknown> = {
+          threadId,
+          text,
+          attachments: sentFiles.map((a) => a.path),
+        };
+        // Detached turns run on the daemon's lifetime context: closing the
+        // window cannot cancel them. An external daemon always detaches.
+        if (runInBackground || conn?.attached) params.detach = true;
+        await rpc.call("thread.turn.start", params);
       }
     } catch (e) {
       // Put the typed text back into its own thread's draft, even if the user has moved on.
@@ -1821,7 +1844,9 @@ export default function App() {
     if (!steer) setTurnBusy(threadId, true);
     setTab("chat");
     try {
-      await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+      const params: Record<string, unknown> = { threadId, text };
+      if (runInBackground || conn?.attached) params.detach = true;
+      await rpc.call(steer ? "thread.steer" : "thread.turn.start", params);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e), threadId);
     } finally {
@@ -2269,6 +2294,14 @@ export default function App() {
     })();
   };
 
+  /** Persists the shell's keep-running preference; a background daemon makes
+   * detached turns the right default. */
+  const toggleKeepRunning = (enabled: boolean) => {
+    setKeepRunningState(enabled);
+    emitKeepRunning(enabled);
+    if (enabled) setRunInBackground(true);
+  };
+
   const flashSaved = () => {
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
@@ -2362,12 +2395,33 @@ export default function App() {
           Agent<b>Tunnel</b>
         </span>
       </div>
-      <div className={`conn ${status}`}>
-        <span className="led" />
-        <span>
-          {enabledHarnesses.length} harness
-          {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
-        </span>
+      <div className="title-meta">
+        <div className={`conn ${status}`}>
+          <span className="led" />
+          <span>
+            {enabledHarnesses.length} harness
+            {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
+          </span>
+        </div>
+        {conn && (
+          <div
+            className={`daemon-badge ${conn.attached ? "attached" : "local"}`}
+            title={
+              conn.attached
+                ? `Attached to a daemon this window did not start (${conn.host || "unknown"})`
+                : "The daemon runs inside this app"
+            }
+          >
+            <span className="led" />
+            {conn.attached ? (
+              <>
+                attached <span className="host">{conn.host || "remote"}</span>
+              </>
+            ) : (
+              "local daemon"
+            )}
+          </div>
+        )}
       </div>
       <UpdateChip
         status={update}
@@ -3105,6 +3159,25 @@ export default function App() {
                   <span className="ctx-chip" title={selectedProject.path}>
                     {selectedProject.name}
                   </span>
+                )}
+                {(conn?.attached || keepRunning) && (
+                  <label
+                    className={`bg-turn${runInBackground || conn?.attached ? " on" : ""}`}
+                    title={
+                      conn?.attached
+                        ? "Attached to an external daemon: turns always run in the background"
+                        : "The turn keeps running after you close the window"
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={runInBackground || !!conn?.attached}
+                      disabled={!!conn?.attached}
+                      onChange={(e) => setRunInBackground(e.target.checked)}
+                    />
+                    Run in background
+                    <span className="bg-hint">keeps running after you close the window</span>
+                  </label>
                 )}
                 <button
                   className={`model-btn${modelsOpen ? " open" : ""}`}
@@ -3850,6 +3923,22 @@ export default function App() {
                   <button onClick={saveThreadDefaults}>Save this view as default</button>
                 </div>
               </section>
+              {!conn?.attached && (
+                <section className="set-section">
+                  <h4>Desktop</h4>
+                  <p className="hint">
+                    When this is on, closing the window leaves the daemon (and any running
+                    turns) alive in the background so <code>at</code> can still reach it.
+                    Turn it off to stop the daemon with the window.
+                  </p>
+                  <div
+                    className={`toggle ${keepRunning ? "on" : ""}`}
+                    {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
+                  >
+                    <span className="sw" /> Keep daemon running after the window closes
+                  </div>
+                </section>
+              )}
               <section className="set-section">
                 <h4>Environment</h4>
                 <label className="field">
