@@ -190,6 +190,9 @@ function threadSearchScore(t: ThreadSummary, query: string): number | null {
 }
 export type Project = { id: string; name: string; path: string; threads: number };
 
+/** The top-level pages shown when no project is open. */
+type HomePage = "projects" | "orchestrator";
+
 /** The environment's cross-project memory: guide, learnings log, rules. */
 type InheritedView = {
   dir: string;
@@ -835,6 +838,8 @@ export default function App() {
   );
   // Projects stay open as tabs; each one remembers the thread it was showing.
   const [openProjectIds, setOpenProjectIds] = useState<string[]>(loadOpenProjects);
+  // Which top-level page shows when no project is open.
+  const [homePage, setHomePage] = useState<HomePage>("projects");
   const lastThreadByProject = useRef<Record<string, string | null>>({});
 
   // Thread context-menu flow: the menu itself, plus the three dialogs it can
@@ -1110,10 +1115,12 @@ export default function App() {
     setActiveId(rememberedThread(id));
   };
 
-  const showProjects = () => {
+  const showHome = (page: HomePage) => {
     setProjectId(null);
     setActiveId(null);
+    setHomePage(page);
   };
+  const showProjects = () => showHome("projects");
 
   const closeProjectTab = (id: string) => {
     const index = openProjectIds.indexOf(id);
@@ -2535,78 +2542,99 @@ export default function App() {
 
   // Open projects live in a persistent tab strip, so switching projects is one
   // click and never loses what the other project was doing.
-  const projectTabs =
-    openProjects.length > 0 ? (
-      <div className="project-tabs">
-        <div
-          className={`ptab pt-home${projectId ? "" : " on"}`}
-          {...tabProps(projectId === null, showProjects)}
-          title="All projects"
+  // Home pages (Projects, Orchestrator) sit in the strip even with no project open.
+  const homeTabOn = (page: HomePage) => projectId === null && homePage === page;
+  const projectTabs = (
+    <div className="project-tabs">
+      <div
+        className={`ptab pt-home${homeTabOn("projects") ? " on" : ""}`}
+        {...tabProps(homeTabOn("projects"), showProjects)}
+        title="All projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
         >
-          <svg
-            viewBox="0 0 24 24"
-            width="13"
-            height="13"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="3" y="3" width="7" height="7" rx="1.5" />
-            <rect x="14" y="3" width="7" height="7" rx="1.5" />
-            <rect x="3" y="14" width="7" height="7" rx="1.5" />
-            <rect x="14" y="14" width="7" height="7" rx="1.5" />
-          </svg>
-          Projects
-        </div>
-        <div className="pt-scroll" role="tablist" aria-label="Open projects">
-          {openProjects.map((p) => {
-            const busy = runningByProject[p.id] ?? 0;
-            return (
-              <div
-                key={p.id}
-                className={`ptab${p.id === projectId ? " on" : ""}`}
-                {...tabProps(p.id === projectId, () => openProject(p.id))}
-                title={p.path || p.name}
-              >
-                <span className={`pt-led${busy > 0 ? " run" : ""}`} />
-                <span className="pt-name">{p.name}</span>
-                {busy > 0 && (
-                  <span className="pt-count" title={`${busy} running agent${busy === 1 ? "" : "s"}`}>
-                    {busy}
-                  </span>
-                )}
-                <span
-                  className="pt-x"
-                  role="button"
-                  tabIndex={0}
-                  title={`Close ${p.name}`}
-                  aria-label={`Close ${p.name}`}
-                  onClick={(e) => {
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </svg>
+        Projects
+      </div>
+      <div
+        className={`ptab pt-home${homeTabOn("orchestrator") ? " on" : ""}`}
+        {...tabProps(homeTabOn("orchestrator"), () => showHome("orchestrator"))}
+        title="Master orchestrator"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        Orchestrator
+      </div>
+      <div className="pt-scroll" role="tablist" aria-label="Open projects">
+        {openProjects.map((p) => {
+          const busy = runningByProject[p.id] ?? 0;
+          return (
+            <div
+              key={p.id}
+              className={`ptab${p.id === projectId ? " on" : ""}`}
+              {...tabProps(p.id === projectId, () => openProject(p.id))}
+              title={p.path || p.name}
+            >
+              <span className={`pt-led${busy > 0 ? " run" : ""}`} />
+              <span className="pt-name">{p.name}</span>
+              {busy > 0 && (
+                <span className="pt-count" title={`${busy} running agent${busy === 1 ? "" : "s"}`}>
+                  {busy}
+                </span>
+              )}
+              <span
+                className="pt-x"
+                role="button"
+                tabIndex={0}
+                title={`Close ${p.name}`}
+                aria-label={`Close ${p.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeProjectTab(p.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
                     e.stopPropagation();
                     closeProjectTab(p.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      closeProjectTab(p.id);
-                    }
-                  }}
-                >
-                  ×
-                </span>
-              </div>
-            );
-          })}
-        </div>
-        <button className="pt-add" onClick={showProjects} title="Projects" aria-label="Projects">
-          +
-        </button>
+                  }
+                }}
+              >
+                ×
+              </span>
+            </div>
+          );
+        })}
       </div>
-    ) : null;
+      <button className="pt-add" onClick={showProjects} title="Projects" aria-label="Projects">
+        +
+      </button>
+    </div>
+  );
 
   const menuItems: MenuItem[] = threadMenu
     ? [
@@ -2732,6 +2760,27 @@ export default function App() {
     </div>
   );
 
+  // The master orchestrator has its own page; it never shares the projects grid.
+  if (!projectId && homePage === "orchestrator") {
+    return (
+      <div className="screen">
+        {titlebar}
+        {projectTabs}
+        <div className="screen-body master-page">
+          <MasterChat
+            rpc={rpcRef.current}
+            projects={projects}
+            onOpenThread={(projectId, threadId) => {
+              openProject(projectId);
+              lastThreadByProject.current[projectId] = threadId;
+              setActiveId(threadId);
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
   // Screen 1 — the projects configured in this environment.
   if (!projectId) {
     return (
@@ -2749,15 +2798,6 @@ export default function App() {
               </p>
             </div>
           </div>
-          <MasterChat
-            rpc={rpcRef.current}
-            projects={projects}
-            onOpenThread={(projectId, threadId) => {
-              openProject(projectId);
-              lastThreadByProject.current[projectId] = threadId;
-              setActiveId(threadId);
-            }}
-          />
           <div className="project-grid">
             <div
               className="new-card"
