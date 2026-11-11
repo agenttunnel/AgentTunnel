@@ -46,13 +46,16 @@ export function useHoldToTalk({
 }): boolean {
   const [listening, setListening] = useState(false);
   const recRef = useRef<SpeechRecognitionLike | null>(null);
+  // The combo is still held. The recognizer ends on its own (silence, no-speech),
+  // so a session that ends mid-hold restarts instead of silently dropping the take.
+  const holdingRef = useRef(false);
   // Latest callbacks without rebinding the window listeners on every render.
   const cbRef = useRef({ onText, onUnavailable });
   useEffect(() => {
     cbRef.current = { onText, onUnavailable };
   });
 
-  const start = useCallback(() => {
+  const start = useCallback(function begin(): void {
     if (recRef.current) return;
     const Ctor = getSpeechRecognition();
     if (!Ctor) {
@@ -65,19 +68,26 @@ export function useHoldToTalk({
     rec.lang = navigator.language || "en-US";
     rec.continuous = true;
     rec.interimResults = false;
+    let fatal = false;
     rec.onresult = (e) => {
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
         if (res.isFinal) cbRef.current.onText(res[0].transcript);
       }
     };
-    // A late onend from a previous session must not clear a newer recording.
-    const done = () => {
+    // A late end from a previous session must not clear a newer recording.
+    const ended = () => {
       if (recRef.current === rec) recRef.current = null;
-      if (!recRef.current) setListening(false);
+      if (recRef.current) return;
+      if (holdingRef.current && !fatal) begin();
+      else setListening(false);
     };
-    rec.onerror = done;
-    rec.onend = done;
+    // Permission and service errors do not clear by restarting.
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") fatal = true;
+      ended();
+    };
+    rec.onend = ended;
     // Track the recorder only once it runs, so a throwing start leaves none behind.
     rec.start();
     recRef.current = rec;
@@ -85,6 +95,7 @@ export function useHoldToTalk({
   }, []);
 
   const stop = useCallback(() => {
+    holdingRef.current = false;
     const rec = recRef.current;
     if (!rec) return;
     recRef.current = null;
@@ -99,6 +110,7 @@ export function useHoldToTalk({
       if (e.code !== "KeyT" || !held(e) || e.altKey || e.shiftKey) return;
       e.preventDefault();
       if (e.repeat) return;
+      holdingRef.current = true;
       start();
     };
     // Releasing T or the modifier ends the take. On macOS, WebKit often drops
