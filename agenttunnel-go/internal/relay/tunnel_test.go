@@ -134,3 +134,65 @@ func TestDisableStopsTheTunnel(t *testing.T) {
 	}
 	_ = ln.Close()
 }
+
+// Pointing the relay at another URL ends the tunnel and frees its port, and a
+// later StopTunnel leaves the new setting alone.
+func TestEnableOtherURLStopsTheTunnelAndKeepsTheNewSetting(t *testing.T) {
+	c := newTunnelClient(t, "192.168.1.42", 0)
+	st, err := c.StartTunnel(context.Background())
+	if err != nil {
+		t.Fatalf("start tunnel: %v", err)
+	}
+
+	const other = "ws://127.0.0.1:1"
+	if err := c.Enable(other); err != nil {
+		t.Fatalf("enable other URL: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tunnelConnectWait)
+	defer cancel()
+	if err := c.WaitDisconnected(ctx); err != nil {
+		t.Fatalf("the tunnel's socket must drop: %v", err)
+	}
+	if c.TunnelStatus().Listening {
+		t.Fatal("enabling another URL must stop the tunnel")
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(st.Port)))
+	if err != nil {
+		t.Fatalf("enabling another URL must release the port: %v", err)
+	}
+	_ = ln.Close()
+
+	if err := c.StopTunnel(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := c.Status(); !got.Enabled || got.URL != other {
+		t.Fatalf("a later stop must keep the new setting, got enabled=%v url=%q", got.Enabled, got.URL)
+	}
+}
+
+// Enabling the tunnel's own loopback URL, as openTunnel does, keeps it running.
+func TestEnableOwnURLKeepsTheTunnel(t *testing.T) {
+	c := newTunnelClient(t, "192.168.1.42", 0)
+	st, err := c.StartTunnel(context.Background())
+	if err != nil {
+		t.Fatalf("start tunnel: %v", err)
+	}
+	if err := c.Enable("ws://127.0.0.1:" + strconv.Itoa(st.Port)); err != nil {
+		t.Fatalf("enable own URL: %v", err)
+	}
+	if got := c.TunnelStatus(); got != st {
+		t.Fatalf("enabling the tunnel's own URL must keep it, got %+v want %+v", got, st)
+	}
+	if err := c.StopTunnel(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+// Only a busy port falls back; any other bind error is returned.
+func TestTunnelListenReturnsErrorsOtherThanAddrInUse(t *testing.T) {
+	c := newTunnelClient(t, "192.168.1.42", -1)
+	if ln, err := c.listenTunnel(); err == nil {
+		_ = ln.Close()
+		t.Fatal("an invalid port is not a busy port, so it must not fall back")
+	}
+}

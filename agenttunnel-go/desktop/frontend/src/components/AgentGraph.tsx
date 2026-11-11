@@ -16,6 +16,20 @@ import {
   type GraphState,
 } from "../lib/graphEvents";
 import { useGraphFeed } from "../lib/useGraphFeed";
+import {
+  RING_GAP,
+  SNAP_GAP,
+  buildGroupPrompt,
+  inSameGroup,
+  mergeNodes,
+  nearestNode,
+  pruneGroups,
+  removeFromGroup,
+  snapSlot,
+  ungroup,
+  type Group,
+  type GroupMember,
+} from "../lib/graphGroups";
 import type { Rpc } from "../lib/rpc";
 import { fmtTokens, type TokenUsage } from "../lib/usage";
 import { Markdown } from "./Markdown";
@@ -51,6 +65,14 @@ const fullTime = (iso: string) => {
 };
 const ms = (iso: string) => Date.parse(iso);
 
+/** Group header and padding around member nodes, in canvas pixels. */
+const GROUP_PAD = 12;
+const GROUP_HEAD = 30;
+
+type Proximity = { from: string; to: string; snapped: boolean };
+const sameProximity = (a: Proximity | null, b: Proximity | null) =>
+  a === b || (!!a && !!b && a.to === b.to && a.snapped === b.snapped);
+
 /**
  * AgentGraph renders the thread as a spawn tree: agent nodes layered by
  * depth, structural spawn edges, dashed task dependencies, and one accent
@@ -72,6 +94,7 @@ export function AgentGraph({
   mailbox,
   peerMailbox,
   onOpenAgent,
+  onSubmitGroup,
 }: {
   rpc: Rpc | null;
   threadId: string;
@@ -81,6 +104,8 @@ export function AgentGraph({
   mailbox: MailboxMessage[] | null;
   peerMailbox: boolean;
   onOpenAgent: (id: string) => void;
+  /** Sends a group prompt to the thread: a new turn, or a steer while one runs. */
+  onSubmitGroup: (threadId: string, text: string) => void;
 }) {
   const feed = useGraphFeed(rpc, threadId);
   const { events, checkpoints } = feed;
@@ -106,6 +131,17 @@ export function AgentGraph({
   } | null>(null);
   // Set when a drag ends, so the click that follows the release does not open details.
   const dragEnded = useRef<string | null>(null);
+  // Agent groups are selection only, scoped to this mounted graph like positions.
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [composing, setComposing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  // The node under the dragged one. Set only when it changes, so moves that stay
+  // in range do not re-render. The ref is what the drop reads.
+  const [prox, setProx] = useState<Proximity | null>(null);
+  const proxRef = useRef<Proximity | null>(null);
+  // Nodes that just joined a group, for the one-shot merge settle.
+  const [settle, setSettle] = useState<string[]>([]);
 
   const ranges = useMemo(() => turnRanges(events), [events]);
   const markers = useMemo(() => markersOf(events), [events]);
@@ -149,6 +185,38 @@ export function AgentGraph({
     [folded, agents, roleNames, usage, mailbox, positions],
   );
   const byId = useMemo(() => new Map(members.map((a) => [a.id, a])), [members]);
+  // Groups are read pruned: an agent that vanished in replay drops out of its group.
+  const liveGroups = useMemo(
+    () => pruneGroups(groups, new Set(members.map((a) => a.id))),
+    [groups, members],
+  );
+  // Group boxes and the × marks on grouped nodes, measured from the layout.
+  const { boxes, unlinks } = useMemo(() => {
+    const at = new Map(layout.nodes.map((n) => [n.id, n]));
+    const boxes = liveGroups.flatMap((g) => {
+      const ns = g.members.map((id) => at.get(id)).filter((n) => !!n);
+      if (ns.length < 2) return [];
+      const left = Math.max(0, Math.min(...ns.map((n) => n.x)) - GROUP_PAD);
+      const top = Math.max(0, Math.min(...ns.map((n) => n.y)) - GROUP_HEAD);
+      const right = Math.max(...ns.map((n) => n.x + n.width)) + GROUP_PAD;
+      const bottom = Math.max(...ns.map((n) => n.y + n.height)) + GROUP_PAD;
+      return [{ id: g.id, count: ns.length, left, top, width: right - left, height: bottom - top }];
+    });
+    const unlinks = liveGroups.flatMap((g) =>
+      g.members.flatMap((id) => {
+        const n = at.get(id);
+        // Sits on the node's top-right corner, just under the group header.
+        return n ? [{ id, name: n.name, x: n.x + n.width - 9, y: n.y - 4 }] : [];
+      }),
+    );
+    return { boxes, unlinks };
+  }, [liveGroups, layout.nodes]);
+  const composeGroup = liveGroups.find((g) => g.id === composing) ?? null;
+  // A group that dissolves under an open composer closes it, so a later group
+  // that reuses the id does not reopen the stale draft.
+  useEffect(() => {
+    if (composing !== null && !composeGroup) setComposing(null);
+  }, [composing, composeGroup]);
 
   // Dragging pins a node at the pointer's offset from where the press began.
   // Positions are clamped to the canvas origin so a node cannot leave the
@@ -175,15 +243,40 @@ export function AgentGraph({
     const dy = e.clientY - d.startY;
     if (!d.moved && Math.hypot(dx, dy) < DRAG_SLOP) return;
     d.moved = true;
-    const x = Math.max(0, d.x + dx);
-    const y = Math.max(0, d.y + dy);
+    let x = Math.max(0, d.x + dx);
+    let y = Math.max(0, d.y + dy);
+    // Proximity to another node: rings inside RING_GAP, a magnetic snap inside SNAP_GAP.
+    // A node already in the target's group gets neither: there is nothing to join.
+    const self = layout.nodes.find((n) => n.id === d.id);
+    const hit = self
+      ? nearestNode({ id: d.id, x, y, width: self.width, height: self.height }, layout.nodes)
+      : null;
+    let next: Proximity | null = null;
+    if (self && hit && hit.gap < RING_GAP && !inSameGroup(liveGroups, d.id, hit.target.id)) {
+      const snapped = hit.gap < SNAP_GAP;
+      if (snapped) ({ x, y } = snapSlot({ id: d.id, x, y, width: self.width, height: self.height }, hit.target));
+      next = { from: d.id, to: hit.target.id, snapped };
+    }
     setPositions((prev) => ({ ...prev, [d.id]: { x, y } }));
+    if (!sameProximity(proxRef.current, next)) {
+      proxRef.current = next;
+      setProx(next);
+    }
   };
   const endDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const d = drag.current;
     if (!d || e.pointerId !== d.pointer) return;
     drag.current = null;
-    if (d.moved) dragEnded.current = d.id;
+    if (!d.moved) return;
+    dragEnded.current = d.id;
+    // Only a snapped drop merges; a drop in the ring zone just places the node.
+    const p = proxRef.current;
+    if (p?.snapped) {
+      setGroups(mergeNodes(liveGroups, p.from, p.to));
+      setSettle([p.from, p.to]);
+    }
+    proxRef.current = null;
+    setProx(null);
   };
   const nameOf = (id: string) => {
     const a = byId.get(id);
@@ -241,6 +334,53 @@ export function AgentGraph({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [conversation]);
+
+  // The merge settle lasts one short animation, then the class is dropped.
+  useEffect(() => {
+    if (settle.length === 0) return;
+    const t = window.setTimeout(() => setSettle([]), 320);
+    return () => window.clearTimeout(t);
+  }, [settle]);
+
+  const openComposer = (groupId: string) => {
+    setComposing(groupId);
+    setDraft("");
+  };
+
+  // Sends the composer's ask with each member's state and output tail. The logs
+  // are fetched only now, on submit, so grouping itself costs no requests.
+  const sendGroup = async () => {
+    if (!composeGroup || sending) return;
+    const ask = draft.trim();
+    if (!ask) return;
+    setSending(true);
+    const logs = await Promise.all(
+      composeGroup.members.map((id) =>
+        rpc
+          ? rpc
+              .call<{ kind: string; text: string }[]>("agents.logs", { threadId, agentId: id })
+              .catch(() => [])
+          : Promise.resolve([]),
+      ),
+    );
+    const prompt: GroupMember[] = composeGroup.members.flatMap((id, i) => {
+      const a = byId.get(id);
+      if (!a) return [];
+      return [
+        {
+          name: a.name || roleNames[a.role] || a.role,
+          role: roleNames[a.role] || a.role,
+          status: a.status,
+          task: a.task,
+          logs: logs[i],
+        },
+      ];
+    });
+    setSending(false);
+    setComposing(null);
+    setDraft("");
+    onSubmitGroup(threadId, buildGroupPrompt(ask, prompt));
+  };
 
   const togglePlay = () => {
     if (running) {
@@ -429,6 +569,48 @@ export function AgentGraph({
           </button>
         )}
       </div>
+      {composeGroup && (
+        <div className="graph-composer">
+          <div className="graph-composer-to">
+            {composeGroup.members.map((id) => (
+              <span key={id} className="graph-chip">
+                {nameOf(id)}
+              </span>
+            ))}
+          </div>
+          <textarea
+            autoFocus
+            rows={3}
+            value={draft}
+            placeholder="Ask this group…"
+            aria-label="Group prompt"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setComposing(null);
+                setDraft("");
+              } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void sendGroup();
+              }
+            }}
+          />
+          <div className="graph-composer-actions">
+            <span className="graph-hint-keys">⌘↵ send · Esc cancel</span>
+            <button
+              onClick={() => {
+                setComposing(null);
+                setDraft("");
+              }}
+            >
+              Cancel
+            </button>
+            <button className="primary" disabled={!draft.trim() || sending} onClick={() => void sendGroup()}>
+              Send
+            </button>
+          </div>
+        </div>
+      )}
       {/* A press that moves past the slop drags the node; one that does not is a click. */}
       <div className="graph-canvas" style={{ width: layout.width, height: layout.height }}>
         <svg className="graph-edges" width={layout.width} height={layout.height}>
@@ -479,10 +661,25 @@ export function AgentGraph({
             />
           )}
         </svg>
+        {boxes.map((b) => (
+          <div
+            key={b.id}
+            className="graph-group"
+            style={{ left: b.left, top: b.top, width: b.width, height: b.height }}
+          >
+            <div className="graph-group-head">
+              <span>Group · {b.count}</span>
+              <button onClick={() => openComposer(b.id)}>Ask</button>
+              <button onClick={() => setGroups(ungroup(liveGroups, b.id))}>Ungroup</button>
+            </div>
+          </div>
+        ))}
         {layout.nodes.map((n) => (
           <button
             key={n.id}
-            className="graph-node enter"
+            className={`graph-node enter${prox?.to === n.id ? " near" : ""}${
+              prox?.from === n.id && prox.snapped ? " snap" : ""
+            }${settle.includes(n.id) ? " merge" : ""}`}
             style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
             onPointerDown={(e) => startDrag(e, n)}
             onPointerMove={moveDrag}
@@ -497,12 +694,31 @@ export function AgentGraph({
             }}
             aria-label={`${n.name} (${n.role}) — open details`}
           >
+            {prox?.to === n.id && (
+              <span className="graph-rings" aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
+            )}
             <div className="graph-node-head">
               <span className={`dot ${n.status}`} />
               <span className="graph-node-name">{n.name}</span>
               {n.tokens > 0 && <span className="graph-node-tokens">{fmtTokens(n.tokens)}</span>}
             </div>
             <div className="graph-node-role">{n.role}</div>
+          </button>
+        ))}
+        {unlinks.map((u) => (
+          <button
+            key={`unlink-${u.id}`}
+            className="graph-unlink"
+            style={{ left: u.x, top: u.y }}
+            onClick={() => setGroups(removeFromGroup(liveGroups, u.id))}
+            aria-label={`Remove ${u.name} from group`}
+            title="Remove from group"
+          >
+            ×
           </button>
         ))}
       </div>

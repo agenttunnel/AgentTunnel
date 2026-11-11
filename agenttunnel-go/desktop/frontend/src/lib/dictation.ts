@@ -7,6 +7,7 @@ type SpeechRecognitionLike = {
   interimResults: boolean;
   start(): void;
   stop(): void;
+  abort(): void;
   onresult:
     | ((e: {
         resultIndex: number;
@@ -28,12 +29,14 @@ const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 /** The hold modifier, as the composer hint names it. */
 export const HOLD_MOD_LABEL = IS_MAC ? "Command" : "Ctrl";
 
+type Take = { rec: SpeechRecognitionLike; parts: string[]; cancelled: boolean; finished: boolean };
+
 /**
- * useHoldToTalk records while Cmd (macOS) or Ctrl is held with T, and inserts
- * the final transcript into `onText` when the key is released. Key repeat does
- * not restart recording, and the combo never types a "t". Where the webview has
- * no Web Speech API, `onUnavailable` explains the OS fallback instead.
- * Returns whether recording is active.
+ * useHoldToTalk records while Cmd (macOS) or Ctrl is held with T. Final phrases
+ * gather during the take and land in `onText` once, when it ends: on key release
+ * (`stop`), or on the recognizer's own end. `cancel` drops the take unseen. Key
+ * repeat does not restart recording, and the combo never types a "t". Where the
+ * webview has no Web Speech API, `onUnavailable` explains the OS fallback instead.
  */
 export function useHoldToTalk({
   enabled,
@@ -43,17 +46,20 @@ export function useHoldToTalk({
   enabled: boolean;
   onText: (text: string) => void;
   onUnavailable?: (msg: string) => void;
-}): boolean {
+}): { listening: boolean; stop: () => void; cancel: () => void } {
   const [listening, setListening] = useState(false);
-  const recRef = useRef<SpeechRecognitionLike | null>(null);
+  const takeRef = useRef<Take | null>(null);
+  // The combo is still held. The recognizer ends on its own (silence, no-speech),
+  // so a take that ends mid-hold continues in a new session instead of dropping.
+  const holdingRef = useRef(false);
   // Latest callbacks without rebinding the window listeners on every render.
   const cbRef = useRef({ onText, onUnavailable });
   useEffect(() => {
     cbRef.current = { onText, onUnavailable };
   });
 
-  const start = useCallback(() => {
-    if (recRef.current) return;
+  const start = useCallback(function begin(carry: string[] = []): void {
+    if (takeRef.current) return;
     const Ctor = getSpeechRecognition();
     if (!Ctor) {
       cbRef.current.onUnavailable?.(
@@ -65,31 +71,61 @@ export function useHoldToTalk({
     rec.lang = navigator.language || "en-US";
     rec.continuous = true;
     rec.interimResults = false;
+    const take: Take = { rec, parts: carry, cancelled: false, finished: false };
+    let fatal = false;
     rec.onresult = (e) => {
+      if (take.cancelled) return;
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
-        if (res.isFinal) cbRef.current.onText(res[0].transcript);
+        if (res.isFinal) take.parts.push(res[0].transcript);
       }
     };
-    // A late onend from a previous session must not clear a newer recording.
-    const done = () => {
-      if (recRef.current === rec) recRef.current = null;
-      if (!recRef.current) setListening(false);
+    // Runs once per take, from stop, cancel, error, or the recognizer's own end.
+    // A late end from a previous take must not clear a newer recording.
+    const finish = () => {
+      if (take.finished) return;
+      take.finished = true;
+      if (takeRef.current === take) {
+        takeRef.current = null;
+        // Ended on its own while the combo is still held: keep the take going.
+        // Permission and service errors do not clear by restarting.
+        if (holdingRef.current && !fatal && !take.cancelled) {
+          begin(take.parts);
+          return;
+        }
+        setListening(false);
+      }
+      const text = take.parts.join(" ").trim();
+      if (!take.cancelled && text) cbRef.current.onText(text);
     };
-    rec.onerror = done;
-    rec.onend = done;
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") fatal = true;
+      finish();
+    };
+    rec.onend = finish;
     // Track the recorder only once it runs, so a throwing start leaves none behind.
     rec.start();
-    recRef.current = rec;
+    takeRef.current = take;
     setListening(true);
   }, []);
 
   const stop = useCallback(() => {
-    const rec = recRef.current;
-    if (!rec) return;
-    recRef.current = null;
-    rec.stop();
+    holdingRef.current = false;
+    const take = takeRef.current;
+    if (!take) return;
+    takeRef.current = null;
     setListening(false);
+    take.rec.stop();
+  }, []);
+
+  const cancel = useCallback(() => {
+    holdingRef.current = false;
+    const take = takeRef.current;
+    if (!take) return;
+    take.cancelled = true;
+    takeRef.current = null;
+    setListening(false);
+    take.rec.abort();
   }, []);
 
   useEffect(() => {
@@ -99,6 +135,7 @@ export function useHoldToTalk({
       if (e.code !== "KeyT" || !held(e) || e.altKey || e.shiftKey) return;
       e.preventDefault();
       if (e.repeat) return;
+      holdingRef.current = true;
       start();
     };
     // Releasing T or the modifier ends the take. On macOS, WebKit often drops
@@ -118,5 +155,5 @@ export function useHoldToTalk({
     };
   }, [enabled, start, stop]);
 
-  return listening;
+  return { listening, stop, cancel };
 }

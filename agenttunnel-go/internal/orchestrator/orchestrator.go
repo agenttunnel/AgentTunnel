@@ -473,6 +473,11 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
+	// A reviewer weighs the answers its threads drew once the team has settled.
+	if err := o.runner.recheckReviews(ctx, threadID); err != nil {
+		return err
+	}
+
 	// Late peer messages have no next pass to land in. Drain once more so they
 	// surface in the final summary instead of being lost.
 	if state, err := o.runner.engine.State(ctx, threadID); err == nil {

@@ -15,11 +15,12 @@ const askHelp = "Ask the human only when you are blocked on a decision only they
 	"choice takes one option, multi takes several, text takes a free answer. The command blocks until the human answers and prints the answer, so run it as a normal foreground command. If it reports no answer, carry on on a stated assumption."
 
 // BuildSubagentPrompt assembles a subagent's prompt from its role prompt, its
-// task, the inherited context, and the shared notebook, so every subagent starts
-// informed by what the others have done. The peer message tool is documented only
-// when the thread has the peer mailbox enabled, and messages teammates sent while
-// this agent was waiting are carried in their own section.
-func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, peerMailbox bool, teammates []contracts.MailboxPosted) string {
+// task, the inherited context, the shared notebook and the open review threads,
+// so every subagent starts informed by what the others have done. The peer message
+// tool is documented only when the thread has the peer mailbox enabled, and
+// messages teammates sent while this agent was waiting are carried in their own
+// section.
+func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	b.WriteString("\n\n## Task\n")
@@ -31,6 +32,10 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared string, pe
 	if strings.TrimSpace(shared) != "" {
 		b.WriteString("\n\n")
 		b.WriteString(shared)
+	}
+	if strings.TrimSpace(reviews) != "" {
+		b.WriteString("\n\n")
+		b.WriteString(reviews)
 	}
 	if len(teammates) > 0 {
 		b.WriteString("\n\n## Messages from teammates\n")

@@ -24,6 +24,8 @@ import {
   type UsageStep,
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
+import { ThreadSetup } from "./components/ThreadSetup";
+import { switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
   PanelToggle,
@@ -32,15 +34,18 @@ import {
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
 import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
+import { VoiceRecorder } from "./components/VoiceRecorder";
 import { useRotatingPlaceholder } from "./lib/placeholder";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
+import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
-import { PRPanel, type PRSnapshot } from "./components/PRPanel";
+import { PRPanel, type PRListing } from "./components/PRPanel";
+import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RelayPairing } from "./components/RelayPairing";
@@ -50,6 +55,7 @@ import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
+import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads } from "./lib/threads";
 import {
@@ -100,10 +106,24 @@ type ReviewComment = {
   body: string;
   submitted: boolean;
 };
+/** A reviewer's inline thread on a diff line; replies run oldest first. */
+type ReviewThread = {
+  id: string;
+  file: string;
+  line: number;
+  endLine: number;
+  side?: "old" | "new";
+  body: string;
+  authorId: string;
+  status: "open" | "resolved";
+  replies?: { authorId: string; body: string; at: string }[] | null;
+  openedAt: string;
+  updatedAt: string;
+};
 /** One lead's runtime override. Empty fields inherit the Orchestrator role's runtime. */
-type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
+export type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
 
-type ThreadState = {
+export type ThreadState = {
   id: string;
   title: string;
   autoMode: boolean;
@@ -122,6 +142,8 @@ type ThreadState = {
   turns: TurnUsage[] | null;
   shared: Record<string, string> | null;
   reviewComments: ReviewComment[] | null;
+  /** Reviewer threads on diff lines. Absent on daemons that predate them. */
+  reviewThreads?: ReviewThread[] | null;
   /** Agent questions for the human, oldest first. Pending ones await an answer. */
   questions?: AgentQuestion[] | null;
   /** The agreed task list, in the order the leads added it. */
@@ -140,6 +162,8 @@ type ThreadSummary = {
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
+  /** The thread's own worktree; its branch is what a PR is opened from. */
+  worktree?: { path: string; branch: string; base: string } | null;
 };
 type Project = { id: string; name: string; path: string; threads: number };
 
@@ -175,7 +199,7 @@ type HarnessInfo = {
   enabled: string[] | null;
   models: Record<string, string[]> | null;
 };
-type RoleConfigView = {
+export type RoleConfigView = {
   id: string;
   name: string;
   harness: string;
@@ -186,7 +210,7 @@ type RoleConfigView = {
   required: boolean;
   experimental: boolean;
 };
-type SettingsView = {
+export type SettingsView = {
   workdir: string;
   autoMode: boolean;
   approvedModels: string[] | null;
@@ -222,6 +246,49 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
 };
+/** How the project's threads are laid out: the card list or the status board. */
+type ThreadView = "list" | "board";
+function loadThreadView(): ThreadView {
+  try {
+    if (window.localStorage.getItem("at.threadView") === "board") return "board";
+  } catch {
+    /* private mode: default to the list */
+  }
+  return "list";
+}
+
+/** How often the board re-reads PR state while it is open. */
+const THREAD_PR_POLL_MS = 20_000;
+
+function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
+  if (a.dirty !== b.dirty) return false;
+  const p = a.pr;
+  const q = b.pr;
+  if (!p || !q) return p === q;
+  return p.number === q.number && p.url === q.url && p.state === q.state && p.draft === q.draft && p.reviewDecision === q.reviewDecision;
+}
+
+/** Keeps the entries that did not change, so memoized board cards keep their props. */
+function mergeThreadStates(
+  prev: Record<string, BoardThreadState>,
+  next: Record<string, BoardThreadState>,
+): Record<string, BoardThreadState> {
+  const ids = Object.keys(next);
+  let changed = ids.length !== Object.keys(prev).length;
+  const out: Record<string, BoardThreadState> = {};
+  for (const id of ids) {
+    const old = prev[id];
+    const cur = next[id];
+    if (old && sameThreadState(old, cur)) {
+      out[id] = old;
+    } else {
+      out[id] = cur;
+      changed = true;
+    }
+  }
+  return changed ? out : prev;
+}
+
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
   try {
@@ -403,22 +470,6 @@ function tabProps(selected: boolean, onSelect: () => void) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         onSelect();
-      }
-    },
-  };
-}
-
-/** Same treatment for the pill switches. */
-function switchProps(on: boolean, onToggle: () => void) {
-  return {
-    role: "switch" as const,
-    "aria-checked": on,
-    tabIndex: 0,
-    onClick: onToggle,
-    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onToggle();
       }
     },
   };
@@ -639,13 +690,10 @@ export default function App() {
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
-  // PR/MR status for the active thread; tagged with its thread so a late reply never shows elsewhere.
-  const [prState, setPRState] = useState<PRSnapshot | null>(null);
+  // Pull requests the active thread opened; tagged with its thread so a late reply never shows elsewhere.
+  const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
-  // The PR-tab write in flight (e.g. "pr.push") and the last one's result, both thread-tagged.
-  const [prBusy, setPRBusy] = useState<string | null>(null);
-  const [prNotice, setPRNotice] = useState<{ threadId: string; text: string } | null>(null);
   // Worktrees: per open project, live git facts from worktree.list. Every thread
   // in a git project gets one, so the UI offers no choice about it. Shown in the
   // threads view (no thread open), not the aside.
@@ -848,39 +896,14 @@ export default function App() {
     setPRLoading(true);
     setPRError(null);
     try {
-      const snapshot = await rpc.call<PRSnapshot>("pr.status", { threadId: id });
-      if (activeIdRef.current === id) setPRState({ ...snapshot, threadId: id });
+      const listing = await rpc.call<PRListing>("pr.list", { threadId: id });
+      if (activeIdRef.current === id) setPRState({ ...listing, threadId: id });
     } catch (e) {
       if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
     } finally {
       if (activeIdRef.current === id) setPRLoading(false);
     }
   }, []);
-
-  /** Runs one PR-tab write (pr.commit, pr.push, ...) for the active thread, then re-reads the snapshot. */
-  const runPRAction = useCallback(
-    async (method: string, params: Record<string, unknown> = {}) => {
-      const rpc = rpcRef.current;
-      const id = activeIdRef.current;
-      if (!rpc || !id) return false;
-      setPRBusy(method);
-      setPRError(null);
-      setPRNotice(null);
-      let ok = false;
-      try {
-        const result = await rpc.call<{ message?: string }>(method, { ...params, threadId: id });
-        ok = true;
-        if (activeIdRef.current === id) setPRNotice({ threadId: id, text: result?.message || "Done" });
-      } catch (e) {
-        if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setPRBusy(null);
-      }
-      void loadPR(id);
-      return ok;
-    },
-    [loadPR],
-  );
 
 
   const loadFileTree = useCallback(async (id: string | null) => {
@@ -1587,6 +1610,21 @@ export default function App() {
   );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
   const comments = thread?.reviewComments ?? [];
+  /** Review threads by file|side|line so each diff line finds its thread without a scan. */
+  const reviewAnchors = useMemo(() => {
+    const map = new Map<string, ReviewThreadLike[]>();
+    for (const t of thread?.reviewThreads ?? []) {
+      const key = reviewAnchorKey(t.file, t.side ?? "new", t.line);
+      const list = map.get(key);
+      if (list) list.push(t);
+      else map.set(key, [t]);
+    }
+    return map;
+  }, [thread?.reviewThreads]);
+  const reviewPeople = useMemo(
+    () => ({ agents: thread?.agents ?? null, roleNames: rolesById }),
+    [thread?.agents, rolesById],
+  );
   const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
@@ -1603,6 +1641,50 @@ export default function App() {
       ),
     [threads, projectId, needle],
   );
+
+  // The board is an alternative to the card list, not a replacement: the choice
+  // is remembered, and both views read the same thread list.
+  const [threadView, setThreadViewState] = useState<ThreadView>(loadThreadView);
+  const setThreadView = (view: ThreadView) => {
+    setThreadViewState(view);
+    try {
+      window.localStorage.setItem("at.threadView", view);
+    } catch {
+      /* not persisted: the choice lasts this session */
+    }
+  };
+  const [threadStates, setThreadStates] = useState<Record<string, BoardThreadState>>({});
+  const openBoardThread = useCallback(
+    (id: string) => {
+      setActiveId(id);
+      if (projectId) lastThreadByProject.current[projectId] = id;
+    },
+    [projectId],
+  );
+  // Only threads with a worktree can have a branch PR. The joined id string keeps
+  // the poll from restarting when unrelated thread fields change.
+  const boardPRIds = useMemo(
+    () => projectThreads.filter((t) => t.worktree).map((t) => t.id).join(","),
+    [projectThreads],
+  );
+  useEffect(() => {
+    if (threadView !== "board" || boardPRIds === "") return;
+    let live = true;
+    const load = () => {
+      rpcRef.current
+        ?.call<Record<string, BoardThreadState>>("pr.states", { threadIds: boardPRIds.split(",") })
+        .then((next) => {
+          if (live) setThreadStates((prev) => mergeThreadStates(prev, next));
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = setInterval(load, THREAD_PR_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [threadView, boardPRIds]);
   const openProjects = useMemo(
     () =>
       openProjectIds
@@ -1726,6 +1808,24 @@ export default function App() {
       // A finished steer must not clear the busy flag of the turn it joined.
       if (!steer) setTurnBusy(threadId, false);
       setShellThread((cur) => (cur === threadId ? null : cur));
+      refresh(threadId).catch(() => undefined);
+    }
+  };
+
+  // A graph group's prompt goes to its thread the way a chat message does: a new
+  // turn, or a steer while one runs. The chat tab shows the result.
+  const sendGroup = async (threadId: string, text: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const steer = running.length > 0 || busy;
+    if (!steer) setTurnBusy(threadId, true);
+    setTab("chat");
+    try {
+      await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e), threadId);
+    } finally {
+      if (!steer) setTurnBusy(threadId, false);
       refresh(threadId).catch(() => undefined);
     }
   };
@@ -2016,11 +2116,18 @@ export default function App() {
       return { ...prev, [draftKey]: next };
     });
   };
-  const listening = useHoldToTalk({
+  const voice = useHoldToTalk({
     enabled: !!activeId,
     onText: appendDictation,
     onUnavailable: (msg) => setError(msg),
   });
+  const listening = voice.listening;
+  // The textarea stays mounted (hidden while recording), so refocus it when a take ends.
+  const wasListening = useRef(false);
+  useEffect(() => {
+    if (wasListening.current && !listening) taRef.current?.focus();
+    wasListening.current = listening;
+  }, [listening]);
   useRotatingPlaceholder(taRef, {
     rotate: tab === "chat" && !!activeId && running.length === 0 && !input,
     idle:
@@ -2563,6 +2670,23 @@ export default function App() {
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
+              <div className="view-toggle" role="group" aria-label="Thread layout">
+                <button
+                  className={threadView === "list" ? "primary" : undefined}
+                  aria-pressed={threadView === "list"}
+                  onClick={() => setThreadView("list")}
+                >
+                  List
+                </button>
+                <button
+                  className={threadView === "board" ? "primary" : undefined}
+                  aria-pressed={threadView === "board"}
+                  onClick={() => setThreadView("board")}
+                >
+                  Board
+                </button>
+              </div>
+              {threadView === "board" && <button onClick={newThread}>New thread</button>}
               <button
                 className={showWorktrees ? "primary" : undefined}
                 aria-pressed={showWorktrees}
@@ -2589,9 +2713,17 @@ export default function App() {
               />
             </div>
           )}
-          {projectThreads.length === 0 && needle && (
+          {threadView === "list" && projectThreads.length === 0 && needle && (
             <div className="empty">No threads match that filter.</div>
           )}
+          {threadView === "board" ? (
+            <ThreadBoard
+              threads={projectThreads}
+              states={threadStates}
+              formatUpdated={fmtUpdated}
+              onOpen={openBoardThread}
+            />
+          ) : (
           <div className="thread-cards">
             <div
               className="new-card"
@@ -2628,15 +2760,20 @@ export default function App() {
               </div>
             ))}
           </div>
+          )}
           {threadOverlays}
         </div>
       </div>
     );
   }
 
+  const setupMode =
+    tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
+  const asideCollapsed = !layout.asideOpen || setupMode;
+
   return (
     <div
-      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${layout.asideOpen ? "" : " aside-closed"}`}
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}`}
       ref={shellRef}
       style={
         {
@@ -2681,6 +2818,7 @@ export default function App() {
           ))}
         </div>
         <div className="sidebar-foot">
+          <LimitsMeter rpc={rpcRef.current} />
           <button className="foot-btn" onClick={openSettings}>
             <svg
               viewBox="0 0 24 24"
@@ -2766,7 +2904,26 @@ export default function App() {
               ref={streamRef}
               onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
             >
-              {(!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
+              {setupMode && thread && (
+                <div className="setup-view">
+                  <ThreadSetup
+                    settings={settings}
+                    thread={thread}
+                    toggle={toggle}
+                    addLead={addLead}
+                    addingLead={addingLead}
+                    setLeadRuntime={setLeadRuntime}
+                    updateRole={updateRole}
+                    persistRole={persistRole}
+                    refreshModels={refreshModels}
+                    addModel={addModel}
+                    modelOptions={modelOptions}
+                    harnessOptionsFor={harnessOptionsFor}
+                    toggleRoleEnabled={toggleRoleEnabled}
+                  />
+                </div>
+              )}
+              {!setupMode && (!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
                 <div className="stream-empty">
                   <img src="/brand-mark.svg" alt="" />
                   <div className="stream-empty-title">Start a thread</div>
@@ -2922,6 +3079,7 @@ export default function App() {
                 <textarea
                   ref={taRef}
                   rows={1}
+                  hidden={listening}
                   onPaste={onComposerPaste}
                   onClick={onComposerClick}
                   value={input}
@@ -2934,6 +3092,13 @@ export default function App() {
                   onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={onComposerKeyDown}
                 />
+                {listening && (
+                  <VoiceRecorder
+                    hint={`${HOLD_MOD_LABEL} + T`}
+                    onStop={voice.stop}
+                    onCancel={voice.cancel}
+                  />
+                )}
               </div>
               <div className="composer-foot">
                 {selectedProject && (
@@ -2964,12 +3129,6 @@ export default function App() {
                   </svg>
                   Model config
                 </button>
-                {listening && (
-                  <span className="rec-indicator" role="status">
-                    <span className="rec-dot" />
-                    Listening — release {HOLD_MOD_LABEL} + T to insert
-                  </span>
-                )}
               </div>
             </div>
           </>
@@ -2990,6 +3149,8 @@ export default function App() {
               onAddComment={() => addComment().catch(() => undefined)}
               onCancelDraft={() => setDraft(null)}
               onRefresh={() => loadDiff(activeId)}
+              threads={reviewAnchors}
+              people={reviewPeople}
             />
             {reviewComments}
           </div>
@@ -3009,6 +3170,7 @@ export default function App() {
             mailbox={thread?.mailbox ?? null}
             peerMailbox={thread?.peerMailbox ?? false}
             onOpenAgent={setDetailId}
+            onSubmitGroup={sendGroup}
           />
         )}
       </div>
@@ -3019,16 +3181,18 @@ export default function App() {
         min={PANEL_BOUNDS.aside.min}
         max={PANEL_BOUNDS.aside.max}
         shellRef={shellRef}
-        disabled={!layout.asideOpen}
+        disabled={asideCollapsed}
         onCommit={(px) => setLayout((l) => ({ ...l, asideW: px }))}
       />
 
-      <div className={`col aside${layout.asideOpen ? "" : " collapsed"}`}>
+      <div className={`col aside${asideCollapsed ? " collapsed" : ""}`}>
         <div className="aside-tabs" role="tablist" aria-label="Thread details">
           <PanelToggle
             side="right"
-            open={layout.asideOpen}
-            onToggle={() => setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }))}
+            open={!asideCollapsed}
+            onToggle={() => {
+              if (!setupMode) setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }));
+            }}
           />
           {asideTabs.map((id) => (
             <div
@@ -3104,160 +3268,21 @@ export default function App() {
         <div className="aside-body">
           {asideActive === "models" ? (
             <div className="aside-models">
-        {settings && (
-          <div className="model-summary">
-            {thread?.autoMode && <span className="ms-auto">auto</span>}
-            {settings.roles
-              .filter((r) => r.enabled)
-              .map((r) => (
-                <span key={r.id}>
-                  {r.name} <b>{r.model || "default"}</b> {r.harness}
-                </span>
-              ))}
-          </div>
-        )}
-          {!settings && <p className="hint">Loading roles…</p>}
-          {settings && (
-            <>
-              <div
-                className={`toggle${thread?.autoMode ? " on" : ""}`}
-                {...switchProps(!!thread?.autoMode, () =>
-                  thread && toggle("autoMode", !thread.autoMode),
-                )}
-                title="Auto mode: the orchestrator picks each task's model and harness"
-              >
-                <span className="sw" /> Auto mode
-              </div>
-              <p className="hint">
-                {thread?.autoMode
-                  ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
-                  : "Each role runs on its own harness and model. Changes apply to the next turn."}
-              </p>
-              {settings.roles.map((r) => {
-                const parked = !!thread?.autoMode && r.id !== "orchestrator";
-                return (
-                  <div
-                    className={`role-edit has-switch${parked ? " parked" : ""}${r.enabled ? "" : " off"}`}
-                    key={r.id}
-                    title={
-                      parked
-                        ? "Parked while auto mode is on — the orchestrator decides this role's runtime"
-                        : undefined
-                    }
-                  >
-                    <span className="rn">
-                      {r.name}
-                      {r.experimental && <span className="badge experimental">Experimental</span>}
-                    </span>
-                    <Dropdown
-                      value={r.harness}
-                      options={harnessOptionsFor(r.harness)}
-                      disabled={parked}
-                      onChange={(v) => {
-                        const row = { ...r, harness: v };
-                        updateRole(r.id, { harness: v });
-                        persistRole(row).catch(() => undefined);
-                        refreshModels(v).catch(() => undefined);
-                      }}
-                    />
-                    <Dropdown
-                      value={r.model}
-                      options={modelOptions(r.harness, r.model)}
-                      searchable
-                      align="end"
-                      placeholder="model (default)"
-                      disabled={parked}
-                      onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                      addLabel="Add model"
-                      onAdd={(m) => {
-                        addModel(r.harness, m)
-                          .then(() => {
-                            const row = { ...r, model: m };
-                            updateRole(r.id, { model: m });
-                            persistRole(row).catch(() => undefined);
-                          })
-                          .catch(() => undefined);
-                      }}
-                      onChange={(v) => {
-                        const row = { ...r, model: v };
-                        updateRole(r.id, { model: v });
-                        persistRole(row).catch(() => undefined);
-                      }}
-                    />
-                    <div
-                      className={`toggle role-switch${r.enabled ? " on" : ""}${r.required ? " disabled" : ""}`}
-                      {...switchProps(r.enabled, () => toggleRoleEnabled(r, !r.enabled).catch(() => undefined))}
-                      aria-disabled={r.required}
-                      aria-label={`${r.enabled ? "Disable" : "Enable"} ${r.name}`}
-                      title={r.required ? "Required" : r.enabled ? "Disable this role" : "Enable this role"}
-                    >
-                      <span className="sw" />
-                    </div>
-                  </div>
-                );
-              })}
-              {(() => {
-                const orch = settings.roles.find((r) => r.id === "orchestrator");
-                const count = thread?.leads && thread.leads > 0 ? thread.leads : 1;
-                return (
-                  <div className="lead-block">
-                    <div className="lead-head">
-                      <span className="rn">Leads</span>
-                    </div>
-                    <p className="hint">
-                      Each lead runs the Orchestrator's runtime unless you override it here. Changes apply to the next turn.
-                    </p>
-                    {Array.from({ length: count }, (_, i) => {
-                      const ov: LeadRuntimeView = thread?.leadRuntimes?.[i] ?? {};
-                      const harness = ov.harness ?? "";
-                      const model = ov.model ?? "";
-                      const variant = ov.variant ?? "";
-                      const effective = harness || orch?.harness || "";
-                      return (
-                        <div className="role-edit" key={i}>
-                          <span className="rn">Lead {i + 1}</span>
-                          <Dropdown
-                            value={harness}
-                            options={[
-                              { value: "", label: `Orchestrator (${orch?.harness ?? "default"})` },
-                              ...harnessOptionsFor(harness),
-                            ]}
-                            disabled={!thread}
-                            onChange={(v) => setLeadRuntime(i, { harness: v })}
-                          />
-                          <Dropdown
-                            value={model}
-                            options={modelOptions(effective, model)}
-                            searchable
-                            placeholder="model (default)"
-                            disabled={!thread}
-                            onRefresh={() => refreshModels(effective).catch(() => undefined)}
-                            addLabel="Add model"
-                            onAdd={(m) => {
-                              addModel(effective, m)
-                                .then(() => setLeadRuntime(i, { harness, model: m, variant }))
-                                .catch(() => undefined);
-                            }}
-                            onChange={(v) => setLeadRuntime(i, { harness, model: v, variant })}
-                          />
-                        </div>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      className="lead-add"
-                      aria-label="Add a lead"
-                      title="Add a lead"
-                      disabled={!thread || addingLead}
-                      onClick={() => addLead(count + 1)}
-                    >
-                      +
-                    </button>
-                  </div>
-                );
-              })()}
-            </>
-          )}
+              <ThreadSetup
+                settings={settings}
+                thread={thread}
+                toggle={toggle}
+                addLead={addLead}
+                addingLead={addingLead}
+                setLeadRuntime={setLeadRuntime}
+                updateRole={updateRole}
+                persistRole={persistRole}
+                refreshModels={refreshModels}
+                addModel={addModel}
+                modelOptions={modelOptions}
+                harnessOptionsFor={harnessOptionsFor}
+                toggleRoleEnabled={toggleRoleEnabled}
+              />
             </div>
           ) : asideActive === "agents" ? (
             <>
@@ -3627,13 +3652,10 @@ export default function App() {
         ) : asideActive === "pr" ? (
           <div className="section pr-section">
             <PRPanel
-              snapshot={prState?.threadId === activeId ? prState : null}
+              listing={prState?.threadId === activeId ? prState : null}
               loading={prLoading}
               error={prError}
-              busy={prBusy}
-              notice={prNotice?.threadId === activeId ? prNotice.text : null}
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
-              onAction={runPRAction}
             />
           </div>
         ) : asideActive === "files" ? (
@@ -3787,6 +3809,8 @@ export default function App() {
                 onAddComment={() => addComment().catch(() => undefined)}
                 onCancelDraft={() => setDraft(null)}
                 onRefresh={() => loadDiff(activeId)}
+                threads={reviewAnchors}
+                people={reviewPeople}
               />
             </div>
             {reviewComments}

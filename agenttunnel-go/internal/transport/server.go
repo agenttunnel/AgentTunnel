@@ -87,6 +87,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindAsk:
 		s.handleAskCall(w, r, req)
 		return
+	case toolbox.KindReviewComment, toolbox.KindReviewReply, toolbox.KindReviewResolve:
+		s.handleReviewCall(w, r, req)
+		return
 	}
 
 	// Peer messages are delivered immediately rather than queued in the tool
@@ -175,6 +178,50 @@ type toolCallRequest struct {
 	QuestionKind string   `json:"questionKind"`
 	Options      []string `json:"options"`
 	TimeoutSec   int      `json:"timeoutSec"`
+	// File, Line, EndLine and Side anchor a review comment; Thread names the
+	// review thread a reply or resolve answers; Reopen moves it back to open.
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	EndLine int    `json:"endLine"`
+	Side    string `json:"side"`
+	Thread  string `json:"thread"`
+	Reopen  bool   `json:"reopen"`
+}
+
+// handleReviewCall applies a review-comment, review-reply or review-resolve call
+// at once and answers with the review thread's id. The decider decides who may
+// do what, so a refusal (an executor resolving, an unknown thread) is a 400 the
+// agent sees in the same pass.
+func (s *Server) handleReviewCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if s.runner == nil {
+		http.Error(w, "review threads are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	id, err := s.runner.ReviewCall(r.Context(), req.ThreadID, req.AgentID, toolbox.Call{
+		Kind:    toolbox.Kind(req.Kind),
+		AgentID: req.AgentID,
+		Text:    req.Text,
+		File:    req.File,
+		Line:    req.Line,
+		EndLine: req.EndLine,
+		Side:    req.Side,
+		Thread:  req.Thread,
+		Reopen:  req.Reopen,
+	})
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, domain.ErrInvalidCommand) || errors.Is(err, domain.ErrThreadNotFound) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.disp.auditLog("tool", map[string]any{
+		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+		"reviewThread": id,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id})
 }
 
 // handleTaskCall applies a task-create, task-update or task-list call to the
