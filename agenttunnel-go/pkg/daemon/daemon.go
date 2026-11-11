@@ -217,7 +217,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Audit:          actions.Func(),
 		Updater:        updater,
 		HarnessUpdates: harnessUpdates,
-		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits()),
+		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
 		Relay:          relay,
 		BaseCtx:        ctx,
 		Shutdown:       opts.OnShutdown,
