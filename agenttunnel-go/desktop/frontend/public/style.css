@@ -3086,15 +3086,24 @@ table.grid tr.rowlink:hover td {
   margin-right: auto;
   color: var(--muted);
 }
-.tb-check {
-  margin: 0;
-  cursor: pointer;
+/* A selected card keeps its accent outline even under the hover border. */
+.tb-card.selected,
+.tb-card.selected:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
-.tb-card.selected {
-  border-color: var(--accent-line);
+.tb-card .tc-title {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tb-card .tc-foot {
+  flex-wrap: wrap;
 }
 .tb-card-actions {
   display: inline-flex;
+  flex: none;
   gap: 6px;
   margin-left: auto;
 }
