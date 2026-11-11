@@ -44,6 +44,17 @@ func Project(s *ThreadState, e contracts.Event) error {
 			s.turnFor(s.Turn).At = e.At
 		}
 
+	case contracts.SteeringConsumed:
+		consumed := make(map[string]bool, len(p.MessageIDs))
+		for _, id := range p.MessageIDs {
+			consumed[id] = true
+		}
+		for i := range s.Messages {
+			if consumed[s.Messages[i].ID] {
+				s.Messages[i].Consumed = true
+			}
+		}
+
 	case contracts.ModelSet:
 		s.Model = p.Selection
 

@@ -12,6 +12,9 @@ type Message struct {
 	Author string    `json:"author"`
 	Text   string    `json:"text"`
 	At     time.Time `json:"at"`
+	// Consumed is set on a steering message once a pass has picked it up. A
+	// steering message that is not consumed yet is still queued.
+	Consumed bool `json:"consumed,omitempty"`
 }
 
 // UsageStep is one model step's spend for a single agent — a row in an agent's

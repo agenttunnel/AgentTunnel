@@ -331,6 +331,28 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{*cmd.Message}, nil
 
+	case contracts.CmdSteeringConsume:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		p := cmd.SteeringConsume
+		if p == nil || len(p.MessageIDs) == 0 {
+			return nil, fmt.Errorf("%w: steering message ids are required", ErrInvalidCommand)
+		}
+		for _, id := range p.MessageIDs {
+			found := false
+			for _, m := range s.Messages {
+				if m.ID == id && m.Author == "steering" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("%w: steering message %q is not in the transcript", ErrInvalidCommand, id)
+			}
+		}
+		return []contracts.EventPayload{*p}, nil
+
 	case contracts.CmdReviewCommentAdd:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

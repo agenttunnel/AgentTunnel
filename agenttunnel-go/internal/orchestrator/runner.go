@@ -969,7 +969,7 @@ func (r *Runner) DrainTools(threadID contracts.ThreadID) []toolbox.Call {
 }
 
 // DrainSteering returns and clears the user's pending mid-run steering messages.
-func (r *Runner) DrainSteering(threadID contracts.ThreadID) []string {
+func (r *Runner) DrainSteering(threadID contracts.ThreadID) []steering.Entry {
 	if r.steering == nil {
 		return nil
 	}

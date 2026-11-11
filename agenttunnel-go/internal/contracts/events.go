@@ -17,6 +17,7 @@ const (
 	EvtWorktreeDetached   EventType = "thread.worktree-detached"
 	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
 	EvtMessageSent        EventType = "thread.message-sent"
+	EvtSteeringConsumed   EventType = "thread.steering-consumed"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
@@ -113,6 +114,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[WorktreeReplaced](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
+	case EvtSteeringConsumed:
+		return decodePayload[SteeringConsumed](data)
 	case EvtModelSet:
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
@@ -228,6 +231,14 @@ type MessageSent struct {
 }
 
 func (MessageSent) eventType() EventType { return EvtMessageSent }
+
+// SteeringConsumed marks the steering messages a lead has picked up in a pass.
+// Until it lands, a steering message is still waiting in the queue.
+type SteeringConsumed struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+func (SteeringConsumed) eventType() EventType { return EvtSteeringConsumed }
 
 type ModelSet struct{ Selection ModelSelection }
 

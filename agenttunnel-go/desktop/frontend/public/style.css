@@ -676,6 +676,19 @@ body.is-resizing * {
 .msg.steering .body {
   font-style: italic;
 }
+/* Queued steering is still waiting for the next pass: dashed edge and a muted
+   label. Static only, so the transcript pays no animation cost. */
+.msg.steering.pending {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.msg.steering.pending .who .role {
+  color: var(--faint);
+}
+.msg.steering.pending .body {
+  color: var(--dim);
+}
 
 .stream-empty {
   display: flex;
