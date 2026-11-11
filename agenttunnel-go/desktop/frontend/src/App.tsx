@@ -49,6 +49,7 @@ import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RelayPairing } from "./components/RelayPairing";
+import { TunnelButton } from "./components/TunnelButton";
 import { Markdown } from "./components/Markdown";
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
@@ -57,7 +58,7 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
-import { arrangeThreads } from "./lib/threads";
+import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import {
   buildCommands,
   matchCommands,
@@ -160,6 +161,8 @@ type ThreadSummary = {
   messages: number;
   agents: number;
   autoMode: boolean;
+  /** Filed by the user; shown in the board's Archived column. */
+  archived?: boolean;
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
@@ -220,6 +223,14 @@ export type SettingsView = {
   configPath: string;
   staleAfterMinutes?: number;
 };
+export type DependencyStatus = "ok" | "outdated" | "missing";
+export type DependencyView = {
+  name: string;
+  installed: boolean;
+  version?: string;
+  minVersion: string;
+  status: DependencyStatus;
+};
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
@@ -260,6 +271,22 @@ function loadThreadView(): ThreadView {
 
 /** How often the board re-reads PR state while it is open. */
 const THREAD_PR_POLL_MS = 20_000;
+/** How often a connected app asks for a newer release. At this rate a client
+ * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
+const UPDATE_CHECK_MS = 5 * 60_000;
+/** Playful verbs for the setup view's Start button. */
+const START_VERBS = [
+  "Brewing",
+  "Noodling",
+  "Wrangling",
+  "Tinkering",
+  "Conjuring",
+  "Herding",
+  "Scheming",
+  "Juggling",
+  "Puzzling",
+  "Dreaming",
+];
 
 function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
   if (a.dirty !== b.dirty) return false;
@@ -616,6 +643,21 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  // A check keeps the "restart to run" state after an install; the daemon's
+  // plain check result does not know about it.
+  const checkForUpdate = useCallback(() => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    rpc
+      .call<UpdateStatus>("update.check")
+      .then((s) => setUpdate((prev) => (prev?.installed ? prev : s)))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (status !== "online") return;
+    const id = window.setInterval(checkForUpdate, UPDATE_CHECK_MS);
+    return () => window.clearInterval(id);
+  }, [status, checkForUpdate]);
 
   // Threads with a turn, council, or review in flight. Keyed by thread so a turn
   // running in one thread never gates or steers another.
@@ -744,6 +786,9 @@ export default function App() {
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
+  const [deps, setDeps] = useState<DependencyView[] | null>(null);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -961,6 +1006,20 @@ export default function App() {
     setHarnesses(await rpc.call<HarnessInfo>("harness.list"));
   }, []);
 
+  const loadDeps = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setDepsBusy(true);
+    try {
+      setDeps(await rpc.call<DependencyView[]>("deps.check"));
+      setDepsError(null);
+    } catch (e) {
+      setDepsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDepsBusy(false);
+    }
+  }, []);
+
   const loadProjects = useCallback(async () => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -1104,6 +1163,41 @@ export default function App() {
     setRenameTarget(null);
     await reloadThreads();
     if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
+  };
+
+  /** Archives or restores several threads in one go. A failure stops the batch
+   * and reports the first error; threads already changed stay changed. */
+  const setThreadsArchived = async (ids: string[], archived: boolean) => {
+    const rpc = rpcRef.current;
+    if (!rpc || ids.length === 0) return;
+    try {
+      for (const threadId of ids) {
+        await rpc.call("thread.setArchived", { threadId, enabled: archived });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    await reloadThreads();
+  };
+
+  /** Deletes several threads. Deleting the open thread closes back to the list. */
+  const deleteThreadsById = async (ids: string[]) => {
+    const rpc = rpcRef.current;
+    if (!rpc || ids.length === 0) return;
+    const deleted: string[] = [];
+    try {
+      for (const threadId of ids) {
+        await rpc.call("thread.delete", { threadId });
+        deleted.push(threadId);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    await reloadThreads();
+    if (activeId && deleted.includes(activeId)) {
+      selectThread(null);
+      setThread(null);
+    }
   };
 
   const confirmDeleteThread = async () => {
@@ -1259,7 +1353,7 @@ export default function App() {
       rpcRef.current = rpc;
       setStatus("online");
       // Not awaited: a slow GitHub lookup must not hold up startup.
-      rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
+      checkForUpdate();
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -1631,6 +1725,16 @@ export default function App() {
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
+  // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
+  // has subthreads toggles this, so a long tree can be folded away.
+  const [collapsedThreads, setCollapsedThreads] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSubthreads = (id: string) =>
+    setCollapsedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const needle = threadFilter.trim().toLowerCase();
   const projectThreads = useMemo(
     () =>
@@ -2064,6 +2168,10 @@ export default function App() {
   };
 
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Thread whose pre-run setup the user confirmed; the composer stays hidden until then.
+  const [setupReadyId, setSetupReadyId] = useState<string | null>(null);
+  // One playful verb per thread's setup view, picked when the thread changes.
+  const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
   // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
@@ -2261,7 +2369,7 @@ export default function App() {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
+        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects(), loadDeps()]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
@@ -2370,6 +2478,7 @@ export default function App() {
           {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
         </span>
       </div>
+      <TunnelButton rpc={rpcRef.current} />
       <UpdateChip
         status={update}
         busy={updateBusy}
@@ -2732,6 +2841,8 @@ export default function App() {
               states={threadStates}
               formatUpdated={fmtUpdated}
               onOpen={openBoardThread}
+              onArchive={(ids, archived) => void setThreadsArchived(ids, archived)}
+              onDelete={(ids) => void deleteThreadsById(ids)}
             />
           ) : (
           <div className="thread-cards">
@@ -2777,8 +2888,12 @@ export default function App() {
     );
   }
 
-  const setupMode =
+  // A new thread shows its setup until the user presses Start; then the setup
+  // view and the hidden composer both give way to the normal empty chat.
+  const setupPending =
     tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
+  const setupMode = setupPending && setupReadyId !== activeId;
+  const composerHidden = setupMode;
   const asideCollapsed = !layout.asideOpen || setupMode;
 
   return (
@@ -2806,16 +2921,24 @@ export default function App() {
         </div>
         <div className="col-body">
           {projectThreads.length === 0 && <div className="empty">No threads yet</div>}
-          {projectThreads.map((t) => (
+          {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-              {...clickable(() => selectThread(t.id))}
+              {...clickable(() => {
+                if (t.subthreads > 0) toggleSubthreads(t.id);
+                selectThread(t.id);
+              })}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
               <div className="t" title={t.title}>
                 {t.title}
+                {t.subthreads > 0 && (
+                  <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
+                    {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
+                  </span>
+                )}
               </div>
               <div className="m">
                 {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
@@ -2931,6 +3054,15 @@ export default function App() {
                     harnessOptionsFor={harnessOptionsFor}
                     toggleRoleEnabled={toggleRoleEnabled}
                   />
+                  {composerHidden && (
+                    <button
+                      type="button"
+                      className="setup-continue"
+                      onClick={() => setSetupReadyId(activeId)}
+                    >
+                      Start {startVerb}...
+                    </button>
+                  )}
                 </div>
               )}
               {!setupMode && (!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
@@ -3050,6 +3182,7 @@ export default function App() {
 
             <div
               className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
+              hidden={composerHidden}
             >
               {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
               {slashOpen && (
@@ -3934,6 +4067,39 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+              </section>
+
+              <section className="set-section">
+                <h4>Dependencies</h4>
+                <p className="hint">
+                  The forge CLIs the Pull request tab shells out to. Versions are read from the
+                  tools on PATH.
+                </p>
+                {depsError && <p className="hint warn">{depsError}</p>}
+                {deps === null && !depsError && <p className="hint">Checking…</p>}
+                {(deps ?? []).map((d) => (
+                  <div className="dep-row" key={d.name}>
+                    <span className="dn">{d.name}</span>
+                    <span className={`dv ${d.status}`}>
+                      {d.status === "missing"
+                        ? "not installed"
+                        : `${d.version || "unknown version"}${
+                            d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
+                          }`}
+                    </span>
+                    <span
+                      className={`dot ${
+                        d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
+                      }`}
+                      title={d.status}
+                    />
+                  </div>
+                ))}
+                <div className="sheet-actions">
+                  <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
+                    {depsBusy ? "Checking…" : "Recheck"}
+                  </button>
+                </div>
               </section>
 
               <section className="set-section">

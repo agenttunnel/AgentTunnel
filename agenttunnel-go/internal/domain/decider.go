@@ -128,6 +128,23 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.ModelSet{Selection: *cmd.ModelSelection}}, nil
 
+	case contracts.CmdArchiveSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Archived == nil {
+			return nil, fmt.Errorf("%w: archived value is required", ErrInvalidCommand)
+		}
+		// Archiving hides a thread from the working columns; stop its agents first.
+		if *cmd.Archived {
+			for id, a := range s.Agents {
+				if !a.Status.Terminal() {
+					return nil, fmt.Errorf("%w: agent %q is still %s", ErrInvalidCommand, id, a.Status)
+				}
+			}
+		}
+		return []contracts.EventPayload{contracts.ArchiveSet{Archived: *cmd.Archived}}, nil
+
 	case contracts.CmdAutoModeSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

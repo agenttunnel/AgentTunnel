@@ -17,6 +17,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deps"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
@@ -257,6 +258,7 @@ type ThreadSummary struct {
 	Messages  int                `json:"messages"`
 	Agents    int                `json:"agents"`
 	AutoMode  bool               `json:"autoMode"`
+	Archived  bool               `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
 	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
@@ -626,7 +628,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
-				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
+				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
 				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
@@ -986,6 +988,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true}, nil
 
+	case "thread.setArchived":
+		var p setBoolParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
 	case "thread.setPeerMailbox":
 		var p setBoolParams
 		if err := decode(req.Params, &p); err != nil {
@@ -1129,6 +1143,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, errors.New("updates are unavailable")
 		}
 		return d.updater.Apply(ctx)
+
+	case "deps.check":
+		// Probes the forge CLIs on PATH with `--version`; local and read-only,
+		// so the headless daemon reports the same answer as the desktop app.
+		return deps.Probe(ctx), nil
 
 	case "review.diff":
 		var p struct {
