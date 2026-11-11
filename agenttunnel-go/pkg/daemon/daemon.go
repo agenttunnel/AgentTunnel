@@ -174,7 +174,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Steering:     steerBox,
 		Audit:        actions.Func(),
 		Updater:      updater,
-		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits()),
+		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
 		Relay:        relay,
 	})
 	// Questions left open by a previous run have no caller to answer them.

@@ -3045,6 +3045,28 @@ table.grid tr.rowlink:hover td {
   justify-content: space-between;
   margin-bottom: 3px;
 }
+/* Collapse toggle: same row as refresh, no transition so toggling never animates layout. */
+.limits-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.limits-toggle:hover {
+  color: var(--text);
+}
+.limits-caret {
+  width: 9px;
+  color: var(--faint);
+}
 .limits-refresh {
   background: transparent;
   border-color: transparent;

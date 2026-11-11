@@ -18,7 +18,12 @@ export type HarnessLimits = {
   fetchedAt: string;
 };
 
-const HARNESS_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", cursor: "Cursor" };
+const HARNESS_NAMES: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  commandcode: "Command Code",
+};
 
 export function harnessName(harness: string): string {
   return HARNESS_NAMES[harness] ?? harness;
