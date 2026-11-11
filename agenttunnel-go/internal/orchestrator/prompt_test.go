@@ -12,7 +12,7 @@ import (
 func TestPromptsDocumentTheAskTool(t *testing.T) {
 	const line = `"$AT_TOOL" tool ask --kind choice|multi|text`
 	for _, mailbox := range []bool{false, true} {
-		sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "task", "", "", mailbox, nil)
+		sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "task", "", "", "", mailbox, nil)
 		if !strings.Contains(sub, line) {
 			t.Fatalf("subagent prompt (peer mailbox %v) lacks the ask line:\n%s", mailbox, sub)
 		}

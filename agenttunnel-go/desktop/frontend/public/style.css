@@ -975,6 +975,29 @@ body.is-resizing * {
   margin-bottom: 8px;
 }
 
+/* Pre-run setup: the same settings, full width above the composer. Rows keep
+ * the aside's grid so the two surfaces read the same. */
+.setup-view {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 8px 0 24px;
+}
+.setup-view .model-summary {
+  margin: 0 0 12px;
+}
+.setup-view .toggle {
+  margin-bottom: 8px;
+}
+.setup-peer {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.toggle[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* One block per turn: the prompt heads it, the team's replies stack under it. */
 .turn {
   max-width: 900px;
@@ -995,23 +1018,113 @@ body.is-resizing * {
   background: var(--surface-2);
 }
 
-/* Listening state for hold-to-talk: a static dot and a mono label, no animation. */
-.rec-indicator {
-  display: inline-flex;
+/* Voice recording: replaces the composer text field while hold-to-talk runs.
+   Motion is transform and opacity only; reduced motion keeps static bars. */
+.rec-ui {
+  flex: 1;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  padding-right: 4px;
-  font: 10.5px/1 var(--mono);
-  letter-spacing: 0.02em;
-  color: var(--err);
-  white-space: nowrap;
+  gap: 10px;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 4px;
+  font: 12px/1 var(--mono);
+  color: var(--dim);
 }
-.rec-dot {
-  width: 6px;
-  height: 6px;
+.rec-pulse {
+  flex: none;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--err);
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+.rec-time {
+  flex: none;
+  color: var(--err);
+  font-variant-numeric: tabular-nums;
+}
+.rec-wave {
+  flex: 1;
+  min-width: 40px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+}
+.rec-bar {
+  flex: 0 0 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--err);
+  opacity: 0.8;
+  transform: scaleY(var(--h));
+}
+/* No mic stream: each bar bobs on its own phase. Stops with the component. */
+.rec-wave.css .rec-bar {
+  animation: rec-bar-idle 0.9s ease-in-out infinite alternate;
+}
+@keyframes rec-bar-idle {
+  from {
+    transform: scaleY(0.15);
+  }
+  to {
+    transform: scaleY(var(--h));
+  }
+}
+.rec-hint {
+  flex: none;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.rec-cancel,
+.rec-stop {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.rec-cancel {
+  font: 16px/1 var(--sans);
+}
+.rec-stop {
+  border-color: var(--err);
+  color: var(--err);
+}
+.rec-stop-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.rec-cancel:hover,
+.rec-stop:hover {
+  background: var(--surface-2);
+}
+.rec-cancel:focus-visible,
+.rec-stop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .role-edit {
@@ -1152,7 +1265,9 @@ body.is-resizing * {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .act-led {
+  .act-led,
+  .rec-pulse,
+  .rec-wave.css .rec-bar {
     animation: none;
   }
   * {
@@ -2126,6 +2241,110 @@ table.grid tr.rowlink:hover td {
   gap: 8px;
   margin-top: 8px;
 }
+/* Inline review threads under a diff line. Static: no transitions. */
+.review-threads {
+  margin: 4px 12px 8px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--sans);
+}
+.review-thread,
+.rt-collapsed {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  padding: 8px 10px;
+}
+.review-thread.resolved {
+  border-left-color: var(--border-strong);
+}
+.rt-collapsed > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.rt-collapsed > summary::-webkit-details-marker {
+  display: none;
+}
+.rt-collapsed > .review-thread {
+  margin-top: 8px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.rt-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+.rt-author {
+  color: var(--text);
+  font-weight: 550;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rt-role {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--agent-line);
+  background: var(--agent-soft);
+  color: var(--agent);
+  font-weight: 550;
+}
+.rt-status {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--faint);
+}
+.rt-status.open {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.rt-status.resolved {
+  color: var(--ok);
+  border-color: rgba(95, 211, 155, 0.28);
+  background: rgba(95, 211, 155, 0.08);
+}
+.rt-anchor {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.rt-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.rt-body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.rt-reply {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
+}
 .comment-item {
   padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
@@ -2692,6 +2911,103 @@ table.grid tr.rowlink:hover td {
   margin-top: auto;
   padding-top: 16px;
 }
+/* --- thread board (status columns over the project's threads) ---------- */
+.view-toggle {
+  display: inline-flex;
+  gap: 4px;
+}
+/* Five columns: each keeps a readable floor width and the board scrolls sideways. */
+.thread-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(200px, 1fr));
+  gap: 14px;
+  align-items: start;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.tb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.tb-col-head {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 2px 6px;
+  border-bottom: 2px solid var(--border-soft);
+  white-space: nowrap;
+}
+.tb-col-running .tb-col-head {
+  border-bottom-color: var(--accent, var(--ok));
+}
+.tb-col-uncommitted .tb-col-head {
+  border-bottom-color: var(--accent-2);
+}
+.tb-col-review .tb-col-head {
+  border-bottom-color: var(--warn);
+}
+.tb-col-ready .tb-col-head {
+  border-bottom-color: var(--ok);
+}
+.tb-col-archived .tb-col-head {
+  border-bottom-color: var(--faint);
+}
+.tb-count {
+  color: var(--faint);
+  margin-left: 4px;
+}
+.tb-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tb-card {
+  min-height: 0;
+  cursor: pointer;
+}
+.tb-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+}
+.tb-branch {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.tb-pr {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+.tb-pr.open {
+  color: var(--ok);
+}
+.tb-pr.merged {
+  color: var(--accent, var(--ok));
+}
+.tb-pr.closed {
+  color: var(--err);
+}
+.tb-pr.draft {
+  color: var(--faint);
+}
+
 /* --- sidebar footer + settings ---------------------------------------- */
 .sidebar-foot {
   border-top: 1px solid var(--border-soft);
@@ -2712,6 +3028,70 @@ table.grid tr.rowlink:hover td {
   background: var(--panel);
   color: var(--text);
   border-color: var(--border-soft);
+}
+
+/* --- subscription usage left (LimitsMeter) ------------------------------- */
+.limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.limits-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.limits-refresh {
+  background: transparent;
+  border-color: transparent;
+  color: var(--faint);
+  padding: 0 4px;
+  line-height: 1;
+}
+.limit-row {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  grid-template-areas:
+    "label value"
+    "bar bar";
+  gap: 3px 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.limit-label {
+  grid-area: label;
+}
+.limit-value {
+  grid-area: value;
+  justify-self: end;
+  font-family: var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.limit-bar {
+  grid-area: bar;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+/* Width comes from scaleX on a static fill: no transition, no per-frame work. */
+.limit-bar > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+}
+.limit-row.warn .limit-bar > i {
+  background: var(--warn);
+}
+.limit-row.err .limit-bar > i {
+  background: var(--err);
 }
 
 /* --- overlays / sheets -------------------------------------------------- */
@@ -3642,10 +4022,159 @@ table.grid tr.rowlink:hover td {
     transform: none;
   }
 }
+/* Agent groups: a dashed box around the members, a composer, and proximity while
+   dragging. Rings and the snap are transform/opacity only, and the rings are
+   mounted only while a dragged node is in range. */
+.graph-group {
+  position: absolute;
+  border: 1px dashed var(--accent-line);
+  border-radius: 14px;
+  background: rgba(25, 195, 200, 0.04);
+  pointer-events: none;
+}
+.graph-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 10px;
+  color: var(--faint);
+  pointer-events: auto;
+}
+.graph-group-head span {
+  margin-right: auto;
+}
+.graph-group-head button {
+  font-size: 10px;
+  padding: 1px 7px;
+}
+.graph-unlink {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 16px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--faint);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.graph-unlink:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+.graph-node.near {
+  border-color: var(--accent);
+}
+.graph-node.snap {
+  scale: 1.04;
+  transition: scale 140ms ease-out;
+}
+.graph-rings {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.graph-rings i {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--accent);
+  border-radius: inherit;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: graph-ring 1350ms ease-out infinite;
+}
+.graph-rings i:nth-child(2) {
+  animation-delay: 450ms;
+}
+.graph-rings i:nth-child(3) {
+  animation-delay: 900ms;
+}
+@keyframes graph-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+/* Keeps graph-enter in the list, finished, so dropping .merge does not replay it. */
+.graph-node.merge {
+  animation: graph-enter 240ms ease-out both, graph-merge 300ms ease-out;
+}
+@keyframes graph-merge {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.graph-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.graph-composer-to {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.graph-chip {
+  font-size: 10px;
+  padding: 1px 8px;
+  color: var(--faint);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+.graph-composer textarea {
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.graph-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.graph-hint-keys {
+  margin-right: auto;
+  font-size: 10px;
+  color: var(--faint);
+}
 @media (prefers-reduced-motion: reduce) {
   .graph-pulse,
-  .graph-node.enter {
+  .graph-node.enter,
+  .graph-node.merge {
     animation: none;
+  }
+  .graph-node.snap {
+    scale: none;
+    transition: none;
+  }
+  .graph-rings {
+    display: none;
   }
 }
 

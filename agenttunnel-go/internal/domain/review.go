@@ -7,6 +7,26 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
+// Review threads are bounded like the other read-model lists: thread.get ships
+// the whole thread state, and the decider refuses past these caps rather than
+// dropping an open thread from the read model.
+const (
+	maxReviewThreads = 200
+	maxReviewReplies = 50
+)
+
+// OpenReviewThreads returns the review threads still open, in the order they
+// were opened.
+func OpenReviewThreads(s *ThreadState) []ReviewThread {
+	var open []ReviewThread
+	for _, t := range s.ReviewThreads {
+		if t.Status == contracts.ReviewStatusOpen {
+			open = append(open, t)
+		}
+	}
+	return open
+}
+
 // ReviewRequest renders review comments as the user turn the team reads: one
 // "file:line" (or "file:start-end") bullet per comment, with a multi-line body
 // indented under it. Comments on removed lines say so, since their numbers are

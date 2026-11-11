@@ -1,5 +1,11 @@
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import { wordDiff, type TokSpan } from "../lib/worddiff";
+import {
+  ReviewThreads,
+  reviewAnchorKey,
+  type ReviewPeople,
+  type ReviewThreadLike,
+} from "./ReviewThreads";
 
 // Local structural types matching the review.diff wire shape (same approach
 // as AgentDetail / ThreadInfoDialog: no import of the app component).
@@ -114,6 +120,8 @@ export function DiffView({
   onAddComment,
   onCancelDraft,
   onRefresh,
+  threads,
+  people,
 }: {
   diff: DiffLike | null;
   title: string;
@@ -127,6 +135,9 @@ export function DiffView({
   onAddComment: () => void;
   onCancelDraft: () => void;
   onRefresh: () => void;
+  /** Review threads keyed by reviewAnchorKey; each renders under its anchor line. */
+  threads: Map<string, ReviewThreadLike[]>;
+  people: ReviewPeople;
 }) {
   const files = useMemo(() => diff?.files ?? [], [diff]);
   const totals = useMemo(
@@ -212,6 +223,8 @@ export function DiffView({
           comments,
           draft,
           picking,
+          threads,
+          people,
           onPress: (side, n, e) => press(f.path, side, n, e),
           onEnter: (side, n) => enter(f.path, side, n),
         };
@@ -269,6 +282,8 @@ type LineCtx = {
   comments: CommentLike[];
   draft: DraftLike | null;
   picking: Picking | null;
+  threads: Map<string, ReviewThreadLike[]>;
+  people: ReviewPeople;
   onPress: (side: Side, n: number, e: React.MouseEvent) => void;
   onEnter: (side: Side, n: number) => void;
 };
@@ -329,21 +344,25 @@ function renderLine(
   ]
     .filter(Boolean)
     .join(" ");
+  const anchored = commentable ? ctx.threads.get(reviewAnchorKey(ctx.file, side, n)) : undefined;
   return (
-    <div key={index} className={classes}>
-      <span className="ln">{line.old ?? ""}</span>
-      <span className="ln">{line.new ?? ""}</span>
-      <span
-        className="code"
-        onMouseDown={(e) => commentable && ctx.onPress(side, n, e)}
-        onMouseEnter={() => commentable && ctx.onEnter(side, n)}
-      >
-        {content ?? (line.text || " ")}
-      </span>
-      {covering.some((c) => c.endLine === n) && <span className="chip">●</span>}
-      {drafting && ctx.draft?.endLine === n && (
-        <span className="chip draft">○</span>
-      )}
-    </div>
+    <Fragment key={index}>
+      <div className={classes}>
+        <span className="ln">{line.old ?? ""}</span>
+        <span className="ln">{line.new ?? ""}</span>
+        <span
+          className="code"
+          onMouseDown={(e) => commentable && ctx.onPress(side, n, e)}
+          onMouseEnter={() => commentable && ctx.onEnter(side, n)}
+        >
+          {content ?? (line.text || " ")}
+        </span>
+        {covering.some((c) => c.endLine === n) && <span className="chip">●</span>}
+        {drafting && ctx.draft?.endLine === n && (
+          <span className="chip draft">○</span>
+        )}
+      </div>
+      {anchored && <ReviewThreads threads={anchored} people={ctx.people} />}
+    </Fragment>
   );
 }

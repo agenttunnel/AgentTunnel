@@ -95,28 +95,9 @@ func (c Client) Fetch(ctx context.Context, workdir string) Snapshot {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	out, stderr, err := c.Run(ctx, workdir, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return Snapshot{Status: StatusNone, Message: firstLine(stderr, "Not a git repository")}
-	}
-	branch := strings.TrimSpace(string(out))
-	if branch == "" || branch == "HEAD" {
-		return Snapshot{Status: StatusNone, Message: "Detached HEAD: no branch to look up"}
-	}
-
-	out, _, err = c.Run(ctx, workdir, "git", "remote", "get-url", "origin")
-	if err != nil {
-		return Snapshot{Status: StatusUnsupported, Branch: branch, Message: "No origin remote"}
-	}
-	provider := providerFor(strings.TrimSpace(string(out)))
-	if provider == "" {
-		return Snapshot{Status: StatusUnsupported, Branch: branch, Message: "origin is not GitHub or GitLab"}
-	}
-
-	cli := map[string]string{"github": "gh", "gitlab": "glab"}[provider]
-	if _, err := c.LookPath(cli); err != nil {
-		return Snapshot{Status: StatusUnavailable, Provider: provider, Branch: branch,
-			Message: cli + " is not installed"}
+	provider, branch, blocked, ok := c.resolve(ctx, workdir)
+	if !ok {
+		return blocked
 	}
 
 	var snap Snapshot
@@ -128,6 +109,36 @@ func (c Client) Fetch(ctx context.Context, workdir string) Snapshot {
 	snap.Provider = provider
 	snap.Branch = branch
 	return snap
+}
+
+// resolve finds the branch checked out in workdir and the forge behind origin,
+// and checks that the forge CLI is installed. When any of those fails it
+// returns ok=false with the snapshot that says why.
+func (c Client) resolve(ctx context.Context, workdir string) (provider, branch string, blocked Snapshot, ok bool) {
+	out, stderr, err := c.Run(ctx, workdir, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", "", Snapshot{Status: StatusNone, Message: firstLine(stderr, "Not a git repository")}, false
+	}
+	branch = strings.TrimSpace(string(out))
+	if branch == "" || branch == "HEAD" {
+		return "", "", Snapshot{Status: StatusNone, Message: "Detached HEAD: no branch to look up"}, false
+	}
+
+	out, _, err = c.Run(ctx, workdir, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", "", Snapshot{Status: StatusUnsupported, Branch: branch, Message: "No origin remote"}, false
+	}
+	provider = providerFor(strings.TrimSpace(string(out)))
+	if provider == "" {
+		return "", "", Snapshot{Status: StatusUnsupported, Branch: branch, Message: "origin is not GitHub or GitLab"}, false
+	}
+
+	cli := map[string]string{"github": "gh", "gitlab": "glab"}[provider]
+	if _, err := c.LookPath(cli); err != nil {
+		return "", "", Snapshot{Status: StatusUnavailable, Provider: provider, Branch: branch,
+			Message: cli + " is not installed"}, false
+	}
+	return provider, branch, Snapshot{}, true
 }
 
 func (c Client) fetchGitHub(ctx context.Context, workdir, branch string) Snapshot {

@@ -357,11 +357,12 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 
 	inherited, _ := r.inherited.Render()
 	peerMailbox := r.peerMailboxFor(ctx, threadID)
+	reviews := r.openReviewsFor(ctx, threadID, t.Role)
 	shared := r.notebookFor(threadID).Render()
 	if curate {
 		shared = curatorInput(r.notebookFor(threadID))
 	}
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -440,7 +441,11 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	var findings []string
 	for _, line := range strings.Split(raw, "\n") {
 		if call, ok := toolbox.ParseCommandLine(line); ok && routedPrintedKind(call.Kind) {
-			r.postAgentCall(threadID, t.AgentID, call)
+			if call.Kind.IsReview() {
+				r.applyPrintedReview(ctx, threadID, t.AgentID, call)
+			} else {
+				r.postAgentCall(threadID, t.AgentID, call)
+			}
 			continue
 		}
 		findings = append(findings, line)
@@ -481,11 +486,13 @@ func (r *Runner) postAgentCall(threadID contracts.ThreadID, from contracts.Agent
 // routedPrintedKind reports whether a printed tool command from a subagent is
 // an action to route rather than findings. Dispatch and spawn become gated
 // spawn requests in the drain, and approve/reject from a non-lead are ignored
-// with an audit; message forwards through the mailbox. Every other kind a
-// subagent prints stays its findings.
+// with an audit; message forwards through the mailbox. Review calls apply at
+// once rather than queueing. Every other kind a subagent prints stays its
+// findings.
 func routedPrintedKind(k toolbox.Kind) bool {
 	switch k {
-	case toolbox.KindMessage, toolbox.KindDispatch, toolbox.KindSpawn, toolbox.KindApprove, toolbox.KindReject:
+	case toolbox.KindMessage, toolbox.KindDispatch, toolbox.KindSpawn, toolbox.KindApprove, toolbox.KindReject,
+		toolbox.KindReviewComment, toolbox.KindReviewReply, toolbox.KindReviewResolve:
 		return true
 	default:
 		return false
@@ -600,6 +607,10 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 	var kept []string
 	for _, line := range strings.Split(raw, "\n") {
 		if call, ok := toolbox.ParseCommandLine(line); ok {
+			if call.Kind.IsReview() {
+				r.applyPrintedReview(ctx, threadID, agentID, call)
+				continue
+			}
 			call.AgentID = agentID
 			if r.tools != nil {
 				r.tools.Post(threadID, call)

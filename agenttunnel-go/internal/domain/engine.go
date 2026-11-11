@@ -192,6 +192,9 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 		})
 		return err
 	}
+	if len(payloads) == 0 {
+		return nil
+	}
 	events, err := e.store.Append(ctx, cmd.ThreadID, payloads, e.clock)
 	if err != nil {
 		return err

@@ -96,6 +96,9 @@ type ThreadState struct {
 	Messages   []Message            `json:"messages"`
 	// Tasks is the agreed task list, in the order the leads added them.
 	Tasks []TaskItem `json:"tasks"`
+	// PullRequests lists the pull requests this thread opened, in the order they
+	// were first seen. Keyed by URL.
+	PullRequests []contracts.PullRequestRef `json:"pullRequests,omitempty"`
 
 	// Turn counts user messages: the turn spend currently accrues to.
 	Turn  int         `json:"turn"`
@@ -109,6 +112,8 @@ type ThreadState struct {
 	Mailbox []MailboxMessage                  `json:"mailbox"`
 
 	ReviewComments []ReviewComment `json:"reviewComments"`
+	// ReviewThreads are reviewer comment threads with agent replies, oldest first.
+	ReviewThreads []ReviewThread `json:"reviewThreads"`
 
 	// Questions are the agent questions asked of the human, oldest first.
 	Questions []Question `json:"questions"`
@@ -124,6 +129,39 @@ type ThreadState struct {
 type ReviewComment struct {
 	contracts.ReviewCommentAdded
 	Submitted bool `json:"submitted"`
+}
+
+// ReviewThread is a reviewer's comment thread on a diff range. The reviewer
+// who opened it is the only one who may change its status; any agent may reply.
+type ReviewThread struct {
+	ID        string                 `json:"id"`
+	File      string                 `json:"file"`
+	Line      int                    `json:"line"`
+	EndLine   int                    `json:"endLine"`
+	Side      string                 `json:"side,omitempty"`
+	Body      string                 `json:"body"`
+	AuthorID  contracts.AgentID      `json:"authorId"`
+	Status    contracts.ReviewStatus `json:"status"`
+	Replies   []ReviewReply          `json:"replies"`
+	OpenedAt  time.Time              `json:"openedAt"`
+	UpdatedAt time.Time              `json:"updatedAt"`
+}
+
+// ReviewReply is one agent's reply on a review thread.
+type ReviewReply struct {
+	AuthorID contracts.AgentID `json:"authorId"`
+	Body     string            `json:"body"`
+	At       time.Time         `json:"at"`
+}
+
+// reviewThreadIndex returns the position of a review thread, or -1.
+func (s *ThreadState) reviewThreadIndex(id string) int {
+	for i := range s.ReviewThreads {
+		if s.ReviewThreads[i].ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // taskIndex returns the position of a named task, or -1.
@@ -193,6 +231,16 @@ func (s *ThreadState) turnFor(turn int) *TurnUsage {
 	return &s.Turns[len(s.Turns)-1]
 }
 
+// HasPullRequest reports whether the thread already tracks the request at url.
+func (s *ThreadState) HasPullRequest(url string) bool {
+	for _, ref := range s.PullRequests {
+		if ref.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
 // Clone returns a deep copy so readers cannot race the engine's worker.
 func (s *ThreadState) Clone() *ThreadState {
 	c := *s
@@ -201,8 +249,14 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.SharedOrder = append([]string(nil), s.SharedOrder...)
 	c.Mailbox = append([]MailboxMessage(nil), s.Mailbox...)
 	c.ReviewComments = append([]ReviewComment(nil), s.ReviewComments...)
+	c.ReviewThreads = make([]ReviewThread, len(s.ReviewThreads))
+	for i, t := range s.ReviewThreads {
+		c.ReviewThreads[i] = t
+		c.ReviewThreads[i].Replies = append([]ReviewReply(nil), t.Replies...)
+	}
 	c.Questions = append([]Question(nil), s.Questions...)
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
+	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
 	c.Tasks = append([]TaskItem(nil), s.Tasks...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
