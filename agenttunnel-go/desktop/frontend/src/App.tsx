@@ -160,6 +160,8 @@ type ThreadSummary = {
   messages: number;
   agents: number;
   autoMode: boolean;
+  /** Filed by the user; shown in the board's Archived column. */
+  archived?: boolean;
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
@@ -1135,6 +1137,41 @@ export default function App() {
     setRenameTarget(null);
     await reloadThreads();
     if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
+  };
+
+  /** Archives or restores several threads in one go. A failure stops the batch
+   * and reports the first error; threads already changed stay changed. */
+  const setThreadsArchived = async (ids: string[], archived: boolean) => {
+    const rpc = rpcRef.current;
+    if (!rpc || ids.length === 0) return;
+    try {
+      for (const threadId of ids) {
+        await rpc.call("thread.setArchived", { threadId, enabled: archived });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    await reloadThreads();
+  };
+
+  /** Deletes several threads. Deleting the open thread closes back to the list. */
+  const deleteThreadsById = async (ids: string[]) => {
+    const rpc = rpcRef.current;
+    if (!rpc || ids.length === 0) return;
+    const deleted: string[] = [];
+    try {
+      for (const threadId of ids) {
+        await rpc.call("thread.delete", { threadId });
+        deleted.push(threadId);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    await reloadThreads();
+    if (activeId && deleted.includes(activeId)) {
+      selectThread(null);
+      setThread(null);
+    }
   };
 
   const confirmDeleteThread = async () => {
@@ -2759,6 +2796,8 @@ export default function App() {
               states={threadStates}
               formatUpdated={fmtUpdated}
               onOpen={openBoardThread}
+              onArchive={(ids, archived) => void setThreadsArchived(ids, archived)}
+              onDelete={(ids) => void deleteThreadsById(ids)}
             />
           ) : (
           <div className="thread-cards">

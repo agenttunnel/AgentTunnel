@@ -3070,6 +3070,41 @@ table.grid tr.rowlink:hover td {
 .tb-pr.draft {
   color: var(--faint);
 }
+.tb-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  font-size: 12px;
+}
+.tb-bar > span {
+  margin-right: auto;
+  color: var(--muted);
+}
+.tb-check {
+  margin: 0;
+  cursor: pointer;
+}
+.tb-card.selected {
+  border-color: var(--accent-line);
+}
+.tb-card-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.tb-card-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+button.danger-text {
+  color: var(--err);
+}
 
 /* --- sidebar footer + settings ---------------------------------------- */
 .sidebar-foot {
