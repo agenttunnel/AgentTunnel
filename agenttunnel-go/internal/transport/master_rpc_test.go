@@ -57,7 +57,7 @@ func newMasterRPCFixture(t *testing.T, script string) (*domain.Engine, *Dispatch
 		Roles:        roles,
 		Registry:     registry,
 		Settings:     store,
-		Models:       models.NewService(models.Default(), registry, store),
+		Models:       models.NewService(registry, store),
 	})
 	return eng, disp
 }

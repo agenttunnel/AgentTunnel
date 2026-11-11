@@ -16,15 +16,19 @@ import (
 )
 
 // newMasterHarness is the side-question fixture with a master wired over the
-// same scripted harness and a real model catalog.
+// same scripted harness and a model catalog seeded through settings. The model
+// service no longer ships a default catalog: it merges live discovery with the
+// models a user added, so the fixture adds one explicitly to keep the model
+// validation tests meaningful.
 func newMasterHarness(t *testing.T, script string) (*Runner, *Master, *domain.Engine, context.Context) {
 	t.Helper()
 	r, eng, ctx := newBtwHarness(t, script)
+	r.settings.AddModel(contracts.HarnessClaude, "claude-sonnet-4-5")
 	m := NewMaster(MasterDeps{
 		Runner:   r,
 		Engine:   eng,
 		Settings: r.settings,
-		Models:   models.NewService(models.Default(), r.registry, r.settings),
+		Models:   models.NewService(r.registry, r.settings),
 	})
 	return r, m, eng, ctx
 }
@@ -254,7 +258,7 @@ func TestMasterPromptSnapshotsProjectsAndThreads(t *testing.T) {
 	if _, err := m.Send(ctx, "what am I working on?", nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	prompt := readPrompt(t, promptFile)
+	prompt := readPromptFile(t, promptFile)
 	for _, want := range []string{
 		"Proj One", "p1", one,
 		"Proj Two", "p2", two,
@@ -279,7 +283,7 @@ func TestMasterClipsHistoryToRecentMessages(t *testing.T) {
 	if _, err := m.Send(ctx, "continue", history); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	prompt := readPrompt(t, promptFile)
+	prompt := readPromptFile(t, promptFile)
 	if !strings.Contains(prompt, "HISTORY-OLD-19") {
 		t.Fatalf("prompt lost the newest history:\n%s", prompt)
 	}
@@ -297,7 +301,7 @@ func TestMasterClipsHistoryToByteBudget(t *testing.T) {
 	if _, err := m.Send(ctx, "continue", history); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	prompt := readPrompt(t, promptFile)
+	prompt := readPromptFile(t, promptFile)
 	if !strings.Contains(prompt, "TAIL-MARKER") {
 		t.Fatalf("prompt lost the tail of the history:\n%s", prompt)
 	}
@@ -306,7 +310,7 @@ func TestMasterClipsHistoryToByteBudget(t *testing.T) {
 	}
 }
 
-func readPrompt(t *testing.T, path string) string {
+func readPromptFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
