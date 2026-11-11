@@ -3,7 +3,7 @@
 AgentTunnel is a minimal GUI for coding agents: a multi-agent coding workflow
 where a planning **orchestrator** breaks a task into jobs and dispatches them to
 **planner / executor / tester / reviewer** subagents, each of which can run on
-any provider CLI (Codex, Claude, Cursor, Grok, OpenCode, Pi, Command Code).
+any provider CLI (Codex, Claude, Cursor, OpenCode, Pi, Command Code).
 
 The app is a daemon plus a native desktop client, both in Go. This directory is
 the whole product; the repository root holds only CI, issue templates, and repo

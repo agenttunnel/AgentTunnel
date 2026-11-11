@@ -113,8 +113,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	catalog := models.Default()
-	modelService := models.NewService(catalog, opts.Registry, store)
+	modelService := models.NewService(opts.Registry, store)
 
 	// The tool inbox, the steering queue, and the address/path agents use.
 	box := toolbox.New()
@@ -287,6 +286,8 @@ func EnrichPATH() {
 		filepath.Join(home, ".opencode", "bin"),
 		filepath.Join(home, ".bun", "bin"),
 		filepath.Join(home, "go", "bin"),
+		// vite-plus installs Command Code (commandcode, cmd) here.
+		filepath.Join(home, ".local", "share", "vite-plus", "bin"),
 	}
 
 	parts := filepath.SplitList(os.Getenv("PATH"))
