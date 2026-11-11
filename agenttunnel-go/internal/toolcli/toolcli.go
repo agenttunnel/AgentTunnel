@@ -30,7 +30,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -45,7 +45,7 @@ func Run(args []string) int {
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
 	text := fs.String("text", "", "text for a note or progress update")
 	summary := fs.String("summary", "", "summary for done")
-	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message)")
+	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message); the subagent to steer (for steer)")
 	status := fs.String("status", "", "todo|doing|done (for task-update)")
 	question := fs.String("question", "", "the question to ask the human (for ask)")
 	questionKind := fs.String("kind", "", "choice|multi|text: the shape of the answer (for ask)")
@@ -135,6 +135,17 @@ func Run(args []string) int {
 	}
 	if kind == "ask" {
 		return printAnswer(resp.Body)
+	}
+	if kind == "steer" {
+		// The steer's outcome is the only answer the lead needs: whether it was
+		// queued for the agent's next run.
+		var reply struct {
+			Message string `json:"message"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&reply); err == nil && reply.Message != "" {
+			fmt.Println(reply.Message)
+			return 0
+		}
 	}
 	if kind == "task-list" {
 		// A list is the answer itself, so it is printed as the daemon sends it.
