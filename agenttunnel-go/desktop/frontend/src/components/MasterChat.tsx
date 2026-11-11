@@ -49,7 +49,7 @@ function saveTranscript(entries: Entry[]): void {
 }
 
 /**
- * MasterChat is the home-screen conversation with the master orchestrator: the
+ * MasterChat is the conversation with the master orchestrator, on its own page: the
  * user describes a task in natural language, and the orchestrator either asks
  * questions or starts a thread in a project and hands it straight to the app.
  */
@@ -159,7 +159,7 @@ export function MasterChat({
   const empty = entries.length === 0 && !sendError;
 
   return (
-    <section className="master-chat" aria-label="Orchestrator">
+    <section className={`master-chat${empty ? " is-empty" : ""}`} aria-label="Orchestrator">
       <header className="master-head">
         <span className="master-title">Orchestrator</span>
         {busy && (

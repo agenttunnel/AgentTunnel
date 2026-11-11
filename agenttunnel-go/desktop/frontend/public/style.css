@@ -4960,15 +4960,29 @@ button.danger-text {
   margin: 8px 0 0;
 }
 
-/* --- master orchestrator chat (projects screen) -------------------------- */
-/* Compact on purpose: the project grid stays the main content above the fold. */
+/* --- master orchestrator page ------------------------------------------- */
+/* The conversation is the page. The composer sits centered while the chat is
+   empty and settles to the bottom of the screen once messages arrive. */
+.screen-body.master-page {
+  display: flex;
+  flex-direction: column;
+}
 .master-chat {
-  max-width: 900px;
-  margin: 0 0 20px;
+  width: 100%;
+  max-width: 760px;
+  flex: 1;
+  min-height: 0;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--panel);
   overflow: hidden;
+}
+.master-chat.is-empty {
+  flex: none;
+  margin: auto;
 }
 .master-head {
   display: flex;
@@ -5028,7 +5042,8 @@ button.danger-text {
   color: var(--text);
 }
 .master-body {
-  max-height: 220px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 14px;
   display: flex;
