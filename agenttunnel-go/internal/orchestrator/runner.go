@@ -81,6 +81,10 @@ type Runner struct {
 
 	spawns *spawnStore
 
+	// steers holds the team lead's steers to subagents, read when each
+	// subagent's next run prompt is built.
+	steers *steerQueue
+
 	// notebooks holds each thread's shared notebook. A thread's context is its
 	// own: a subthread running beside its parent must not read or write the
 	// parent's notes.
@@ -115,6 +119,7 @@ func NewRunner(d Deps) *Runner {
 		clock:     d.Clock,
 		cfg:       d.Cfg,
 		spawns:    newSpawnStore(),
+		steers:    newSteerQueue(),
 		notebooks: map[contracts.ThreadID]*contextstore.Notebook{},
 	}
 }
@@ -362,7 +367,8 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	if curate {
 		shared = curatorInput(r.notebookFor(threadID))
 	}
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
+	steering := r.steers.Drain(threadID, t.AgentID)
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox), steering)
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -420,6 +426,13 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	r.auditLog("agent.exit", map[string]any{
 		"agentId": string(t.AgentID), "status": statusWord(werr), "error": errString(werr),
 	})
+	// A steer that arrived during this run has no run left to read it. Say so
+	// in the agent's log rather than let it vanish.
+	if late := r.steers.Drain(threadID, t.AgentID); len(late) > 0 {
+		msg := fmt.Sprintf("%d steer(s) from the team lead arrived during this run and were not delivered: the agent has no further run", len(late))
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: t.AgentID, Kind: contracts.LogError, Text: msg, At: r.clock()})
+		r.publishOutput(threadID, t.AgentID, contracts.LogError, msg)
+	}
 
 	// A harness that exits cleanly but emitted nothing is a silent failure —
 	// a dead API key, a swallowed quota error — and must not read as success.
@@ -796,7 +809,6 @@ func (r *Runner) harnessList() []contracts.Harness {
 		contracts.HarnessClaude,
 		contracts.HarnessCodex,
 		contracts.HarnessCursor,
-		contracts.HarnessGrok,
 		contracts.HarnessPi,
 		contracts.HarnessCommandCode,
 	}
@@ -1009,7 +1021,7 @@ func (r *Runner) DrainTools(threadID contracts.ThreadID) []toolbox.Call {
 }
 
 // DrainSteering returns and clears the user's pending mid-run steering messages.
-func (r *Runner) DrainSteering(threadID contracts.ThreadID) []string {
+func (r *Runner) DrainSteering(threadID contracts.ThreadID) []steering.Entry {
 	if r.steering == nil {
 		return nil
 	}

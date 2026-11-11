@@ -17,8 +17,10 @@ const (
 	EvtWorktreeDetached   EventType = "thread.worktree-detached"
 	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
 	EvtMessageSent        EventType = "thread.message-sent"
+	EvtSteeringConsumed   EventType = "thread.steering-consumed"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
+	EvtArchiveSet         EventType = "thread.archive-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
@@ -114,10 +116,14 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[WorktreeReplaced](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
+	case EvtSteeringConsumed:
+		return decodePayload[SteeringConsumed](data)
 	case EvtModelSet:
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
 		return decodePayload[AutoModeSet](data)
+	case EvtArchiveSet:
+		return decodePayload[ArchiveSet](data)
 	case EvtPeerMailboxSet:
 		return decodePayload[PeerMailboxSet](data)
 	case EvtLeadsSet:
@@ -232,6 +238,14 @@ type MessageSent struct {
 
 func (MessageSent) eventType() EventType { return EvtMessageSent }
 
+// SteeringConsumed marks the steering messages a lead has picked up in a pass.
+// Until it lands, a steering message is still waiting in the queue.
+type SteeringConsumed struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+func (SteeringConsumed) eventType() EventType { return EvtSteeringConsumed }
+
 type ModelSet struct{ Selection ModelSelection }
 
 func (ModelSet) eventType() EventType { return EvtModelSet }
@@ -239,6 +253,12 @@ func (ModelSet) eventType() EventType { return EvtModelSet }
 type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
+
+// ArchiveSet files a thread under Archived or brings it back. An archived
+// thread is hidden from the board's working columns but keeps its history.
+type ArchiveSet struct{ Archived bool }
+
+func (ArchiveSet) eventType() EventType { return EvtArchiveSet }
 
 // PeerMailboxSet toggles peer-to-peer agent messaging for a thread. On by
 // default: thread creation records it enabled.

@@ -18,6 +18,7 @@ export type Conn = {
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 type ThreadEventHandler = (event: unknown) => void;
 type AppOpenHandler = (params: { threadId?: string; projectId?: string }) => void;
+type NotificationHandler = (notification: { method: string; params: unknown }) => void;
 
 /**
  * Rpc is a tiny JSON-RPC-over-WebSocket client. It is the same surface any
@@ -30,6 +31,7 @@ export class Rpc {
   private pending = new Map<string, Pending>();
   private handlers = new Set<ThreadEventHandler>();
   private appOpenHandlers = new Set<AppOpenHandler>();
+  private notificationHandlers = new Set<NotificationHandler>();
 
   constructor(private readonly conn: Conn) {}
 
@@ -62,6 +64,10 @@ export class Rpc {
     }
     if (msg.method === "app.open") {
       this.appOpenHandlers.forEach((h) => h((msg.params ?? {}) as { threadId?: string; projectId?: string }));
+      return;
+    }
+    if (msg.method) {
+      this.notificationHandlers.forEach((h) => h({ method: msg.method as string, params: msg.params }));
       return;
     }
     if (!msg.id) return;
@@ -100,6 +106,15 @@ export class Rpc {
     this.appOpenHandlers.add(handler);
     return () => {
       this.appOpenHandlers.delete(handler);
+    };
+  }
+
+  /** onNotification subscribes to server pushes that are not thread events.
+   * Handlers see the method and params, so a client refreshes only what changed. */
+  onNotification(handler: NotificationHandler): () => void {
+    this.notificationHandlers.add(handler);
+    return () => {
+      this.notificationHandlers.delete(handler);
     };
   }
 

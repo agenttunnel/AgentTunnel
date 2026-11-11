@@ -12,6 +12,9 @@ type Message struct {
 	Author string    `json:"author"`
 	Text   string    `json:"text"`
 	At     time.Time `json:"at"`
+	// Consumed is set on a steering message once a pass has picked it up. A
+	// steering message that is not consumed yet is still queued.
+	Consumed bool `json:"consumed,omitempty"`
 }
 
 // UsageStep is one model step's spend for a single agent — a row in an agent's
@@ -28,6 +31,12 @@ type TurnUsage struct {
 	At         time.Time                                  `json:"at,omitempty"`
 	AgentOrder []contracts.AgentID                        `json:"agentOrder"`
 	Agents     map[contracts.AgentID]contracts.TokenUsage `json:"agents"`
+	// EndedAt is when a lead last reached a terminal status in this turn: the
+	// turn's end as the team saw it. Zero while the turn is open, and for turns
+	// recorded before this was tracked.
+	EndedAt time.Time `json:"endedAt,omitempty"`
+	// Failed is set when a lead ended failed or cancelled in this turn.
+	Failed bool `json:"failed,omitempty"`
 }
 
 // MailboxMessage is one peer message in a thread's read model: the durable
@@ -71,7 +80,9 @@ type ThreadState struct {
 	Provisional bool `json:"-"`
 	// Deleted marks a tombstoned thread: the event log is retained, but the
 	// thread is gone from listings and refuses further commands.
-	Deleted     bool                     `json:"deleted"`
+	Deleted bool `json:"deleted"`
+	// Archived is set by the user; it moves the thread to the board's Archived column.
+	Archived    bool                     `json:"archived"`
 	Title       string                   `json:"title"`
 	ProjectID   string                   `json:"projectId,omitempty"`
 	UpdatedAt   time.Time                `json:"updatedAt"`
@@ -282,6 +293,8 @@ func (s *ThreadState) Clone() *ThreadState {
 			At:         t.At,
 			AgentOrder: append([]contracts.AgentID(nil), t.AgentOrder...),
 			Agents:     make(map[contracts.AgentID]contracts.TokenUsage, len(t.Agents)),
+			EndedAt:    t.EndedAt,
+			Failed:     t.Failed,
 		}
 		for k, v := range t.Agents {
 			c.Turns[i].Agents[k] = v

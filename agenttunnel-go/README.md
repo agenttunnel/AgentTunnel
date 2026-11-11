@@ -3,7 +3,7 @@
 AgentTunnel is a minimal GUI for coding agents: a multi-agent coding workflow
 where a planning **orchestrator** breaks a task into jobs and dispatches them to
 **planner / executor / tester / reviewer** subagents, each of which can run on
-any provider CLI (Codex, Claude, Cursor, Grok, OpenCode, Pi, Command Code).
+any provider CLI (Codex, Claude, Cursor, OpenCode, Pi, Command Code).
 
 The app is a daemon plus a native desktop client, both in Go. This directory is
 the whole product; the repository root holds only CI, issue templates, and repo
@@ -206,9 +206,13 @@ every connected client — how `agenttunnel <dir>` reaches a running app).
 
 Files: `files.tree`, `files.read`.
 
-Registry and settings: `roles.list`, `harness.list`, `models.refresh`,
-`models.add`, `project.create`, `project.list`, `project.delete`,
-`settings.get`, `settings.set`.
+Registry and settings: `roles.list`, `harness.list`, `harness.updates`,
+`harness.update` (checks published CLI versions, upgrades only affected
+harnesses), `models.refresh`, `models.add`, `project.create`, `project.list`,
+`project.delete`, `settings.get`, `settings.set`. A `lead` patch
+(`{harness, model, variant}`) pins the master orchestrator's runtime; empty
+fields inherit the Orchestrator role, and `thread.setLeadRuntime` still
+overrides it per lead.
 
 ## Where state lives
 

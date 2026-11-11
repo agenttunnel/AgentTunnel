@@ -128,6 +128,23 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.ModelSet{Selection: *cmd.ModelSelection}}, nil
 
+	case contracts.CmdArchiveSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Archived == nil {
+			return nil, fmt.Errorf("%w: archived value is required", ErrInvalidCommand)
+		}
+		// Archiving hides a thread from the working columns; stop its agents first.
+		if *cmd.Archived {
+			for id, a := range s.Agents {
+				if !a.Status.Terminal() {
+					return nil, fmt.Errorf("%w: agent %q is still %s", ErrInvalidCommand, id, a.Status)
+				}
+			}
+		}
+		return []contracts.EventPayload{contracts.ArchiveSet{Archived: *cmd.Archived}}, nil
+
 	case contracts.CmdAutoModeSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
@@ -350,6 +367,28 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			return nil, fmt.Errorf("%w: message payload is required", ErrInvalidCommand)
 		}
 		return []contracts.EventPayload{*cmd.Message}, nil
+
+	case contracts.CmdSteeringConsume:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		p := cmd.SteeringConsume
+		if p == nil || len(p.MessageIDs) == 0 {
+			return nil, fmt.Errorf("%w: steering message ids are required", ErrInvalidCommand)
+		}
+		for _, id := range p.MessageIDs {
+			found := false
+			for _, m := range s.Messages {
+				if m.ID == id && m.Author == "steering" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("%w: steering message %q is not in the transcript", ErrInvalidCommand, id)
+			}
+		}
+		return []contracts.EventPayload{*p}, nil
 
 	case contracts.CmdReviewCommentAdd:
 		if !s.Exists {

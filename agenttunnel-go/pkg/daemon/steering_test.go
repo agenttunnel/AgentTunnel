@@ -42,7 +42,7 @@ func TestSteeringRecordsAMessageAndQueuesIt(t *testing.T) {
 
 	// And it is queued for the orchestrator's next pass.
 	queued := d.Runner.DrainSteering(created.ThreadID)
-	if len(queued) != 1 || queued[0] != "focus on the parser first" {
+	if len(queued) != 1 || queued[0].Text != "focus on the parser first" || queued[0].MessageID == "" {
 		t.Fatalf("queued steering = %+v", queued)
 	}
 	if again := d.Runner.DrainSteering(created.ThreadID); len(again) != 0 {
