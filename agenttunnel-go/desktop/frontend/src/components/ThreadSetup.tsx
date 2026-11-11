@@ -15,8 +15,7 @@ type ThreadSetupProps = {
   addModel: (harness: string, model: string) => Promise<void>;
   modelOptions: (harness: string, current: string) => DropdownOption[];
   harnessOptionsFor: (current: string) => DropdownOption[];
-  /** Per-role enable switch. Omit to hide the switches. */
-  toggleRoleEnabled?: (row: RoleConfigView, enabled: boolean) => Promise<void>;
+  toggleRoleEnabled: (row: RoleConfigView, enabled: boolean) => Promise<void>;
 };
 
 /** Per-thread run settings plus the global role table. Shared by the pre-run
@@ -48,10 +47,10 @@ export function ThreadSetup({
           {settings.roles
             .filter((r) => r.enabled)
             .map((r) => (
-              <span key={r.id}>
-                {r.name} <b>{r.model || "default"}</b> {r.harness}
-              </span>
-            ))}
+            <span key={r.id}>
+              {r.name} <b>{r.model || "default"}</b> {r.harness}
+            </span>
+          ))}
         </div>
       )}
       {!settings && <p className="hint">Loading roles…</p>}
@@ -75,7 +74,7 @@ export function ThreadSetup({
             const parked = !!thread?.autoMode && r.id !== "orchestrator";
             return (
               <div
-                className={`role-edit${toggleRoleEnabled ? " has-switch" : ""}${parked ? " parked" : ""}${r.enabled ? "" : " off"}`}
+                className={`role-edit has-switch${parked ? " parked" : ""}${r.enabled ? "" : " off"}`}
                 key={r.id}
                 title={
                   parked
@@ -122,19 +121,15 @@ export function ThreadSetup({
                     persistRole(row).catch(() => undefined);
                   }}
                 />
-                {toggleRoleEnabled && (
-                  <div
-                    className={`toggle role-switch${r.enabled ? " on" : ""}${r.required ? " disabled" : ""}`}
-                    {...switchProps(r.enabled, () =>
-                      toggleRoleEnabled(r, !r.enabled).catch(() => undefined),
-                    )}
-                    aria-disabled={r.required}
-                    aria-label={`${r.enabled ? "Disable" : "Enable"} ${r.name}`}
-                    title={r.required ? "Required" : r.enabled ? "Disable this role" : "Enable this role"}
-                  >
-                    <span className="sw" />
-                  </div>
-                )}
+                <div
+                  className={`toggle role-switch${r.enabled ? " on" : ""}${r.required ? " disabled" : ""}`}
+                  {...switchProps(r.enabled, () => toggleRoleEnabled(r, !r.enabled).catch(() => undefined))}
+                  aria-disabled={r.required}
+                  aria-label={`${r.enabled ? "Disable" : "Enable"} ${r.name}`}
+                  title={r.required ? "Required" : r.enabled ? "Disable this role" : "Enable this role"}
+                >
+                  <span className="sw" />
+                </div>
               </div>
             );
           })}
