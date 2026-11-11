@@ -53,7 +53,7 @@ func TestClaudeLimitsParsesWindowsAndSkipsNulls(t *testing.T) {
 	if reason != "" {
 		t.Fatalf("reason = %q, want empty", reason)
 	}
-	if gotAuth != "Bearer "+testClaudeToken || gotBeta != "oauth-2025-04-01" {
+	if gotAuth != "Bearer "+testClaudeToken || gotBeta != "oauth-2025-04-20" {
 		t.Fatalf("headers auth=%q beta=%q", gotAuth, gotBeta)
 	}
 	if len(windows) != 2 {
@@ -76,6 +76,79 @@ func TestClaudeLimitsParsesWindowsAndSkipsNulls(t *testing.T) {
 	}
 	if strings.Contains(string(raw), testClaudeToken) {
 		t.Fatalf("limits JSON leaked the token: %s", raw)
+	}
+}
+
+// Enterprise seats carry no five-hour or weekly plan windows; their usage is
+// the monthly usage-credit pool under extra_usage.
+func TestClaudeLimitsEnterpriseUsageCredits(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want *contracts.LimitWindow
+	}{
+		{
+			name: "enabled credits are shown",
+			body: `{
+				"five_hour": null,
+				"seven_day": null,
+				"extra_usage": {"is_enabled": true, "monthly_limit": 100000, "used_credits": 45710, "utilization": 45.71, "currency": "USD"}
+			}`,
+			want: &contracts.LimitWindow{ID: "extra_usage", Label: "Usage credits", UsedPercent: 45.71},
+		},
+		{
+			name: "spend above the cap is clamped",
+			body: `{
+				"five_hour": null,
+				"seven_day": null,
+				"extra_usage": {"is_enabled": true, "monthly_limit": 4000, "used_credits": 5306, "utilization": 132.65, "currency": "USD"}
+			}`,
+			want: &contracts.LimitWindow{ID: "extra_usage", Label: "Usage credits", UsedPercent: 100},
+		},
+		{
+			name: "disabled credits are hidden",
+			body: `{
+				"five_hour": null,
+				"seven_day": null,
+				"extra_usage": {"is_enabled": false, "monthly_limit": null, "used_credits": null, "utilization": null}
+			}`,
+		},
+		{
+			name: "unmetered credits are hidden",
+			body: `{
+				"five_hour": null,
+				"seven_day": null,
+				"extra_usage": {"is_enabled": true, "monthly_limit": null, "used_credits": 1240, "utilization": null}
+			}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestClaudeLimits(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/oauth/usage" {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}, validCreds, time.Now())
+
+			windows, reason := c.Fetch(context.Background())
+			if reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+			if tt.want == nil {
+				if len(windows) != 0 {
+					t.Fatalf("windows = %#v, want none", windows)
+				}
+				return
+			}
+			if len(windows) != 1 {
+				t.Fatalf("windows = %#v, want one extra-usage window", windows)
+			}
+			if windows[0] != *tt.want {
+				t.Fatalf("window = %#v, want %#v", windows[0], *tt.want)
+			}
+		})
 	}
 }
 

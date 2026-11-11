@@ -94,13 +94,13 @@ func TestCommandDiscovererReadsStderr(t *testing.T) {
 
 func TestChainDiscovererFallsBack(t *testing.T) {
 	bad := NewCommandDiscoverer("definitely-not-a-real-binary-xyz", "models")
-	good := NewCommandDiscoverer("sh", "-c", "printf 'grok/x-1\n'")
+	good := NewCommandDiscoverer("sh", "-c", "printf 'vendor/x-1\n'")
 
 	got, err := NewChainDiscoverer(bad, good).Discover(context.Background())
 	if err != nil {
 		t.Fatalf("chain: %v", err)
 	}
-	if !hasModel(got, "grok/x-1") {
+	if !hasModel(got, "vendor/x-1") {
 		t.Fatalf("got %v", got)
 	}
 }
