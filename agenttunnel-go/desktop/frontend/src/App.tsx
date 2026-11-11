@@ -243,6 +243,8 @@ export type SettingsView = {
   approvedModels: string[] | null;
   experimentalRoles: boolean;
   roles: RoleConfigView[];
+  /** Master orchestrator override; empty fields inherit the Orchestrator role. */
+  lead?: LeadRuntimeView;
   configPath: string;
   staleAfterMinutes?: number;
 };
@@ -1670,6 +1672,12 @@ export default function App() {
     return map;
   }, [roles]);
 
+  // The master orchestrator (lead) runs on the Orchestrator role's runtime
+  // unless it is pinned, in which case the pin is the persisted lead setting.
+  const leadSettings = settings?.lead ?? {};
+  const orchestratorRole = settings?.roles.find((r) => r.id === "orchestrator");
+  const leadHarness = leadSettings.harness || orchestratorRole?.harness || "";
+
   const agents = useMemo<Agent[]>(() => {
     const out: Agent[] = [];
     if (thread?.agentOrder) {
@@ -2468,6 +2476,21 @@ export default function App() {
     if (!rpc) return;
     const s = await rpc.call<SettingsView>("settings.set", {
       role: { id: row.id, harness: row.harness, model: row.model, variant: row.variant },
+    });
+    setSettings(s);
+    flashSaved();
+  };
+
+  /** Pins the master orchestrator's runtime; empty fields inherit the role. */
+  const persistLeadRuntime = async (runtime: LeadRuntimeView) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const s = await rpc.call<SettingsView>("settings.set", {
+      lead: {
+        harness: runtime.harness ?? "",
+        model: runtime.model ?? "",
+        variant: runtime.variant ?? "",
+      },
     });
     setSettings(s);
     flashSaved();
@@ -4225,6 +4248,61 @@ export default function App() {
               </section>
 
               <section className="set-section">
+                <h4>Master orchestrator</h4>
+                <p className="hint">
+                  The team lead runs on this harness and model. Leave it on the Orchestrator role
+                  to inherit that role's default; each thread can still override its own leads.
+                </p>
+                <div className="role-edit">
+                  <span className="rn">Lead agent</span>
+                  <Dropdown
+                    value={leadSettings.harness ?? ""}
+                    options={[
+                      {
+                        value: "",
+                        label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
+                      },
+                      ...harnessOptionsFor(leadSettings.harness ?? ""),
+                    ]}
+                    onChange={(v) => {
+                      persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
+                        () => undefined,
+                      );
+                      if (v) refreshModels(v).catch(() => undefined);
+                    }}
+                  />
+                  <Dropdown
+                    value={leadSettings.model ?? ""}
+                    options={modelOptions(leadHarness, leadSettings.model ?? "")}
+                    searchable
+                    align="end"
+                    placeholder="model (default)"
+                    footNote="Discovered from the harness CLI"
+                    onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
+                    addLabel="Add model"
+                    onAdd={(m) => {
+                      addModel(leadHarness, m)
+                        .then(() =>
+                          persistLeadRuntime({
+                            harness: leadSettings.harness ?? "",
+                            model: m,
+                            variant: leadSettings.variant ?? "",
+                          }),
+                        )
+                        .catch(() => undefined);
+                    }}
+                    onChange={(v) =>
+                      persistLeadRuntime({
+                        harness: leadSettings.harness ?? "",
+                        model: v,
+                        variant: leadSettings.variant ?? "",
+                      }).catch(() => undefined)
+                    }
+                  />
+                </div>
+              </section>
+
+              <section className="set-section">
                 <h4>Dependencies</h4>
                 <p className="hint">
                   The forge CLIs the Pull request tab shells out to. Versions are read from the
@@ -4260,7 +4338,8 @@ export default function App() {
               <section className="set-section">
                 <h4>Roles</h4>
                 <p className="hint">
-                  Each role runs on its own harness and model. Changes apply to the next turn.
+                  Each subagent role runs on its own harness and model; the Orchestrator role is the
+                  master orchestrator above. Changes apply to the next turn.
                 </p>
                 <div
                   className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
@@ -4275,48 +4354,50 @@ export default function App() {
                   Experimental roles are off by default. Turn this on to dispatch them.
                 </p>
                 {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
-                {settings.roles.map((r) => (
-                  <div className="role-edit" key={r.id}>
-                    <span className="rn">
-                      {r.name}
-                      {r.experimental && <span className="badge experimental">Experimental</span>}
-                    </span>
-                    <Dropdown
-                      value={r.harness}
-                      options={harnessOptionsFor(r.harness)}
-                      onChange={(v) => {
-                        const row = { ...r, harness: v };
-                        updateRole(r.id, { harness: v });
-                        persistRole(row).catch(() => undefined);
-                        refreshModels(v).catch(() => undefined);
-                      }}
-                    />
-                    <Dropdown
-                      value={r.model}
-                      options={modelOptions(r.harness, r.model)}
-                      searchable
-                      align="end"
-                      placeholder="model (default)"
-                      footNote="Discovered from the harness CLI"
-                      onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                      addLabel="Add model"
-                      onAdd={(m) => {
-                        addModel(r.harness, m)
-                          .then(() => {
-                            const row = { ...r, model: m };
-                            updateRole(r.id, { model: m });
-                            persistRole(row).catch(() => undefined);
-                          })
-                          .catch(() => undefined);
-                      }}
-                      onChange={(v) => {
-                        const row = { ...r, model: v };
-                        updateRole(r.id, { model: v });
-                        persistRole(row).catch(() => undefined);
-                      }}
-                    />
-                  </div>
-                ))}
+                {settings.roles
+                  .filter((r) => r.id !== "orchestrator")
+                  .map((r) => (
+                    <div className="role-edit" key={r.id}>
+                      <span className="rn">
+                        {r.name}
+                        {r.experimental && <span className="badge experimental">Experimental</span>}
+                      </span>
+                      <Dropdown
+                        value={r.harness}
+                        options={harnessOptionsFor(r.harness)}
+                        onChange={(v) => {
+                          const row = { ...r, harness: v };
+                          updateRole(r.id, { harness: v });
+                          persistRole(row).catch(() => undefined);
+                          refreshModels(v).catch(() => undefined);
+                        }}
+                      />
+                      <Dropdown
+                        value={r.model}
+                        options={modelOptions(r.harness, r.model)}
+                        searchable
+                        align="end"
+                        placeholder="model (default)"
+                        footNote="Discovered from the harness CLI"
+                        onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
+                        addLabel="Add model"
+                        onAdd={(m) => {
+                          addModel(r.harness, m)
+                            .then(() => {
+                              const row = { ...r, model: m };
+                              updateRole(r.id, { model: m });
+                              persistRole(row).catch(() => undefined);
+                            })
+                            .catch(() => undefined);
+                        }}
+                        onChange={(v) => {
+                          const row = { ...r, model: v };
+                          updateRole(r.id, { model: v });
+                          persistRole(row).catch(() => undefined);
+                        }}
+                      />
+                    </div>
+                  ))}
               </section>
             </div>
           </div>

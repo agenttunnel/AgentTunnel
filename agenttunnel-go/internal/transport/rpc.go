@@ -1405,6 +1405,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				return nil, fmt.Errorf("required role %q cannot be disabled", role.ID)
 			}
 		}
+		if p.Role != nil && p.Role.Harness != "" && !contracts.Harness(p.Role.Harness).Valid() {
+			return nil, fmt.Errorf("unknown harness %q", p.Role.Harness)
+		}
+		if p.Lead != nil && p.Lead.Harness != "" && !contracts.Harness(p.Lead.Harness).Valid() {
+			return nil, fmt.Errorf("unknown harness %q", p.Lead.Harness)
+		}
 		if p.Workdir != nil {
 			d.settings.SetWorkdir(*p.Workdir)
 		}
@@ -1422,6 +1428,15 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				Harness: contracts.Harness(p.Role.Harness),
 				Model:   p.Role.Model,
 				Variant: p.Role.Variant,
+			})
+		}
+		if p.Lead != nil {
+			// The lead runs on the Orchestrator role's runtime, so pinning it
+			// is the same persisted setting, not a second source of truth.
+			d.settings.SetRoleConfig(contracts.RoleOrchestrator, settings.RoleConfig{
+				Harness: contracts.Harness(p.Lead.Harness),
+				Model:   strings.TrimSpace(p.Lead.Model),
+				Variant: strings.TrimSpace(p.Lead.Variant),
 			})
 		}
 		if p.Harness != nil {
@@ -1863,12 +1878,22 @@ type RoleConfigView struct {
 	Experimental bool `json:"experimental"`
 }
 
+// LeadRuntimeView is the master orchestrator's configured runtime override.
+// Empty fields inherit the Orchestrator role's defaults, and a thread's
+// per-lead override still wins over it.
+type LeadRuntimeView struct {
+	Harness string `json:"harness"`
+	Model   string `json:"model"`
+	Variant string `json:"variant"`
+}
+
 // SettingsView is the settings screen's payload.
 type SettingsView struct {
 	Workdir           string           `json:"workdir"`
 	AutoMode          bool             `json:"autoMode"`
 	ApprovedModels    []string         `json:"approvedModels"`
 	Roles             []RoleConfigView `json:"roles"`
+	Lead              LeadRuntimeView  `json:"lead"`
 	ConfigPath        string           `json:"configPath"`
 	StaleAfterMinutes int              `json:"staleAfterMinutes"`
 	ExperimentalRoles bool             `json:"experimentalRoles"`
@@ -1885,6 +1910,9 @@ type settingsPatch struct {
 		Model   string `json:"model"`
 		Variant string `json:"variant"`
 	} `json:"role"`
+	// Lead pins the master orchestrator's runtime; it is stored as the
+	// Orchestrator role's runtime, so unset fields keep inheriting it.
+	Lead    *LeadRuntimeView `json:"lead"`
 	Harness *struct {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
@@ -1908,6 +1936,13 @@ func (d *Dispatcher) settingsView() SettingsView {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}
 		sort.Strings(view.ApprovedModels)
+		if cfg, ok := d.settings.RoleConfig(contracts.RoleOrchestrator); ok {
+			view.Lead.Model = cfg.Model
+			view.Lead.Variant = cfg.Variant
+			if cfg.Harness.Valid() {
+				view.Lead.Harness = string(cfg.Harness)
+			}
+		}
 	}
 	for _, role := range d.roles.List() {
 		harness, model, variant := role.DefaultHarness, role.DefaultModel, role.DefaultVariant

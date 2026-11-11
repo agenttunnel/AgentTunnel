@@ -209,7 +209,10 @@ Files: `files.tree`, `files.read`.
 Registry and settings: `roles.list`, `harness.list`, `harness.updates`,
 `harness.update` (checks published CLI versions, upgrades only affected
 harnesses), `models.refresh`, `models.add`, `project.create`, `project.list`,
-`project.delete`, `settings.get`, `settings.set`.
+`project.delete`, `settings.get`, `settings.set`. A `lead` patch
+(`{harness, model, variant}`) pins the master orchestrator's runtime; empty
+fields inherit the Orchestrator role, and `thread.setLeadRuntime` still
+overrides it per lead.
 
 ## Where state lives
 
