@@ -58,7 +58,7 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
-import { arrangeThreads } from "./lib/threads";
+import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import {
   buildCommands,
   matchCommands,
@@ -1699,6 +1699,16 @@ export default function App() {
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
+  // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
+  // has subthreads toggles this, so a long tree can be folded away.
+  const [collapsedThreads, setCollapsedThreads] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSubthreads = (id: string) =>
+    setCollapsedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const needle = threadFilter.trim().toLowerCase();
   const projectThreads = useMemo(
     () =>
@@ -2873,16 +2883,24 @@ export default function App() {
         </div>
         <div className="col-body">
           {projectThreads.length === 0 && <div className="empty">No threads yet</div>}
-          {projectThreads.map((t) => (
+          {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-              {...clickable(() => selectThread(t.id))}
+              {...clickable(() => {
+                if (t.subthreads > 0) toggleSubthreads(t.id);
+                selectThread(t.id);
+              })}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
               <div className="t" title={t.title}>
                 {t.title}
+                {t.subthreads > 0 && (
+                  <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
+                    {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
+                  </span>
+                )}
               </div>
               <div className="m">
                 {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
