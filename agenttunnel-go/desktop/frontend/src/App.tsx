@@ -56,6 +56,11 @@ import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
+import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
+import type {
+  HarnessUpdateReport,
+  HarnessUpdateResult,
+} from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
@@ -68,6 +73,7 @@ import {
 } from "./lib/commands";
 import { SlashMenu } from "./components/SlashMenu";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import { MasterChat } from "./components/MasterChat";
 
 type Role = {
   id: string;
@@ -168,7 +174,7 @@ type ThreadSummary = {
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
 };
-type Project = { id: string; name: string; path: string; threads: number };
+export type Project = { id: string; name: string; path: string; threads: number };
 
 /** The environment's cross-project memory: guide, learnings log, rules. */
 type InheritedView = {
@@ -221,6 +227,14 @@ export type SettingsView = {
   roles: RoleConfigView[];
   configPath: string;
   staleAfterMinutes?: number;
+};
+export type DependencyStatus = "ok" | "outdated" | "missing";
+export type DependencyView = {
+  name: string;
+  installed: boolean;
+  version?: string;
+  minVersion: string;
+  status: DependencyStatus;
 };
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
@@ -634,6 +648,9 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
+  const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
+  const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
   // A check keeps the "restart to run" state after an install; the daemon's
   // plain check result does not know about it.
   const checkForUpdate = useCallback(() => {
@@ -777,6 +794,9 @@ export default function App() {
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
+  const [deps, setDeps] = useState<DependencyView[] | null>(null);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -908,6 +928,24 @@ export default function App() {
     }
   }, []);
 
+  const updateHarnesses = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setHarnessUpdateBusy(true);
+    setHarnessUpdateError(null);
+    try {
+      const res = await rpc.call<HarnessUpdateResult>("harness.update", { harnesses: [] });
+      setHarnessUpdates(res.report);
+      if (res.failed && res.failed.length > 0) {
+        setHarnessUpdateError(res.failed.map((f) => `${f.harness}: ${f.error}`).join("; "));
+      }
+    } catch (e) {
+      setHarnessUpdateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHarnessUpdateBusy(false);
+    }
+  }, []);
+
   const loadDiff = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -992,6 +1030,20 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     setHarnesses(await rpc.call<HarnessInfo>("harness.list"));
+  }, []);
+
+  const loadDeps = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setDepsBusy(true);
+    try {
+      setDeps(await rpc.call<DependencyView[]>("deps.check"));
+      setDepsError(null);
+    } catch (e) {
+      setDepsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDepsBusy(false);
+    }
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -1328,6 +1380,7 @@ export default function App() {
       setStatus("online");
       // Not awaited: a slow GitHub lookup must not hold up startup.
       checkForUpdate();
+      rpc.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -2343,7 +2396,7 @@ export default function App() {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
+        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects(), loadDeps()]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
@@ -2458,6 +2511,12 @@ export default function App() {
         busy={updateBusy}
         error={updateError}
         onInstall={installUpdate}
+      />
+      <HarnessUpdateChip
+        report={harnessUpdates}
+        busy={harnessUpdateBusy}
+        error={harnessUpdateError}
+        onUpdate={updateHarnesses}
       />
     </div>
   );
@@ -2678,6 +2737,15 @@ export default function App() {
               </p>
             </div>
           </div>
+          <MasterChat
+            rpc={rpcRef.current}
+            projects={projects}
+            onOpenThread={(projectId, threadId) => {
+              openProject(projectId);
+              lastThreadByProject.current[projectId] = threadId;
+              setActiveId(threadId);
+            }}
+          />
           <div className="project-grid">
             <div
               className="new-card"
@@ -2748,6 +2816,29 @@ export default function App() {
               {selectedProject?.path && <p className="screen-sub">{selectedProject.path}</p>}
             </div>
             <div className="screen-actions">
+              <button
+                className={`board-link${threadView === "board" ? " primary" : ""}`}
+                aria-pressed={threadView === "board"}
+                title="Open the project board"
+                onClick={() => setThreadView("board")}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="15"
+                  height="15"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="4" width="5" height="16" rx="1.5" />
+                  <rect x="10" y="4" width="5" height="11" rx="1.5" />
+                  <rect x="17" y="4" width="4" height="7" rx="1.5" />
+                </svg>
+                Board
+              </button>
               <input
                 className="thread-filter"
                 placeholder="Filter threads…"
@@ -4028,6 +4119,39 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+              </section>
+
+              <section className="set-section">
+                <h4>Dependencies</h4>
+                <p className="hint">
+                  The forge CLIs the Pull request tab shells out to. Versions are read from the
+                  tools on PATH.
+                </p>
+                {depsError && <p className="hint warn">{depsError}</p>}
+                {deps === null && !depsError && <p className="hint">Checking…</p>}
+                {(deps ?? []).map((d) => (
+                  <div className="dep-row" key={d.name}>
+                    <span className="dn">{d.name}</span>
+                    <span className={`dv ${d.status}`}>
+                      {d.status === "missing"
+                        ? "not installed"
+                        : `${d.version || "unknown version"}${
+                            d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
+                          }`}
+                    </span>
+                    <span
+                      className={`dot ${
+                        d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
+                      }`}
+                      title={d.status}
+                    />
+                  </div>
+                ))}
+                <div className="sheet-actions">
+                  <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
+                    {depsBusy ? "Checking…" : "Recheck"}
+                  </button>
+                </div>
               </section>
 
               <section className="set-section">
