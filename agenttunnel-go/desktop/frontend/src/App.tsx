@@ -67,6 +67,7 @@ import {
 } from "./lib/commands";
 import { SlashMenu } from "./components/SlashMenu";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import { MasterChat } from "./components/MasterChat";
 
 type Role = {
   id: string;
@@ -165,7 +166,7 @@ type ThreadSummary = {
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
 };
-type Project = { id: string; name: string; path: string; threads: number };
+export type Project = { id: string; name: string; path: string; threads: number };
 
 /** The environment's cross-project memory: guide, learnings log, rules. */
 type InheritedView = {
@@ -2594,6 +2595,15 @@ export default function App() {
               </p>
             </div>
           </div>
+          <MasterChat
+            rpc={rpcRef.current}
+            projects={projects}
+            onOpenThread={(projectId, threadId) => {
+              openProject(projectId);
+              lastThreadByProject.current[projectId] = threadId;
+              setActiveId(threadId);
+            }}
+          />
           <div className="project-grid">
             <div
               className="new-card"

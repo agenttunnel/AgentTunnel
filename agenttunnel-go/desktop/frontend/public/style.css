@@ -4582,3 +4582,143 @@ table.grid tr.rowlink:hover td {
   font-size: 10.5px;
   color: var(--faint);
 }
+
+/* --- master orchestrator chat (projects screen) -------------------------- */
+/* Compact on purpose: the project grid stays the main content above the fold. */
+.master-chat {
+  max-width: 900px;
+  margin: 0 0 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.master-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.master-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.master-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 11px var(--mono);
+  color: var(--faint);
+}
+.master-busy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: master-pulse 1.2s ease-in-out infinite;
+}
+@keyframes master-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .master-busy-dot {
+    animation: none;
+    opacity: 1;
+  }
+}
+.master-new {
+  margin-left: auto;
+  flex: none;
+  padding: 3px 9px;
+  font-size: 11px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--faint);
+}
+.master-new:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border-soft);
+  color: var(--text);
+}
+.master-body {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.master-empty {
+  max-width: 560px;
+  margin: 0;
+  color: var(--faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.master-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.master-who {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.master-msg.user .master-who {
+  color: var(--accent);
+}
+.master-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  color: var(--text);
+}
+.master-text .md {
+  font-size: 13px;
+}
+.master-error {
+  margin-top: 3px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  background: var(--err-soft);
+  color: var(--err);
+  font-size: 12px;
+}
+.master-send-err {
+  margin: 0;
+  color: var(--err);
+  font-size: 12px;
+}
+.master-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.master-composer textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  max-height: 160px;
+  resize: none;
+  overflow-y: auto;
+  font: 12.5px/1.55 var(--mono);
+}
+.master-composer .primary {
+  flex: none;
+}
