@@ -177,10 +177,19 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		adapter = remote.NewDefaultAdapter(opts.StateDir)
 	}
 	var disp *transport.Dispatcher
+	// The chat control router needs the dispatcher, and the bridge (which the
+	// dispatcher needs) needs the router. Both are closures over this variable.
+	var router *transport.ControlRouter
 	bridge, err := remote.New(remote.Options{
 		StateDir: opts.StateDir,
 		Engine:   eng,
 		Adapter:  adapter,
+		Control: func(ctx context.Context, text string) string {
+			if router == nil {
+				return ""
+			}
+			return router.Handle(ctx, text)
+		},
 		OnChange: func() {
 			if disp != nil {
 				disp.BroadcastRemoteStatus()
@@ -214,6 +223,9 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Shutdown:       opts.OnShutdown,
 		Remote:         bridge,
 	})
+	// Inbound WhatsApp control routes through the daemon's own RPC surface, with
+	// a fixed whitelist; see transport.ControlRouter.
+	router = transport.NewControlRouter(disp)
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
 		return nil, fmt.Errorf("close stale questions: %w", err)

@@ -15,6 +15,16 @@ export type RemoteItem = {
   qr?: string;
   /** This surface cannot connect in this build (e.g. WhatsApp credentials unset). */
   unavailable?: boolean;
+  /**
+   * Inbound control (WhatsApp only): messages the linked account sends to its
+   * own chat drive the selected thread's orchestrator. Off by default.
+   */
+  control?: boolean;
+  /**
+   * Whether this surface can receive control messages at all. An adapter with
+   * no inbound path leaves the Control toggle hidden rather than inert.
+   */
+  controlSupported?: boolean;
 };
 
 export type RemoteStatus = { items: RemoteItem[] };

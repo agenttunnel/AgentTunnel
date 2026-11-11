@@ -1739,6 +1739,27 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.RemoteStatus(), nil
 
+	case "remote.whatsapp.control":
+		// Inbound control lets the linked account's own chat drive the
+		// orchestrator, so it is a desktop-only setting: a relayed phone cannot
+		// reach remote.whatsapp.* at all.
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		var p struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Enabled != nil {
+			if err := d.remote.SetControl(*p.Enabled); err != nil {
+				return nil, err
+			}
+			d.BroadcastRemoteStatus()
+		}
+		return ControlState{Enabled: d.remote.Control()}, nil
+
 	case "relay.status":
 		return d.relayControl().Status(), nil
 

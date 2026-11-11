@@ -3,11 +3,16 @@ package remote
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeLinkedSession is the whatsmeow client boundary with no network. Hooks
@@ -16,6 +21,8 @@ type fakeLinkedSession struct {
 	mu          sync.Mutex
 	connectHook func(onQR, onLinked func(string), onError func(error)) error
 	sent        []string
+	sentIDs     []string
+	inbound     func(InboundMessage)
 	logouts     int
 	closes      int
 }
@@ -31,11 +38,31 @@ func (f *fakeLinkedSession) Connect(_ context.Context, onQR, onLinked func(strin
 	return nil
 }
 
-func (f *fakeLinkedSession) Send(_ context.Context, text string) error {
+func (f *fakeLinkedSession) Send(_ context.Context, text string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, text)
-	return nil
+	id := fmt.Sprintf("sent-%d", len(f.sent))
+	f.sentIDs = append(f.sentIDs, id)
+	return id, nil
+}
+
+func (f *fakeLinkedSession) SetInbound(handler func(InboundMessage)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inbound = handler
+}
+
+// deliver hands one message to whatever handler the adapter installed.
+func (f *fakeLinkedSession) deliver(msg InboundMessage) bool {
+	f.mu.Lock()
+	handler := f.inbound
+	f.mu.Unlock()
+	if handler == nil {
+		return false
+	}
+	handler(msg)
+	return true
 }
 
 func (f *fakeLinkedSession) Logout(context.Context) error {
@@ -361,6 +388,84 @@ func TestWhatsmeowSessionOpensFromRelativeStateDir(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("session database mode = %o, want 600", perm)
+	}
+}
+
+// Only the linked account's own chat reaches the handler: another chat, a
+// group, and a media-only message are all dropped before the bridge sees them.
+func TestInboundTextSelfChatOnly(t *testing.T) {
+	own := types.NewJID("15551234567", types.DefaultUserServer)
+	other := types.NewJID("15550000000", types.DefaultUserServer)
+	lid := types.NewJID("99887766", "lid")
+	text := &waE2E.Message{Conversation: proto.String("hello")}
+	extended := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("same")}}
+
+	info := func(chat, sender types.JID, fromMe, group bool) types.MessageInfo {
+		return types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: sender, IsFromMe: fromMe, IsGroup: group},
+			ID:            "m1",
+		}
+	}
+
+	cases := []struct {
+		name     string
+		own      types.JID
+		info     types.MessageInfo
+		message  *waE2E.Message
+		want     string
+		ok       bool
+		fromSelf bool
+	}{
+		{name: "self chat", own: own, info: info(own, own, true, false), message: text, want: "hello", ok: true, fromSelf: true},
+		{name: "extended text", own: own, info: info(own, own, true, false), message: extended, want: "same", ok: true, fromSelf: true},
+		{name: "another chat", own: own, info: info(other, other, false, false), message: text},
+		{name: "group", own: own, info: info(own, own, true, true), message: text},
+		{name: "no text", own: own, info: info(own, own, true, false), message: &waE2E.Message{}},
+		// A self message addressed by LID is still the self chat.
+		{name: "lid self chat", own: own, info: info(lid, lid, true, false), message: text, want: "hello", ok: true, fromSelf: true},
+		// A message in our own chat that the account did not send is not ours.
+		{name: "foreign sender in own chat", own: own, info: info(own, other, false, false), message: text, want: "hello", ok: true},
+	}
+	for _, tc := range cases {
+		msg, ok := inboundText(tc.own, tc.info, tc.message)
+		if ok != tc.ok {
+			t.Errorf("%s: ok = %v, want %v", tc.name, ok, tc.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if msg.Text != tc.want || msg.ID != "m1" || msg.FromSelf != tc.fromSelf {
+			t.Errorf("%s: message = %+v, want text %q fromSelf %v", tc.name, msg, tc.want, tc.fromSelf)
+		}
+	}
+}
+
+// The adapter passes the handler to a session that connects later, and Send
+// reports the id so the bridge can drop its echo.
+func TestLinkedAdapterForwardsInbound(t *testing.T) {
+	sess := &fakeLinkedSession{}
+	open, _ := sequentialOpener(sess)
+	a := newLinkedAdapter(t.TempDir(), open)
+
+	var got []InboundMessage
+	a.SetInbound(func(msg InboundMessage) { got = append(got, msg) })
+	if err := a.Connect(context.Background(), func(string) {}, func(string) {}, func(error) {}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if !sess.deliver(InboundMessage{ID: "m1", Text: "hi", FromSelf: true}) {
+		t.Fatal("the session never received the inbound handler")
+	}
+	if len(got) != 1 || got[0].ID != "m1" || got[0].Text != "hi" {
+		t.Fatalf("delivered = %+v, want the session's message", got)
+	}
+
+	id, err := a.SendTracked(context.Background(), "reply")
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if id != "sent-1" {
+		t.Fatalf("send id = %q, want the session's message id", id)
 	}
 }
 

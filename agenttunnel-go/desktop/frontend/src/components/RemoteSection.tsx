@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Rpc } from "../lib/rpc";
+import { switchProps } from "../lib/switchProps";
 import {
   pairUri,
   phoneRelayUrl,
@@ -191,6 +192,17 @@ export function RemoteSection({ rpc }: { rpc: Rpc | null }) {
     else void (on ? disconnectWhatsApp() : connectWhatsApp());
   };
 
+  // Control is a separate, off-by-default grant: it lets the account's own
+  // chat drive the orchestrator, so it changes nothing about connectivity.
+  const toggleControl = (item: RemoteItem) =>
+    act(item.id, async () => {
+      if (!rpc) return;
+      const res = await rpc.call<{ enabled: boolean }>("remote.whatsapp.control", {
+        enabled: !item.control,
+      });
+      setItems((cur) => cur.map((i) => (i.id === item.id ? { ...i, control: res.enabled } : i)));
+    });
+
   const toggleAdvanced = () => {
     const next = !advanced;
     setAdvanced(next);
@@ -288,6 +300,24 @@ export function RemoteSection({ rpc }: { rpc: Rpc | null }) {
                 {active ? "Working…" : unavailable ? "Not configured" : remoteStateLabel(item.state)}
               </span>
             </button>
+            {item.id === "whatsapp" && !unavailable && item.controlSupported && (
+              <div className="remote-control">
+                <div
+                  className={`toggle ${item.control ? "on" : ""}`}
+                  {...switchProps(!!item.control, () => {
+                    if (!busy && rpc) void toggleControl(item);
+                  })}
+                  aria-label="Let WhatsApp messages control the orchestrator"
+                  aria-disabled={active || !rpc}
+                >
+                  <span className="sw" /> Control
+                </div>
+                <p className="hint warn">
+                  Grants remote agent execution: text you send in your WhatsApp self-chat can start and
+                  steer runs.
+                </p>
+              </div>
+            )}
             {item.id === "phone" && (
               <button type="button" className="remote-adv" onClick={toggleAdvanced} disabled={!rpc}>
                 {advanced ? "Hide relay settings" : "Relay settings"}

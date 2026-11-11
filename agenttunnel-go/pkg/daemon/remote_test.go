@@ -4,30 +4,75 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/agenttunnel/agenttunnel-go/internal/remote"
 	"github.com/agenttunnel/agenttunnel-go/internal/transport"
 )
 
 // fakeRemoteAdapter links immediately, so the daemon test never reaches
-// WhatsApp. The bridge is the behavior under test, not the client.
+// WhatsApp. The bridge is the behavior under test, not the client. It also
+// implements remote.InboundAdapter so the daemon's control wiring can be driven
+// without a network.
 type fakeRemoteAdapter struct {
+	mu       sync.Mutex
 	connects int
+	inbound  func(remote.InboundMessage)
+	sent     []string
+	sentCh   chan string
 }
 
 func (f *fakeRemoteAdapter) Connect(_ context.Context, onQR func(string), onLinked func(string), _ func(error)) error {
+	f.mu.Lock()
 	f.connects++
+	f.mu.Unlock()
 	onQR("2@qr-payload")
 	onLinked("Linked device · +15551234567")
 	return nil
 }
 
-func (f *fakeRemoteAdapter) Disconnect() error                  { return nil }
-func (f *fakeRemoteAdapter) Send(context.Context, string) error { return nil }
+func (f *fakeRemoteAdapter) Disconnect() error { return nil }
+
+func (f *fakeRemoteAdapter) Send(ctx context.Context, text string) error {
+	_, err := f.SendTracked(ctx, text)
+	return err
+}
+
+func (f *fakeRemoteAdapter) SendTracked(_ context.Context, text string) (string, error) {
+	f.mu.Lock()
+	f.sent = append(f.sent, text)
+	id := len(f.sent)
+	ch := f.sentCh
+	f.mu.Unlock()
+	if ch != nil {
+		ch <- text
+	}
+	return fmt.Sprintf("sent-%d", id), nil
+}
+
+func (f *fakeRemoteAdapter) SetInbound(handler func(remote.InboundMessage)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inbound = handler
+}
+
+// deliver hands one message to the handler the daemon installed.
+func (f *fakeRemoteAdapter) deliver(msg remote.InboundMessage) bool {
+	f.mu.Lock()
+	handler := f.inbound
+	f.mu.Unlock()
+	if handler == nil {
+		return false
+	}
+	handler(msg)
+	return true
+}
 
 // failingRemoteAdapter refuses to connect, so the daemon must surface the error
 // to the caller and broadcast the error row.
@@ -177,6 +222,50 @@ func TestDaemonBroadcastsBackgroundRelayTransitions(t *testing.T) {
 		t.Fatalf("relay never dropped: %v", err)
 	}
 	awaitRemotePhone(t, c, "off")
+}
+
+// Inbound control is wired end to end: only after the RPC turns it on does a
+// self-chat message reach the daemon's command router, and its reply goes back
+// through the same adapter.
+func TestDaemonWhatsAppControlRoutesChatMessages(t *testing.T) {
+	adapter := &fakeRemoteAdapter{sentCh: make(chan string, 16)}
+	d := newTestDaemonWith(t, Options{RemoteAdapter: adapter})
+	c, _ := dialWS(t, d)
+
+	call(t, c, "1", "remote.whatsapp.connect", nil)
+
+	// With control off the same message is dropped; there is no router call to
+	// await, so the drop is observed by the reply never arriving.
+	if !adapter.deliver(remote.InboundMessage{ID: "m0", Text: "/threads", FromSelf: true}) {
+		t.Fatal("the daemon never installed the bridge's inbound handler")
+	}
+	// The drop is synchronous, so nothing can be in flight after deliver.
+	select {
+	case reply := <-adapter.sentCh:
+		t.Fatalf("control off sent a reply: %q", reply)
+	default:
+	}
+
+	var control transport.ControlState
+	params := map[string]any{"enabled": true}
+	if err := json.Unmarshal(call(t, c, "2", "remote.whatsapp.control", params), &control); err != nil {
+		t.Fatalf("decode control: %v", err)
+	}
+	if !control.Enabled {
+		t.Fatal("control was not enabled")
+	}
+
+	if !adapter.deliver(remote.InboundMessage{ID: "m1", Text: "/threads", FromSelf: true}) {
+		t.Fatal("the daemon never installed the bridge's inbound handler")
+	}
+	select {
+	case reply := <-adapter.sentCh:
+		if !strings.Contains(reply, "thread") {
+			t.Fatalf("reply = %q, want a thread listing", reply)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the chat message never produced a reply")
+	}
 }
 
 // awaitRemotePhone reads pushes until the phone row reaches want.
