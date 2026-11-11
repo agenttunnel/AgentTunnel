@@ -24,6 +24,8 @@ import {
   type UsageStep,
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
+import { ThreadSetup } from "./components/ThreadSetup";
+import { switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
   PanelToggle,
@@ -119,9 +121,9 @@ type ReviewThread = {
   updatedAt: string;
 };
 /** One lead's runtime override. Empty fields inherit the Orchestrator role's runtime. */
-type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
+export type LeadRuntimeView = { harness?: string; model?: string; variant?: string };
 
-type ThreadState = {
+export type ThreadState = {
   id: string;
   title: string;
   autoMode: boolean;
@@ -197,7 +199,7 @@ type HarnessInfo = {
   enabled: string[] | null;
   models: Record<string, string[]> | null;
 };
-type RoleConfigView = {
+export type RoleConfigView = {
   id: string;
   name: string;
   harness: string;
@@ -205,7 +207,7 @@ type RoleConfigView = {
   variant: string;
   builtin: boolean;
 };
-type SettingsView = {
+export type SettingsView = {
   workdir: string;
   autoMode: boolean;
   approvedModels: string[] | null;
@@ -464,22 +466,6 @@ function tabProps(selected: boolean, onSelect: () => void) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         onSelect();
-      }
-    },
-  };
-}
-
-/** Same treatment for the pill switches. */
-function switchProps(on: boolean, onToggle: () => void) {
-  return {
-    role: "switch" as const,
-    "aria-checked": on,
-    tabIndex: 0,
-    onClick: onToggle,
-    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onToggle();
       }
     },
   };
@@ -2780,9 +2766,13 @@ export default function App() {
     );
   }
 
+  const setupMode =
+    tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
+  const asideCollapsed = !layout.asideOpen || setupMode;
+
   return (
     <div
-      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${layout.asideOpen ? "" : " aside-closed"}`}
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}`}
       ref={shellRef}
       style={
         {
@@ -2913,7 +2903,25 @@ export default function App() {
               ref={streamRef}
               onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
             >
-              {(!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
+              {setupMode && thread && (
+                <div className="setup-view">
+                  <ThreadSetup
+                    settings={settings}
+                    thread={thread}
+                    toggle={toggle}
+                    addLead={addLead}
+                    addingLead={addingLead}
+                    setLeadRuntime={setLeadRuntime}
+                    updateRole={updateRole}
+                    persistRole={persistRole}
+                    refreshModels={refreshModels}
+                    addModel={addModel}
+                    modelOptions={modelOptions}
+                    harnessOptionsFor={harnessOptionsFor}
+                  />
+                </div>
+              )}
+              {!setupMode && (!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
                 <div className="stream-empty">
                   <img src="/brand-mark.svg" alt="" />
                   <div className="stream-empty-title">Start a thread</div>
@@ -3171,16 +3179,18 @@ export default function App() {
         min={PANEL_BOUNDS.aside.min}
         max={PANEL_BOUNDS.aside.max}
         shellRef={shellRef}
-        disabled={!layout.asideOpen}
+        disabled={asideCollapsed}
         onCommit={(px) => setLayout((l) => ({ ...l, asideW: px }))}
       />
 
-      <div className={`col aside${layout.asideOpen ? "" : " collapsed"}`}>
+      <div className={`col aside${asideCollapsed ? " collapsed" : ""}`}>
         <div className="aside-tabs" role="tablist" aria-label="Thread details">
           <PanelToggle
             side="right"
-            open={layout.asideOpen}
-            onToggle={() => setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }))}
+            open={!asideCollapsed}
+            onToggle={() => {
+              if (!setupMode) setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }));
+            }}
           />
           {asideTabs.map((id) => (
             <div
@@ -3256,146 +3266,20 @@ export default function App() {
         <div className="aside-body">
           {asideActive === "models" ? (
             <div className="aside-models">
-        {settings && (
-          <div className="model-summary">
-            {thread?.autoMode && <span className="ms-auto">auto</span>}
-            {settings.roles.map((r) => (
-              <span key={r.id}>
-                {r.name} <b>{r.model || "default"}</b> {r.harness}
-              </span>
-            ))}
-          </div>
-        )}
-          {!settings && <p className="hint">Loading roles…</p>}
-          {settings && (
-            <>
-              <div
-                className={`toggle${thread?.autoMode ? " on" : ""}`}
-                {...switchProps(!!thread?.autoMode, () =>
-                  thread && toggle("autoMode", !thread.autoMode),
-                )}
-                title="Auto mode: the orchestrator picks each task's model and harness"
-              >
-                <span className="sw" /> Auto mode
-              </div>
-              <p className="hint">
-                {thread?.autoMode
-                  ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
-                  : "Each role runs on its own harness and model. Changes apply to the next turn."}
-              </p>
-              {settings.roles.map((r) => {
-                const parked = !!thread?.autoMode && r.id !== "orchestrator";
-                return (
-                  <div
-                    className={`role-edit${parked ? " parked" : ""}`}
-                    key={r.id}
-                    title={
-                      parked
-                        ? "Parked while auto mode is on — the orchestrator decides this role's runtime"
-                        : undefined
-                    }
-                  >
-                    <span className="rn">{r.name}</span>
-                    <Dropdown
-                      value={r.harness}
-                      options={harnessOptionsFor(r.harness)}
-                      disabled={parked}
-                      onChange={(v) => {
-                        const row = { ...r, harness: v };
-                        updateRole(r.id, { harness: v });
-                        persistRole(row).catch(() => undefined);
-                        refreshModels(v).catch(() => undefined);
-                      }}
-                    />
-                    <Dropdown
-                      value={r.model}
-                      options={modelOptions(r.harness, r.model)}
-                      searchable
-                      align="end"
-                      placeholder="model (default)"
-                      disabled={parked}
-                      onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                      addLabel="Add model"
-                      onAdd={(m) => {
-                        addModel(r.harness, m)
-                          .then(() => {
-                            const row = { ...r, model: m };
-                            updateRole(r.id, { model: m });
-                            persistRole(row).catch(() => undefined);
-                          })
-                          .catch(() => undefined);
-                      }}
-                      onChange={(v) => {
-                        const row = { ...r, model: v };
-                        updateRole(r.id, { model: v });
-                        persistRole(row).catch(() => undefined);
-                      }}
-                    />
-                  </div>
-                );
-              })}
-              {(() => {
-                const orch = settings.roles.find((r) => r.id === "orchestrator");
-                const count = thread?.leads && thread.leads > 0 ? thread.leads : 1;
-                return (
-                  <div className="lead-block">
-                    <div className="lead-head">
-                      <span className="rn">Leads</span>
-                    </div>
-                    <p className="hint">
-                      Each lead runs the Orchestrator's runtime unless you override it here. Changes apply to the next turn.
-                    </p>
-                    {Array.from({ length: count }, (_, i) => {
-                      const ov: LeadRuntimeView = thread?.leadRuntimes?.[i] ?? {};
-                      const harness = ov.harness ?? "";
-                      const model = ov.model ?? "";
-                      const variant = ov.variant ?? "";
-                      const effective = harness || orch?.harness || "";
-                      return (
-                        <div className="role-edit" key={i}>
-                          <span className="rn">Lead {i + 1}</span>
-                          <Dropdown
-                            value={harness}
-                            options={[
-                              { value: "", label: `Orchestrator (${orch?.harness ?? "default"})` },
-                              ...harnessOptionsFor(harness),
-                            ]}
-                            disabled={!thread}
-                            onChange={(v) => setLeadRuntime(i, { harness: v })}
-                          />
-                          <Dropdown
-                            value={model}
-                            options={modelOptions(effective, model)}
-                            searchable
-                            placeholder="model (default)"
-                            disabled={!thread}
-                            onRefresh={() => refreshModels(effective).catch(() => undefined)}
-                            addLabel="Add model"
-                            onAdd={(m) => {
-                              addModel(effective, m)
-                                .then(() => setLeadRuntime(i, { harness, model: m, variant }))
-                                .catch(() => undefined);
-                            }}
-                            onChange={(v) => setLeadRuntime(i, { harness, model: v, variant })}
-                          />
-                        </div>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      className="lead-add"
-                      aria-label="Add a lead"
-                      title="Add a lead"
-                      disabled={!thread || addingLead}
-                      onClick={() => addLead(count + 1)}
-                    >
-                      +
-                    </button>
-                  </div>
-                );
-              })()}
-            </>
-          )}
+              <ThreadSetup
+                settings={settings}
+                thread={thread}
+                toggle={toggle}
+                addLead={addLead}
+                addingLead={addingLead}
+                setLeadRuntime={setLeadRuntime}
+                updateRole={updateRole}
+                persistRole={persistRole}
+                refreshModels={refreshModels}
+                addModel={addModel}
+                modelOptions={modelOptions}
+                harnessOptionsFor={harnessOptionsFor}
+              />
             </div>
           ) : asideActive === "agents" ? (
             <>
