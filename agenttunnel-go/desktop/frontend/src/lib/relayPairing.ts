@@ -15,6 +15,7 @@ export type PairOffer = {
   expires: string;
 };
 
+/** RelayDevice is one phone paired through the relay (relay.devices.list). */
 export type RelayDevice = {
   clientId: string;
   name: string;

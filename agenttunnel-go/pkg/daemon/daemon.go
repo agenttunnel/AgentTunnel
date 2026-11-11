@@ -17,6 +17,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	relayclient "github.com/agenttunnel/agenttunnel-go/internal/relay"
+	"github.com/agenttunnel/agenttunnel-go/internal/remote"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
@@ -53,6 +54,7 @@ type Daemon struct {
 	Settings *settings.Store
 	Actions  *actionlog.Logger
 	Relay    *relayclient.Client
+	Remote   *remote.Bridge
 	Token    string
 
 	endpoint *atomic.Value
@@ -161,7 +163,27 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	disp := transport.NewDispatcher(transport.DispatcherDeps{
+	// WhatsApp updates are off until the user connects. The bridge follows the
+	// engine so turn results, failures, and questions reach the linked device.
+	var disp *transport.Dispatcher
+	bridge, err := remote.New(remote.Options{
+		StateDir: opts.StateDir,
+		Engine:   eng,
+		Adapter:  remote.NewDefaultAdapter(),
+		OnChange: func() {
+			if disp != nil {
+				disp.BroadcastRemoteStatus()
+			}
+		},
+		Logf: func(format string, args ...any) {
+			actions.Log("whatsapp", map[string]any{"message": fmt.Sprintf(format, args...)})
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp bridge: %w", err)
+	}
+
+	disp = transport.NewDispatcher(transport.DispatcherDeps{
 		Engine:       eng,
 		Runner:       runner,
 		Orchestrator: orch,
@@ -176,6 +198,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Updater:      updater,
 		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits()),
 		Relay:        relay,
+		Remote:       bridge,
 	})
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
@@ -183,8 +206,18 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	srv := transport.NewServer(disp, eng, runner, opts.Token, box)
+	// Status changes are pushed to every client, so a QR that appears after the
+	// connect reply still reaches the window that asked for it.
+	disp.SetRemoteNotifier(func(st transport.RemoteStatus) {
+		srv.NotifyAll("remote.status.changed", st)
+	})
 	relay.Bind(srv)
 	relay.Start(ctx)
+	bridge.Start(ctx)
+	// RPC calls broadcast the transitions they cause, but the relay also
+	// connects and drops on its own. Follow those moves so the phone row is
+	// never stale.
+	go followRelayTransitions(ctx, relay, disp)
 
 	return &Daemon{
 		Engine:   eng,
@@ -196,6 +229,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Settings: store,
 		Actions:  actions,
 		Relay:    relay,
+		Remote:   bridge,
 		Token:    opts.Token,
 		endpoint: &endpoint,
 	}, nil
@@ -208,8 +242,27 @@ func (d *Daemon) SetEndpoint(url string) {
 	}
 }
 
+// followRelayTransitions broadcasts the Remote section whenever the relay
+// socket connects or drops in the background. It waits on the client's change
+// signals rather than polling, and exits with ctx.
+func followRelayTransitions(ctx context.Context, relay *relayclient.Client, disp *transport.Dispatcher) {
+	for {
+		if err := relay.WaitConnected(ctx); err != nil {
+			return
+		}
+		disp.BroadcastRemoteStatus()
+		if err := relay.WaitDisconnected(ctx); err != nil {
+			return
+		}
+		disp.BroadcastRemoteStatus()
+	}
+}
+
 // Close stops the engine and flushes the action log.
 func (d *Daemon) Close() {
+	if d.Remote != nil {
+		d.Remote.Close()
+	}
 	if d.Relay != nil {
 		d.Relay.Close()
 	}

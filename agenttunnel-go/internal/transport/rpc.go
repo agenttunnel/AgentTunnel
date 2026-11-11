@@ -72,6 +72,9 @@ type DispatcherDeps struct {
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
+	// Remote drives WhatsApp connectivity for the Remote section. Nil reports it
+	// unavailable.
+	Remote RemoteControl
 }
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
@@ -145,9 +148,14 @@ type Dispatcher struct {
 	updater    *update.Updater
 	limits     *providers.LimitsProvider
 	relay      RelayControl
+	remote     RemoteControl
 	prBoard    *scm.Board
 	dirtyBoard *scm.DirtyBoard
 	seq        atomic.Int64
+
+	// remoteNotifier broadcasts Remote section changes. Set after the server
+	// exists, since the dispatcher is built first.
+	remoteNotifier func(RemoteStatus)
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
@@ -184,6 +192,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		updater:    d.Updater,
 		limits:     d.Limits,
 		relay:      d.Relay,
+		remote:     d.Remote,
 		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
 		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
@@ -1401,6 +1410,41 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		d.settings.RemoveProject(p.ID)
 		return d.projectList(ctx), nil
 
+	case "remote.status":
+		st := d.RemoteStatus()
+		if isRelayedSession(ctx) {
+			// A pairing QR is a secret: the phone that reaches this daemon
+			// through the relay must never be handed another surface's link.
+			for i := range st.Items {
+				st.Items[i].QR = ""
+			}
+		}
+		return st, nil
+
+	case "remote.whatsapp.connect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Connect(ctx)
+		// The bridge may finish connecting later, but a failure is already a
+		// state change every client should see.
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
+	case "remote.whatsapp.disconnect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Disconnect()
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
 	case "relay.status":
 		return d.relayControl().Status(), nil
 
@@ -1415,6 +1459,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Enable(p.URL); err != nil {
 			return nil, err
 		}
+		// The phone row is derived from the relay, so its state changed too.
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.disable":
@@ -1422,6 +1468,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Disable(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.pair.start":
@@ -1431,13 +1478,19 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"devices": d.relayControl().Devices()}, nil
 
 	case "relay.tunnel.start":
-		return d.relayControl().StartTunnel(ctx)
+		st, err := d.relayControl().StartTunnel(ctx)
+		if err != nil {
+			return nil, err
+		}
+		d.BroadcastRemoteStatus()
+		return st, nil
 
 	case "relay.tunnel.stop":
 		rc := d.relayControl()
 		if err := rc.StopTunnel(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.TunnelStatus(), nil
 
 	case "relay.tunnel.status":
