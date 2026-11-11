@@ -86,6 +86,9 @@ type Runner struct {
 	// parent's notes.
 	notebookMu sync.Mutex
 	notebooks  map[contracts.ThreadID]*contextstore.Notebook
+
+	// curator single-flights the auto context manager per thread.
+	curator contextCurator
 }
 
 // NewRunner wires a runner from its dependencies.
@@ -252,7 +255,7 @@ func (r *Runner) RunCollect(ctx context.Context, threadID contracts.ThreadID, ta
 			go func(t contracts.DispatchTask) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				findings, err := r.runTask(ctx, threadID, t)
+				findings, err := r.runTask(ctx, threadID, t, false)
 				mu.Lock()
 				if errors.Is(err, context.Canceled) {
 					status[t.Name] = contracts.AgentCancelled
@@ -268,6 +271,9 @@ func (r *Runner) RunCollect(ctx context.Context, threadID contracts.ThreadID, ta
 					}
 				}
 				mu.Unlock()
+				if err == nil && t.Role != contracts.RoleContextManager {
+					r.requestCuration(ctx, threadID)
+				}
 			}(t)
 		}
 		wg.Wait()
@@ -313,7 +319,10 @@ func (r *Runner) StopAgent(id contracts.AgentID) bool {
 }
 
 // runTask executes one dispatched agent and returns its final text output.
-func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t contracts.DispatchTask) (string, error) {
+// runTask runs one agent to completion. curate marks the auto context-manager
+// run: its input is the clipped notebook and its summary replaces the context
+// key instead of writing result_*.
+func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t contracts.DispatchTask, curate bool) (string, error) {
 	// A cancellation here targets only this agent: either the turn ended or
 	// the user stopped the agent specifically. Both map to a cancelled status.
 	ctx, cancel := context.WithCancel(ctx)
@@ -323,6 +332,9 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	role, ok := r.roles.Get(t.Role)
 	if !ok {
 		return "", fmt.Errorf("unknown role %q", t.Role)
+	}
+	if !r.roleUsable(t.Role) {
+		return "", fmt.Errorf("role %q is disabled", t.Role)
 	}
 	auto := r.autoModeFor(ctx, threadID)
 	// An explicit user choice (council membership) is honored regardless of
@@ -345,7 +357,11 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 
 	inherited, _ := r.inherited.Render()
 	peerMailbox := r.peerMailboxFor(ctx, threadID)
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, r.notebookFor(threadID).Render(), peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
+	shared := r.notebookFor(threadID).Render()
+	if curate {
+		shared = curatorInput(r.notebookFor(threadID))
+	}
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -434,9 +450,14 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	// a stream ending in a newline must not become one either.
 	summary := strings.TrimSpace(strings.Join(findings, "\n"))
 	if summary != "" {
-		key := "result_" + t.Name
-		r.notebookFor(threadID).Append(key, summary, string(t.AgentID))
-		r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
+		if curate {
+			r.notebookFor(threadID).Set(ContextKey, summary, string(t.AgentID))
+			r.setSharedContext(ctx, threadID, ContextKey, summary, t.AgentID)
+		} else {
+			key := "result_" + t.Name
+			r.notebookFor(threadID).Append(key, summary, string(t.AgentID))
+			r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
+		}
 	}
 	return summary, werr
 }
@@ -684,6 +705,22 @@ func (r *Runner) roleRuntime(role contracts.Role) (contracts.Harness, string, st
 // harnessAllowed reports whether a harness is enabled in settings.
 func (r *Runner) harnessAllowed(h contracts.Harness) bool {
 	return r.settings == nil || r.settings.HarnessEnabled(h)
+}
+
+// roleUsable reports whether a role may run. Required roles always run, even if
+// a hand-edited settings file disables them. An unknown role is never usable.
+func (r *Runner) roleUsable(id contracts.RoleID) bool {
+	role, ok := r.roles.Get(id)
+	if !ok {
+		return false
+	}
+	if role.Required {
+		return true
+	}
+	if r.settings == nil {
+		return !role.Experimental
+	}
+	return r.settings.RoleEnabled(id) && (!role.Experimental || r.settings.ExperimentalRoles())
 }
 
 // runtimeChoices renders the harness/model options the orchestrator may pick

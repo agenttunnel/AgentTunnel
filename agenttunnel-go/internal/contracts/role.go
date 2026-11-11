@@ -10,12 +10,13 @@ import (
 type RoleID string
 
 const (
-	RoleOrchestrator RoleID = "orchestrator"
-	RolePlanner      RoleID = "planner"
-	RoleExecutor     RoleID = "executor"
-	RoleTester       RoleID = "tester"
-	RoleReviewer     RoleID = "reviewer"
-	RoleFacilitator  RoleID = "facilitator"
+	RoleOrchestrator   RoleID = "orchestrator"
+	RolePlanner        RoleID = "planner"
+	RoleExecutor       RoleID = "executor"
+	RoleTester         RoleID = "tester"
+	RoleReviewer       RoleID = "reviewer"
+	RoleFacilitator    RoleID = "facilitator"
+	RoleContextManager RoleID = "context-manager"
 )
 
 // Role describes an agent role: its identity, system prompt, and default runtime.
@@ -27,16 +28,22 @@ type Role struct {
 	DefaultModel   string  `json:"defaultModel"`
 	DefaultVariant string  `json:"defaultVariant,omitempty"`
 	Builtin        bool    `json:"builtin"`
+	// Experimental roles are usable only when the user opts into experimental
+	// roles. Required roles cannot be disabled: the core workflow depends on them.
+	Experimental bool `json:"experimental,omitempty"`
+	Required     bool `json:"required,omitempty"`
 }
 
-// BuiltinRoles returns the six roles AgentTunnel ships: orchestrator, planner,
-// executor, tester (QA), reviewer, and the council facilitator.
+// BuiltinRoles returns the seven roles AgentTunnel ships: orchestrator, planner,
+// executor, tester (QA), reviewer, the council facilitator, and the experimental
+// context manager.
 func BuiltinRoles() []Role {
 	return []Role{
 		{
 			ID:             RoleOrchestrator,
 			Name:           "Orchestrator",
 			Builtin:        true,
+			Required:       true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are the AgentTunnel orchestrator (team lead). Break the user's task into concrete jobs, " +
 				"dispatch them to planner/executor/tester/reviewer subagents, keep a live view of who is doing what, " +
@@ -56,6 +63,7 @@ func BuiltinRoles() []Role {
 			ID:             RoleExecutor,
 			Name:           "Executor",
 			Builtin:        true,
+			Required:       true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are an executor. Implement the assigned task in the working tree, run the relevant checks, " +
 				"and report what you changed. If the task splits into smaller pieces you may propose subagents with " +
@@ -73,6 +81,7 @@ func BuiltinRoles() []Role {
 			ID:             RoleReviewer,
 			Name:           "Reviewer",
 			Builtin:        true,
+			Required:       true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are a reviewer. Inspect the diff the executors produced for correctness, style, and risk. " +
 				"Return findings and an explicit approve/request-changes verdict.",
@@ -85,6 +94,16 @@ func BuiltinRoles() []Role {
 			SystemPrompt: "You are a neutral council facilitator. Read the members' positions, surface where they agree " +
 				"and where they split, and state one decisive recommendation with the dissent recorded. Do not add " +
 				"arguments of your own or invent agreement that is not there.",
+		},
+		{
+			ID:             RoleContextManager,
+			Name:           "Context Manager",
+			Builtin:        true,
+			Experimental:   true,
+			DefaultHarness: HarnessOpenCode,
+			SystemPrompt: "You are the context manager. Read the thread's collected subagent results and write one " +
+				"concise, current summary of what is known, decided, and still open. Keep it short and factual, " +
+				"drop anything superseded, and do not add work of your own.",
 		},
 	}
 }
