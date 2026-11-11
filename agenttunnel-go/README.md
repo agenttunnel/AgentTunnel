@@ -206,9 +206,10 @@ every connected client — how `agenttunnel <dir>` reaches a running app).
 
 Files: `files.tree`, `files.read`.
 
-Registry and settings: `roles.list`, `harness.list`, `models.refresh`,
-`models.add`, `project.create`, `project.list`, `project.delete`,
-`settings.get`, `settings.set`.
+Registry and settings: `roles.list`, `harness.list`, `harness.updates`,
+`harness.update` (checks published CLI versions, upgrades only affected
+harnesses), `models.refresh`, `models.add`, `project.create`, `project.list`,
+`project.delete`, `settings.get`, `settings.set`.
 
 ## Where state lives
 

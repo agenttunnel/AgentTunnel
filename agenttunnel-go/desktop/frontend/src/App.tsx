@@ -56,6 +56,11 @@ import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
+import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
+import type {
+  HarnessUpdateReport,
+  HarnessUpdateResult,
+} from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
@@ -643,6 +648,9 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
+  const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
+  const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
   // A check keeps the "restart to run" state after an install; the daemon's
   // plain check result does not know about it.
   const checkForUpdate = useCallback(() => {
@@ -917,6 +925,24 @@ export default function App() {
       setUpdateError(e instanceof Error ? e.message : String(e));
     } finally {
       setUpdateBusy(false);
+    }
+  }, []);
+
+  const updateHarnesses = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setHarnessUpdateBusy(true);
+    setHarnessUpdateError(null);
+    try {
+      const res = await rpc.call<HarnessUpdateResult>("harness.update", { harnesses: [] });
+      setHarnessUpdates(res.report);
+      if (res.failed && res.failed.length > 0) {
+        setHarnessUpdateError(res.failed.map((f) => `${f.harness}: ${f.error}`).join("; "));
+      }
+    } catch (e) {
+      setHarnessUpdateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHarnessUpdateBusy(false);
     }
   }, []);
 
@@ -1354,6 +1380,7 @@ export default function App() {
       setStatus("online");
       // Not awaited: a slow GitHub lookup must not hold up startup.
       checkForUpdate();
+      rpc.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -2484,6 +2511,12 @@ export default function App() {
         busy={updateBusy}
         error={updateError}
         onInstall={installUpdate}
+      />
+      <HarnessUpdateChip
+        report={harnessUpdates}
+        busy={harnessUpdateBusy}
+        error={harnessUpdateError}
+        onUpdate={updateHarnesses}
       />
     </div>
   );
