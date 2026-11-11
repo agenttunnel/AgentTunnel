@@ -7,6 +7,9 @@ const KIND_LABEL: Record<QuestionKind, string> = {
   text: "Answer",
 };
 
+// Shown as a keyboard hint; Mac users see the Cmd glyph.
+const SEND_KEY = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent) ? "⌘" : "Ctrl";
+
 type Props = {
   question: AgentQuestion;
   /** The asking agent's display name. */
@@ -32,7 +35,7 @@ export function QuestionCard({ question: q, askedBy, onAnswer, onDismiss }: Prop
       <section className="question-card closed" aria-label={`Question from ${askedBy}`}>
         <div className="q-head">
           <span className="q-asker">{askedBy}</span>
-          <span className="q-kind">{answered ? "Answered" : "Closed"}</span>
+          <span className={answered ? "q-kind" : "q-kind closed-kind"}>{answered ? "Answered" : "Closed"}</span>
         </div>
         <div className="q-text">{q.question}</div>
         {answered ? (
@@ -109,14 +112,15 @@ export function QuestionCard({ question: q, askedBy, onAnswer, onDismiss }: Prop
                 disabled={busy}
                 onChange={() => pick(opt)}
               />
-              <span>{opt}</span>
+              <span className="q-option-label">{opt}</span>
             </label>
           ))}
         </div>
       )}
 
       <textarea
-        rows={q.kind === "text" ? 3 : 2}
+        className="q-input"
+        rows={q.kind === "text" ? 3 : 1}
         value={text}
         disabled={busy}
         aria-label={q.kind === "text" ? "Your answer" : "Other answer (optional)"}
@@ -128,8 +132,11 @@ export function QuestionCard({ question: q, askedBy, onAnswer, onDismiss }: Prop
       {error && <div className="err-text">{error}</div>}
 
       <div className="q-actions">
-        <span className="hint">Cmd/Ctrl+Enter sends</span>
-        <button onClick={() => void run(onDismiss)} disabled={busy}>
+        <span className="hint">
+          <kbd>{SEND_KEY}</kbd>
+          <kbd>Enter</kbd> to send
+        </span>
+        <button className="ghost" onClick={() => void run(onDismiss)} disabled={busy}>
           Skip
         </button>
         <button className="primary" onClick={submit} disabled={!ready}>
