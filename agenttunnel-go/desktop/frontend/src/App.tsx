@@ -206,11 +206,15 @@ export type RoleConfigView = {
   model: string;
   variant: string;
   builtin: boolean;
+  enabled: boolean;
+  required: boolean;
+  experimental: boolean;
 };
 export type SettingsView = {
   workdir: string;
   autoMode: boolean;
   approvedModels: string[] | null;
+  experimentalRoles: boolean;
   roles: RoleConfigView[];
   configPath: string;
   staleAfterMinutes?: number;
@@ -2312,6 +2316,31 @@ export default function App() {
     flashSaved();
   };
 
+  // Required roles cannot be disabled; the daemon refuses them too.
+  const toggleRoleEnabled = async (row: RoleConfigView, enabled: boolean) => {
+    const rpc = rpcRef.current;
+    if (!rpc || row.required) return;
+    updateRole(row.id, { enabled });
+    try {
+      const s = await rpc.call<SettingsView>("settings.set", {
+        roleEnabled: { id: row.id, enabled },
+      });
+      setSettings(s);
+      flashSaved();
+    } catch {
+      // Reload so the switch shows what the daemon actually holds.
+      loadSettings().catch(() => undefined);
+    }
+  };
+
+  const toggleExperimentalRoles = async (enabled: boolean) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const s = await rpc.call<SettingsView>("settings.set", { experimentalRoles: enabled });
+    setSettings(s);
+    flashSaved();
+  };
+
   if (status !== "online") {
     return (
       <div className="splash">
@@ -2890,6 +2919,7 @@ export default function App() {
                     addModel={addModel}
                     modelOptions={modelOptions}
                     harnessOptionsFor={harnessOptionsFor}
+                    toggleRoleEnabled={toggleRoleEnabled}
                   />
                 </div>
               )}
@@ -3251,6 +3281,7 @@ export default function App() {
                 addModel={addModel}
                 modelOptions={modelOptions}
                 harnessOptionsFor={harnessOptionsFor}
+                toggleRoleEnabled={toggleRoleEnabled}
               />
             </div>
           ) : asideActive === "agents" ? (
@@ -3900,10 +3931,25 @@ export default function App() {
                 <p className="hint">
                   Each role runs on its own harness and model. Changes apply to the next turn.
                 </p>
+                <div
+                  className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
+                  {...switchProps(settings.experimentalRoles, () =>
+                    toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
+                  )}
+                  style={{ marginBottom: 10 }}
+                >
+                  <span className="sw" /> Experimental roles
+                </div>
+                <p className="hint">
+                  Experimental roles are off by default. Turn this on to dispatch them.
+                </p>
                 {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
                 {settings.roles.map((r) => (
                   <div className="role-edit" key={r.id}>
-                    <span className="rn">{r.name}</span>
+                    <span className="rn">
+                      {r.name}
+                      {r.experimental && <span className="badge experimental">Experimental</span>}
+                    </span>
                     <Dropdown
                       value={r.harness}
                       options={harnessOptionsFor(r.harness)}
