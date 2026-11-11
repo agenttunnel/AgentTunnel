@@ -220,6 +220,63 @@ func TestFetchGitLabMergeRequestMapsPipelineAndDraft(t *testing.T) {
 	}
 }
 
+func TestFetchGitLabMapsDetailedMergeStatus(t *testing.T) {
+	cases := map[string]struct {
+		status string
+		want   string
+	}{
+		"mergeable":              {status: "mergeable", want: "approved"},
+		"not approved":           {status: "not_approved", want: "review_required"},
+		"changes requested":      {status: "requested_changes", want: "changes_requested"},
+		"unresolved discussions": {status: "discussions_not_resolved", want: "changes_requested"},
+		"draft":                  {status: "draft_status", want: ""},
+		"ci must pass":           {status: "ci_must_pass", want: ""},
+		"mixed case":             {status: "MergeAble", want: "approved"},
+		"unreported":             {status: "", want: ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			mr := `{"iid":7,"state":"opened","detailed_merge_status":"` + tc.status + `"}`
+			cli := fakeCLI{
+				installed: map[string]bool{"glab": true},
+				replies: map[string]reply{
+					gitBranch: {stdout: "feat/x"},
+					gitOrigin: {stdout: "git@gitlab.com:o/r.git"},
+					glView:    {stdout: mr},
+				},
+			}
+			snap := cli.client().Fetch(context.Background(), "/repo")
+			if snap.Status != StatusReady || snap.Request == nil {
+				t.Fatalf("snapshot = %+v", snap)
+			}
+			if snap.Request.Review != tc.want {
+				t.Fatalf("review = %q, want %q", snap.Request.Review, tc.want)
+			}
+		})
+	}
+}
+
+// glab's MergeRequest JSON has no approved field; an invented one must not
+// lift an MR into the approved bucket.
+func TestFetchGitLabIgnoresInventedApprovedFlag(t *testing.T) {
+	mr := `{"iid":7,"state":"opened","approved":true}`
+	cli := fakeCLI{
+		installed: map[string]bool{"glab": true},
+		replies: map[string]reply{
+			gitBranch: {stdout: "feat/x"},
+			gitOrigin: {stdout: "git@gitlab.com:o/r.git"},
+			glView:    {stdout: mr},
+		},
+	}
+	snap := cli.client().Fetch(context.Background(), "/repo")
+	if snap.Status != StatusReady || snap.Request == nil {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if snap.Request.Review != "" {
+		t.Fatalf("review = %q, want empty", snap.Request.Review)
+	}
+}
+
 func TestFetchGitLabNoOpenMergeRequest(t *testing.T) {
 	cli := fakeCLI{
 		installed: map[string]bool{"glab": true},
@@ -236,11 +293,14 @@ func TestFetchGitLabNoOpenMergeRequest(t *testing.T) {
 
 func TestProviderForRemoteShapes(t *testing.T) {
 	cases := map[string]string{
-		"git@github.com:o/r.git":           "github",
-		"https://github.com/o/r.git":       "github",
-		"https://user@gitlab.com/o/r.git":  "gitlab",
-		"ssh://git@gitlab.example.com/o/r": "gitlab",
-		"https://example.com/o/r.git":      "",
+		"git@github.com:o/r.git":                "github",
+		"https://github.com/o/r.git":            "github",
+		"https://user@gitlab.com/o/r.git":       "gitlab",
+		"ssh://git@gitlab.example.com/o/r":      "gitlab",
+		"https://gitlab.example.com/o/r.git":    "gitlab",
+		"ssh://git@gitlab.example.com:2222/o/r": "gitlab",
+		"https://GitLab.com/o/r.git":            "gitlab",
+		"https://example.com/o/r.git":           "",
 	}
 	for remote, want := range cases {
 		if got := providerFor(remote); got != want {
