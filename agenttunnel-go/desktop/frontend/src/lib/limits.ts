@@ -19,9 +19,12 @@ export type HarnessLimits = {
 };
 
 const HARNESS_NAMES: Record<string, string> = {
-  claude: "Claude",
+  opencode: "OpenCode",
   codex: "Codex",
+  claude: "Claude",
   cursor: "Cursor",
+  grok: "Grok",
+  pi: "Pi",
   commandcode: "Command Code",
 };
 

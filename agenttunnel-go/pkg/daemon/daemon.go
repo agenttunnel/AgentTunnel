@@ -17,6 +17,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	relayclient "github.com/agenttunnel/agenttunnel-go/internal/relay"
+	"github.com/agenttunnel/agenttunnel-go/internal/remote"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
@@ -39,6 +40,13 @@ type Options struct {
 	// Version is the release version embedded at link time. Empty or "dev"
 	// disables self-update.
 	Version string
+	// OnShutdown is invoked by the daemon.shutdown RPC to gracefully stop the
+	// process that hosts this daemon. The assembly points it at the same
+	// signal-cancel path a SIGTERM uses.
+	OnShutdown func()
+	// RemoteAdapter overrides the shipped WhatsApp adapter. Tests use a fake so
+	// they never touch WhatsApp; nil uses NewDefaultAdapter.
+	RemoteAdapter remote.Adapter
 }
 
 // Daemon is the fully assembled AgentTunnel server: engine, orchestrator, usage,
@@ -53,6 +61,7 @@ type Daemon struct {
 	Settings *settings.Store
 	Actions  *actionlog.Logger
 	Relay    *relayclient.Client
+	Remote   *remote.Bridge
 	Token    string
 
 	endpoint *atomic.Value
@@ -111,8 +120,8 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	catalog := models.Default()
-	modelService := models.NewService(catalog, opts.Registry, store)
+	modelService := models.NewService(opts.Registry, store)
+	harnessUpdates := providers.NewHarnessUpdater(providers.HarnessUpdaterOptions{})
 
 	// The tool inbox, the steering queue, and the address/path agents use.
 	box := toolbox.New()
@@ -161,30 +170,80 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	disp := transport.NewDispatcher(transport.DispatcherDeps{
-		Engine:       eng,
-		Runner:       runner,
-		Orchestrator: orch,
-		Ledger:       ledger,
-		Logs:         logs,
-		Roles:        opts.Roles,
-		Registry:     opts.Registry,
-		Settings:     store,
-		Models:       modelService,
-		Steering:     steerBox,
-		Audit:        actions.Func(),
-		Updater:      updater,
-		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
-		Relay:        relay,
+	// WhatsApp updates are off until the user connects. The bridge follows the
+	// engine so turn results, failures, and questions reach the linked device.
+	adapter := opts.RemoteAdapter
+	if adapter == nil {
+		adapter = remote.NewDefaultAdapter(opts.StateDir)
+	}
+	var disp *transport.Dispatcher
+	// The chat control router needs the dispatcher, and the bridge (which the
+	// dispatcher needs) needs the router. Both are closures over this variable.
+	var router *transport.ControlRouter
+	bridge, err := remote.New(remote.Options{
+		StateDir: opts.StateDir,
+		Engine:   eng,
+		Adapter:  adapter,
+		Control: func(ctx context.Context, text string) string {
+			if router == nil {
+				return ""
+			}
+			return router.Handle(ctx, text)
+		},
+		OnChange: func() {
+			if disp != nil {
+				disp.BroadcastRemoteStatus()
+			}
+		},
+		Logf: func(format string, args ...any) {
+			actions.Log("whatsapp", map[string]any{"message": fmt.Sprintf(format, args...)})
+		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp bridge: %w", err)
+	}
+
+	disp = transport.NewDispatcher(transport.DispatcherDeps{
+		Engine:         eng,
+		Runner:         runner,
+		Orchestrator:   orch,
+		Ledger:         ledger,
+		Logs:           logs,
+		Roles:          opts.Roles,
+		Registry:       opts.Registry,
+		Settings:       store,
+		Models:         modelService,
+		Steering:       steerBox,
+		Audit:          actions.Func(),
+		Updater:        updater,
+		HarnessUpdates: harnessUpdates,
+		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
+		Relay:          relay,
+		BaseCtx:        ctx,
+		Shutdown:       opts.OnShutdown,
+		Remote:         bridge,
+	})
+	// Inbound WhatsApp control routes through the daemon's own RPC surface, with
+	// a fixed whitelist; see transport.ControlRouter.
+	router = transport.NewControlRouter(disp)
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
 		return nil, fmt.Errorf("close stale questions: %w", err)
 	}
 
 	srv := transport.NewServer(disp, eng, runner, opts.Token, box)
+	// Status changes are pushed to every client, so a QR that appears after the
+	// connect reply still reaches the window that asked for it.
+	disp.SetRemoteNotifier(func(st transport.RemoteStatus) {
+		srv.NotifyAll("remote.status.changed", st)
+	})
 	relay.Bind(srv)
 	relay.Start(ctx)
+	bridge.Start(ctx)
+	// RPC calls broadcast the transitions they cause, but the relay also
+	// connects and drops on its own. Follow those moves so the phone row is
+	// never stale.
+	go followRelayTransitions(ctx, relay, disp)
 
 	return &Daemon{
 		Engine:   eng,
@@ -196,6 +255,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Settings: store,
 		Actions:  actions,
 		Relay:    relay,
+		Remote:   bridge,
 		Token:    opts.Token,
 		endpoint: &endpoint,
 	}, nil
@@ -208,8 +268,27 @@ func (d *Daemon) SetEndpoint(url string) {
 	}
 }
 
+// followRelayTransitions broadcasts the Remote section whenever the relay
+// socket connects or drops in the background. It waits on the client's change
+// signals rather than polling, and exits with ctx.
+func followRelayTransitions(ctx context.Context, relay *relayclient.Client, disp *transport.Dispatcher) {
+	for {
+		if err := relay.WaitConnected(ctx); err != nil {
+			return
+		}
+		disp.BroadcastRemoteStatus()
+		if err := relay.WaitDisconnected(ctx); err != nil {
+			return
+		}
+		disp.BroadcastRemoteStatus()
+	}
+}
+
 // Close stops the engine and flushes the action log.
 func (d *Daemon) Close() {
+	if d.Remote != nil {
+		d.Remote.Close()
+	}
 	if d.Relay != nil {
 		d.Relay.Close()
 	}
@@ -233,7 +312,12 @@ func EnrichPATH() {
 		filepath.Join(home, ".local", "bin"),
 		filepath.Join(home, ".opencode", "bin"),
 		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, ".local", "share", "vite-plus", "bin"),
+		filepath.Join(home, ".local", "share", "pnpm"),
+		filepath.Join(home, "Library", "pnpm"),
 		filepath.Join(home, "go", "bin"),
+		// vite-plus installs Command Code (commandcode, cmd) here.
+		filepath.Join(home, ".local", "share", "vite-plus", "bin"),
 	}
 
 	parts := filepath.SplitList(os.Getenv("PATH"))

@@ -53,7 +53,7 @@ func (r *Runner) Btw(ctx context.Context, threadID contracts.ThreadID, question 
 	if !ok {
 		return "", errors.New("orchestrator role is missing")
 	}
-	harness, model, variant := r.roleRuntime(role)
+	harness, model, variant := r.roleRuntimeFor(ctx, threadID, role)
 	if !r.harnessAllowed(harness) {
 		return "", fmt.Errorf("harness %s is disabled", harness)
 	}

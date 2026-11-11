@@ -24,15 +24,21 @@ printf '{"usage":{"input_tokens":3,"output_tokens":2}}\n'`
 
 func newTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
+	return newTestDaemonWith(t, Options{})
+}
+
+// newTestDaemonWith assembles a daemon for tests that need to override an
+// option (e.g. the WhatsApp adapter) while sharing the scripted harness.
+func newTestDaemonWith(t *testing.T, opts Options) *Daemon {
+	t.Helper()
 	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", func(providers.SessionSpec) (providers.CommandSpec, error) {
 		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", e2eScript}, PromptVia: "stdin"}, nil
 	}, providers.JSONLineTranslator{})
-	d, err := New(context.Background(), Options{
-		StateDir: t.TempDir(),
-		Token:    "secret",
-		Registry: providers.NewRegistry(driver),
-		Config:   orchestrator.Config{MaxPasses: 2, MaxConcurrency: 2},
-	})
+	opts.StateDir = t.TempDir()
+	opts.Token = "secret"
+	opts.Registry = providers.NewRegistry(driver)
+	opts.Config = orchestrator.Config{MaxPasses: 2, MaxConcurrency: 2}
+	d, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("daemon: %v", err)
 	}
@@ -196,27 +202,40 @@ func TestDaemonStreamsThreadEvents(t *testing.T) {
 		_ = c.Write(context.Background(), websocket.MessageText, data)
 	}()
 
+	// The turn reply arrives only after the turn settles. Returning on the
+	// dispatch event alone would race the agents still writing logs under the
+	// TempDir state dir, and the TempDir cleanup would fail.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sawDispatch := false
-	for !sawDispatch {
+	for {
 		_, msg, err := c.Read(ctx)
 		if err != nil {
-			t.Fatalf("read: %v", err)
+			t.Fatalf("read: %v (sawDispatch=%v)", err, sawDispatch)
 		}
 		var resp transport.Response
 		if err := json.Unmarshal(msg, &resp); err != nil {
 			continue
 		}
-		if resp.Method != "thread.event" {
+		if resp.Method == "thread.event" {
+			var ev struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal(mustJSON(t, resp.Params), &ev)
+			if ev.Type == string(contracts.EvtTaskDispatched) {
+				sawDispatch = true
+			}
 			continue
 		}
-		var ev struct {
-			Type string `json:"type"`
+		if resp.ID != turn.ID {
+			continue
 		}
-		json.Unmarshal(mustJSON(t, resp.Params), &ev)
-		if ev.Type == string(contracts.EvtTaskDispatched) {
-			sawDispatch = true
+		if resp.Error != nil {
+			t.Fatalf("turn failed: %s", resp.Error.Message)
 		}
+		break
+	}
+	if !sawDispatch {
+		t.Fatal("no task-dispatched event streamed")
 	}
 }

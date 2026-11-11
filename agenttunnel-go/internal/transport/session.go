@@ -11,8 +11,22 @@ import (
 // phone could mint a pairing code and enroll a stranger's device.
 const relayMethodPrefix = "relay."
 
+// remoteMethodPrefix names the RPCs that pair another messaging surface. A
+// relayed phone must not reach these either: a lost phone could redirect the
+// user's workflow updates to a stranger's WhatsApp account.
+const remoteMethodPrefix = "remote.whatsapp."
+
 // codeRelayRestricted is the JSON-RPC error code for a refused relayed call.
 const codeRelayRestricted = -32003
+
+// relayedSessionKey marks a context whose frames arrived through a relayed
+// phone rather than a local socket. Only NewSession sets it.
+type relayedSessionKey struct{}
+
+func isRelayedSession(ctx context.Context) bool {
+	v, _ := ctx.Value(relayedSessionKey{}).(bool)
+	return v
+}
 
 // Session is a virtual JSON-RPC client with no socket of its own. The relay
 // client holds one per phone: frames the phone sends arrive through Handle,
@@ -28,15 +42,18 @@ type Session struct {
 // from the dispatcher's goroutines and must not block for long.
 func (s *Server) NewSession(sink func(Response)) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, relayedSessionKey{}, true)
 	c := &conn{sink: sink, engine: s.engine, disp: s.disp, srv: s}
 	return &Session{c: c, ctx: ctx, cancel: cancel}
 }
 
-// Handle processes one client->server JSON-RPC frame. relay.* methods are
-// refused here, synchronously, before any dispatch.
+// Handle processes one client->server JSON-RPC frame. Relay configuration and
+// messaging-surface pairing are refused here, synchronously, before any
+// dispatch.
 func (s *Session) Handle(data []byte) {
 	var req Request
-	if err := json.Unmarshal(data, &req); err == nil && strings.HasPrefix(req.Method, relayMethodPrefix) {
+	if err := json.Unmarshal(data, &req); err == nil &&
+		(strings.HasPrefix(req.Method, relayMethodPrefix) || strings.HasPrefix(req.Method, remoteMethodPrefix)) {
 		s.c.send(Response{ID: req.ID, Error: &RPCError{
 			Code:    codeRelayRestricted,
 			Message: req.Method + " is not available over a relayed connection; use the desktop app",
