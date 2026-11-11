@@ -40,7 +40,7 @@ func TestPromptsAssignGitToLead(t *testing.T) {
 	}
 	custom := contracts.Role{ID: "auditor", SystemPrompt: "You audit."}
 	for _, role := range []contracts.Role{custom, mustRole(t, roles, contracts.RoleExecutor)} {
-		prompt := BuildSubagentPrompt(role, "task", "", "", "", false, nil)
+		prompt := BuildSubagentPrompt(role, "task", "", "", "", false, nil, nil)
 		if !strings.Contains(prompt, "Do not run state-changing git") || !strings.Contains(prompt, "the lead commits your work") {
 			t.Fatalf("subagent prompt for %s should forbid state-changing git:\n%s", role.ID, prompt)
 		}

@@ -583,6 +583,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Team:           teamBrief(t.leads, i, peerMailbox),
 		Pass:           pass,
 		Steering:       steering,
+		Steer:          hasSubagents(state),
 		RuntimeChoices: runtimeChoices,
 	})
 
