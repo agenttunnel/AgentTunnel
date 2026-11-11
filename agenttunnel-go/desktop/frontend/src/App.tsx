@@ -191,7 +191,7 @@ function threadSearchScore(t: ThreadSummary, query: string): number | null {
 export type Project = { id: string; name: string; path: string; threads: number };
 
 /** The top-level pages shown when no project is open. */
-type HomePage = "projects" | "orchestrator";
+type HomePage = "projects" | "orchestrator" | "stats";
 
 /** The environment's cross-project memory: guide, learnings log, rules. */
 type InheritedView = {
@@ -2589,6 +2589,26 @@ export default function App() {
         </svg>
         Orchestrator
       </div>
+      <div
+        className={`ptab pt-home${homeTabOn("stats") ? " on" : ""}`}
+        {...tabProps(homeTabOn("stats"), () => showHome("stats"))}
+        title="Harness stats across all projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+        </svg>
+        Stats
+      </div>
       <div className="pt-scroll" role="tablist" aria-label="Open projects">
         {openProjects.map((p) => {
           const busy = runningByProject[p.id] ?? 0;
@@ -2760,6 +2780,27 @@ export default function App() {
     </div>
   );
 
+  // Stats are their own page, not part of the projects grid.
+  if (!projectId && homePage === "stats") {
+    return (
+      <div className="screen">
+        {titlebar}
+        {projectTabs}
+        <div className="screen-body">
+          <div className="screen-head">
+            <div className="screen-title">
+              <h2>Stats</h2>
+              <p className="screen-sub">Across all projects</p>
+            </div>
+          </div>
+          <div className="section stats-section">
+            <HarnessStatsView rpc={rpcRef.current} threadId={null} projectId={null} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // The master orchestrator has its own page; it never shares the projects grid.
   if (!projectId && homePage === "orchestrator") {
     return (
@@ -2842,10 +2883,6 @@ export default function App() {
                 </button>
               </div>
             ))}
-          </div>
-          <div className="section stats-section">
-            <h3>Harnesses across all projects</h3>
-            <HarnessStatsView rpc={rpcRef.current} threadId={null} projectId={null} />
           </div>
         </div>
       </div>
