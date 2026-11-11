@@ -2635,6 +2635,21 @@ table.grid tr.rowlink:hover td {
   align-items: center;
   gap: 10px;
 }
+/* Prominent jump to the project's board: accent-outlined while the card list
+ * is showing, filled once the board is open. Avoids the small layout toggle. */
+.board-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--accent);
+  border-color: var(--accent-line);
+  font-weight: 600;
+}
+.board-link:not(.primary):hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-2);
+}
 .back {
   background: transparent;
   border-color: transparent;
