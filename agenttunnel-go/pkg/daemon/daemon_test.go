@@ -24,15 +24,21 @@ printf '{"usage":{"input_tokens":3,"output_tokens":2}}\n'`
 
 func newTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
+	return newTestDaemonWith(t, Options{})
+}
+
+// newTestDaemonWith assembles a daemon for tests that need to override an
+// option (e.g. the WhatsApp adapter) while sharing the scripted harness.
+func newTestDaemonWith(t *testing.T, opts Options) *Daemon {
+	t.Helper()
 	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", func(providers.SessionSpec) (providers.CommandSpec, error) {
 		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", e2eScript}, PromptVia: "stdin"}, nil
 	}, providers.JSONLineTranslator{})
-	d, err := New(context.Background(), Options{
-		StateDir: t.TempDir(),
-		Token:    "secret",
-		Registry: providers.NewRegistry(driver),
-		Config:   orchestrator.Config{MaxPasses: 2, MaxConcurrency: 2},
-	})
+	opts.StateDir = t.TempDir()
+	opts.Token = "secret"
+	opts.Registry = providers.NewRegistry(driver)
+	opts.Config = orchestrator.Config{MaxPasses: 2, MaxConcurrency: 2}
+	d, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("daemon: %v", err)
 	}

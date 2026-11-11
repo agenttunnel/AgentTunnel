@@ -3223,6 +3223,119 @@ button.danger-text {
   background: var(--err);
 }
 
+/* --- remote controls in the sidebar footer (phone tunnel + WhatsApp) ----- */
+.remote {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 4px 6px;
+}
+.remote-title {
+  margin: 2px 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.remote-item {
+  min-width: 0;
+}
+.remote-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  text-align: left;
+  min-width: 0;
+}
+.remote-row:hover:not(:disabled) {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--border-soft);
+}
+.remote-row .dot {
+  margin-top: 0;
+}
+.remote-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.remote-state {
+  font-size: 10.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.remote-state.connected {
+  color: var(--ok);
+}
+.remote-state.connecting,
+.remote-state.pairing {
+  color: var(--warn);
+}
+.remote-state.error {
+  color: var(--err);
+}
+.remote-pair {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px 8px 25px;
+}
+.remote-qr {
+  flex: none;
+  padding: 6px;
+  background: #fff;
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+.remote-code {
+  font-family: var(--mono);
+  font-size: 16px;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.remote-err {
+  margin: 2px 10px 4px;
+  font-size: 11px;
+}
+.remote-adv {
+  display: block;
+  margin: 0 10px 4px 25px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--faint);
+  font-size: 10.5px;
+  text-align: left;
+}
+.remote-adv:hover:not(:disabled) {
+  color: var(--muted);
+}
+.remote-adv-panel {
+  padding: 2px 10px 10px 25px;
+  min-width: 0;
+}
+.remote-adv-panel .field {
+  margin: 6px 0 8px;
+}
+.remote-adv-panel .relay-device {
+  grid-template-columns: 1fr auto;
+  row-gap: 2px;
+}
+.remote-adv-panel .relay-device .rd {
+  grid-column: 1 / -1;
+}
+
 /* --- overlays / sheets -------------------------------------------------- */
 .overlay {
   position: fixed;

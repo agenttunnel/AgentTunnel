@@ -48,7 +48,7 @@ import { PRPanel, type PRListing } from "./components/PRPanel";
 import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
-import { RelayPairing } from "./components/RelayPairing";
+import { RemoteSection } from "./components/RemoteSection";
 import { TunnelButton } from "./components/TunnelButton";
 import { Markdown } from "./components/Markdown";
 import { QuestionCard } from "./components/QuestionCard";
@@ -3008,6 +3008,7 @@ export default function App() {
         </div>
         <div className="sidebar-foot">
           <LimitsMeter rpc={rpcRef.current} />
+          <RemoteSection rpc={rpcRef.current} />
           <button className="foot-btn" onClick={openSettings}>
             <svg
               viewBox="0 0 24 24"
@@ -4096,11 +4097,6 @@ export default function App() {
                     Save environment
                   </button>
                 </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Phones</h4>
-                <RelayPairing rpc={rpcRef.current} />
               </section>
 
               <section className="set-section">
