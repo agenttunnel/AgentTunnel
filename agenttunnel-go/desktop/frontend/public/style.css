@@ -2844,6 +2844,12 @@ table.grid tr.rowlink:hover td {
   width: 220px;
   flex: none;
 }
+.sidebar-search {
+  padding: 8px 10px 4px;
+}
+.sidebar-search .thread-filter {
+  width: 100%;
+}
 .thread-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

@@ -58,6 +58,7 @@ import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
 import { arrangeThreads } from "./lib/threads";
+import { fuzzyScore } from "./lib/fuzzy";
 import {
   buildCommands,
   matchCommands,
@@ -153,6 +154,8 @@ type ThreadSummary = {
   id: string;
   title: string;
   projectId?: string;
+  /** The first human message, truncated by the daemon for list search. */
+  firstPrompt?: string;
   /** Set on a subthread: the thread that started it. */
   parentThreadId?: string;
   updatedAt?: string;
@@ -165,6 +168,17 @@ type ThreadSummary = {
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
 };
+
+// A prompt hit must be stronger than a title hit to win, so a thread whose
+// title matches leads a thread that only mentions the query in its prompt.
+const PROMPT_WEIGHT = 0.7;
+
+function threadSearchScore(t: ThreadSummary, query: string): number | null {
+  const title = fuzzyScore(query, t.title);
+  const prompt = t.firstPrompt ? fuzzyScore(query, t.firstPrompt) : null;
+  if (title === null && prompt === null) return null;
+  return Math.max(title ?? -Infinity, (prompt ?? -Infinity) * PROMPT_WEIGHT);
+}
 type Project = { id: string; name: string; path: string; threads: number };
 
 /** The environment's cross-project memory: guide, learnings log, rules. */
@@ -1630,17 +1644,19 @@ export default function App() {
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
-  const needle = threadFilter.trim().toLowerCase();
-  const projectThreads = useMemo(
-    () =>
-      arrangeThreads(
-        threads.filter(
-          (t) =>
-            t.projectId === projectId && (needle === "" || t.title.toLowerCase().includes(needle)),
-        ),
-      ),
-    [threads, projectId, needle],
-  );
+  const query = threadFilter.trim();
+  const projectThreads = useMemo(() => {
+    const scoped = threads.filter((t) => t.projectId === projectId);
+    if (query === "") return arrangeThreads(scoped);
+    const ranked: { thread: ThreadSummary; score: number }[] = [];
+    for (const thread of scoped) {
+      const score = threadSearchScore(thread, query);
+      if (score !== null) ranked.push({ thread, score });
+    }
+    // Array.sort is stable, so equal scores keep the daemon's recency order.
+    ranked.sort((a, b) => b.score - a.score);
+    return arrangeThreads(ranked.map((r) => r.thread));
+  }, [threads, projectId, query]);
 
   // The board is an alternative to the card list, not a replacement: the choice
   // is remembered, and both views read the same thread list.
@@ -2666,7 +2682,7 @@ export default function App() {
             <div className="screen-actions">
               <input
                 className="thread-filter"
-                placeholder="Filter threads…"
+                placeholder="Search threads…"
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
@@ -2713,7 +2729,7 @@ export default function App() {
               />
             </div>
           )}
-          {threadView === "list" && projectThreads.length === 0 && needle && (
+          {threadView === "list" && projectThreads.length === 0 && query !== "" && (
             <div className="empty">No threads match that filter.</div>
           )}
           {threadView === "board" ? (
@@ -2794,8 +2810,20 @@ export default function App() {
           />
           <button onClick={newThread}>New</button>
         </div>
+        <div className="sidebar-search">
+          <input
+            className="thread-filter"
+            placeholder="Search threads…"
+            value={threadFilter}
+            onChange={(e) => setThreadFilter(e.target.value)}
+          />
+        </div>
         <div className="col-body">
-          {projectThreads.length === 0 && <div className="empty">No threads yet</div>}
+          {projectThreads.length === 0 && (
+            <div className="empty">
+              {query !== "" ? "No threads match that search." : "No threads yet"}
+            </div>
+          )}
           {projectThreads.map((t) => (
             <div
               key={t.id}

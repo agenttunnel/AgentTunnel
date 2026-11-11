@@ -243,15 +243,42 @@ func threadStates(
 	return out
 }
 
+// maxSummaryPromptRunes bounds the searchable prompt in the thread list: the
+// openers are short, and the list is shipped whole on every recency change.
+const maxSummaryPromptRunes = 200
+
+// firstUserPrompt returns the thread's first human message, truncated to the
+// list-search budget. Threads started only by agents have none.
+func firstUserPrompt(st *domain.ThreadState) string {
+	for _, m := range st.Messages {
+		if m.Author != "user" {
+			continue
+		}
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		r := []rune(text)
+		if len(r) > maxSummaryPromptRunes {
+			return string(r[:maxSummaryPromptRunes])
+		}
+		return text
+	}
+	return ""
+}
+
 // ThreadSummary is the list-row projection of a thread.
 type ThreadSummary struct {
 	ID        contracts.ThreadID `json:"id"`
 	Title     string             `json:"title"`
 	ProjectID string             `json:"projectId,omitempty"`
-	UpdatedAt time.Time          `json:"updatedAt"`
-	Messages  int                `json:"messages"`
-	Agents    int                `json:"agents"`
-	AutoMode  bool               `json:"autoMode"`
+	// FirstPrompt is the first human message, truncated so list search can
+	// match against what the thread was actually asked to do.
+	FirstPrompt string    `json:"firstPrompt,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Messages    int       `json:"messages"`
+	Agents      int       `json:"agents"`
+	AutoMode    bool      `json:"autoMode"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
 	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
@@ -581,7 +608,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
-				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
+				FirstPrompt: firstUserPrompt(st),
+				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
 				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
