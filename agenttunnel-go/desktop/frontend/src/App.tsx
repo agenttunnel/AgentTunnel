@@ -49,6 +49,7 @@ import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RelayPairing } from "./components/RelayPairing";
+import { TunnelButton } from "./components/TunnelButton";
 import { Markdown } from "./components/Markdown";
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
@@ -259,6 +260,9 @@ function loadThreadView(): ThreadView {
 
 /** How often the board re-reads PR state while it is open. */
 const THREAD_PR_POLL_MS = 20_000;
+/** How often a connected app asks for a newer release. At this rate a client
+ * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
+const UPDATE_CHECK_MS = 5 * 60_000;
 /** Playful verbs for the setup view's Start button. */
 const START_VERBS = [
   "Brewing",
@@ -628,6 +632,21 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  // A check keeps the "restart to run" state after an install; the daemon's
+  // plain check result does not know about it.
+  const checkForUpdate = useCallback(() => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    rpc
+      .call<UpdateStatus>("update.check")
+      .then((s) => setUpdate((prev) => (prev?.installed ? prev : s)))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (status !== "online") return;
+    const id = window.setInterval(checkForUpdate, UPDATE_CHECK_MS);
+    return () => window.clearInterval(id);
+  }, [status, checkForUpdate]);
 
   // Threads with a turn, council, or review in flight. Keyed by thread so a turn
   // running in one thread never gates or steers another.
@@ -1271,7 +1290,7 @@ export default function App() {
       rpcRef.current = rpc;
       setStatus("online");
       // Not awaited: a slow GitHub lookup must not hold up startup.
-      rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
+      checkForUpdate();
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -2386,6 +2405,7 @@ export default function App() {
           {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
         </span>
       </div>
+      <TunnelButton rpc={rpcRef.current} />
       <UpdateChip
         status={update}
         busy={updateBusy}
