@@ -64,7 +64,7 @@ func TestCloudAdapterVerifiesThenSends(t *testing.T) {
 	})
 
 	var detail string
-	if err := adapter.Connect(context.Background(), func(string) {}, func(d string) { detail = d }); err != nil {
+	if err := adapter.Connect(context.Background(), func(string) {}, func(d string) { detail = d }, func(error) {}); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	if !strings.Contains(detail, "+1 555 0100") || !strings.Contains(detail, "AgentTunnel") {
@@ -110,7 +110,7 @@ func TestCloudAdapterSurfacesAPIErrors(t *testing.T) {
 	adapter := NewCloudAdapter(CloudConfig{
 		BaseURL: srv.URL, PhoneNumberID: "123", AccessToken: "bad", Recipient: "15551234567",
 	})
-	err := adapter.Connect(context.Background(), func(string) {}, func(string) {})
+	err := adapter.Connect(context.Background(), func(string) {}, func(string) {}, func(error) {})
 	if err == nil || !strings.Contains(err.Error(), "Invalid OAuth access token") {
 		t.Fatalf("connect error = %v, want the API message", err)
 	}
@@ -118,7 +118,7 @@ func TestCloudAdapterSurfacesAPIErrors(t *testing.T) {
 
 func TestCloudAdapterRequiresConfiguration(t *testing.T) {
 	adapter := NewCloudAdapter(CloudConfig{})
-	if err := adapter.Connect(context.Background(), func(string) {}, func(string) {}); err == nil {
+	if err := adapter.Connect(context.Background(), func(string) {}, func(string) {}, func(error) {}); err == nil {
 		t.Fatal("connect without credentials must fail")
 	}
 	if err := adapter.Send(context.Background(), "hi"); err == nil {

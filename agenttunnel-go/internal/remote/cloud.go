@@ -31,10 +31,9 @@ type CloudConfig struct {
 	PairingCode string
 }
 
-// CloudAdapter sends workflow updates through the WhatsApp Cloud API. It is the
-// shipped adapter because linked-device QR pairing needs the WhatsApp web
-// protocol, a large dependency this daemon deliberately does not carry. The
-// Adapter seam is where such a client would drop in.
+// CloudAdapter sends workflow updates through the WhatsApp Cloud API. It is a
+// fallback for deployments that already run a Business number; a normal install
+// links the daemon as a companion device instead (see linked.go).
 type CloudAdapter struct {
 	cfg    CloudConfig
 	client *http.Client
@@ -54,11 +53,11 @@ func NewCloudAdapter(cfg CloudConfig) *CloudAdapter {
 	}
 }
 
-// NewDefaultAdapter returns the adapter this build ships, configured from the
-// AT_WHATSAPP_* environment variables. It returns nil when the credentials are
-// absent, so the section reports WhatsApp as unavailable instead of offering a
-// connect that can only fail.
-func NewDefaultAdapter() Adapter {
+// NewDefaultAdapter returns the adapter this build ships. With the
+// AT_WHATSAPP_* Cloud API credentials set it uses that fallback; otherwise it
+// links the daemon as a WhatsApp companion device, which needs no configuration
+// beyond the state directory the session lives in.
+func NewDefaultAdapter(stateDir string) Adapter {
 	cfg := CloudConfig{
 		BaseURL:       os.Getenv("AT_WHATSAPP_GRAPH_URL"),
 		PhoneNumberID: os.Getenv("AT_WHATSAPP_PHONE_NUMBER_ID"),
@@ -66,16 +65,17 @@ func NewDefaultAdapter() Adapter {
 		Recipient:     os.Getenv("AT_WHATSAPP_TO"),
 		PairingCode:   os.Getenv("AT_WHATSAPP_PAIRING_CODE"),
 	}
-	if cfg.AccessToken == "" || cfg.PhoneNumberID == "" || cfg.Recipient == "" {
-		return nil
+	if cfg.AccessToken != "" && cfg.PhoneNumberID != "" && cfg.Recipient != "" {
+		return NewCloudAdapter(cfg)
 	}
-	return NewCloudAdapter(cfg)
+	return NewLinkedAdapter(stateDir)
 }
 
 // Connect verifies the configured number with the Graph API and registers its
 // PIN when one is configured. The Cloud API has no QR: the phone number is the
-// device, and onLinked names it once the credentials check out.
-func (a *CloudAdapter) Connect(ctx context.Context, _ func(qr string), onLinked func(detail string)) error {
+// device, and onLinked names it once the credentials check out. It has no
+// asynchronous failures, so onError is unused.
+func (a *CloudAdapter) Connect(ctx context.Context, _ func(qr string), onLinked func(detail string), _ func(error)) error {
 	if a.cfg.AccessToken == "" || a.cfg.PhoneNumberID == "" || a.cfg.Recipient == "" {
 		return errors.New("WhatsApp is not configured: set AT_WHATSAPP_TOKEN, AT_WHATSAPP_PHONE_NUMBER_ID, and AT_WHATSAPP_TO")
 	}

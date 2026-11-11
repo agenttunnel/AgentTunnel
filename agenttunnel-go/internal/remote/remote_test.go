@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,25 +22,29 @@ type fakeAdapter struct {
 	connects    int
 	disconnects int
 	sent        []string
-	connectHook func(onQR func(string), onLinked func(string)) error
+	connectHook func(onQR func(string), onLinked func(string), onError func(error)) error
 	connectCh   chan string
 	sentCh      chan string
 }
 
-func (f *fakeAdapter) Connect(_ context.Context, onQR, onLinked func(string)) error {
+func (f *fakeAdapter) Connect(_ context.Context, onQR, onLinked func(string), onError func(error)) error {
 	f.mu.Lock()
 	f.connects++
 	hook := f.connectHook
 	connectCh := f.connectCh
 	f.mu.Unlock()
+	var err error
+	if hook != nil {
+		err = hook(onQR, onLinked, onError)
+	} else {
+		onLinked("fake device")
+	}
+	// Signal only after the callbacks have run: await(connectCh) then means the
+	// bridge has persisted its state, not merely entered Connect.
 	if connectCh != nil {
 		connectCh <- "connect"
 	}
-	if hook != nil {
-		return hook(onQR, onLinked)
-	}
-	onLinked("fake device")
-	return nil
+	return err
 }
 
 func (f *fakeAdapter) Disconnect() error {
@@ -128,7 +133,7 @@ func TestBridgePairsByQR(t *testing.T) {
 	ctx := context.Background()
 	changes := make(chan struct{}, 8)
 	var link func(string)
-	adapter := &fakeAdapter{connectHook: func(onQR func(string), onLinked func(string)) error {
+	adapter := &fakeAdapter{connectHook: func(onQR func(string), onLinked func(string), _ func(error)) error {
 		onQR("2@qr-payload")
 		link = onLinked
 		return nil
@@ -299,7 +304,7 @@ func TestBridgeEnqueueNeverBlocks(t *testing.T) {
 func TestBridgeIgnoresStaleAdapterCallbacks(t *testing.T) {
 	ctx := context.Background()
 	var qr, link func(string)
-	adapter := &fakeAdapter{connectHook: func(onQR func(string), onLinked func(string)) error {
+	adapter := &fakeAdapter{connectHook: func(onQR func(string), onLinked func(string), _ func(error)) error {
 		qr, link = onQR, onLinked
 		return nil
 	}}
@@ -317,6 +322,138 @@ func TestBridgeIgnoresStaleAdapterCallbacks(t *testing.T) {
 	link("stale link")
 	if got := b.Status(); got.State != string(StateOff) || got.QR != "" {
 		t.Fatalf("stale callback changed status: %+v", got)
+	}
+}
+
+// An adapter that fails after linking (the phone unlinked this device, or the
+// QR expired) must move the row to error, clear the QR, notify listeners, and
+// leave a later Connect free to start over.
+func TestBridgeAdapterAsyncErrorBecomesAnErrorRow(t *testing.T) {
+	var fail func(error)
+	changes := make(chan struct{}, 8)
+	adapter := &fakeAdapter{connectHook: func(_ func(string), onLinked func(string), onError func(error)) error {
+		fail = onError
+		onLinked("fake device")
+		return nil
+	}}
+	b := newBridge(t, t.TempDir(), adapter, func() { changes <- struct{}{} })
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if got := b.Status().State; got != string(StateConnected) {
+		t.Fatalf("state after connect = %q, want connected", got)
+	}
+	for len(changes) > 0 {
+		<-changes
+	}
+
+	boom := errors.New("the device was unlinked from the phone; pair it again")
+	fail(boom)
+	got := b.Status()
+	if got.State != string(StateError) || got.Detail != boom.Error() || got.QR != "" {
+		t.Fatalf("status after async error = %+v, want error with the message and no QR", got)
+	}
+	await(t, changes, "the error state to reach listeners")
+
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	adapter.mu.Lock()
+	connects := adapter.connects
+	adapter.mu.Unlock()
+	if connects != 2 {
+		t.Fatalf("adapter connects = %d, want a new attempt after the error", connects)
+	}
+}
+
+// A second Connect while pairing is already in flight must not start another
+// link attempt.
+func TestBridgeSecondConnectWhilePairingStartsOneLinker(t *testing.T) {
+	adapter := &fakeAdapter{connectHook: func(onQR func(string), _ func(string), _ func(error)) error {
+		onQR("2@qr")
+		return nil
+	}}
+	b := newBridge(t, t.TempDir(), adapter, nil)
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if got := b.Status().State; got != string(StatePairing) {
+		t.Fatalf("state = %q, want pairing", got)
+	}
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("second connect: %v", err)
+	}
+	adapter.mu.Lock()
+	connects := adapter.connects
+	adapter.mu.Unlock()
+	if connects != 1 {
+		t.Fatalf("adapter connects = %d, want 1", connects)
+	}
+}
+
+// A failed connect keeps the enabled choice: the user asked for updates, so the
+// next daemon start retries instead of silently forgetting it.
+func TestBridgeFailedConnectKeepsUpdatesEnabled(t *testing.T) {
+	dir := t.TempDir()
+	boom := errors.New("pairing refused")
+	failing := &fakeAdapter{connectHook: func(func(string), func(string), func(error)) error { return boom }}
+	b := newBridge(t, dir, failing, nil)
+	if err := b.Connect(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("connect = %v, want the adapter error", err)
+	}
+	if got := b.Status().State; got != string(StateError) {
+		t.Fatalf("state = %q, want error", got)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "whatsapp.json"))
+	if err != nil {
+		t.Fatalf("state file: %v", err)
+	}
+	var stored storedState
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if !stored.Enabled {
+		t.Fatalf("a failed connect must keep enabled=true, got %s", data)
+	}
+
+	retry := &fakeAdapter{connectCh: make(chan string, 1)}
+	b2 := newBridge(t, dir, retry, nil)
+	b2.Start(context.Background())
+	await(t, retry.connectCh, "the saved device to retry")
+	if got := b2.Status().State; got != string(StateConnected) {
+		t.Fatalf("state after restart = %q, want connected", got)
+	}
+}
+
+// closeOnlyAdapter is an adapter whose shutdown path stops the socket rather
+// than unlinking the device, like the linked-device adapter.
+type closeOnlyAdapter struct {
+	fakeAdapter
+	closes int
+}
+
+func (a *closeOnlyAdapter) Close() {
+	a.mu.Lock()
+	a.closes++
+	a.mu.Unlock()
+}
+
+// Closing the bridge must not unlink a device: the saved session is what makes
+// the next daemon start reconnect.
+func TestBridgeCloseStopsWithoutUnlinking(t *testing.T) {
+	adapter := &closeOnlyAdapter{}
+	b := newBridge(t, t.TempDir(), adapter, nil)
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	b.Close()
+
+	adapter.mu.Lock()
+	disconnects, closes := adapter.disconnects, adapter.closes
+	adapter.mu.Unlock()
+	if closes != 1 || disconnects != 0 {
+		t.Fatalf("bridge close = closes %d, disconnects %d; want 1 and 0", closes, disconnects)
 	}
 }
 

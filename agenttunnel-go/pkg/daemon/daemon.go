@@ -40,6 +40,9 @@ type Options struct {
 	// Version is the release version embedded at link time. Empty or "dev"
 	// disables self-update.
 	Version string
+	// RemoteAdapter overrides the shipped WhatsApp adapter. Tests use a fake so
+	// they never touch WhatsApp; nil uses NewDefaultAdapter.
+	RemoteAdapter remote.Adapter
 }
 
 // Daemon is the fully assembled AgentTunnel server: engine, orchestrator, usage,
@@ -164,11 +167,15 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 
 	// WhatsApp updates are off until the user connects. The bridge follows the
 	// engine so turn results, failures, and questions reach the linked device.
+	adapter := opts.RemoteAdapter
+	if adapter == nil {
+		adapter = remote.NewDefaultAdapter(opts.StateDir)
+	}
 	var disp *transport.Dispatcher
 	bridge, err := remote.New(remote.Options{
 		StateDir: opts.StateDir,
 		Engine:   eng,
-		Adapter:  remote.NewDefaultAdapter(),
+		Adapter:  adapter,
 		OnChange: func() {
 			if disp != nil {
 				disp.BroadcastRemoteStatus()

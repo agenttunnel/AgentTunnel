@@ -3,9 +3,11 @@
 // a bridge pairs a device, persists that choice under StateDir, and forwards
 // turn results, agent failures, and questions from the engine event stream.
 //
-// The WhatsApp client itself sits behind Adapter: the shipped adapter talks to
-// the WhatsApp Cloud API (see cloud.go), and a linked-device client can replace
-// it without touching the bridge, its persistence, or the RPC surface.
+// The WhatsApp client itself sits behind Adapter: the shipped adapter links
+// this daemon as a WhatsApp companion device (see linked.go), and the Cloud API
+// adapter (see cloud.go) remains for deployments that already run a Business
+// number. Either way the bridge, its persistence, and the RPC surface are
+// unchanged.
 package remote
 
 import (
@@ -39,11 +41,20 @@ const (
 // calls onQR with a linked-device QR to display (possibly never, for adapters
 // that pair another way) and onLinked once messages can be sent. Connect may
 // return before linking finishes, in which case the callbacks report progress.
-// Send delivers one text message; Disconnect unlinks the device.
+// An adapter that fails later (an expired QR, or the phone unlinking this
+// device) reports it through onError so the item stops claiming to be paired or
+// connected. Send delivers one text message; Disconnect unlinks the device.
 type Adapter interface {
-	Connect(ctx context.Context, onQR func(qr string), onLinked func(detail string)) error
+	Connect(ctx context.Context, onQR func(qr string), onLinked func(detail string), onError func(error)) error
 	Disconnect() error
 	Send(ctx context.Context, text string) error
+}
+
+// adapterCloser is an Adapter that can stop its socket without unlinking the
+// device. The bridge calls it when the daemon shuts down, so a linked session
+// survives a restart; the user's Disconnect still unlinks.
+type adapterCloser interface {
+	Close()
 }
 
 // Options configure a bridge.
@@ -154,7 +165,11 @@ func (b *Bridge) Close() {
 		unsub()
 	}
 	if b.opts.Adapter != nil {
-		_ = b.opts.Adapter.Disconnect()
+		if closer, ok := b.opts.Adapter.(adapterCloser); ok {
+			closer.Close()
+		} else {
+			_ = b.opts.Adapter.Disconnect()
+		}
 	}
 }
 
@@ -220,6 +235,7 @@ func (b *Bridge) Connect(ctx context.Context) error {
 	err := b.opts.Adapter.Connect(ctx,
 		func(qr string) { b.paired(gen, qr) },
 		func(detail string) { b.linked(gen, detail) },
+		func(err error) { b.failed(gen, err) },
 	)
 	if err != nil {
 		b.failed(gen, err)
@@ -455,9 +471,9 @@ func (b *Bridge) persist(st storedState) {
 	}
 }
 
-// unavailableDetail explains an unconfigured build. The row stays off and the
-// UI must not present it as a toggle that can work.
-const unavailableDetail = "Not configured: set AT_WHATSAPP_TOKEN, AT_WHATSAPP_PHONE_NUMBER_ID, and AT_WHATSAPP_TO"
+// unavailableDetail explains a build without an adapter. The row stays off and
+// the UI must not present it as a toggle that can work.
+const unavailableDetail = "Not configured: this build has no WhatsApp adapter"
 
 // updateMax bounds one WhatsApp message. A long turn summary stays readable and
 // fits comfortably in a single text message.
