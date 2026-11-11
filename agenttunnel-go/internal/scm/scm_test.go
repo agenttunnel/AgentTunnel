@@ -112,6 +112,25 @@ func TestFetchGitHubPendingChecksWithoutFailureStayPending(t *testing.T) {
 	}
 }
 
+func TestFetchGitHubMapsReviewDecision(t *testing.T) {
+	cases := map[string]string{
+		"APPROVED":          "approved",
+		"CHANGES_REQUESTED": "changes_requested",
+		"REVIEW_REQUIRED":   "review_required",
+		"":                  "none",
+	}
+	for decision, want := range cases {
+		pr := `{"number":3,"state":"OPEN","reviewDecision":"` + decision + `","statusCheckRollup":[]}`
+		req := githubRepo(map[string]reply{ghView: {stdout: pr}}).client().Fetch(context.Background(), "/r").Request
+		if req == nil {
+			t.Fatalf("reviewDecision %q: no request parsed", decision)
+		}
+		if req.Review != want {
+			t.Fatalf("reviewDecision %q: review = %q, want %q", decision, req.Review, want)
+		}
+	}
+}
+
 func TestFetchDegradesWhenCLIMissingOrLoggedOut(t *testing.T) {
 	cases := []struct {
 		name string

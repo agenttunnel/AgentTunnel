@@ -39,6 +39,8 @@ func TestLeadRuntimeOverridesOnlyTheNamedLead(t *testing.T) {
 	}
 
 	// A harness override without a model must not inherit the role's model.
+	// Lead 3 exists only on a three-lead team.
+	startLead(t, r, ctx, 3)
 	set(2, contracts.LeadRuntime{Harness: other})
 	if h, m, _ := r.leadRuntime(ctx, "t1", 2, role); h != other || m != "" {
 		t.Fatalf("lead 3 harness-only override = %s/%q, want %s/empty", h, m, other)

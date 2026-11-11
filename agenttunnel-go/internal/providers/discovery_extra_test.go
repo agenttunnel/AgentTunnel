@@ -71,7 +71,7 @@ func TestBuiltinRegistryProbesCommandCodeWithListModels(t *testing.T) {
 	if !ok {
 		t.Fatalf("command-code discoverer = %T, want *ChainDiscoverer", disc)
 	}
-	for i, want := range []string{"command-code", "cmd"} {
+	for i, want := range []string{"commandcode", "cmd"} {
 		if i >= len(chain.Discoverers) {
 			t.Fatalf("chain has %d discoverers, want at least %d", len(chain.Discoverers), i+1)
 		}

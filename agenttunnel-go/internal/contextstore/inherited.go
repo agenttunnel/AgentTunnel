@@ -13,6 +13,21 @@ const guideSeed = `# Inherited context
 
 Guidance shared by every project in this environment. Treat it as binding unless
 the current task overrides it.
+
+## Auto-mode model selection
+
+In auto mode, pick the harness and model for each task from the runtime choices
+you are given, not from this guide. Model lineups change; this list does not.
+
+- Quick lookups and small edits: the fastest, cheapest capable model.
+- Multi-file implementation: a capable general coding model.
+- Deep debugging or review: the strongest reasoning model offered.
+- Long-running refactors: a model and harness that keep a steady session.
+- Cheap bulk or read-only exploration: the lowest-cost model that can read and summarize.
+
+Where a harness offers model families (for example Haiku, Sonnet, Opus), choose
+the family that fits the row above. When a pick is confirmed to work well, or
+goes badly, record it in LOG.md with the task kind, harness, model, and outcome.
 `
 
 // InheritedContext is the global, cross-project memory. It lives outside any

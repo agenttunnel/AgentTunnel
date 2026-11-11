@@ -11,16 +11,28 @@ func setLeads(t *testing.T, s *ThreadState, n int) ([]contracts.EventPayload, er
 	return Decide(contracts.Command{Type: contracts.CmdLeadsSet, ThreadID: "t1", Leads: &n}, s)
 }
 
-func TestDecideLeadsSetBoundsTheTeam(t *testing.T) {
+func TestDecideLeadsSetRequiresAtLeastOneLead(t *testing.T) {
 	s := NewThreadState("t1")
 	s.Exists = true
-	for _, n := range []int{0, -1, contracts.MaxLeads + 1} {
+	for _, n := range []int{0, -1} {
 		if _, err := setLeads(t, s, n); err == nil {
 			t.Fatalf("leads=%d should be rejected", n)
 		}
 	}
 	if _, err := Decide(contracts.Command{Type: contracts.CmdLeadsSet, ThreadID: "t1"}, s); err == nil {
 		t.Fatal("a leads command without a count should be rejected")
+	}
+}
+
+func TestDecideLeadsSetAcceptsAnyTeamSize(t *testing.T) {
+	s := NewThreadState("t1")
+	s.Exists = true
+	evs, err := setLeads(t, s, 5)
+	if err != nil {
+		t.Fatalf("a five-lead team should be accepted: %v", err)
+	}
+	if len(evs) != 2 || evs[0].(contracts.LeadsSet).Count != 5 {
+		t.Fatalf("want LeadsSet{5} plus PeerMailboxSet, got %#v", evs)
 	}
 }
 

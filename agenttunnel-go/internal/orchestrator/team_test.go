@@ -14,7 +14,7 @@ import (
 var subagentID = regexp.MustCompile(`^agent-.+-\d+$`)
 
 func TestLeadIDsNeverCollideWithSubagentIDs(t *testing.T) {
-	for i := 0; i < contracts.MaxLeads; i++ {
+	for i := 0; i < 8; i++ {
 		id := leadAgentID(i)
 		if subagentID.MatchString(string(id)) {
 			t.Fatalf("lead %d id %q could be minted for a subagent", i, id)
@@ -103,5 +103,46 @@ esac`
 	}
 	if !strings.Contains(final, "team agreed") {
 		t.Fatalf("final message = %q", final)
+	}
+}
+
+// TestFiveLeadTeamDispatchesEveryLead sets a five-lead team, past the size the
+// team once capped at. Every lead must get its own id, a roster name, and a team
+// brief that counts five, and each must dispatch and finish its pass.
+func TestFiveLeadTeamDispatchesEveryLead(t *testing.T) {
+	script := `case "$1" in
+  *"of 5 on this thread's orchestrator team"*) ;;
+  *) printf '{"type":"error","text":"lead prompt lacks the five-lead brief"}\n'; exit 1 ;;
+esac
+printf '{"type":"text","text":"%s agrees"}\n' "$AT_AGENT_ID"`
+
+	r, eng, ctx := newPromptHarness(t, script)
+	startLead(t, r, ctx, 5)
+
+	if err := New(r).RunTurn(ctx, "t1", "plan with a five-lead team"); err != nil {
+		for _, e := range r.Logs().Entries("t1") {
+			t.Logf("%s %s: %s", e.AgentID, e.Kind, e.Text)
+		}
+		t.Fatalf("run turn: %v", err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	if state.LeadCount() != 5 {
+		t.Fatalf("LeadCount() = %d, want 5", state.LeadCount())
+	}
+	for i := 0; i < 5; i++ {
+		id := leadAgentID(i)
+		if !IsLead(id) {
+			t.Fatalf("lead %d id %q not recognized as a lead", i+1, id)
+		}
+		if got := state.Agents[id].Status; got != contracts.AgentSucceeded {
+			t.Fatalf("lead %d (%s) status = %s, want succeeded", i+1, id, got)
+		}
+	}
+	if got := state.Agents[leadAgentID(4)].Name; got != "orchestrator-5" {
+		t.Fatalf("lead 5 roster name = %q, want orchestrator-5", got)
+	}
+	if IsLead(leadAgentID(4) + "-1") {
+		t.Fatal("a subagent id under a lead must not be treated as a lead")
 	}
 }

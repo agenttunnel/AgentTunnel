@@ -163,7 +163,8 @@ func TestRunnerHonoursRoleRuntimeOverride(t *testing.T) {
 	if harness != contracts.HarnessClaude || model != "sonnet" {
 		t.Fatalf("override ignored: harness=%s model=%s", harness, model)
 	}
-	if got := r.resolveModel(role, contracts.HarnessOpenCode, "", r.settings.AutoMode(), false); got != "sonnet" {
+	// The override model belongs to the override harness, so it is resolved on that harness.
+	if got := r.resolveModel(role, contracts.HarnessClaude, "", r.settings.AutoMode(), false); got != "sonnet" {
 		t.Fatalf("resolveModel should use the override: %q", got)
 	}
 }

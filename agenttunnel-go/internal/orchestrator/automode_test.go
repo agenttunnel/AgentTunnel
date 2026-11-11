@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
+	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
@@ -51,7 +53,8 @@ func TestThreadAutoModeDrivesModelResolution(t *testing.T) {
 }
 
 // autoHarnessRunner builds a runner with a driver per harness that records
-// which harness each agent actually spawned with.
+// which harness each agent actually spawned with. The model and variant land
+// under "<agent>/model" and "<agent>/variant" in the same map.
 func autoHarnessRunner(t *testing.T, seen *sync.Map) (*Runner, context.Context) {
 	t.Helper()
 	ctx := context.Background()
@@ -63,6 +66,8 @@ func autoHarnessRunner(t *testing.T, seen *sync.Map) (*Runner, context.Context) 
 	recorder := func(h contracts.Harness) providers.Driver {
 		return providers.NewGenericDriver(h, "sh", func(spec providers.SessionSpec) (providers.CommandSpec, error) {
 			seen.Store(string(spec.AgentID), string(spec.Harness))
+			seen.Store(string(spec.AgentID)+"/model", spec.Model)
+			seen.Store(string(spec.AgentID)+"/variant", spec.Variant)
 			return providers.CommandSpec{
 				Binary: "sh", Args: []string{"-c", `printf '{"type":"text","text":"x"}\n'`},
 				PromptVia: "stdin",
@@ -159,8 +164,7 @@ func TestHarnessOverrideIgnoredWithoutAutoMode(t *testing.T) {
 }
 
 // TestRuntimeChoicesListsEnabledHarnesses pins what the orchestrator's runtime
-// menu looks like in auto mode: enabled harnesses with their discovered models,
-// capped so the prompt stays small.
+// menu looks like in auto mode: the enabled harnesses.
 func TestRuntimeChoicesListsEnabledHarnesses(t *testing.T) {
 	r, _, _ := newHarness(t, `printf '{"type":"text","text":"x"}\n'`)
 
@@ -177,4 +181,96 @@ func TestRuntimeChoicesListsEnabledHarnesses(t *testing.T) {
 	if strings.Contains(choices, "- claude") {
 		t.Fatalf("disabled harness still offered: %q", choices)
 	}
+}
+
+// TestRuntimeChoicesListsEveryModel checks that a harness with more models than
+// the old prompt cap still offers each one, so the orchestrator can pick any.
+func TestRuntimeChoicesListsEveryModel(t *testing.T) {
+	r, _, _ := newHarness(t, `printf '{"type":"text","text":"x"}\n'`)
+	var list []string
+	for i := range 12 {
+		list = append(list, fmt.Sprintf("model-%02d", i))
+	}
+	catalog := models.Default()
+	catalog.Set(contracts.HarnessOpenCode, list)
+	r.models = models.NewService(catalog, nil, r.settings)
+
+	choices := r.runtimeChoices()
+	for _, m := range list {
+		if !strings.Contains(choices, m) {
+			t.Fatalf("choices missing %s: %q", m, choices)
+		}
+	}
+	if strings.Contains(choices, "…") {
+		t.Fatalf("choices still truncated: %q", choices)
+	}
+}
+
+// assertSpawn checks the harness, model, and variant one agent spawned with, as
+// recorded by autoHarnessRunner.
+func assertSpawn(t *testing.T, seen *sync.Map, agent string, harness contracts.Harness, model, variant string) {
+	t.Helper()
+	h, _ := seen.Load(agent)
+	m, _ := seen.Load(agent + "/model")
+	v, _ := seen.Load(agent + "/variant")
+	if h != string(harness) || m != model || v != variant {
+		t.Fatalf("spawn = (%v, %q, %q), want (%s, %q, %q)", h, m, v, harness, model, variant)
+	}
+}
+
+// TestAutoModeRoleDefaultNotCarriedAcrossHarness: when auto mode moves a task
+// to another harness, the role's model and variant belong to its own harness
+// and must not follow. With no requested model the other harness runs its
+// default.
+func TestAutoModeRoleDefaultNotCarriedAcrossHarness(t *testing.T) {
+	var seen sync.Map
+	r, ctx := autoHarnessRunner(t, &seen)
+	r.settings.SetRoleConfig(contracts.RoleExecutor, settings.RoleConfig{Model: "role-model", Variant: "role-variant"})
+
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it",
+		Harness: contracts.HarnessClaude,
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessClaude, "", "")
+}
+
+// TestAutoModeRequestedModelWinsOverRoleDefault: in auto mode a requested model
+// the chosen harness allows replaces the role's configured model, on the role's
+// own harness and on another one.
+func TestAutoModeRequestedModelWinsOverRoleDefault(t *testing.T) {
+	var seen sync.Map
+	r, ctx := autoHarnessRunner(t, &seen)
+	r.settings.SetRoleConfig(contracts.RoleExecutor, settings.RoleConfig{Model: "role-model"})
+
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it",
+		Model: "picked-model",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "picked-model", "")
+
+	seen.Clear()
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h2", Role: contracts.RoleExecutor, Task: "do it",
+		Harness: contracts.HarnessClaude, Model: "claude-picked",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessClaude, "claude-picked", "")
+}
+
+// TestRoleDefaultAppliesWithoutAutoMode: with auto mode off a requested model
+// is ignored and the role's configured model runs.
+func TestRoleDefaultAppliesWithoutAutoMode(t *testing.T) {
+	var seen sync.Map
+	r, ctx := autoHarnessRunner(t, &seen)
+	r.settings.SetRoleConfig(contracts.RoleExecutor, settings.RoleConfig{Model: "role-model"})
+	if err := r.engine.Dispatch(ctx, contracts.Command{
+		ID: "m3", Type: contracts.CmdAutoModeSet, ThreadID: "t1", AutoMode: autoModePtr(false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it",
+		Model: "picked-model",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "role-model", "")
 }
