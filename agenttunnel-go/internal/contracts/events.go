@@ -24,6 +24,7 @@ const (
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
+	EvtRoleRuntimeSet     EventType = "thread.role-runtime-set"
 	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
 	EvtTaskAdded          EventType = "thread.task-added"
 	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
@@ -129,6 +130,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[LeadsSet](data)
 	case EvtLeadRuntimeSet:
 		return decodePayload[LeadRuntimeSet](data)
+	case EvtRoleRuntimeSet:
+		return decodePayload[RoleRuntimeSet](data)
 	case EvtSubthreadSpawned:
 		return decodePayload[SubthreadSpawned](data)
 	case EvtTaskAdded:
@@ -286,6 +289,18 @@ type LeadRuntimeSet struct {
 }
 
 func (LeadRuntimeSet) eventType() EventType { return EvtLeadRuntimeSet }
+
+// RoleRuntimeSet sets a role's runtime override on one thread, so a job
+// template can pin executor=tester harness/model for a single thread without
+// changing the daemon-wide settings every other thread reads. An empty field
+// inherits the lower layer (settings, then the role's default).
+type RoleRuntimeSet struct {
+	ThreadID ThreadID    `json:"threadId,omitempty"`
+	Role     RoleID      `json:"role"`
+	Runtime  LeadRuntime `json:"runtime"`
+}
+
+func (RoleRuntimeSet) eventType() EventType { return EvtRoleRuntimeSet }
 
 // MaxSubthreads bounds how many subthreads one thread may start. A subthread
 // cannot start its own, so this is also the whole tree below a thread.

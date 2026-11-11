@@ -147,6 +147,7 @@ jobs:
 
           mkdir -p go-dist
           go build -trimpath -buildvcs=false -ldflags="$ldflags" -o "go-dist/atd${ext}" ./cmd/atd
+          go build -trimpath -buildvcs=false -ldflags="$ldflags" -o "go-dist/at${ext}" ./cmd/at
           (
             cd desktop
             go build -tags production -trimpath -buildvcs=false \
@@ -254,7 +255,7 @@ jobs:
           curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
           ```
 
-          **Linux / Windows** — the archives contain `atd` and the `agenttunnel`
-          desktop binary.
+          **Linux / Windows** — the archives contain `atd`, the `at` CLI, and the
+          `agenttunnel` desktop binary.
           '
           printf '%s%s' "$existing" "$note" | gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file -

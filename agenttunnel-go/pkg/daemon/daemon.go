@@ -40,6 +40,10 @@ type Options struct {
 	// Version is the release version embedded at link time. Empty or "dev"
 	// disables self-update.
 	Version string
+	// OnShutdown is invoked by the daemon.shutdown RPC to gracefully stop the
+	// process that hosts this daemon. The assembly points it at the same
+	// signal-cancel path a SIGTERM uses.
+	OnShutdown func()
 	// RemoteAdapter overrides the shipped WhatsApp adapter. Tests use a fake so
 	// they never touch WhatsApp; nil uses NewDefaultAdapter.
 	RemoteAdapter remote.Adapter
@@ -206,6 +210,8 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		HarnessUpdates: harnessUpdates,
 		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits()),
 		Relay:          relay,
+		BaseCtx:        ctx,
+		Shutdown:       opts.OnShutdown,
 		Remote:         bridge,
 	})
 	// Questions left open by a previous run have no caller to answer them.

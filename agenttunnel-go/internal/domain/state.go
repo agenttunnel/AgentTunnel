@@ -96,6 +96,10 @@ type ThreadState struct {
 	// entry means the lead inherits the orchestrator role. Read through
 	// LeadRuntimeFor.
 	LeadRuntimes []contracts.LeadRuntime `json:"leadRuntimes,omitempty"`
+	// RoleRuntimes holds thread-scoped runtime overrides keyed by role id. They
+	// win over the daemon-wide settings.RoleConfig for this thread only, so two
+	// concurrent turns can run different runtimes. Read through RoleRuntimeFor.
+	RoleRuntimes map[string]contracts.LeadRuntime `json:"roleRuntimes,omitempty"`
 	// ParentThreadID is set on a subthread: the thread that started it. Its
 	// presence is also the depth check — a subthread starts no subthreads.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
@@ -193,6 +197,13 @@ func (s *ThreadState) LeadRuntimeFor(i int) contracts.LeadRuntime {
 	return s.LeadRuntimes[i]
 }
 
+// RoleRuntimeFor is the thread's override for role, if one was set. An empty
+// result means the role inherits settings and its built-in default.
+func (s *ThreadState) RoleRuntimeFor(role contracts.RoleID) (contracts.LeadRuntime, bool) {
+	rt, ok := s.RoleRuntimes[string(role)]
+	return rt, ok
+}
+
 // LeadCount is the number of orchestrators leading the thread's turns.
 func (s *ThreadState) LeadCount() int {
 	if s.Leads < 1 {
@@ -204,11 +215,12 @@ func (s *ThreadState) LeadCount() int {
 // NewThreadState returns an empty read model for a thread.
 func NewThreadState(id contracts.ThreadID) *ThreadState {
 	return &ThreadState{
-		ID:     id,
-		Agents: make(map[contracts.AgentID]contracts.Agent),
-		Usage:  make(map[contracts.AgentID]contracts.AgentUsage),
-		Steps:  make(map[contracts.AgentID][]UsageStep),
-		Shared: make(map[string]string),
+		ID:           id,
+		Agents:       make(map[contracts.AgentID]contracts.Agent),
+		Usage:        make(map[contracts.AgentID]contracts.AgentUsage),
+		Steps:        make(map[contracts.AgentID][]UsageStep),
+		Shared:       make(map[string]string),
+		RoleRuntimes: make(map[string]contracts.LeadRuntime),
 	}
 }
 
@@ -269,6 +281,10 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
 	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
+	c.RoleRuntimes = make(map[string]contracts.LeadRuntime, len(s.RoleRuntimes))
+	for k, v := range s.RoleRuntimes {
+		c.RoleRuntimes[k] = v
+	}
 	c.Tasks = append([]TaskItem(nil), s.Tasks...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {

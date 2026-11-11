@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	go.mau.fi/whatsmeow v0.0.0-20261110152934-c88388f983b4
 	google.golang.org/protobuf v1.36.12
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.62.0
 )
 

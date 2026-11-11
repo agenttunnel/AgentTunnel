@@ -7,6 +7,12 @@ export type Conn = {
   /** A project directory passed on the command line (agenttunnel <dir>): open
    * a thread in it once connected. Empty for a plain launch. */
   launchDir?: string;
+  /** Host:port of the daemon, for the "local" vs "attached" header badge. */
+  host?: string;
+  /** True when the window attached to a daemon it did not start. */
+  attached?: boolean;
+  /** The shell's saved keep-running preference. */
+  keepRunning?: boolean;
 };
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
@@ -168,6 +174,19 @@ export function installExternalLinks(): void {
     },
     true,
   );
+}
+
+/**
+ * setKeepRunning asks the desktop shell to persist whether its daemon should
+ * outlive the window. A capability event, not daemon data: outside the shell it
+ * is a no-op.
+ */
+export function setKeepRunning(enabled: boolean): void {
+  try {
+    Events.Emit("at:keep-running", { enabled });
+  } catch {
+    /* not running under the desktop shell */
+  }
 }
 
 /**

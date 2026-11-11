@@ -488,6 +488,13 @@ func (c *conn) handleFrame(ctx context.Context, data []byte) {
 		c.srv.handleAppOpen(c, req)
 		return
 	}
+	if req.Method == "daemon.shutdown" {
+		// Acknowledge before tearing the server down: the client's `at daemon
+		// stop` waits for this reply, then for daemon.json to disappear.
+		c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
+		go c.disp.Shutdown()
+		return
+	}
 	go func() {
 		result, err := c.disp.Handle(ctx, req)
 		if err != nil {

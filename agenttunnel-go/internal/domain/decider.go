@@ -194,6 +194,26 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{set}, nil
 
+	case contracts.CmdRoleRuntimeSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.RoleRuntime == nil {
+			return nil, fmt.Errorf("%w: role runtime is required", ErrInvalidCommand)
+		}
+		set := *cmd.RoleRuntime
+		if set.Role == "" {
+			return nil, fmt.Errorf("%w: role is required", ErrInvalidCommand)
+		}
+		if !contracts.IsBuiltinRole(set.Role) {
+			return nil, fmt.Errorf("%w: unknown role %q", ErrInvalidCommand, set.Role)
+		}
+		if set.Runtime.Harness != "" && !set.Runtime.Harness.Valid() {
+			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, set.Runtime.Harness)
+		}
+		set.ThreadID = s.ID
+		return []contracts.EventPayload{set}, nil
+
 	case contracts.CmdLeadsSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

@@ -33,6 +33,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ReviewThreadReplied{ThreadID: "rt1", AuthorID: "exe", Body: "done", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusResolved, Body: "looks good", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusOpen, CreatedAt: at},
+		RoleRuntimeSet{ThreadID: "t1", Role: RoleExecutor, Runtime: LeadRuntime{Harness: HarnessCodex, Model: "gpt-x", Variant: "high"}},
 	}
 
 	for _, payload := range payloads {
