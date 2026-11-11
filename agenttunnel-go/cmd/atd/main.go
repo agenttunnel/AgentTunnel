@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolcli"
 	"github.com/agenttunnel/agenttunnel-go/pkg/daemon"
@@ -76,7 +77,8 @@ func main() {
 			MaxPasses:      *maxPasses,
 			MaxConcurrency: *concurrency,
 		},
-		Version: version,
+		Version:    version,
+		OnShutdown: stop,
 	})
 	if err != nil {
 		log.Fatalf("atd: %v", err)
@@ -95,6 +97,21 @@ func main() {
 	}
 	// Agents call the tool endpoint at this address.
 	d.SetEndpoint("http://" + ln.Addr().String())
+
+	// Publish how to reach this daemon, now that the port is known. A CLI
+	// (`at`) reads it to attach or stop; the file is removed on shutdown so a
+	// stale entry cannot outlive the process.
+	if err := discovery.Write(*homeDir, discovery.Info{
+		WSURL:     "ws://" + ln.Addr().String() + "/ws",
+		HTTPURL:   "http://" + ln.Addr().String(),
+		Token:     tok,
+		PID:       os.Getpid(),
+		Version:   version,
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		log.Fatalf("atd: write %s: %v", discovery.FileName, err)
+	}
+	defer discovery.Remove(*homeDir)
 
 	srv := &http.Server{
 		Handler:           d.Server.Handler(),

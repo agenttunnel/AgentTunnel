@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 )
 
 // launchLock is the running app's handoff point: where its daemon listens and
@@ -46,11 +49,38 @@ func writeLock(stateDir string, lock launchLock) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(lockPath(stateDir), data, 0o600)
+	if err := os.WriteFile(lockPath(stateDir), data, 0o600); err != nil {
+		return err
+	}
+	// The daemon is reachable over the same socket the CLI's discovery file
+	// describes, so `at` can drive a desktop-hosted daemon. Both files describe
+	// one server and are removed together.
+	return discovery.Write(stateDir, discovery.Info{
+		WSURL:     lock.WsURL,
+		HTTPURL:   httpURLFromWS(lock.WsURL),
+		Token:     lock.Token,
+		PID:       os.Getpid(),
+		Version:   version,
+		StartedAt: time.Now().UTC(),
+	})
 }
 
 func removeLock(stateDir string) {
 	_ = os.Remove(lockPath(stateDir))
+	_ = discovery.Remove(stateDir)
+}
+
+// httpURLFromWS converts the daemon's WebSocket URL into its HTTP base, since
+// discovery records both and the desktop only knows the socket.
+func httpURLFromWS(ws string) string {
+	switch {
+	case strings.HasPrefix(ws, "wss://"):
+		return "https://" + strings.TrimSuffix(strings.TrimPrefix(ws, "wss://"), "/ws")
+	case strings.HasPrefix(ws, "ws://"):
+		return "http://" + strings.TrimSuffix(strings.TrimPrefix(ws, "ws://"), "/ws")
+	default:
+		return strings.TrimSuffix(ws, "/ws")
+	}
 }
 
 // launchDirArg validates a command-line argument as a project directory and

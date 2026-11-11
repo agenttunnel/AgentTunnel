@@ -39,6 +39,10 @@ type Options struct {
 	// Version is the release version embedded at link time. Empty or "dev"
 	// disables self-update.
 	Version string
+	// OnShutdown is invoked by the daemon.shutdown RPC to gracefully stop the
+	// process that hosts this daemon. The assembly points it at the same
+	// signal-cancel path a SIGTERM uses.
+	OnShutdown func()
 }
 
 // Daemon is the fully assembled AgentTunnel server: engine, orchestrator, usage,
@@ -176,6 +180,8 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Updater:      updater,
 		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits()),
 		Relay:        relay,
+		BaseCtx:      ctx,
+		Shutdown:     opts.OnShutdown,
 	})
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {

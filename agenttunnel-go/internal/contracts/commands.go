@@ -21,6 +21,7 @@ const (
 	CmdPeerMailboxSet     CommandType = "thread.peer-mailbox.set"
 	CmdLeadsSet           CommandType = "thread.leads.set"
 	CmdLeadRuntimeSet     CommandType = "thread.leads.runtime.set"
+	CmdRoleRuntimeSet     CommandType = "thread.role.runtime.set"
 	CmdSubthreadSpawn     CommandType = "thread.subthread.spawn"
 	CmdTaskAdd            CommandType = "thread.task.add"
 	CmdTaskStatusSet      CommandType = "thread.task.status.set"
@@ -39,6 +40,18 @@ const (
 	CmdQuestionClose      CommandType = "thread.question.close"
 	CmdPRTrack            CommandType = "thread.pr.track"
 )
+
+// IsBuiltinRole reports whether id names a role every daemon registers. The
+// decider is pure and has no registry, so it gates thread-scoped runtime
+// overrides to the builtin set.
+func IsBuiltinRole(id RoleID) bool {
+	for _, role := range BuiltinRoles() {
+		if role.ID == id {
+			return true
+		}
+	}
+	return false
+}
 
 // DispatchTask is the orchestrator's instruction to spawn a subagent.
 type DispatchTask struct {
@@ -72,6 +85,7 @@ type Command struct {
 	PeerMailbox    *bool                      `json:"peerMailbox,omitempty"`
 	Leads          *int                       `json:"leads,omitempty"`
 	LeadRuntime    *LeadRuntimeSet            `json:"leadRuntime,omitempty"`
+	RoleRuntime    *RoleRuntimeSet            `json:"roleRuntime,omitempty"`
 	ParentThreadID ThreadID                   `json:"parentThreadId,omitempty"`
 	Worktree       *WorktreeRef               `json:"worktree,omitempty"`
 	Subthread      *SubthreadSpawned          `json:"subthread,omitempty"`

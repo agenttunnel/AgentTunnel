@@ -72,6 +72,13 @@ type DispatcherDeps struct {
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
+	// BaseCtx is the daemon's lifetime context. Detached turns run against it,
+	// so a client socket closing cannot cancel them; only the daemon going
+	// away or thread.turn.stop can. Nil falls back to context.Background.
+	BaseCtx context.Context
+	// Shutdown triggers a graceful daemon shutdown for the daemon.shutdown RPC.
+	// The assembly sets it; nil makes the RPC a no-op acknowledgement.
+	Shutdown func()
 }
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
@@ -147,6 +154,8 @@ type Dispatcher struct {
 	relay      RelayControl
 	prBoard    *scm.Board
 	dirtyBoard *scm.DirtyBoard
+	baseCtx    context.Context
+	shutdown   func()
 	seq        atomic.Int64
 
 	// turns gates one running turn per thread and lets clients stop it.
@@ -168,8 +177,14 @@ type Dispatcher struct {
 
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
+	base := d.BaseCtx
+	if base == nil {
+		base = context.Background()
+	}
 	return &Dispatcher{
 		questions:  newQuestionBroker(),
+		baseCtx:    base,
+		shutdown:   d.Shutdown,
 		engine:     d.Engine,
 		runner:     d.Runner,
 		orch:       d.Orchestrator,
@@ -284,6 +299,9 @@ type (
 		// Attachments are workdir-relative files or folders the composer attached.
 		// They reach the agent's prompt, not the transcript.
 		Attachments []string `json:"attachments,omitempty"`
+		// Detach runs the turn against the daemon's lifetime context and replies
+		// at once, so a client (at run) can exit while the work continues.
+		Detach bool `json:"detach,omitempty"`
 	}
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -296,6 +314,13 @@ type (
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
+	setRoleRuntimeParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Role     string             `json:"role"`
 		Harness  contracts.Harness  `json:"harness,omitempty"`
 		Model    string             `json:"model,omitempty"`
 		Variant  string             `json:"variant,omitempty"`
@@ -339,6 +364,55 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// startDetachedTurn claims the thread's turn slot against the daemon's lifetime
+// context and runs the turn in the background, replying at once. The caller's
+// socket closing cannot cancel it — only thread.turn.stop or daemon shutdown
+// can. The slot is released when the goroutine finishes, so a stopped turn
+// keeps it until it unwinds, exactly like a foreground turn.
+func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
+	if d.orch == nil || d.engine == nil {
+		return nil, errors.New("detached turns are unavailable")
+	}
+	// A caller with no daemon context (a bare dispatcher in a test) still gets
+	// a turn that outlives its socket. A daemon context that is already
+	// cancelled is respected: shutdown must not start new work.
+	base := d.baseCtx
+	if base == nil {
+		base = context.WithoutCancel(ctx)
+	}
+	turnCtx, done, err := d.beginTurn(base, threadID)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		defer done()
+		if err := d.ensureWorktree(base, threadID); err != nil {
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+			return
+		}
+		if err := d.engine.Dispatch(base, cmd); err != nil {
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+			return
+		}
+		if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
+			if turnCtx.Err() != nil {
+				d.auditLog("turn.detached.stopped", map[string]any{"threadId": string(threadID)})
+				return
+			}
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+		}
+	}()
+	return map[string]any{"ok": true, "detached": true, "threadId": string(threadID)}, nil
+}
+
+// Shutdown asks the daemon assembly to shut down gracefully. It is called by
+// the server after the daemon.shutdown reply is written.
+func (d *Dispatcher) Shutdown() {
+	if d.shutdown != nil {
+		d.shutdown()
+	}
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -633,9 +707,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
+		cmd := contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
-		})
+		}
+		if p.Detach {
+			return d.startDetachedTurn(ctx, p.ThreadID, prompt, cmd)
+		}
+		return d.runTurn(ctx, p.ThreadID, prompt, cmd)
 
 	case "review.submit":
 		var p struct {
@@ -933,6 +1011,25 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
 			LeadRuntime: &contracts.LeadRuntimeSet{
 				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setRoleRuntime":
+		var p setRoleRuntimeParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Role == "" {
+			return nil, errors.New("role is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdRoleRuntimeSet, ThreadID: p.ThreadID,
+			RoleRuntime: &contracts.RoleRuntimeSet{
+				Role:    contracts.RoleID(p.Role),
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
 		}); err != nil {

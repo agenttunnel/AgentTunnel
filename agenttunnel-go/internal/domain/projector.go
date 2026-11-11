@@ -67,6 +67,12 @@ func Project(s *ThreadState, e contracts.Event) error {
 		}
 		s.LeadRuntimes[p.Index] = p.Runtime
 
+	case contracts.RoleRuntimeSet:
+		if s.RoleRuntimes == nil {
+			s.RoleRuntimes = make(map[string]contracts.LeadRuntime)
+		}
+		s.RoleRuntimes[string(p.Role)] = p.Runtime
+
 	case contracts.SubthreadSpawned:
 		s.Subthreads = append(s.Subthreads, p.ThreadID)
 
