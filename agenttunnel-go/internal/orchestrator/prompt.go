@@ -19,8 +19,9 @@ const askHelp = "Ask the human only when you are blocked on a decision only they
 // so every subagent starts informed by what the others have done. The peer message
 // tool is documented only when the thread has the peer mailbox enabled, and
 // messages teammates sent while this agent was waiting are carried in their own
-// section.
-func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted) string {
+// section. Steers the team lead sent while the agent was not running come in a
+// steering section.
+func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted, steering []string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	b.WriteString("\n\n## Task\n")
@@ -42,6 +43,15 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews s
 		b.WriteString("These arrived while you were waiting. Weigh them alongside your task:\n\n")
 		for _, m := range teammates {
 			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
+		}
+	}
+	if len(steering) > 0 {
+		b.WriteString("\n\n## Steering from the team lead\n")
+		b.WriteString("These arrived while your previous run was in progress, so they did not change it. Weigh them now and adjust your work:\n\n")
+		for _, s := range steering {
+			b.WriteString("- ")
+			b.WriteString(s)
+			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n\nGit is the team lead's. Do not run state-changing git (add, commit, push, branch, checkout, switch, reset, restore, rebase, merge, stash, worktree, tag, fetch, pull, clean); the lead commits your work. Read-only git (status, diff, log, show) is fine, and a guard refuses the rest.\n")
@@ -73,10 +83,12 @@ type OrchestratorPrompt struct {
 	PeerMessages  string
 	PeerMailbox   bool
 	// Subthreads offers the subthread tool: the thread may start one.
-	Subthreads     bool
-	Team           string
-	Pass           int
-	Steering       []string
+	Subthreads bool
+	Team       string
+	Pass       int
+	Steering   []string
+	// Steer offers the steer tool: the thread has subagents to steer.
+	Steer          bool
 	RuntimeChoices string
 }
 
@@ -139,6 +151,12 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
 		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
+	}
+	if in.Steer {
+		b.WriteString("\n\n## Steering a subagent\n")
+		b.WriteString("Send a course correction to an agent you dispatched. A steer does not interrupt a run in progress: the agent reads it when its next run starts, so use it for work still waiting on its dependencies or for a later run. To change running work, dispatch a follow-up with --depends-on instead:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool steer --to <agent name> --text \"<adjustment>\"\n\n")
+		b.WriteString("The reply says whether the steer was queued for that agent's next run.")
 	}
 	b.WriteString("\n\n## Tracking the plan\n")
 	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")
