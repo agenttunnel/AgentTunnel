@@ -154,8 +154,10 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			return nil, fmt.Errorf("%w: lead runtime is required", ErrInvalidCommand)
 		}
 		set := *cmd.LeadRuntime
-		if set.Index < 0 || set.Index >= contracts.MaxLeads {
-			return nil, fmt.Errorf("%w: lead index must be between 0 and %d", ErrInvalidCommand, contracts.MaxLeads-1)
+		// The team's leads, or the next slot to append one: the index can never
+		// run past the team by more than one.
+		if set.Index < 0 || set.Index > s.LeadCount() {
+			return nil, fmt.Errorf("%w: lead index must be between 0 and %d", ErrInvalidCommand, s.LeadCount())
 		}
 		if set.Runtime.Harness != "" && !set.Runtime.Harness.Valid() {
 			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, set.Runtime.Harness)
@@ -169,8 +171,8 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if cmd.Leads == nil {
 			return nil, fmt.Errorf("%w: leads count is required", ErrInvalidCommand)
 		}
-		if *cmd.Leads < 1 || *cmd.Leads > contracts.MaxLeads {
-			return nil, fmt.Errorf("%w: leads must be between 1 and %d", ErrInvalidCommand, contracts.MaxLeads)
+		if *cmd.Leads < 1 {
+			return nil, fmt.Errorf("%w: leads must be at least 1", ErrInvalidCommand)
 		}
 		events := []contracts.EventPayload{contracts.LeadsSet{Count: *cmd.Leads}}
 		// A team of leads agrees through peer messages, so a multi-lead thread

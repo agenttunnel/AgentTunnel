@@ -1876,14 +1876,19 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
-  /** Sets how many orchestrators lead the active thread's turns from the next turn on. */
-  const setLeads = async (count: number) => {
+  const [addingLead, setAddingLead] = useState(false);
+
+  /** Grows the lead team by one from the next turn on. */
+  const addLead = async (count: number) => {
     const rpc = rpcRef.current;
-    if (!rpc || !activeId) return;
+    if (!rpc || !activeId || addingLead) return;
+    setAddingLead(true);
     try {
       await rpc.call("thread.setLeads", { threadId: activeId, count });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAddingLead(false);
     }
     refresh(activeId).catch(() => undefined);
   };
@@ -3336,19 +3341,6 @@ export default function App() {
                   <div className="lead-block">
                     <div className="lead-head">
                       <span className="rn">Leads</span>
-                      <div className="lead-count" role="group" aria-label="Number of leads">
-                        {[1, 2, 3].map((n) => (
-                          <button
-                            key={n}
-                            type="button"
-                            aria-pressed={count === n}
-                            disabled={!thread}
-                            onClick={() => setLeads(n)}
-                          >
-                            {n}
-                          </button>
-                        ))}
-                      </div>
                     </div>
                     <p className="hint">
                       Each lead runs the Orchestrator's runtime unless you override it here. Changes apply to the next turn.
@@ -3389,6 +3381,16 @@ export default function App() {
                         </div>
                       );
                     })}
+                    <button
+                      type="button"
+                      className="lead-add"
+                      aria-label="Add a lead"
+                      title="Add a lead"
+                      disabled={!thread || addingLead}
+                      onClick={() => addLead(count + 1)}
+                    >
+                      +
+                    </button>
                   </div>
                 );
               })()}
