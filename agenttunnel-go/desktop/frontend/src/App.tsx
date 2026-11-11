@@ -43,6 +43,7 @@ import { FilesPanel, type FileContentLike, type FileEntryLike } from "./componen
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRSnapshot } from "./components/PRPanel";
+import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RelayPairing } from "./components/RelayPairing";
@@ -159,6 +160,8 @@ type ThreadSummary = {
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
+  /** The thread's own worktree; its branch is what a PR is opened from. */
+  worktree?: { path: string; branch: string; base: string } | null;
 };
 type Project = { id: string; name: string; path: string; threads: number };
 
@@ -237,6 +240,49 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
 };
+/** How the project's threads are laid out: the card list or the status board. */
+type ThreadView = "list" | "board";
+function loadThreadView(): ThreadView {
+  try {
+    if (window.localStorage.getItem("at.threadView") === "board") return "board";
+  } catch {
+    /* private mode: default to the list */
+  }
+  return "list";
+}
+
+/** How often the board re-reads PR state while it is open. */
+const THREAD_PR_POLL_MS = 20_000;
+
+function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
+  if (a.dirty !== b.dirty) return false;
+  const p = a.pr;
+  const q = b.pr;
+  if (!p || !q) return p === q;
+  return p.number === q.number && p.url === q.url && p.state === q.state && p.draft === q.draft && p.reviewDecision === q.reviewDecision;
+}
+
+/** Keeps the entries that did not change, so memoized board cards keep their props. */
+function mergeThreadStates(
+  prev: Record<string, BoardThreadState>,
+  next: Record<string, BoardThreadState>,
+): Record<string, BoardThreadState> {
+  const ids = Object.keys(next);
+  let changed = ids.length !== Object.keys(prev).length;
+  const out: Record<string, BoardThreadState> = {};
+  for (const id of ids) {
+    const old = prev[id];
+    const cur = next[id];
+    if (old && sameThreadState(old, cur)) {
+      out[id] = old;
+    } else {
+      out[id] = cur;
+      changed = true;
+    }
+  }
+  return changed ? out : prev;
+}
+
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
   try {
@@ -1633,6 +1679,50 @@ export default function App() {
       ),
     [threads, projectId, needle],
   );
+
+  // The board is an alternative to the card list, not a replacement: the choice
+  // is remembered, and both views read the same thread list.
+  const [threadView, setThreadViewState] = useState<ThreadView>(loadThreadView);
+  const setThreadView = (view: ThreadView) => {
+    setThreadViewState(view);
+    try {
+      window.localStorage.setItem("at.threadView", view);
+    } catch {
+      /* not persisted: the choice lasts this session */
+    }
+  };
+  const [threadStates, setThreadStates] = useState<Record<string, BoardThreadState>>({});
+  const openBoardThread = useCallback(
+    (id: string) => {
+      setActiveId(id);
+      if (projectId) lastThreadByProject.current[projectId] = id;
+    },
+    [projectId],
+  );
+  // Only threads with a worktree can have a branch PR. The joined id string keeps
+  // the poll from restarting when unrelated thread fields change.
+  const boardPRIds = useMemo(
+    () => projectThreads.filter((t) => t.worktree).map((t) => t.id).join(","),
+    [projectThreads],
+  );
+  useEffect(() => {
+    if (threadView !== "board" || boardPRIds === "") return;
+    let live = true;
+    const load = () => {
+      rpcRef.current
+        ?.call<Record<string, BoardThreadState>>("pr.states", { threadIds: boardPRIds.split(",") })
+        .then((next) => {
+          if (live) setThreadStates((prev) => mergeThreadStates(prev, next));
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = setInterval(load, THREAD_PR_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [threadView, boardPRIds]);
   const openProjects = useMemo(
     () =>
       openProjectIds
@@ -2588,6 +2678,23 @@ export default function App() {
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
+              <div className="view-toggle" role="group" aria-label="Thread layout">
+                <button
+                  className={threadView === "list" ? "primary" : undefined}
+                  aria-pressed={threadView === "list"}
+                  onClick={() => setThreadView("list")}
+                >
+                  List
+                </button>
+                <button
+                  className={threadView === "board" ? "primary" : undefined}
+                  aria-pressed={threadView === "board"}
+                  onClick={() => setThreadView("board")}
+                >
+                  Board
+                </button>
+              </div>
+              {threadView === "board" && <button onClick={newThread}>New thread</button>}
               <button
                 className={showWorktrees ? "primary" : undefined}
                 aria-pressed={showWorktrees}
@@ -2614,9 +2721,17 @@ export default function App() {
               />
             </div>
           )}
-          {projectThreads.length === 0 && needle && (
+          {threadView === "list" && projectThreads.length === 0 && needle && (
             <div className="empty">No threads match that filter.</div>
           )}
+          {threadView === "board" ? (
+            <ThreadBoard
+              threads={projectThreads}
+              states={threadStates}
+              formatUpdated={fmtUpdated}
+              onOpen={openBoardThread}
+            />
+          ) : (
           <div className="thread-cards">
             <div
               className="new-card"
@@ -2653,6 +2768,7 @@ export default function App() {
               </div>
             ))}
           </div>
+          )}
           {threadOverlays}
         </div>
       </div>

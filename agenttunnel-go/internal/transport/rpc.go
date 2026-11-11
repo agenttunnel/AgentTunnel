@@ -131,21 +131,23 @@ type RelayDevice struct {
 
 // Dispatcher routes RPC methods to the daemon's services.
 type Dispatcher struct {
-	engine   *domain.Engine
-	runner   *orchestrator.Runner
-	orch     *orchestrator.Orchestrator
-	ledger   *usage.Ledger
-	logs     *logstore.Store
-	roles    *contracts.RoleRegistry
-	registry *providers.Registry
-	settings *settings.Store
-	models   *models.Service
-	steering *steering.Box
-	audit    actionlog.Func
-	updater  *update.Updater
-	limits   *providers.LimitsProvider
-	relay    RelayControl
-	seq      atomic.Int64
+	engine     *domain.Engine
+	runner     *orchestrator.Runner
+	orch       *orchestrator.Orchestrator
+	ledger     *usage.Ledger
+	logs       *logstore.Store
+	roles      *contracts.RoleRegistry
+	registry   *providers.Registry
+	settings   *settings.Store
+	models     *models.Service
+	steering   *steering.Box
+	audit      actionlog.Func
+	updater    *update.Updater
+	limits     *providers.LimitsProvider
+	relay      RelayControl
+	prBoard    *scm.Board
+	dirtyBoard *scm.DirtyBoard
+	seq        atomic.Int64
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
@@ -167,22 +169,78 @@ type Dispatcher struct {
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
 	return &Dispatcher{
-		questions: newQuestionBroker(),
-		engine:    d.Engine,
-		runner:    d.Runner,
-		orch:      d.Orchestrator,
-		ledger:    d.Ledger,
-		logs:      d.Logs,
-		roles:     d.Roles,
-		registry:  d.Registry,
-		settings:  d.Settings,
-		models:    d.Models,
-		steering:  d.Steering,
-		audit:     d.Audit,
-		updater:   d.Updater,
-		limits:    d.Limits,
-		relay:     d.Relay,
+		questions:  newQuestionBroker(),
+		engine:     d.Engine,
+		runner:     d.Runner,
+		orch:       d.Orchestrator,
+		ledger:     d.Ledger,
+		logs:       d.Logs,
+		roles:      d.Roles,
+		registry:   d.Registry,
+		settings:   d.Settings,
+		models:     d.Models,
+		steering:   d.Steering,
+		audit:      d.Audit,
+		updater:    d.Updater,
+		limits:     d.Limits,
+		relay:      d.Relay,
+		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
+		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
+}
+
+// prBoardTTL bounds how stale a thread board's PR state may be. Each refresh
+// is one gh call per worktree, so the board never polls faster than this.
+const prBoardTTL = 60 * time.Second
+
+// dirtyBoardTTL matches the board's 20s poll: uncommitted work should move
+// columns about as fast as the poll can show it. git status is local and cheap.
+const dirtyBoardTTL = 20 * time.Second
+
+// ThreadPR is the PR a thread's worktree branch has, as the thread board shows it.
+type ThreadPR struct {
+	Number         int    `json:"number"`
+	URL            string `json:"url"`
+	State          string `json:"state"` // open | merged | closed
+	Draft          bool   `json:"draft"`
+	ReviewDecision string `json:"reviewDecision"` // approved | changes_requested | review_required | none
+}
+
+// ThreadState is what the thread board knows about one thread's worktree.
+type ThreadState struct {
+	PR    *ThreadPR `json:"pr,omitempty"`
+	Dirty bool      `json:"dirty"`
+}
+
+// threadStates maps each thread with a worktree to its branch PR and dirty flag.
+// workdir returns the thread's worktree directory, or "" when it has none;
+// peekPR and peekDirty read the cached forge snapshot and working-tree state for
+// a directory, ok=false until the first fetch lands. Unknown state reads as no
+// PR and clean, so the thread lands in the PR column rather than erroring.
+// Threads without a worktree are omitted.
+func threadStates(
+	ids []contracts.ThreadID,
+	workdir func(contracts.ThreadID) string,
+	peekPR func(dir string) (scm.Snapshot, bool),
+	peekDirty func(dir string) (dirty bool, ok bool),
+) map[contracts.ThreadID]ThreadState {
+	out := make(map[contracts.ThreadID]ThreadState, len(ids))
+	for _, id := range ids {
+		wd := workdir(id)
+		if wd == "" {
+			continue
+		}
+		var st ThreadState
+		if dirty, ok := peekDirty(wd); ok {
+			st.Dirty = dirty
+		}
+		if snap, ok := peekPR(wd); ok && snap.Request != nil {
+			r := snap.Request
+			st.PR = &ThreadPR{Number: r.Number, URL: r.URL, State: r.State, Draft: r.Draft, ReviewDecision: r.Review}
+		}
+		out[id] = st
+	}
+	return out
 }
 
 // ThreadSummary is the list-row projection of a thread.
@@ -1025,6 +1083,23 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			wd = d.threadWorkdir(ctx, p.ThreadID)
 		}
 		return scm.Fetch(ctx, wd), nil
+
+	case "pr.states":
+		// Takes thread ids, never directories: the daemon resolves each thread's
+		// own worktree, so a client cannot point gh at an arbitrary path.
+		var p struct {
+			ThreadIDs []contracts.ThreadID `json:"threadIds"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return threadStates(p.ThreadIDs, func(id contracts.ThreadID) string {
+			st, err := d.engine.State(ctx, id)
+			if err != nil || st.Worktree == nil {
+				return ""
+			}
+			return d.threadWorkdir(ctx, id)
+		}, d.prBoard.Peek, d.dirtyBoard.Peek), nil
 
 	case "pr.commit", "pr.push", "pr.pull", "pr.create", "pr.ready", "pr.merge":
 		return d.prAction(ctx, req)
