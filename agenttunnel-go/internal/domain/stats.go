@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"math"
 	"sort"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -119,6 +120,14 @@ type ModelStat struct {
 	Agents    int                  `json:"agents"`
 	Subagents int                  `json:"subagents"`
 	Usage     contracts.TokenUsage `json:"usage"`
+	// Resolved counts subagent runs that succeeded. Only those feed the timing
+	// fields: a run that failed or was cancelled says nothing about how long the
+	// model takes to finish a task.
+	Resolved int `json:"resolved"`
+	// MedianSeconds and P90Seconds are the wall-clock time of resolved subagent
+	// runs. Both are zero when Resolved is zero.
+	MedianSeconds float64 `json:"medianSeconds"`
+	P90Seconds    float64 `json:"p90Seconds"`
 }
 
 type modelKey struct {
@@ -126,36 +135,61 @@ type modelKey struct {
 	model   string
 }
 
+// modelAcc is one model's rollup while the environment is still being walked.
+// Durations stay here until the walk ends, so quantiles see every thread at once.
+type modelAcc struct {
+	stat      ModelStat
+	durations []float64
+}
+
 // addModelStats folds one thread's read model into the per-model rollup, keyed
 // the way addHarnessStats keys harnesses, with the model as the second part.
-func addModelStats(acc map[modelKey]*ModelStat, st *ThreadState) {
+func addModelStats(acc map[modelKey]*modelAcc, st *ThreadState) {
 	touched := map[modelKey]bool{}
-	get := func(a contracts.Agent) *ModelStat {
+	get := func(a contracts.Agent) *modelAcc {
 		k := modelKey{a.Harness, a.Model}
-		s, ok := acc[k]
+		m, ok := acc[k]
 		if !ok {
-			s = &ModelStat{Harness: a.Harness, Model: a.Model}
-			acc[k] = s
+			m = &modelAcc{stat: ModelStat{Harness: a.Harness, Model: a.Model}}
+			acc[k] = m
 		}
 		touched[k] = true
-		return s
+		return m
 	}
 
 	for _, id := range st.AgentOrder {
 		a := st.Agents[id]
-		s := get(a)
-		s.Agents++
-		if !a.IsOrchestrator() {
-			s.Subagents++
+		m := get(a)
+		m.stat.Agents++
+		if a.IsOrchestrator() {
+			continue
+		}
+		m.stat.Subagents++
+		if a.Status == contracts.AgentSucceeded && a.EndedAt != nil {
+			m.stat.Resolved++
+			m.durations = append(m.durations, a.EndedAt.Sub(a.StartedAt).Seconds())
 		}
 	}
 	for id, au := range st.Usage {
-		s := get(st.Agents[id])
-		s.Usage = s.Usage.Add(au.Usage)
+		m := get(st.Agents[id])
+		m.stat.Usage = m.stat.Usage.Add(au.Usage)
 	}
 	for k := range touched {
-		acc[k].Threads++
+		acc[k].stat.Threads++
 	}
+}
+
+// quantile reads the p-th quantile (0..1) of sorted values by linear
+// interpolation between the two nearest ranks, so the median of an even count
+// is the mean of the middle pair.
+func quantile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	pos := p * float64(len(sorted)-1)
+	lo := int(math.Floor(pos))
+	hi := int(math.Ceil(pos))
+	return sorted[lo] + (sorted[hi]-sorted[lo])*(pos-float64(lo))
 }
 
 // ModelStats returns the harness-and-model rollup across the threads in scope,
@@ -166,13 +200,19 @@ func (e *Engine) ModelStats(ctx context.Context, scope HarnessScope) ([]ModelSta
 	if err != nil {
 		return nil, err
 	}
-	acc := map[modelKey]*ModelStat{}
+	acc := map[modelKey]*modelAcc{}
 	for _, st := range states {
 		addModelStats(acc, st)
 	}
 	out := make([]ModelStat, 0, len(acc))
-	for _, s := range acc {
-		out = append(out, *s)
+	for _, m := range acc {
+		s := m.stat
+		if len(m.durations) > 0 {
+			sort.Float64s(m.durations)
+			s.MedianSeconds = quantile(m.durations, 0.5)
+			s.P90Seconds = quantile(m.durations, 0.9)
+		}
+		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
