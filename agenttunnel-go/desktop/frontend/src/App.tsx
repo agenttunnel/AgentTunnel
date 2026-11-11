@@ -50,7 +50,6 @@ import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RemoteSection } from "./components/RemoteSection";
-import { TunnelButton } from "./components/TunnelButton";
 import { Markdown } from "./components/Markdown";
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
@@ -2519,7 +2518,6 @@ export default function App() {
           {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
         </span>
       </div>
-      <TunnelButton rpc={rpcRef.current} />
       <UpdateChip
         status={update}
         busy={updateBusy}
