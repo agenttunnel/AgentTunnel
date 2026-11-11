@@ -328,12 +328,14 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	// An explicit user choice (council membership) is honored regardless of
 	// auto mode; an orchestrator pick still needs auto mode to override.
 	overrideRuntime := auto || t.Override
-	harness, _, variant := r.roleRuntime(role)
+	roleHarness, _, roleVariant := r.roleRuntime(role)
 	// In auto mode the orchestrator picks the runtime per task: a requested
 	// harness wins when it is known and enabled, mirroring how resolveModel
 	// treats requested models. Otherwise the role's configured harness stands.
-	if overrideRuntime && t.Harness.Valid() && r.harnessAllowed(t.Harness) {
-		harness = t.Harness
+	// A variant belongs to the role's harness, so it never follows a switch.
+	harness, variant := roleHarness, roleVariant
+	if overrideRuntime && t.Harness.Valid() && t.Harness != roleHarness && r.harnessAllowed(t.Harness) {
+		harness, variant = t.Harness, ""
 	}
 	if !r.harnessAllowed(harness) {
 		return "", fmt.Errorf("harness %q is disabled", harness)
@@ -696,9 +698,8 @@ func (r *Runner) harnessAllowed(h contracts.Harness) bool {
 }
 
 // runtimeChoices renders the harness/model options the orchestrator may pick
-// from in auto mode: enabled harnesses that are actually installed, with the
-// models each reports. Capped per harness so the prompt stays small; the role
-// defaults are always listed.
+// from in auto mode: enabled harnesses with every model each reports, so any
+// listed model can be requested.
 func (r *Runner) runtimeChoices() string {
 	if r.registry == nil {
 		return ""
@@ -708,13 +709,9 @@ func (r *Runner) runtimeChoices() string {
 		if r.settings != nil && !r.settings.HarnessEnabled(harness) {
 			continue
 		}
-		models := []string{}
+		var models []string
 		if r.models != nil {
 			models = r.models.List(harness)
-		}
-		if len(models) > 8 {
-			models = models[:8]
-			models = append(models, "…")
 		}
 		fmt.Fprintf(&b, "- %s", harness)
 		if len(models) > 0 {
@@ -778,26 +775,42 @@ func (r *Runner) teammateMessages(threadID contracts.ThreadID, id contracts.Agen
 	return r.mailbox.Drain(threadID, id)
 }
 
-// resolveModel applies auto mode: the orchestrator's requested model wins only if
-// it is approved; otherwise the role's configured model is used.
-// resolveModel picks the model a role runs on. Priority:
+// resolveModel picks the model a role runs on for the harness it will run on.
+// Priority:
 //
-//  1. No request: the role's configured model.
-//  2. A role with no configured model trusts the request (the settings UI
+//  1. No request: the role's configured model, if the harness is the role's own.
+//  2. A harness other than the role's never takes the role's model. Only an
+//     explicit override (council membership) or an auto-mode request the
+//     chosen harness allows is used; otherwise the model is empty and the
+//     harness runs its own default.
+//  3. A role with no configured model trusts the request (the settings UI
 //     feeds per-role models through here).
-//  3. An explicit user override (council membership) runs exactly what was
+//  4. An explicit user override (council membership) runs exactly what was
 //     asked for.
-//  4. Auto mode may pick another model, bounded by the approved list when one
+//  5. Auto mode may pick another model, bounded by the approved list when one
 //     is configured. With no list, any model the harness actually reports is
 //     allowed — enabling auto mode is the opt-in.
 //
 // Anything else falls back to the role's model.
 func (r *Runner) resolveModel(role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
-	_, model, _ := r.roleRuntime(role)
+	roleHarness, model, _ := r.roleRuntime(role)
+	sameHarness := harness == roleHarness
+	if !sameHarness {
+		model = ""
+	}
 	if requested == "" {
 		return model
 	}
-	if model == "" || override {
+	if override {
+		return requested
+	}
+	if !sameHarness {
+		if auto && r.autoAllowed(harness, requested) {
+			return requested
+		}
+		return ""
+	}
+	if model == "" {
 		return requested
 	}
 	if !auto || !r.autoAllowed(harness, requested) {
