@@ -3,6 +3,7 @@ package domain
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -171,5 +172,55 @@ func TestModelStatsSplitsHarnessByModel(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelStats =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestModelStatsTimesResolvedSubagentRuns(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	clock := time.Unix(0, 0).UTC()
+	e.SetClock(func() time.Time { return clock })
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c-t1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+
+	dispatchOn(t, e, "t1", "agent-orchestrator", "", contracts.HarnessClaude)
+	for _, id := range []string{"agent-a-1", "agent-a-2", "agent-a-3"} {
+		dispatchOn(t, e, "t1", id, "agent-orchestrator", contracts.HarnessClaude)
+	}
+	setStatus := func(id string, status contracts.AgentStatus) {
+		t.Helper()
+		mustDispatch(t, e, ctx, contracts.Command{
+			ID: "s-" + id + string(status), Type: contracts.CmdAgentStatusSet, ThreadID: "t1",
+			Status: &contracts.AgentStatusChanged{AgentID: contracts.AgentID(id), Status: status},
+		})
+	}
+	// a-1 runs 0s..10s and succeeds; a-2 runs 0s..30s and succeeds; a-3 fails at
+	// 40s, so it is counted as a run but not as a resolved task. The lead ends at
+	// 100s and must not enter the timing at all.
+	clock = time.Unix(10, 0).UTC()
+	setStatus("agent-a-1", contracts.AgentRunning)
+	setStatus("agent-a-1", contracts.AgentSucceeded)
+	clock = time.Unix(30, 0).UTC()
+	setStatus("agent-a-2", contracts.AgentRunning)
+	setStatus("agent-a-2", contracts.AgentSucceeded)
+	clock = time.Unix(40, 0).UTC()
+	setStatus("agent-a-3", contracts.AgentRunning)
+	setStatus("agent-a-3", contracts.AgentFailed)
+	clock = time.Unix(100, 0).UTC()
+	setStatus("agent-orchestrator", contracts.AgentSucceeded)
+
+	got, err := e.ModelStats(ctx, HarnessScope{})
+	if err != nil {
+		t.Fatalf("ModelStats: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ModelStats = %+v, want one claude row", got)
+	}
+	s := got[0]
+	if s.Agents != 4 || s.Subagents != 3 || s.Resolved != 2 {
+		t.Fatalf("counts = agents %d subagents %d resolved %d, want 4/3/2", s.Agents, s.Subagents, s.Resolved)
+	}
+	// Resolved durations are 10s and 30s: the median is their mean, and p90
+	// interpolates 90% of the way from the faster run to the slower one.
+	if s.MedianSeconds != 20 || s.P90Seconds != 28 {
+		t.Fatalf("median %.2f p90 %.2f, want 20 and 28", s.MedianSeconds, s.P90Seconds)
 	}
 }

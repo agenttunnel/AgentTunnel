@@ -5156,3 +5156,86 @@ button.danger-text {
   color: var(--muted);
   white-space: nowrap;
 }
+
+/* Time per task: one horizontal bar per harness and model pair, on a shared
+   0..max scale with faint gridlines. The tick marks p90. Static on purpose. */
+.tt-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+.tt-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.tt-track {
+  position: relative;
+  height: 14px;
+  border-radius: 3px;
+  background-image: linear-gradient(to right, var(--border-soft) 1px, transparent 1px);
+  background-size: 25% 100%;
+}
+.tt-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.tt-p90 {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text);
+}
+.tt-value {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tt-n {
+  color: var(--faint);
+}
+.tt-axis {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 96px;
+  gap: 12px;
+  margin-top: 4px;
+  font: 10.5px var(--mono);
+  color: var(--faint);
+}
+.tt-axis-ticks {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+}
+@media (max-width: 720px) {
+  .tt-row,
+  .tt-axis {
+    grid-template-columns: minmax(0, 1fr) 96px;
+  }
+  .tt-track {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .tt-axis-gap {
+    display: none;
+  }
+  .tt-axis-ticks {
+    grid-column: 1 / -1;
+  }
+}
