@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,8 @@ type fakeAdapter struct {
 	connects    int
 	disconnects int
 	sent        []string
+	sentIDs     []string
+	inbound     func(InboundMessage)
 	connectHook func(onQR func(string), onLinked func(string), onError func(error)) error
 	connectCh   chan string
 	sentCh      chan string
@@ -54,21 +58,56 @@ func (f *fakeAdapter) Disconnect() error {
 	return nil
 }
 
-func (f *fakeAdapter) Send(_ context.Context, text string) error {
+func (f *fakeAdapter) Send(ctx context.Context, text string) error {
+	_, err := f.SendTracked(ctx, text)
+	return err
+}
+
+func (f *fakeAdapter) SendTracked(_ context.Context, text string) (string, error) {
 	f.mu.Lock()
 	f.sent = append(f.sent, text)
+	id := fmt.Sprintf("out-%d", len(f.sent))
+	f.sentIDs = append(f.sentIDs, id)
 	ch := f.sentCh
 	f.mu.Unlock()
 	if ch != nil {
 		ch <- text
 	}
-	return nil
+	return id, nil
+}
+
+func (f *fakeAdapter) SetInbound(handler func(InboundMessage)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inbound = handler
+}
+
+// deliver hands one message to the handler the bridge installed, reporting
+// whether there was one.
+func (f *fakeAdapter) deliver(msg InboundMessage) bool {
+	f.mu.Lock()
+	handler := f.inbound
+	f.mu.Unlock()
+	if handler == nil {
+		return false
+	}
+	handler(msg)
+	return true
 }
 
 func (f *fakeAdapter) sends() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sent...)
+}
+
+func (f *fakeAdapter) lastSentID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sentIDs) == 0 {
+		return ""
+	}
+	return f.sentIDs[len(f.sentIDs)-1]
 }
 
 func await[T any](t *testing.T, ch <-chan T, what string) T {
@@ -491,5 +530,289 @@ func TestBridgeWithoutAdapterReportsUnavailable(t *testing.T) {
 	}
 	if err := b.Connect(context.Background()); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("connect without an adapter = %v, want the configuration error", err)
+	}
+}
+
+// inboundBridge is a bridge whose Control handler reports every routed message
+// on a channel and replies with a fixed text.
+type inboundBridge struct {
+	bridge  *Bridge
+	adapter *fakeAdapter
+	routed  chan string
+}
+
+const inboundReply = "handled"
+
+func newInboundBridge(t *testing.T, dir string) *inboundBridge {
+	t.Helper()
+	routed := make(chan string, 16)
+	adapter := &fakeAdapter{sentCh: make(chan string, 16)}
+	b, err := New(Options{
+		StateDir: dir,
+		Adapter:  adapter,
+		Control: func(_ context.Context, text string) string {
+			routed <- text
+			return inboundReply
+		},
+	})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(b.Close)
+	return &inboundBridge{bridge: b, adapter: adapter, routed: routed}
+}
+
+// Control is off by default, is separate from notifications, and the bridge
+// ignores inbound messages entirely while it is off.
+func TestBridgeInboundControlOffByDefault(t *testing.T) {
+	dir := t.TempDir()
+	f := newInboundBridge(t, dir)
+	if f.bridge.Control() {
+		t.Fatal("control must default off")
+	}
+	if err := f.bridge.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	// Connecting turns notifications on; control stays off.
+	if got := f.bridge.Status(); got.State != string(StateConnected) || got.Control {
+		t.Fatalf("status after connect = %+v, want connected with control off", got)
+	}
+
+	if text, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "/threads", FromSelf: true}); ok {
+		t.Fatalf("control off accepted %q", text)
+	}
+	// The drop happens synchronously, so no router call can be in flight.
+	if !f.adapter.deliver(InboundMessage{ID: "m1", Text: "/threads", FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	select {
+	case got := <-f.routed:
+		t.Fatalf("control off routed %q", got)
+	default:
+	}
+}
+
+// Self-chat only, echo suppression by id and text, dedupe by id, and a persisted
+// setting that survives a restart.
+func TestBridgeInboundPolicy(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := newInboundBridge(t, dir)
+	if err := f.bridge.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := f.bridge.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+
+	var stored storedState
+	data, err := os.ReadFile(filepath.Join(dir, "whatsapp.json"))
+	if err != nil {
+		t.Fatalf("state file: %v", err)
+	}
+	if err := json.Unmarshal(data, &stored); err != nil || !stored.Control || !stored.Enabled {
+		t.Fatalf("whatsapp.json = %s, want both choices remembered", data)
+	}
+
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m0", Text: "hi", FromSelf: false}); ok {
+		t.Fatal("a message from another chat must not be routed")
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m0", Text: "   ", FromSelf: true}); ok {
+		t.Fatal("an empty message must not be routed")
+	}
+
+	text, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: " hello ", FromSelf: true})
+	if !ok || text != "hello" {
+		t.Fatalf("acceptInbound = %q, %v; want trimmed text", text, ok)
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "hello", FromSelf: true}); ok {
+		t.Fatal("the same message id must be routed once")
+	}
+
+	// An update the bridge sent is remembered by id and by text.
+	f.bridge.send(ctx, "turn complete")
+	sentID := f.adapter.lastSentID()
+	if sentID == "" {
+		t.Fatal("send did not record a message id")
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: sentID, Text: "something else", FromSelf: true}); ok {
+		t.Fatal("the echo of the bridge's own update must be dropped by id")
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m2", Text: "turn complete", FromSelf: true}); ok {
+		t.Fatal("the echo of the bridge's own update must be dropped by text")
+	}
+
+	// A restart loads the control choice; notifications were enabled too.
+	f.bridge.Close()
+	restarted := newInboundBridge(t, dir)
+	if !restarted.bridge.Control() {
+		t.Fatal("control must survive a restart")
+	}
+	if !restarted.bridge.Status().Control {
+		t.Fatal("status must report control so the UI can show the toggle")
+	}
+}
+
+// The text fallback expires while the recorded id stays authoritative, so a
+// command that repeats an older update is not silently dropped forever.
+func TestBridgeEchoTextExpires(t *testing.T) {
+	f := newInboundBridge(t, t.TempDir())
+	if err := f.bridge.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := f.bridge.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	f.bridge.now = func() time.Time { return now }
+
+	f.bridge.send(context.Background(), "turn complete")
+	sentID := f.adapter.lastSentID()
+
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "turn complete", FromSelf: true}); ok {
+		t.Fatal("the immediate echo of an update must be dropped")
+	}
+	now = now.Add(echoTextWindow + time.Second)
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m2", Text: "turn complete", FromSelf: true}); !ok {
+		t.Fatal("an old text match must not hide a later command")
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: sentID, Text: "anything", FromSelf: true}); ok {
+		t.Fatal("the recorded message id must drop the echo regardless of age")
+	}
+}
+
+// One message reaches the router and its reply goes back through the bridge's
+// normal sender.
+func TestBridgeRoutesInboundAndReplies(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	f := newInboundBridge(t, t.TempDir())
+	f.bridge.Start(ctx)
+	if err := f.bridge.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := f.bridge.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+
+	if !f.adapter.deliver(InboundMessage{ID: "m1", Text: "/threads", FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	if got := await(t, f.routed, "the message to reach the router"); got != "/threads" {
+		t.Fatalf("routed = %q, want the message text", got)
+	}
+	if got := await(t, f.adapter.sentCh, "the router's reply"); got != inboundReply {
+		t.Fatalf("reply = %q, want %q", got, inboundReply)
+	}
+}
+
+// Accepted messages are routed by one worker in arrival order: "/use 2" has
+// committed before the following text reads the selection, and no two commands
+// ever run at once. Everything is driven by typed channels, never a sleep.
+func TestBridgeSerializesInboundRouting(t *testing.T) {
+	const (
+		selectText = "/use 2"
+		actText    = "run the tests"
+	)
+	firstEntered := make(chan struct{})
+	release := make(chan struct{})
+	routed := make(chan string, 4)
+	var active, overlapped int32
+	var mu sync.Mutex
+	selected := ""
+
+	adapter := &fakeAdapter{sentCh: make(chan string, 8)}
+	b, err := New(Options{
+		StateDir: t.TempDir(),
+		Adapter:  adapter,
+		Control: func(_ context.Context, text string) string {
+			if atomic.AddInt32(&active, 1) > 1 {
+				atomic.StoreInt32(&overlapped, 1)
+			}
+			defer atomic.AddInt32(&active, -1)
+			if text == selectText {
+				close(firstEntered)
+				<-release
+				mu.Lock()
+				selected = "t2"
+				mu.Unlock()
+				return ""
+			}
+			mu.Lock()
+			got := selected
+			mu.Unlock()
+			routed <- got + ":" + text
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(b.Close)
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := b.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+
+	if !adapter.deliver(InboundMessage{ID: "m1", Text: selectText, FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	// Wait until the first command is inside the router, then deliver the next
+	// one while it is still running. It must wait its turn.
+	<-firstEntered
+	if !adapter.deliver(InboundMessage{ID: "m2", Text: actText, FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	close(release)
+
+	if got := await(t, routed, "the second command to be routed"); got != "t2:"+actText {
+		t.Fatalf("routed = %q, want it to see the selection made by the first command", got)
+	}
+	if atomic.LoadInt32(&overlapped) != 0 {
+		t.Fatal("two commands were routed concurrently")
+	}
+}
+
+// ControlSupported reports whether this configuration can receive control
+// messages at all, so the UI never offers an inert toggle.
+type sendOnlyAdapter struct{}
+
+func (sendOnlyAdapter) Connect(context.Context, func(string), func(string), func(error)) error {
+	return nil
+}
+func (sendOnlyAdapter) Disconnect() error                  { return nil }
+func (sendOnlyAdapter) Send(context.Context, string) error { return nil }
+
+func TestBridgeReportsControlCapability(t *testing.T) {
+	supported := newInboundBridge(t, t.TempDir())
+	if !supported.bridge.Status().ControlSupported {
+		t.Fatal("a bridge whose adapter can receive messages must advertise control")
+	}
+
+	sendOnly, err := New(Options{
+		StateDir: t.TempDir(),
+		Adapter:  sendOnlyAdapter{},
+		Control:  func(context.Context, string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(sendOnly.Close)
+	if sendOnly.Status().ControlSupported {
+		t.Fatal("an adapter with no inbound path must not advertise control")
+	}
+}
+
+// Inbound control needs a linked device: a saved handler alone routes nothing.
+func TestBridgeInboundRequiresALinkedDevice(t *testing.T) {
+	f := newInboundBridge(t, t.TempDir())
+	if err := f.bridge.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "hi", FromSelf: true}); ok {
+		t.Fatal("an unlinked bridge must not route inbound messages")
 	}
 }

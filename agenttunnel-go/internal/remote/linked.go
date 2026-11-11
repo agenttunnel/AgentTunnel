@@ -13,6 +13,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 
@@ -29,9 +30,10 @@ type LinkedAdapter struct {
 	stateDir string
 	open     linkedOpener
 
-	mu    sync.Mutex
-	sess  linkedSession
-	epoch int
+	mu      sync.Mutex
+	sess    linkedSession
+	epoch   int
+	inbound func(InboundMessage)
 }
 
 // linkedSession is the WhatsApp web client the adapter drives. Keeping the
@@ -42,7 +44,12 @@ type linkedSession interface {
 	// device once messages can be sent, and onError reports a pairing that
 	// failed after Connect returned (expired QR, unlinked from the phone, …).
 	Connect(ctx context.Context, onQR func(string), onLinked func(string), onError func(error)) error
-	Send(ctx context.Context, text string) error
+	// Send delivers one text to the account's own chat and reports the message
+	// id the server assigned it.
+	Send(ctx context.Context, text string) (string, error)
+	// SetInbound installs the handler for text messages the account sends to
+	// its own chat. Nil stops delivery.
+	SetInbound(func(InboundMessage))
 	Logout(ctx context.Context) error
 	Close()
 }
@@ -85,7 +92,11 @@ func (a *LinkedAdapter) Connect(ctx context.Context, onQR, onLinked func(string)
 		return nil
 	}
 	a.sess = sess
+	inbound := a.inbound
 	a.mu.Unlock()
+	if inbound != nil {
+		sess.SetInbound(inbound)
+	}
 
 	// The socket outlives the RPC that started it, so it must not inherit that
 	// request's cancellation.
@@ -104,13 +115,32 @@ func (a *LinkedAdapter) Connect(ctx context.Context, onQR, onLinked func(string)
 
 // Send delivers one text message to the linked account's own number.
 func (a *LinkedAdapter) Send(ctx context.Context, text string) error {
+	_, err := a.SendTracked(ctx, text)
+	return err
+}
+
+// SendTracked also reports the message id, so the bridge can drop the echo of
+// its own update when WhatsApp delivers it back.
+func (a *LinkedAdapter) SendTracked(ctx context.Context, text string) (string, error) {
 	a.mu.Lock()
 	sess := a.sess
 	a.mu.Unlock()
 	if sess == nil {
-		return errors.New("whatsapp: no linked device")
+		return "", errors.New("whatsapp: no linked device")
 	}
 	return sess.Send(ctx, text)
+}
+
+// SetInbound installs the handler for the user's own chat messages. A session
+// already connected gets it immediately; otherwise Connect passes it on.
+func (a *LinkedAdapter) SetInbound(handler func(InboundMessage)) {
+	a.mu.Lock()
+	a.inbound = handler
+	sess := a.sess
+	a.mu.Unlock()
+	if sess != nil {
+		sess.SetInbound(handler)
+	}
 }
 
 // Disconnect unlinks the device: WhatsApp stops delivering to it, and the local
@@ -162,6 +192,9 @@ type whatsmeowSession struct {
 	linked    sync.Once
 	failed    sync.Once
 	closed    sync.Once
+
+	mu      sync.Mutex
+	inbound func(InboundMessage)
 }
 
 // sqliteDSN builds the driver URI for the session store. It deliberately avoids
@@ -204,9 +237,11 @@ func openWhatsmeowSession(ctx context.Context, stateDir string) (linkedSession, 
 
 func (s *whatsmeowSession) Connect(_ context.Context, onQR, onLinked func(string), onError func(error)) error {
 	s.client.AddEventHandler(func(evt any) {
-		switch evt.(type) {
+		switch e := evt.(type) {
 		case *events.Connected:
 			s.notifyLinked(onLinked)
+		case *events.Message:
+			s.deliver(e)
 		case *events.LoggedOut:
 			// The phone removed this companion device; there is nothing left to
 			// reconnect, so the bridge must stop claiming "connected".
@@ -318,15 +353,74 @@ func (s *whatsmeowSession) detail() string {
 
 // Send messages the user's own number, which is where a companion device sees
 // the conversation with itself.
-func (s *whatsmeowSession) Send(ctx context.Context, text string) error {
+func (s *whatsmeowSession) Send(ctx context.Context, text string) (string, error) {
 	jid := s.client.Store.GetJID()
 	if jid.IsEmpty() {
-		return whatsmeow.ErrNotLoggedIn
+		return "", whatsmeow.ErrNotLoggedIn
 	}
-	_, err := s.client.SendMessage(ctx, jid.ToNonAD(), &waE2E.Message{
+	resp, err := s.client.SendMessage(ctx, jid.ToNonAD(), &waE2E.Message{
 		Conversation: proto.String(text),
 	})
-	return err
+	return string(resp.ID), err
+}
+
+// SetInbound installs the handler for self-chat messages. whatsmeow calls the
+// event handler on its own goroutine, so the handler must not block it.
+func (s *whatsmeowSession) SetInbound(handler func(InboundMessage)) {
+	s.mu.Lock()
+	s.inbound = handler
+	s.mu.Unlock()
+}
+
+// deliver forwards a message only when it came from the linked account's own
+// chat. That chat is the bridge's surface: anyone else's message is not a
+// command and never reaches the handler.
+func (s *whatsmeowSession) deliver(evt *events.Message) {
+	msg, ok := inboundText(s.client.Store.GetJID(), evt.Info, evt.Message)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	handler := s.inbound
+	s.mu.Unlock()
+	if handler != nil {
+		handler(msg)
+	}
+}
+
+// inboundText is the self-chat rule. A message counts only when its chat is the
+// account's own address (or the account sent it to itself under a different
+// addressing form, e.g. LID) and it carries text.
+func inboundText(own types.JID, info types.MessageInfo, m *waE2E.Message) (InboundMessage, bool) {
+	if own.IsEmpty() || info.Chat.IsEmpty() || info.IsGroup {
+		return InboundMessage{}, false
+	}
+	selfChat := info.Chat.ToNonAD() == own.ToNonAD() ||
+		(info.IsFromMe && info.Chat.ToNonAD() == info.Sender.ToNonAD())
+	if !selfChat {
+		return InboundMessage{}, false
+	}
+	text := messageText(m)
+	if strings.TrimSpace(text) == "" {
+		return InboundMessage{}, false
+	}
+	return InboundMessage{
+		ID:       string(info.ID),
+		Text:     text,
+		FromSelf: info.IsFromMe || info.Sender.ToNonAD() == own.ToNonAD(),
+	}, true
+}
+
+// messageText reads a plain-text message, in either the simple or the extended
+// form WhatsApp uses once a message carries metadata.
+func messageText(m *waE2E.Message) string {
+	if m == nil {
+		return ""
+	}
+	if text := m.GetConversation(); text != "" {
+		return text
+	}
+	return m.GetExtendedTextMessage().GetText()
 }
 
 // Logout unlinks the companion device. An unpaired session has nothing to

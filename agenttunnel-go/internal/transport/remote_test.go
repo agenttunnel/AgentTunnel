@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ type fakeRemote struct {
 	item        RemoteItem
 	connects    int
 	disconnects int
+	controlSets int
 }
 
 func (f *fakeRemote) Status() RemoteItem {
@@ -35,6 +37,20 @@ func (f *fakeRemote) Disconnect() error {
 	defer f.mu.Unlock()
 	f.disconnects++
 	f.item = RemoteItem{State: "off", Detail: "Not connected"}
+	return nil
+}
+
+func (f *fakeRemote) Control() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.item.Control
+}
+
+func (f *fakeRemote) SetControl(enabled bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.controlSets++
+	f.item.Control = enabled
 	return nil
 }
 
@@ -185,6 +201,42 @@ func TestRemoteRPCsWithoutABridge(t *testing.T) {
 	}
 }
 
+// Control is a get when no value is sent and a set when one is, and every set
+// broadcasts the section so every client's toggle stays in step.
+func TestWhatsAppControlRPCGetAndSet(t *testing.T) {
+	ctx := context.Background()
+	wa := &fakeRemote{item: RemoteItem{State: "connected"}}
+	disp := NewDispatcher(DispatcherDeps{Remote: wa})
+	notifications := make(chan RemoteStatus, 4)
+	disp.SetRemoteNotifier(func(st RemoteStatus) { notifications <- st })
+
+	res, err := disp.Handle(ctx, Request{ID: "1", Method: "remote.whatsapp.control"})
+	if err != nil {
+		t.Fatalf("control get: %v", err)
+	}
+	if st, ok := res.(ControlState); !ok || st.Enabled {
+		t.Fatalf("control get = %#v, want off", res)
+	}
+
+	params, _ := json.Marshal(map[string]any{"enabled": true})
+	res, err = disp.Handle(ctx, Request{ID: "2", Method: "remote.whatsapp.control", Params: params})
+	if err != nil {
+		t.Fatalf("control set: %v", err)
+	}
+	if st, ok := res.(ControlState); !ok || !st.Enabled {
+		t.Fatalf("control set = %#v, want on", res)
+	}
+	awaitRemoteStatus(t, notifications, func(st RemoteStatus) bool {
+		return st.Items[1].Control
+	})
+	wa.mu.Lock()
+	sets := wa.controlSets
+	wa.mu.Unlock()
+	if sets != 1 {
+		t.Fatalf("control sets = %d, want 1", sets)
+	}
+}
+
 // A relayed phone cannot re-pair WhatsApp, and its status view never carries
 // another surface's pairing secret.
 func TestSessionRefusesWhatsAppPairing(t *testing.T) {
@@ -199,6 +251,7 @@ func TestSessionRefusesWhatsAppPairing(t *testing.T) {
 	for _, frame := range []string{
 		`{"id":"w1","method":"remote.whatsapp.connect"}`,
 		`{"id":"w2","method":"remote.whatsapp.disconnect"}`,
+		`{"id":"w6","method":"remote.whatsapp.control","params":{"enabled":true}}`,
 	} {
 		sess.Handle([]byte(frame))
 		select {
@@ -212,10 +265,11 @@ func TestSessionRefusesWhatsAppPairing(t *testing.T) {
 	}
 
 	wa.mu.Lock()
-	connects, disconnects := wa.connects, wa.disconnects
+	connects, disconnects, controlSets := wa.connects, wa.disconnects, wa.controlSets
 	wa.mu.Unlock()
-	if connects != 0 || disconnects != 0 {
-		t.Fatalf("bridge was driven through a session: connects %d, disconnects %d", connects, disconnects)
+	if connects != 0 || disconnects != 0 || controlSets != 0 {
+		t.Fatalf("bridge was driven through a session: connects %d, disconnects %d, control sets %d",
+			connects, disconnects, controlSets)
 	}
 
 	sess.Handle([]byte(`{"id":"w3","method":"remote.status"}`))

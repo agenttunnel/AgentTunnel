@@ -9,12 +9,25 @@ import (
 // linked-device pairing is waiting to be scanned. Unavailable marks a surface
 // this build cannot connect at all, so the UI must not offer a toggle.
 type RemoteItem struct {
-	ID          string `json:"id"` // "phone" | "whatsapp"
-	Label       string `json:"label"`
-	State       string `json:"state"`
-	Detail      string `json:"detail,omitempty"`
-	QR          string `json:"qr,omitempty"`
-	Unavailable bool   `json:"unavailable,omitempty"`
+	ID     string `json:"id"` // "phone" | "whatsapp"
+	Label  string `json:"label"`
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+	QR     string `json:"qr,omitempty"`
+	// Control is the persisted inbound-control setting. Only WhatsApp has one;
+	// it is independent of the item's connection state.
+	Control bool `json:"control,omitempty"`
+	// ControlSupported says this surface can actually receive the messages that
+	// drive control. An adapter with no inbound path reports false, so the UI
+	// does not offer a toggle that would be silently inert.
+	ControlSupported bool `json:"controlSupported,omitempty"`
+	Unavailable      bool `json:"unavailable,omitempty"`
+}
+
+// ControlState is the remote.whatsapp.control payload: the current setting for
+// a get, and the new setting for a set.
+type ControlState struct {
+	Enabled bool `json:"enabled"`
 }
 
 // RemoteStatus is the Remote section's whole payload.
@@ -29,6 +42,10 @@ type RemoteControl interface {
 	Status() RemoteItem
 	Connect(ctx context.Context) error
 	Disconnect() error
+	// Control reports and sets inbound control, which lets the user's own chat
+	// messages drive the selected thread's orchestrator.
+	Control() bool
+	SetControl(enabled bool) error
 }
 
 // RemoteStatus composes the section from the phone relay state and the WhatsApp
