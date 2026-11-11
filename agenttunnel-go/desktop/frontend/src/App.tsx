@@ -222,6 +222,14 @@ export type SettingsView = {
   configPath: string;
   staleAfterMinutes?: number;
 };
+export type DependencyStatus = "ok" | "outdated" | "missing";
+export type DependencyView = {
+  name: string;
+  installed: boolean;
+  version?: string;
+  minVersion: string;
+  status: DependencyStatus;
+};
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
  * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
@@ -777,6 +785,9 @@ export default function App() {
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
+  const [deps, setDeps] = useState<DependencyView[] | null>(null);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -992,6 +1003,20 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     setHarnesses(await rpc.call<HarnessInfo>("harness.list"));
+  }, []);
+
+  const loadDeps = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setDepsBusy(true);
+    try {
+      setDeps(await rpc.call<DependencyView[]>("deps.check"));
+      setDepsError(null);
+    } catch (e) {
+      setDepsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDepsBusy(false);
+    }
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -2343,7 +2368,7 @@ export default function App() {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
+        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects(), loadDeps()]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
@@ -4032,6 +4057,39 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+              </section>
+
+              <section className="set-section">
+                <h4>Dependencies</h4>
+                <p className="hint">
+                  The forge CLIs the Pull request tab shells out to. Versions are read from the
+                  tools on PATH.
+                </p>
+                {depsError && <p className="hint warn">{depsError}</p>}
+                {deps === null && !depsError && <p className="hint">Checking…</p>}
+                {(deps ?? []).map((d) => (
+                  <div className="dep-row" key={d.name}>
+                    <span className="dn">{d.name}</span>
+                    <span className={`dv ${d.status}`}>
+                      {d.status === "missing"
+                        ? "not installed"
+                        : `${d.version || "unknown version"}${
+                            d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
+                          }`}
+                    </span>
+                    <span
+                      className={`dot ${
+                        d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
+                      }`}
+                      title={d.status}
+                    />
+                  </div>
+                ))}
+                <div className="sheet-actions">
+                  <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
+                    {depsBusy ? "Checking…" : "Recheck"}
+                  </button>
+                </div>
               </section>
 
               <section className="set-section">

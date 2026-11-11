@@ -17,6 +17,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deps"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
@@ -1068,6 +1069,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, errors.New("updates are unavailable")
 		}
 		return d.updater.Apply(ctx)
+
+	case "deps.check":
+		// Probes the forge CLIs on PATH with `--version`; local and read-only,
+		// so the headless daemon reports the same answer as the desktop app.
+		return deps.Probe(ctx), nil
 
 	case "review.diff":
 		var p struct {

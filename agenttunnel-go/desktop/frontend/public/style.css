@@ -3354,6 +3354,36 @@ button.danger-text {
   color: var(--ok);
 }
 
+/* --- dependencies ------------------------------------------------------ */
+.dep-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.dep-row .dn {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.dep-row .dv {
+  font-size: 11px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dep-row .dv.ok {
+  color: var(--ok);
+}
+.dep-row .dv.outdated {
+  color: var(--warn);
+}
+.dep-row .dot {
+  margin-top: 0;
+}
+
 /* --- dropdown ---------------------------------------------------------- */
 .dd {
   position: relative;
