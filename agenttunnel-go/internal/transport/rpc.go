@@ -1206,6 +1206,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.engine.HarnessStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
 
+	case "stats.teams":
+		// Same scope as stats.harnesses: no params is the environment.
+		var p struct {
+			ThreadID  contracts.ThreadID `json:"threadId"`
+			ProjectID string             `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.engine.TeamStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
 	case "stats.models":
 		// Same scope as stats.harnesses: no params is the environment.
 		var p struct {

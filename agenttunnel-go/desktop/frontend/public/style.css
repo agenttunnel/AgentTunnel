@@ -5239,3 +5239,52 @@ button.danger-text {
     grid-column: 1 / -1;
   }
 }
+
+/* Team effectiveness: the ranked table and a scatter of time against tokens. */
+.team-table .team-rank {
+  display: inline-block;
+  width: 18px;
+  font-family: var(--mono);
+  color: var(--faint);
+}
+.team-name {
+  color: var(--text);
+}
+.team-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.team-scatter {
+  margin: 16px 0 0;
+}
+.team-scatter svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 640px;
+}
+.ts-grid {
+  stroke: var(--border-soft);
+  stroke-width: 1;
+}
+.ts-tick,
+.ts-axis {
+  font: 10.5px var(--mono);
+  fill: var(--faint);
+}
+.ts-dot {
+  fill: var(--accent);
+  fill-opacity: 0.85;
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+.ts-label {
+  font: 600 10.5px var(--mono);
+  fill: var(--text);
+}

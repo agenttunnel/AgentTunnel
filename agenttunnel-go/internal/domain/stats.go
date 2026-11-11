@@ -2,8 +2,10 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -223,6 +225,114 @@ func (e *Engine) ModelStats(ctx context.Context, scope HarnessScope) ([]ModelSta
 			return a.Harness < b.Harness
 		}
 		return a.Model < b.Model
+	})
+	return out, nil
+}
+
+// TeamStat rolls up one team across the threads in scope. A team is the set of
+// distinct harness and model pairs that worked a turn, so "claude/opus with
+// codex/gpt" and "claude/opus alone" are different teams. A task is a turn the
+// leads finished; a resolved task is one where no lead failed.
+type TeamStat struct {
+	// Members lists the team's "harness/model" pairs, sorted; "default" stands
+	// for an unset model.
+	Members []string `json:"members"`
+	// Tasks counts turns that ended. Resolved counts those with no failed lead.
+	Tasks    int `json:"tasks"`
+	Resolved int `json:"resolved"`
+	// MedianSeconds and P90Seconds time resolved tasks from the turn's start to
+	// the lead's terminal status. MedianTokens is input plus output per resolved
+	// task, so cache reads do not make a team look cheaper or dearer than it is.
+	MedianSeconds float64 `json:"medianSeconds"`
+	P90Seconds    float64 `json:"p90Seconds"`
+	MedianTokens  float64 `json:"medianTokens"`
+}
+
+type teamAcc struct {
+	stat   TeamStat
+	times  []float64
+	tokens []float64
+}
+
+// teamMembers returns the sorted, de-duplicated harness/model pairs that ran in a turn.
+func teamMembers(st *ThreadState, tu TurnUsage) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range tu.AgentOrder {
+		a := st.Agents[id]
+		model := a.Model
+		if model == "" {
+			model = "default"
+		}
+		label := fmt.Sprintf("%s/%s", a.Harness, model)
+		if !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TeamStats returns the team rollup across the threads in scope, best first: by
+// resolve rate, then by median time per resolved task, then by team name. Turns
+// that have no end time (open, or recorded before it was tracked) are skipped.
+func (e *Engine) TeamStats(ctx context.Context, scope HarnessScope) ([]TeamStat, error) {
+	states, err := e.scopedStates(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	acc := map[string]*teamAcc{}
+	for _, st := range states {
+		for _, tu := range st.Turns {
+			if tu.EndedAt.IsZero() || tu.At.IsZero() {
+				continue
+			}
+			members := teamMembers(st, tu)
+			if len(members) == 0 {
+				continue
+			}
+			key := strings.Join(members, " + ")
+			ta, ok := acc[key]
+			if !ok {
+				ta = &teamAcc{stat: TeamStat{Members: members}}
+				acc[key] = ta
+			}
+			ta.stat.Tasks++
+			if tu.Failed {
+				continue
+			}
+			ta.stat.Resolved++
+			ta.times = append(ta.times, tu.EndedAt.Sub(tu.At).Seconds())
+			var io int64
+			for _, u := range tu.Agents {
+				io += u.InputTokens + u.OutputTokens
+			}
+			ta.tokens = append(ta.tokens, float64(io))
+		}
+	}
+	out := make([]TeamStat, 0, len(acc))
+	for _, ta := range acc {
+		s := ta.stat
+		if len(ta.times) > 0 {
+			sort.Float64s(ta.times)
+			sort.Float64s(ta.tokens)
+			s.MedianSeconds = quantile(ta.times, 0.5)
+			s.P90Seconds = quantile(ta.times, 0.9)
+			s.MedianTokens = quantile(ta.tokens, 0.5)
+		}
+		out = append(out, s)
+	}
+	rate := func(s TeamStat) float64 { return float64(s.Resolved) / float64(s.Tasks) }
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if rate(a) != rate(b) {
+			return rate(a) > rate(b)
+		}
+		if a.MedianSeconds != b.MedianSeconds {
+			return a.MedianSeconds < b.MedianSeconds
+		}
+		return strings.Join(a.Members, " + ") < strings.Join(b.Members, " + ")
 	})
 	return out, nil
 }

@@ -109,6 +109,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 		if p.Status.Terminal() {
 			t := e.At
 			a.EndedAt = &t
+			// A lead finishing is the team finishing the turn; keep the latest one.
+			if a.IsOrchestrator() && s.Turn > 0 {
+				turn := s.turnFor(s.Turn)
+				turn.EndedAt = e.At
+				if p.Status != contracts.AgentSucceeded {
+					turn.Failed = true
+				}
+			}
 		}
 		s.Agents[p.AgentID] = a
 
