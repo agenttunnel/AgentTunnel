@@ -779,7 +779,6 @@ func (r *Runner) harnessList() []contracts.Harness {
 		contracts.HarnessClaude,
 		contracts.HarnessCodex,
 		contracts.HarnessCursor,
-		contracts.HarnessGrok,
 		contracts.HarnessPi,
 		contracts.HarnessCommandCode,
 	}
