@@ -44,7 +44,7 @@ import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
-import { PRPanel, type PRSnapshot } from "./components/PRPanel";
+import { PRPanel, type PRListing } from "./components/PRPanel";
 import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
@@ -686,13 +686,10 @@ export default function App() {
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
-  // PR/MR status for the active thread; tagged with its thread so a late reply never shows elsewhere.
-  const [prState, setPRState] = useState<PRSnapshot | null>(null);
+  // Pull requests the active thread opened; tagged with its thread so a late reply never shows elsewhere.
+  const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
-  // The PR-tab write in flight (e.g. "pr.push") and the last one's result, both thread-tagged.
-  const [prBusy, setPRBusy] = useState<string | null>(null);
-  const [prNotice, setPRNotice] = useState<{ threadId: string; text: string } | null>(null);
   // Worktrees: per open project, live git facts from worktree.list. Every thread
   // in a git project gets one, so the UI offers no choice about it. Shown in the
   // threads view (no thread open), not the aside.
@@ -895,39 +892,14 @@ export default function App() {
     setPRLoading(true);
     setPRError(null);
     try {
-      const snapshot = await rpc.call<PRSnapshot>("pr.status", { threadId: id });
-      if (activeIdRef.current === id) setPRState({ ...snapshot, threadId: id });
+      const listing = await rpc.call<PRListing>("pr.list", { threadId: id });
+      if (activeIdRef.current === id) setPRState({ ...listing, threadId: id });
     } catch (e) {
       if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
     } finally {
       if (activeIdRef.current === id) setPRLoading(false);
     }
   }, []);
-
-  /** Runs one PR-tab write (pr.commit, pr.push, ...) for the active thread, then re-reads the snapshot. */
-  const runPRAction = useCallback(
-    async (method: string, params: Record<string, unknown> = {}) => {
-      const rpc = rpcRef.current;
-      const id = activeIdRef.current;
-      if (!rpc || !id) return false;
-      setPRBusy(method);
-      setPRError(null);
-      setPRNotice(null);
-      let ok = false;
-      try {
-        const result = await rpc.call<{ message?: string }>(method, { ...params, threadId: id });
-        ok = true;
-        if (activeIdRef.current === id) setPRNotice({ threadId: id, text: result?.message || "Done" });
-      } catch (e) {
-        if (activeIdRef.current === id) setPRError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setPRBusy(null);
-      }
-      void loadPR(id);
-      return ok;
-    },
-    [loadPR],
-  );
 
 
   const loadFileTree = useCallback(async (id: string | null) => {
@@ -3649,13 +3621,10 @@ export default function App() {
         ) : asideActive === "pr" ? (
           <div className="section pr-section">
             <PRPanel
-              snapshot={prState?.threadId === activeId ? prState : null}
+              listing={prState?.threadId === activeId ? prState : null}
               loading={prLoading}
               error={prError}
-              busy={prBusy}
-              notice={prNotice?.threadId === activeId ? prNotice.text : null}
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
-              onAction={runPRAction}
             />
           </div>
         ) : asideActive === "files" ? (

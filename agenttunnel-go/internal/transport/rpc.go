@@ -1084,6 +1084,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return scm.Fetch(ctx, wd), nil
 
+	case "pr.list":
+		return d.prList(ctx, req)
+
 	case "pr.states":
 		// Takes thread ids, never directories: the daemon resolves each thread's
 		// own worktree, so a client cannot point gh at an arbitrary path.

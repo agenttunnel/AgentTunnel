@@ -56,6 +56,11 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.LeadsSet:
 		s.Leads = p.Count
 
+	case contracts.PRTracked:
+		if !s.HasPullRequest(p.PullRequest.URL) {
+			s.PullRequests = append(s.PullRequests, p.PullRequest)
+		}
+
 	case contracts.LeadRuntimeSet:
 		for len(s.LeadRuntimes) <= p.Index {
 			s.LeadRuntimes = append(s.LeadRuntimes, contracts.LeadRuntime{})

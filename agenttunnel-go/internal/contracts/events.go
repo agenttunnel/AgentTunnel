@@ -38,6 +38,7 @@ const (
 	EvtAgentOutput        EventType = "agent.output"
 	EvtQuestionAsked      EventType = "thread.question-asked"
 	EvtQuestionClosed     EventType = "thread.question-closed"
+	EvtPRTracked          EventType = "thread.pr-tracked"
 )
 
 // EventPayload is implemented by every concrete event payload. The unexported
@@ -152,6 +153,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[QuestionAsked](data)
 	case EvtQuestionClosed:
 		return decodePayload[QuestionClosed](data)
+	case EvtPRTracked:
+		return decodePayload[PRTracked](data)
 	default:
 		return nil, fmt.Errorf("unknown event type %q", t)
 	}
@@ -506,3 +509,16 @@ type AgentOutput struct {
 }
 
 func (AgentOutput) eventType() EventType { return EvtAgentOutput }
+
+// PullRequestRef identifies a pull request a thread opened. URL is the key:
+// a thread tracks every request it has opened, and each one is recorded once.
+type PullRequestRef struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+}
+
+// PRTracked records that a thread has a pull request. Details such as title,
+// comments, and reviewers are read from the forge on demand, never stored.
+type PRTracked struct{ PullRequest PullRequestRef }
+
+func (PRTracked) eventType() EventType { return EvtPRTracked }
