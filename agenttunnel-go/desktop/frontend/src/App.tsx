@@ -259,6 +259,19 @@ function loadThreadView(): ThreadView {
 
 /** How often the board re-reads PR state while it is open. */
 const THREAD_PR_POLL_MS = 20_000;
+/** Playful verbs for the setup view's Start button. */
+const START_VERBS = [
+  "Brewing",
+  "Noodling",
+  "Wrangling",
+  "Tinkering",
+  "Conjuring",
+  "Herding",
+  "Scheming",
+  "Juggling",
+  "Puzzling",
+  "Dreaming",
+];
 
 function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
   if (a.dirty !== b.dirty) return false;
@@ -2063,6 +2076,10 @@ export default function App() {
   };
 
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Thread whose pre-run setup the user confirmed; the composer stays hidden until then.
+  const [setupReadyId, setSetupReadyId] = useState<string | null>(null);
+  // One playful verb per thread's setup view, picked when the thread changes.
+  const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
   // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
@@ -2769,6 +2786,7 @@ export default function App() {
 
   const setupMode =
     tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
+  const composerHidden = setupMode && setupReadyId !== activeId;
   const asideCollapsed = !layout.asideOpen || setupMode;
 
   return (
@@ -2921,6 +2939,15 @@ export default function App() {
                     harnessOptionsFor={harnessOptionsFor}
                     toggleRoleEnabled={toggleRoleEnabled}
                   />
+                  {composerHidden && (
+                    <button
+                      type="button"
+                      className="setup-continue"
+                      onClick={() => setSetupReadyId(activeId)}
+                    >
+                      Start {startVerb}...
+                    </button>
+                  )}
                 </div>
               )}
               {!setupMode && (!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
@@ -3040,6 +3067,7 @@ export default function App() {
 
             <div
               className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
+              hidden={composerHidden}
             >
               {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
               {slashOpen && (
