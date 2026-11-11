@@ -4219,19 +4219,60 @@ button.danger-text {
     opacity: 0;
   }
 }
-/* Keeps graph-enter in the list, finished, so dropping .merge does not replay it. */
-.graph-node.merge {
-  animation: graph-enter 240ms ease-out both, graph-merge 300ms ease-out;
+/* A group being born: concentric rings wash outward from the group's center
+   while its members rise and fade into place. Both are one-shot, transform and
+   opacity only, and the ripple unmounts once it has played. */
+.graph-ripple {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
-@keyframes graph-merge {
+.graph-ripple i {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--accent);
+  border-radius: 999px;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: graph-birth-ring 900ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.graph-ripple i:nth-child(2) {
+  animation-delay: 120ms;
+}
+.graph-ripple i:nth-child(3) {
+  animation-delay: 240ms;
+}
+@keyframes graph-birth-ring {
   0% {
-    transform: scale(1);
+    transform: scale(0.82);
+    opacity: 0;
   }
-  40% {
-    transform: scale(1.06);
+  15% {
+    opacity: 0.55;
   }
   100% {
-    transform: scale(1);
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+/* graph-enter stays in the list (finished, `both`) so dropping .born does not
+   replay it, and graph-born animates the separate translate/scale properties
+   plus opacity, which compose with the entrance's transform. */
+.graph-node.born {
+  animation:
+    graph-enter 240ms ease-out both,
+    graph-born 420ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+}
+@keyframes graph-born {
+  from {
+    opacity: 0.35;
+    translate: 0 8px;
+    scale: 0.97;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    scale: 1;
   }
 }
 .graph-composer {
@@ -4280,14 +4321,15 @@ button.danger-text {
 @media (prefers-reduced-motion: reduce) {
   .graph-pulse,
   .graph-node.enter,
-  .graph-node.merge {
+  .graph-node.born {
     animation: none;
   }
   .graph-node.snap {
     scale: none;
     transition: none;
   }
-  .graph-rings {
+  .graph-rings,
+  .graph-ripple {
     display: none;
   }
 }
