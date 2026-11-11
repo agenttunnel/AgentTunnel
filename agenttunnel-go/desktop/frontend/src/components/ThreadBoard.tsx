@@ -120,7 +120,12 @@ export const ThreadBoardCard = memo(function ThreadBoardCard({
       className={`thread-card tb-card${selected ? " selected" : ""}`}
       role="button"
       tabIndex={0}
-      onClick={() => onOpen(thread.id)}
+      aria-pressed={selected}
+      onClick={(e) => {
+        // Cmd/Ctrl- or Shift-click selects for a bulk action; a plain click opens.
+        if (e.metaKey || e.ctrlKey || e.shiftKey) onToggle(thread.id);
+        else onOpen(thread.id);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -129,14 +134,6 @@ export const ThreadBoardCard = memo(function ThreadBoardCard({
       }}
     >
       <div className="tc-head">
-        <input
-          type="checkbox"
-          className="tb-check"
-          checked={selected}
-          aria-label={`Select ${thread.title}`}
-          onClick={stop}
-          onChange={() => onToggle(thread.id)}
-        />
         <span className={`dot ${DOT_CLASS[column]}`} aria-hidden="true" />
         <div className="tc-title" title={thread.title}>
           {thread.title}
@@ -265,7 +262,7 @@ export function ThreadBoard<T extends BoardThread>({
             </>
           ) : (
             <>
-              <span>{selected.size} selected</span>
+              <span>{selected.size} selected · Cmd- or Shift-click cards to change the selection</span>
               <button type="button" onClick={archiveSelected}>
                 Archive
               </button>
