@@ -743,6 +743,7 @@ export default function App() {
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -1239,6 +1240,17 @@ export default function App() {
     setApprovedInput((s.approvedModels ?? []).join(", "));
     setStaleAfterInput(String(s.staleAfterMinutes ?? 30));
     return s;
+  }, []);
+
+  const loadAppInfo = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      const info = await rpc.call<{ version?: string }>("app.info");
+      setAppVersion(info?.version || "dev");
+    } catch {
+      setAppVersion("dev");
+    }
   }, []);
 
   // Connect to the embedded daemon once the shell hands us its address.
@@ -2260,7 +2272,7 @@ export default function App() {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
+        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects(), loadAppInfo()]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
@@ -3986,6 +3998,16 @@ export default function App() {
                     />
                   </div>
                 ))}
+              </section>
+
+              <section className="set-section about-section">
+                <h4>About</h4>
+                <p className="hint">
+                  AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
+                </p>
+                <p className="hint">
+                  <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
+                </p>
               </section>
             </div>
           </div>

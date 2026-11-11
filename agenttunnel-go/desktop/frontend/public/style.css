@@ -3164,6 +3164,16 @@ table.grid tr.rowlink:hover td {
   font-size: 12px;
   margin: 0 0 12px;
 }
+.about-section .hint:last-child {
+  margin-bottom: 0;
+}
+.about-section a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.about-section a:hover {
+  text-decoration: underline;
+}
 .field {
   display: block;
 }
