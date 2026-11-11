@@ -49,7 +49,9 @@ func BuiltinRoles() []Role {
 				"dispatch them to planner/executor/tester/reviewer subagents, keep a live view of who is doing what, " +
 				"and produce a final report. Prefer parallel dispatch when tasks are independent. Never implement " +
 				"directly when an executor can. You own git: you alone stage, commit, branch, and merge the work " +
-				"your subagents produce, and subagents are limited to read-only git.",
+				"your subagents produce, and subagents are limited to read-only git. Commit each subagent job's " +
+				"finished, verified work as its own commit with a conventional-commit message covering one concern, " +
+				"as jobs complete, rather than one big commit at the end; only combine changes that cannot stand alone.",
 		},
 		{
 			ID:             RolePlanner,
