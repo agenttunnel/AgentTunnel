@@ -276,7 +276,7 @@ func TestHarnessUpdaterIsCurrentWhenInstalledIsAhead(t *testing.T) {
 	env := newFakeHarnessEnv()
 	bin := filepath.Join(t.TempDir(), ".opencode", "bin", "opencode")
 	env.install(t, contracts.HarnessOpenCode, bin, "opencode v2.0.29")
-	srv, _ := npmRegistry(t, map[string]string{"opencode-ai": "1.19.5"})
+	srv, _ := npmRegistry(t, map[string]string{"@opencode/cli": "2.0.28"})
 	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
 
 	report := u.Check(context.Background(), false)
@@ -284,8 +284,8 @@ func TestHarnessUpdaterIsCurrentWhenInstalledIsAhead(t *testing.T) {
 		t.Fatalf("got %d rows, want 1", len(report.Harnesses))
 	}
 	row := report.Harnesses[0]
-	if row.Installed != "2.0.29" || row.Latest != "1.19.5" {
-		t.Fatalf("versions = %q -> %q, want 2.0.29 -> 1.19.5", row.Installed, row.Latest)
+	if row.Installed != "2.0.29" || row.Latest != "2.0.28" {
+		t.Fatalf("versions = %q -> %q, want 2.0.29 -> 2.0.28", row.Installed, row.Latest)
 	}
 	if row.Reason != "" {
 		t.Fatalf("unexpected reason: %q", row.Reason)
@@ -295,6 +295,28 @@ func TestHarnessUpdaterIsCurrentWhenInstalledIsAhead(t *testing.T) {
 	}
 	if !row.Updatable || row.Command != "opencode upgrade" {
 		t.Fatalf("row = %+v", row)
+	}
+}
+
+// The installed v2 binary reports "opencode v2.0.29" while the v1 npm package
+// (opencode-ai) still calls 1.19.5 latest; the v2 channel is @opencode/cli, and
+// a 2.x install must be offered its 2.x upgrade.
+func TestHarnessUpdaterOffersOpenCodeV2Update(t *testing.T) {
+	env := newFakeHarnessEnv()
+	bin := filepath.Join(t.TempDir(), ".opencode", "bin", "opencode")
+	env.install(t, contracts.HarnessOpenCode, bin, "opencode v2.0.29")
+	srv, _ := npmRegistry(t, map[string]string{"@opencode/cli": "2.2.7"})
+	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+
+	row := u.Check(context.Background(), false).Harnesses[0]
+	if row.Installed != "2.0.29" || row.Latest != "2.2.7" {
+		t.Fatalf("versions = %q -> %q, want 2.0.29 -> 2.2.7", row.Installed, row.Latest)
+	}
+	if !row.UpdateAvailable || !row.Updatable {
+		t.Fatalf("a 2.x install behind the v2 channel must offer the upgrade: %+v", row)
+	}
+	if row.Command != "opencode upgrade" {
+		t.Fatalf("command = %q, want %q", row.Command, "opencode upgrade")
 	}
 }
 

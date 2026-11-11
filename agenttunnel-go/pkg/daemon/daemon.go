@@ -111,8 +111,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	catalog := models.Default()
-	modelService := models.NewService(catalog, opts.Registry, store)
+	modelService := models.NewService(opts.Registry, store)
 	harnessUpdates := providers.NewHarnessUpdater(providers.HarnessUpdaterOptions{})
 
 	// The tool inbox, the steering queue, and the address/path agents use.
@@ -239,6 +238,8 @@ func EnrichPATH() {
 		filepath.Join(home, ".local", "share", "pnpm"),
 		filepath.Join(home, "Library", "pnpm"),
 		filepath.Join(home, "go", "bin"),
+		// vite-plus installs Command Code (commandcode, cmd) here.
+		filepath.Join(home, ".local", "share", "vite-plus", "bin"),
 	}
 
 	parts := filepath.SplitList(os.Getenv("PATH"))

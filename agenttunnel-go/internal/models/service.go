@@ -9,10 +9,10 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 )
 
-// Service merges three sources into one dynamic per-harness model list: live CLI
-// discovery, the seed catalog, and models the user added by hand.
+// Service merges two sources into one per-harness model list: live CLI discovery
+// and models the user added by hand. Nothing is hardcoded, so a harness with no
+// listing command shows only what the user adds.
 type Service struct {
-	catalog  *Catalog
 	registry *providers.Registry
 	settings *settings.Store
 
@@ -22,9 +22,8 @@ type Service struct {
 }
 
 // NewService wires a model service.
-func NewService(catalog *Catalog, registry *providers.Registry, store *settings.Store) *Service {
+func NewService(registry *providers.Registry, store *settings.Store) *Service {
 	return &Service{
-		catalog:    catalog,
 		registry:   registry,
 		settings:   store,
 		discovered: map[contracts.Harness][]string{},
@@ -85,9 +84,6 @@ func (s *Service) merge(h contracts.Harness) []string {
 	s.mu.Unlock()
 	add(discovered)
 
-	if s.catalog != nil {
-		add(s.catalog.Models(h))
-	}
 	if s.settings != nil {
 		add(s.settings.CustomModels(h))
 	}

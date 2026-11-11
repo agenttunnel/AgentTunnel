@@ -112,9 +112,13 @@ type updateTarget struct {
 func updateTargets() []updateTarget {
 	return []updateTarget{
 		{
-			harness:     contracts.HarnessOpenCode,
-			binaries:    []string{"opencode"},
-			npmPackage:  "opencode-ai",
+			harness:  contracts.HarnessOpenCode,
+			binaries: []string{"opencode"},
+			// opencode-ai is the v1 channel (npm latest is 1.x). The v2 binary
+			// that opencode.ai/v2/install drops in ~/.opencode/bin is published
+			// as @opencode/cli, and its npm latest matches the version in the
+			// native updater's own channel manifest.
+			npmPackage:  "@opencode/cli",
 			brewFormula: "anomalyco/tap/opencode",
 			nativeArgs:  []string{"upgrade"},
 			nativePaths: []string{"/.opencode/bin/", "/.local/bin/opencode"},
@@ -143,12 +147,6 @@ func updateTargets() []updateTarget {
 			nativePaths: []string{"/.local/share/cursor-agent/", "/.local/bin/cursor-agent", "/.local/bin/agent"},
 			versionRe:   cursorVersionRe,
 			latest:      latestCursorInstall,
-		},
-		{
-			harness:    contracts.HarnessGrok,
-			binaries:   []string{"grok"},
-			npmPackage: "@xai-official/grok",
-			latest:     latestNPM,
 		},
 		{
 			harness:    contracts.HarnessPi,

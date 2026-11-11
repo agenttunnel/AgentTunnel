@@ -50,6 +50,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.AutoModeSet:
 		s.AutoMode = p.Enabled
 
+	case contracts.ArchiveSet:
+		s.Archived = p.Archived
+
 	case contracts.PeerMailboxSet:
 		s.PeerMailbox = p.Enabled
 

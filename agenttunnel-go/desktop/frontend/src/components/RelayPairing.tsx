@@ -142,24 +142,6 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
 
   const newCode = () => act(mintCode);
 
-  // Starting the tunnel serves the relay in the daemon and waits for its socket,
-  // so a code can be minted straight away and the QR shows the LAN address.
-  const startTunnel = () =>
-    act(async () => {
-      if (!rpc) return;
-      setTunnel(await rpc.call<TunnelStatus>("relay.tunnel.start"));
-      setStatus(await rpc.call<RelayStatus>("relay.status"));
-      await mintCode();
-    });
-
-  const stopTunnel = () =>
-    act(async () => {
-      if (!rpc) return;
-      setTunnel(await rpc.call<TunnelStatus>("relay.tunnel.stop"));
-      setStatus(await rpc.call<RelayStatus>("relay.status"));
-      setOffer(null);
-    });
-
   const unpair = (target: string | "all") => {
     if (confirm !== target) {
       setConfirm(target);
@@ -183,20 +165,9 @@ export function RelayPairing({ rpc }: { rpc: Rpc | null }) {
     <>
       <p className="hint">
         Pair a phone through a relay. Off by default. The relay operator can read traffic, so
-        self-host it if that matters to you. The phone tunnel runs the relay inside this app and
-        listens on your local network until you stop it.
+        self-host it if that matters to you. The phone tunnel runs the relay inside this app; start
+        or stop it from the title bar.
       </p>
-      <div className="sheet-actions" style={{ marginTop: 0, marginBottom: 12 }}>
-        {tunnel.listening ? (
-          <button onClick={stopTunnel} disabled={busy || !rpc}>
-            Stop phone tunnel
-          </button>
-        ) : (
-          <button onClick={startTunnel} disabled={busy || !rpc}>
-            Start phone tunnel
-          </button>
-        )}
-      </div>
       {tunnel.listening && tunnel.lanUrl && (
         <p className="hint">Phones on this network connect to {tunnel.lanUrl}.</p>
       )}
