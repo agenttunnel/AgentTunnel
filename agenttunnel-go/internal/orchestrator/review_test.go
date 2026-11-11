@@ -54,11 +54,11 @@ func TestOpenReviewBlockListsOnlyOpenThreads(t *testing.T) {
 
 func TestSubagentPromptCarriesReviewBlock(t *testing.T) {
 	block := renderOpenReviews(reviewState())
-	prompt := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "fix it", "", "", block, false, nil)
+	prompt := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "fix it", "", "", block, false, nil, nil)
 	if !strings.Contains(prompt, "## Open review threads") || !strings.Contains(prompt, "rt-silent") {
 		t.Fatalf("subagent prompt lacks the review block:\n%s", prompt)
 	}
-	if plain := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "fix it", "", "", "", false, nil); strings.Contains(plain, "Open review threads") {
+	if plain := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "fix it", "", "", "", false, nil, nil); strings.Contains(plain, "Open review threads") {
 		t.Fatalf("prompt without threads shows the block:\n%s", plain)
 	}
 }

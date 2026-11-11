@@ -11,6 +11,9 @@ export type PRRequest = {
   commits: number;
   assignees: string[] | null;
   reviewers: string[] | null;
+  /** CI bucket and approval bucket, set when the forge reports them (GitLab). */
+  checks?: string;
+  review?: string;
   /** Set when the forge could not be read for this request; the link still works. */
   error?: string;
 };
@@ -55,10 +58,13 @@ export function PRPanel({
   error: string | null;
   onRefresh: () => void;
 }) {
+  const mr = listing?.provider === "gitlab";
+  const noun = mr ? "MR" : "PR";
+  const plural = mr ? "merge requests" : "pull requests";
   const header = (
     <div className="panel-bar">
       <span className="chat-title" title={listing?.branch ?? ""}>
-        {listing?.branch ?? "Pull requests"}
+        {listing?.branch ?? (mr ? "Merge requests" : "Pull requests")}
       </span>
       <button onClick={onRefresh} disabled={loading}>
         {loading ? "Checking…" : "Refresh"}
@@ -84,20 +90,20 @@ export function PRPanel({
         <p className={`hint${listing.status === "error" ? " err-text" : ""}`}>{listing.message}</p>
       )}
       {requests.length === 0 && listing.status === "ready" && (
-        <p className="hint">No pull requests opened from this thread yet.</p>
+        <p className="hint">No {plural} opened from this thread yet.</p>
       )}
       {requests.map((req) => (
-        <PRCard key={req.url} req={req} />
+        <PRCard key={req.url} req={req} noun={noun} />
       ))}
     </div>
   );
 }
 
-function PRCard({ req }: { req: PRRequest }) {
+function PRCard({ req, noun }: { req: PRRequest; noun: string }) {
   return (
     <div className="pr-git">
       <div className="pr-title">
-        <span className="pill">PR #{req.number}</span>
+        <span className="pill">{noun} #{req.number}</span>
         <span className={`pill${req.state === "merged" ? " run" : ""}`}>{req.draft ? "draft" : req.state}</span>
       </div>
       {req.title && <p className="pr-heading">{req.title}</p>}
@@ -109,14 +115,16 @@ function PRCard({ req }: { req: PRRequest }) {
       ) : (
         <>
           <Fact label="Comments" value={req.comments} />
-          <Fact label="Commits" value={req.commits} />
+          {noun !== "MR" && <Fact label="Commits" value={req.commits} />}
+          {req.checks && <Fact label={noun === "MR" ? "Pipeline" : "Checks"} value={req.checks} />}
+          {req.review && <Fact label="Review" value={req.review} />}
           <Fact label="Assignees" value={names(req.assignees)} />
           <Fact label="Reviewers" value={names(req.reviewers)} />
         </>
       )}
       <div className="pr-actions">
         <button className="primary" onClick={() => openExternal(req.url)}>
-          Open PR
+          Open {noun}
         </button>
       </div>
     </div>

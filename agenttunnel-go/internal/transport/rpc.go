@@ -17,6 +17,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deps"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
@@ -68,10 +69,16 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// HarnessUpdates checks and upgrades the provider CLIs themselves. Nil
+	// reports none; this is distinct from Updater, which updates AgentTunnel.
+	HarnessUpdates *providers.HarnessUpdater
 	// Limits reports subscription usage left per harness. Nil reports none.
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
+	// Remote drives WhatsApp connectivity for the Remote section. Nil reports it
+	// unavailable.
+	Remote RemoteControl
 }
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
@@ -131,23 +138,30 @@ type RelayDevice struct {
 
 // Dispatcher routes RPC methods to the daemon's services.
 type Dispatcher struct {
-	engine     *domain.Engine
-	runner     *orchestrator.Runner
-	orch       *orchestrator.Orchestrator
-	ledger     *usage.Ledger
-	logs       *logstore.Store
-	roles      *contracts.RoleRegistry
-	registry   *providers.Registry
-	settings   *settings.Store
-	models     *models.Service
-	steering   *steering.Box
-	audit      actionlog.Func
-	updater    *update.Updater
-	limits     *providers.LimitsProvider
-	relay      RelayControl
-	prBoard    *scm.Board
-	dirtyBoard *scm.DirtyBoard
-	seq        atomic.Int64
+	engine         *domain.Engine
+	runner         *orchestrator.Runner
+	orch           *orchestrator.Orchestrator
+	ledger         *usage.Ledger
+	logs           *logstore.Store
+	roles          *contracts.RoleRegistry
+	registry       *providers.Registry
+	settings       *settings.Store
+	models         *models.Service
+	steering       *steering.Box
+	audit          actionlog.Func
+	updater        *update.Updater
+	harnessUpdates *providers.HarnessUpdater
+	limits         *providers.LimitsProvider
+	relay          RelayControl
+	remote         RemoteControl
+	master         *orchestrator.Master
+	prBoard        *scm.Board
+	dirtyBoard     *scm.DirtyBoard
+	seq            atomic.Int64
+
+	// remoteNotifier broadcasts Remote section changes. Set after the server
+	// exists, since the dispatcher is built first.
+	remoteNotifier func(RemoteStatus)
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
@@ -168,25 +182,31 @@ type Dispatcher struct {
 
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
-	return &Dispatcher{
-		questions:  newQuestionBroker(),
-		engine:     d.Engine,
-		runner:     d.Runner,
-		orch:       d.Orchestrator,
-		ledger:     d.Ledger,
-		logs:       d.Logs,
-		roles:      d.Roles,
-		registry:   d.Registry,
-		settings:   d.Settings,
-		models:     d.Models,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		updater:    d.Updater,
-		limits:     d.Limits,
-		relay:      d.Relay,
-		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
-		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
+	disp := &Dispatcher{
+		questions:      newQuestionBroker(),
+		engine:         d.Engine,
+		runner:         d.Runner,
+		orch:           d.Orchestrator,
+		ledger:         d.Ledger,
+		logs:           d.Logs,
+		roles:          d.Roles,
+		registry:       d.Registry,
+		settings:       d.Settings,
+		models:         d.Models,
+		steering:       d.Steering,
+		audit:          d.Audit,
+		updater:        d.Updater,
+		harnessUpdates: d.HarnessUpdates,
+		limits:         d.Limits,
+		relay:          d.Relay,
+		remote:         d.Remote,
+		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
+		dirtyBoard:     scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
+	disp.master = orchestrator.NewMaster(orchestrator.MasterDeps{
+		Runner: d.Runner, Engine: d.Engine, Settings: d.Settings, Models: d.Models,
+	})
+	return disp
 }
 
 // prBoardTTL bounds how stale a thread board's PR state may be. Each refresh
@@ -279,6 +299,7 @@ type ThreadSummary struct {
 	Messages    int       `json:"messages"`
 	Agents      int       `json:"agents"`
 	AutoMode    bool      `json:"autoMode"`
+	Archived    bool      `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
 	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
@@ -366,6 +387,46 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// startMasterThread creates the thread a home-screen proposal asked for,
+// applies its lead-0 runtime, and starts the first turn in the background. The
+// RPC returns as soon as the goroutine is dispatched: thread.turn.start blocks
+// for the whole turn, so awaiting it here would hold the home chat open.
+func (d *Dispatcher) startMasterThread(ctx context.Context, action *orchestrator.MasterAction, result *orchestrator.MasterResult) error {
+	if d.engine == nil || d.orch == nil {
+		return errors.New("orchestrator is unavailable")
+	}
+	id := d.newThreadID()
+	if err := d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
+		Title: action.Title, ProjectID: action.ProjectID,
+	}); err != nil {
+		return err
+	}
+	if action.Harness != "" || action.Model != "" || action.Variant != "" {
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: id,
+			LeadRuntime: &contracts.LeadRuntimeSet{
+				Index: 0,
+				Runtime: contracts.LeadRuntime{
+					Harness: action.Harness, Model: action.Model, Variant: action.Variant,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	result.ThreadID = id
+	result.ProjectID = action.ProjectID
+
+	cmd := contracts.Command{ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: id, Text: action.Prompt}
+	// Detach from the request: the client may disconnect or time out, but the
+	// turn it started keeps going.
+	go func() {
+		_, _ = d.runTurn(context.WithoutCancel(ctx), id, action.Prompt, cmd)
+	}()
+	return nil
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -472,6 +533,38 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			"enabled":   enabled,
 			"models":    modelsByHarness,
 		}, nil
+
+	case "harness.updates":
+		var p struct {
+			Refresh bool `json:"refresh"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return providers.UpdateReport{CheckedAt: time.Now(), Harnesses: []providers.HarnessUpdate{}}, nil
+		}
+		return d.harnessUpdates.Check(ctx, p.Refresh), nil
+
+	case "harness.update":
+		var p struct {
+			Harnesses []string `json:"harnesses"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return nil, errors.New("harness updates are unavailable")
+		}
+		only := make([]contracts.Harness, 0, len(p.Harnesses))
+		for _, name := range p.Harnesses {
+			h := contracts.Harness(name)
+			if !h.Valid() {
+				return nil, fmt.Errorf("unknown harness %q", name)
+			}
+			only = append(only, h)
+		}
+		return d.harnessUpdates.Update(ctx, only)
 
 	case "models.refresh":
 		var p struct {
@@ -609,7 +702,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				FirstPrompt: firstUserPrompt(st),
-				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
+				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
 				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
@@ -928,6 +1021,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"answer": answer}, nil
 
+	case "master.send":
+		// The home-screen orchestrator answers from a snapshot and may propose a
+		// thread. Dispatch is fire-and-forget: the first turn runs for as long
+		// as the work takes, so the reply cannot wait for it.
+		var p struct {
+			Text    string                       `json:"text"`
+			History []orchestrator.MasterMessage `json:"history"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Text) == "" {
+			return nil, errors.New("text is required")
+		}
+		if d.master == nil {
+			return nil, errors.New("master chat is unavailable")
+		}
+		result, err := d.master.Send(ctx, p.Text, p.History)
+		if err != nil {
+			return nil, err
+		}
+		if result.Action == nil {
+			return result, nil
+		}
+		if err := d.startMasterThread(ctx, result.Action, &result); err != nil {
+			return nil, err
+		}
+		return result, nil
+
 	case "thread.setAutoMode":
 		var p setBoolParams
 		if err := decode(req.Params, &p); err != nil {
@@ -935,6 +1057,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdAutoModeSet, ThreadID: p.ThreadID, AutoMode: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setArchived":
+		var p setBoolParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
 		}); err != nil {
 			return nil, err
 		}
@@ -1083,6 +1217,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, errors.New("updates are unavailable")
 		}
 		return d.updater.Apply(ctx)
+
+	case "deps.check":
+		// Probes the forge CLIs on PATH with `--version`; local and read-only,
+		// so the headless daemon reports the same answer as the desktop app.
+		return deps.Probe(ctx), nil
 
 	case "review.diff":
 		var p struct {
@@ -1429,6 +1568,41 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		d.settings.RemoveProject(p.ID)
 		return d.projectList(ctx), nil
 
+	case "remote.status":
+		st := d.RemoteStatus()
+		if isRelayedSession(ctx) {
+			// A pairing QR is a secret: the phone that reaches this daemon
+			// through the relay must never be handed another surface's link.
+			for i := range st.Items {
+				st.Items[i].QR = ""
+			}
+		}
+		return st, nil
+
+	case "remote.whatsapp.connect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Connect(ctx)
+		// The bridge may finish connecting later, but a failure is already a
+		// state change every client should see.
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
+	case "remote.whatsapp.disconnect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Disconnect()
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
 	case "relay.status":
 		return d.relayControl().Status(), nil
 
@@ -1443,6 +1617,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Enable(p.URL); err != nil {
 			return nil, err
 		}
+		// The phone row is derived from the relay, so its state changed too.
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.disable":
@@ -1450,6 +1626,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Disable(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.pair.start":
@@ -1459,13 +1636,19 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"devices": d.relayControl().Devices()}, nil
 
 	case "relay.tunnel.start":
-		return d.relayControl().StartTunnel(ctx)
+		st, err := d.relayControl().StartTunnel(ctx)
+		if err != nil {
+			return nil, err
+		}
+		d.BroadcastRemoteStatus()
+		return st, nil
 
 	case "relay.tunnel.stop":
 		rc := d.relayControl()
 		if err := rc.StopTunnel(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.TunnelStatus(), nil
 
 	case "relay.tunnel.status":
