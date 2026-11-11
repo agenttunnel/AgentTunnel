@@ -2843,9 +2843,12 @@ export default function App() {
     );
   }
 
-  const setupMode =
+  // A new thread shows its setup until the user presses Start; then the setup
+  // view and the hidden composer both give way to the normal empty chat.
+  const setupPending =
     tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
-  const composerHidden = setupMode && setupReadyId !== activeId;
+  const setupMode = setupPending && setupReadyId !== activeId;
+  const composerHidden = setupMode;
   const asideCollapsed = !layout.asideOpen || setupMode;
 
   return (
