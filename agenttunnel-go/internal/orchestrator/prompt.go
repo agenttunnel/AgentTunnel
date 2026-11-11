@@ -6,6 +6,14 @@ import (
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+)
+
+// Bounds on the earlier conversation the lead sees. A single long message is
+// clipped; when the whole history exceeds the budget the oldest lines drop.
+const (
+	historyMessageClip = 2000
+	historyBudget      = 24000
 )
 
 // askHelp documents the ask tool for every agent. Asking is not gated on the peer
@@ -64,8 +72,11 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews s
 // so BuildOrchestratorPrompt's signature stays readable as sections are added;
 // zero values render no section.
 type OrchestratorPrompt struct {
-	Role          contracts.Role
-	UserMessage   string
+	Role        contracts.Role
+	UserMessage string
+	// History is the thread's earlier conversation, oldest first, rendered by
+	// renderHistory. Empty renders no section.
+	History       string
 	Inherited     string
 	Shared        string
 	Roster        string
@@ -105,6 +116,11 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	if strings.TrimSpace(pending) != "" {
 		b.WriteString("\n\n")
 		b.WriteString(pending)
+	}
+	if strings.TrimSpace(in.History) != "" {
+		b.WriteString("\n\n## Conversation so far\n")
+		b.WriteString(in.History)
+		b.WriteString("\nThis is the thread's earlier conversation, oldest first. Use it to resolve references like 'that', 'the steering', or 'the last result'. Act on the request below.")
 	}
 	b.WriteString("\n\n## User request\n")
 	b.WriteString(userMessage)
@@ -181,6 +197,33 @@ func BuildTitlePrompt(userMessage, summary string) string {
 		b.WriteString(clip(summary, 800))
 	}
 	b.WriteString("\n\nReply with only the title: 3 to 6 words, no quotes, no trailing punctuation, no label such as \"Title:\".")
+	return b.String()
+}
+
+// renderHistory writes messages as "- author: text" lines, oldest first. It keeps
+// the newest messages that fit historyBudget and drops the rest.
+func renderHistory(messages []domain.Message) string {
+	var lines []string
+	total := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		line := "- " + m.Author + ": " + clip(m.Text, historyMessageClip)
+		if total+len(line)+1 > historyBudget {
+			break
+		}
+		total += len(line) + 1
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i := len(lines) - 1; i >= 0; i-- {
+		b.WriteString(lines[i])
+		if i > 0 {
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

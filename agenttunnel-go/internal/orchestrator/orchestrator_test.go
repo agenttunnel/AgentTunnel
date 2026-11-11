@@ -1,10 +1,12 @@
 package orchestrator
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
@@ -90,6 +92,74 @@ func TestOrchestratorPromptCarriesSteering(t *testing.T) {
 	})
 	if !strings.Contains(prompt, "## Steering") || !strings.Contains(prompt, "stop and fix the tests first") {
 		t.Fatalf("steering missing from the prompt:\n%s", prompt)
+	}
+}
+
+func TestOrchestratorPromptCarriesHistory(t *testing.T) {
+	role, _ := contracts.NewRoleRegistry(contracts.BuiltinRoles()...).Get(contracts.RoleOrchestrator)
+	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		Role:        role,
+		UserMessage: "what is steering?",
+		History:     "- user: plan the auth refactor\n- orchestrator: here is the plan",
+	})
+	const section = "## Conversation so far"
+	at := strings.Index(prompt, section)
+	if at < 0 || !strings.Contains(prompt, "plan the auth refactor") {
+		t.Fatalf("history missing from the prompt:\n%s", prompt)
+	}
+	if request := strings.Index(prompt, "## User request"); at > request {
+		t.Fatalf("history must precede the user request:\n%s", prompt)
+	}
+
+	bare := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "do the thing"})
+	if strings.Contains(bare, section) {
+		t.Fatalf("empty history should render no section:\n%s", bare)
+	}
+}
+
+func TestPriorMessagesExcludesCurrentTurn(t *testing.T) {
+	msg := func(author, text string) domain.Message { return domain.Message{Author: author, Text: text} }
+	state := &domain.ThreadState{Messages: []domain.Message{
+		msg("user", "A"),
+		msg("orchestrator", "reply to A"),
+		msg("user", "B"),
+		msg("steering", "change course"),
+	}}
+	got := priorMessages(state, "B")
+	if len(got) != 2 || got[0].Text != "A" || got[1].Text != "reply to A" {
+		t.Fatalf("prior messages = %+v, want the messages before turn B", got)
+	}
+
+	// A subthread appends no user message, so nothing matches the brief.
+	sub := &domain.ThreadState{Messages: []domain.Message{msg("user", "A"), msg("orchestrator", "reply")}}
+	if got := priorMessages(sub, "brief"); len(got) != 2 {
+		t.Fatalf("subthread prior messages = %+v, want all messages", got)
+	}
+}
+
+func TestRenderHistoryKeepsNewestWithinBudget(t *testing.T) {
+	if got := renderHistory(nil); got != "" {
+		t.Fatalf("empty history rendered %q", got)
+	}
+
+	long := strings.Repeat("x", historyMessageClip*2)
+	var messages []domain.Message
+	for i := 0; i < 40; i++ {
+		messages = append(messages, domain.Message{Author: "user", Text: fmt.Sprintf("m%02d %s", i, long)})
+	}
+	got := renderHistory(messages)
+	if len(got) > historyBudget+historyMessageClip {
+		t.Fatalf("history is %d chars, budget %d", len(got), historyBudget)
+	}
+	if !strings.Contains(got, "m39 ") {
+		t.Fatalf("newest message dropped")
+	}
+	if strings.Contains(got, "m00 ") {
+		t.Fatalf("oldest message kept past the budget")
+	}
+	newest := fmt.Sprintf("m39 %s", long)
+	if !strings.HasSuffix(got, "- user: "+newest[:historyMessageClip]+"…") {
+		t.Fatalf("newest message not clipped to %d chars", historyMessageClip)
 	}
 }
 
