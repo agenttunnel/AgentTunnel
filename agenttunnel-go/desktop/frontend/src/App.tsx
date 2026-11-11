@@ -1905,7 +1905,16 @@ export default function App() {
     }
   };
 
-  const toggleModels = () => (modelsOpen ? closePanel("models") : openPanel("models"));
+  const toggleModels = () => {
+    // A collapsed pane opens to the Models tab; an open one keeps the toggle.
+    if (!layout.asideOpen) {
+      setLayout((l) => ({ ...l, asideOpen: true }));
+      openPanel("models");
+      return;
+    }
+    if (modelsOpen) closePanel("models");
+    else openPanel("models");
+  };
   useEffect(() => {
     // Role config lives in settings, which is only fetched on demand — load it
     // the first time the Models panel opens, same trio the settings sheet uses.
