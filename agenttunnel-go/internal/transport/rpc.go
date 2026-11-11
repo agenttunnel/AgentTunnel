@@ -146,6 +146,7 @@ type Dispatcher struct {
 	updater    *update.Updater
 	limits     *providers.LimitsProvider
 	relay      RelayControl
+	master     *orchestrator.Master
 	prBoard    *scm.Board
 	dirtyBoard *scm.DirtyBoard
 	seq        atomic.Int64
@@ -169,7 +170,7 @@ type Dispatcher struct {
 
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
-	return &Dispatcher{
+	disp := &Dispatcher{
 		questions:  newQuestionBroker(),
 		engine:     d.Engine,
 		runner:     d.Runner,
@@ -188,6 +189,10 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
 		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
+	disp.master = orchestrator.NewMaster(orchestrator.MasterDeps{
+		Runner: d.Runner, Engine: d.Engine, Settings: d.Settings, Models: d.Models,
+	})
+	return disp
 }
 
 // prBoardTTL bounds how stale a thread board's PR state may be. Each refresh
@@ -341,6 +346,46 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// startMasterThread creates the thread a home-screen proposal asked for,
+// applies its lead-0 runtime, and starts the first turn in the background. The
+// RPC returns as soon as the goroutine is dispatched: thread.turn.start blocks
+// for the whole turn, so awaiting it here would hold the home chat open.
+func (d *Dispatcher) startMasterThread(ctx context.Context, action *orchestrator.MasterAction, result *orchestrator.MasterResult) error {
+	if d.engine == nil || d.orch == nil {
+		return errors.New("orchestrator is unavailable")
+	}
+	id := d.newThreadID()
+	if err := d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
+		Title: action.Title, ProjectID: action.ProjectID,
+	}); err != nil {
+		return err
+	}
+	if action.Harness != "" || action.Model != "" || action.Variant != "" {
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: id,
+			LeadRuntime: &contracts.LeadRuntimeSet{
+				Index: 0,
+				Runtime: contracts.LeadRuntime{
+					Harness: action.Harness, Model: action.Model, Variant: action.Variant,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	result.ThreadID = id
+	result.ProjectID = action.ProjectID
+
+	cmd := contracts.Command{ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: id, Text: action.Prompt}
+	// Detach from the request: the client may disconnect or time out, but the
+	// turn it started keeps going.
+	go func() {
+		_, _ = d.runTurn(context.WithoutCancel(ctx), id, action.Prompt, cmd)
+	}()
+	return nil
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -901,6 +946,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"answer": answer}, nil
+
+	case "master.send":
+		// The home-screen orchestrator answers from a snapshot and may propose a
+		// thread. Dispatch is fire-and-forget: the first turn runs for as long
+		// as the work takes, so the reply cannot wait for it.
+		var p struct {
+			Text    string                       `json:"text"`
+			History []orchestrator.MasterMessage `json:"history"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Text) == "" {
+			return nil, errors.New("text is required")
+		}
+		if d.master == nil {
+			return nil, errors.New("master chat is unavailable")
+		}
+		result, err := d.master.Send(ctx, p.Text, p.History)
+		if err != nil {
+			return nil, err
+		}
+		if result.Action == nil {
+			return result, nil
+		}
+		if err := d.startMasterThread(ctx, result.Action, &result); err != nil {
+			return nil, err
+		}
+		return result, nil
 
 	case "thread.setAutoMode":
 		var p setBoolParams
