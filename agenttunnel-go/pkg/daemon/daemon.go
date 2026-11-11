@@ -113,6 +113,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	catalog := models.Default()
 	modelService := models.NewService(catalog, opts.Registry, store)
+	harnessUpdates := providers.NewHarnessUpdater(providers.HarnessUpdaterOptions{})
 
 	// The tool inbox, the steering queue, and the address/path agents use.
 	box := toolbox.New()
@@ -162,20 +163,21 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	disp := transport.NewDispatcher(transport.DispatcherDeps{
-		Engine:       eng,
-		Runner:       runner,
-		Orchestrator: orch,
-		Ledger:       ledger,
-		Logs:         logs,
-		Roles:        opts.Roles,
-		Registry:     opts.Registry,
-		Settings:     store,
-		Models:       modelService,
-		Steering:     steerBox,
-		Audit:        actions.Func(),
-		Updater:      updater,
-		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits()),
-		Relay:        relay,
+		Engine:         eng,
+		Runner:         runner,
+		Orchestrator:   orch,
+		Ledger:         ledger,
+		Logs:           logs,
+		Roles:          opts.Roles,
+		Registry:       opts.Registry,
+		Settings:       store,
+		Models:         modelService,
+		Steering:       steerBox,
+		Audit:          actions.Func(),
+		Updater:        updater,
+		HarnessUpdates: harnessUpdates,
+		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits()),
+		Relay:          relay,
 	})
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
@@ -233,6 +235,9 @@ func EnrichPATH() {
 		filepath.Join(home, ".local", "bin"),
 		filepath.Join(home, ".opencode", "bin"),
 		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, ".local", "share", "vite-plus", "bin"),
+		filepath.Join(home, ".local", "share", "pnpm"),
+		filepath.Join(home, "Library", "pnpm"),
 		filepath.Join(home, "go", "bin"),
 	}
 

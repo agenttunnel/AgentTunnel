@@ -68,6 +68,9 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// HarnessUpdates checks and upgrades the provider CLIs themselves. Nil
+	// reports none; this is distinct from Updater, which updates AgentTunnel.
+	HarnessUpdates *providers.HarnessUpdater
 	// Limits reports subscription usage left per harness. Nil reports none.
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
@@ -131,23 +134,24 @@ type RelayDevice struct {
 
 // Dispatcher routes RPC methods to the daemon's services.
 type Dispatcher struct {
-	engine     *domain.Engine
-	runner     *orchestrator.Runner
-	orch       *orchestrator.Orchestrator
-	ledger     *usage.Ledger
-	logs       *logstore.Store
-	roles      *contracts.RoleRegistry
-	registry   *providers.Registry
-	settings   *settings.Store
-	models     *models.Service
-	steering   *steering.Box
-	audit      actionlog.Func
-	updater    *update.Updater
-	limits     *providers.LimitsProvider
-	relay      RelayControl
-	prBoard    *scm.Board
-	dirtyBoard *scm.DirtyBoard
-	seq        atomic.Int64
+	engine         *domain.Engine
+	runner         *orchestrator.Runner
+	orch           *orchestrator.Orchestrator
+	ledger         *usage.Ledger
+	logs           *logstore.Store
+	roles          *contracts.RoleRegistry
+	registry       *providers.Registry
+	settings       *settings.Store
+	models         *models.Service
+	steering       *steering.Box
+	audit          actionlog.Func
+	updater        *update.Updater
+	harnessUpdates *providers.HarnessUpdater
+	limits         *providers.LimitsProvider
+	relay          RelayControl
+	prBoard        *scm.Board
+	dirtyBoard     *scm.DirtyBoard
+	seq            atomic.Int64
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
@@ -169,23 +173,24 @@ type Dispatcher struct {
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
 	return &Dispatcher{
-		questions:  newQuestionBroker(),
-		engine:     d.Engine,
-		runner:     d.Runner,
-		orch:       d.Orchestrator,
-		ledger:     d.Ledger,
-		logs:       d.Logs,
-		roles:      d.Roles,
-		registry:   d.Registry,
-		settings:   d.Settings,
-		models:     d.Models,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		updater:    d.Updater,
-		limits:     d.Limits,
-		relay:      d.Relay,
-		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
-		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
+		questions:      newQuestionBroker(),
+		engine:         d.Engine,
+		runner:         d.Runner,
+		orch:           d.Orchestrator,
+		ledger:         d.Ledger,
+		logs:           d.Logs,
+		roles:          d.Roles,
+		registry:       d.Registry,
+		settings:       d.Settings,
+		models:         d.Models,
+		steering:       d.Steering,
+		audit:          d.Audit,
+		updater:        d.Updater,
+		harnessUpdates: d.HarnessUpdates,
+		limits:         d.Limits,
+		relay:          d.Relay,
+		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
+		dirtyBoard:     scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
 }
 
@@ -445,6 +450,38 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			"enabled":   enabled,
 			"models":    modelsByHarness,
 		}, nil
+
+	case "harness.updates":
+		var p struct {
+			Refresh bool `json:"refresh"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return providers.UpdateReport{CheckedAt: time.Now(), Harnesses: []providers.HarnessUpdate{}}, nil
+		}
+		return d.harnessUpdates.Check(ctx, p.Refresh), nil
+
+	case "harness.update":
+		var p struct {
+			Harnesses []string `json:"harnesses"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return nil, errors.New("harness updates are unavailable")
+		}
+		only := make([]contracts.Harness, 0, len(p.Harnesses))
+		for _, name := range p.Harnesses {
+			h := contracts.Harness(name)
+			if !h.Valid() {
+				return nil, fmt.Errorf("unknown harness %q", name)
+			}
+			only = append(only, h)
+		}
+		return d.harnessUpdates.Update(ctx, only)
 
 	case "models.refresh":
 		var p struct {
