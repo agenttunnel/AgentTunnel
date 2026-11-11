@@ -48,6 +48,7 @@ import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatc
 import { PRPanel, type PRListing } from "./components/PRPanel";
 import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
+import { ModelLeaderboard } from "./components/ModelLeaderboard";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RemoteSection } from "./components/RemoteSection";
 import { Markdown } from "./components/Markdown";
@@ -2795,6 +2796,9 @@ export default function App() {
           </div>
           <div className="section stats-section">
             <HarnessStatsView rpc={rpcRef.current} threadId={null} projectId={null} />
+          </div>
+          <div className="section stats-section">
+            <ModelLeaderboard rpc={rpcRef.current} />
           </div>
         </div>
       </div>
