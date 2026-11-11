@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
 import type { Rpc } from "./rpc";
+import { useStatsRpc } from "./rpcStats";
 import type { TokenUsage } from "./usage";
 
 /** One harness and model pair across every thread in the environment (stats.models). */
@@ -21,28 +21,10 @@ export type ModelStat = {
 export const comboLabel = (s: Pick<ModelStat, "harness" | "model">) =>
   `${s.harness || "unknown"} · ${s.model || "default"}`;
 
-/** Loads the harness-and-model rollup once, and again only on refresh. */
+const NONE: ModelStat[] = [];
+
+/** The harness-and-model rollup, loaded once and again only on refresh. */
 export function useModelStats(rpc: Rpc | null) {
-  const [stats, setStats] = useState<ModelStat[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
-
-  useEffect(() => {
-    if (!rpc) return;
-    let live = true;
-    setLoading(true);
-    setError(null);
-    rpc
-      .call<ModelStat[]>("stats.models")
-      .then((next) => live && setStats(next))
-      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => live && setLoading(false));
-    return () => {
-      live = false;
-    };
-  }, [rpc, reload]);
-
-  const refresh = useCallback(() => setReload((n) => n + 1), []);
-  return { stats, loading, error, refresh };
+  const { data, loading, error, refresh } = useStatsRpc<ModelStat[]>(rpc, "stats.models", NONE);
+  return { stats: data, loading, error, refresh };
 }
