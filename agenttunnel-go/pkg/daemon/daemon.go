@@ -216,6 +216,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Steering:       steerBox,
 		Audit:          actions.Func(),
 		Updater:        updater,
+		Version:        opts.Version,
 		HarnessUpdates: harnessUpdates,
 		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
 		Relay:          relay,

@@ -69,6 +69,8 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// Version is the release version embedded at link time, reported by app.info.
+	Version string
 	// HarnessUpdates checks and upgrades the provider CLIs themselves. Nil
 	// reports none; this is distinct from Updater, which updates AgentTunnel.
 	HarnessUpdates *providers.HarnessUpdater
@@ -157,6 +159,7 @@ type Dispatcher struct {
 	steering       *steering.Box
 	audit          actionlog.Func
 	updater        *update.Updater
+	version        string
 	harnessUpdates *providers.HarnessUpdater
 	limits         *providers.LimitsProvider
 	relay          RelayControl
@@ -211,6 +214,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		steering:       d.Steering,
 		audit:          d.Audit,
 		updater:        d.Updater,
+		version:        d.Version,
 		harnessUpdates: d.HarnessUpdates,
 		limits:         d.Limits,
 		relay:          d.Relay,
@@ -1304,6 +1308,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		return d.engine.HarnessStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
+	case "app.info":
+		version := d.version
+		if version == "" {
+			version = "dev"
+		}
+		return map[string]any{"version": version}, nil
 
 	case "stats.teams":
 		// Same scope as stats.harnesses: no params is the environment.
