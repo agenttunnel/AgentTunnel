@@ -74,6 +74,9 @@ func (o *Orchestrator) normalizeCouncil(spec *CouncilSpec) error {
 		if _, ok := o.runner.roles.Get(m.Role); !ok {
 			return fmt.Errorf("council member %q: unknown role %q", m.Name, m.Role)
 		}
+		if !o.runner.roleUsable(m.Role) {
+			return fmt.Errorf("council member %q: role %q is disabled", m.Name, m.Role)
+		}
 		if m.Harness != "" && !m.Harness.Valid() {
 			return fmt.Errorf("council member %q: unknown harness %q", m.Name, m.Harness)
 		}
@@ -159,7 +162,7 @@ func (o *Orchestrator) RunCouncil(ctx context.Context, threadID contracts.Thread
 	if err := o.runner.Dispatch(ctx, threadID, []contracts.DispatchTask{facilitator}); err != nil {
 		return "", err
 	}
-	consensus, err := o.runner.runTask(ctx, threadID, facilitator)
+	consensus, err := o.runner.runTask(ctx, threadID, facilitator, false)
 	if err != nil {
 		if ctx.Err() != nil {
 			o.runner.setStatus(ctx, threadID, facilitator.AgentID, contracts.AgentCancelled, "turn stopped")

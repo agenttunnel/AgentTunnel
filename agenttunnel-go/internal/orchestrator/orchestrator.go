@@ -118,7 +118,18 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 		case toolbox.KindDispatch, toolbox.KindSpawn:
 			if fromLead {
 				// The lead is the approver, so its own spawn is simply a
-				// dispatch.
+				// dispatch. A disabled role is refused here, with the reason
+				// in the lead's log, rather than recorded as a failed agent.
+				role := call.Role
+				if role == "" {
+					role = contracts.RoleExecutor
+				}
+				if !o.runner.roleUsable(role) {
+					line := fmt.Sprintf("dispatch refused: role %q is disabled or unknown", role)
+					_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+					o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
+					continue
+				}
 				if task, ok := o.dispatchTask(orchID, call, taken); ok {
 					names[task.Name] = true
 					tasks = append(tasks, task)
@@ -205,6 +216,10 @@ func (o *Orchestrator) recordSpawnRequest(threadID contracts.ThreadID, call tool
 	}
 	if _, known := o.runner.roles.Get(role); !known {
 		refuse(fmt.Sprintf("unknown role %q", role))
+		return
+	}
+	if !o.runner.roleUsable(role) {
+		refuse(fmt.Sprintf("role %q is disabled", role))
 		return
 	}
 	name := strings.TrimSpace(call.Name)
@@ -373,6 +388,10 @@ type turn struct {
 // pending, or a lead has mail; it ends after the pass budget regardless. With
 // one lead this is the classic single-orchestrator loop.
 func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) (err error) {
+	// An auto context-manager run started by this turn must finish before the
+	// turn reports done, so none of its events land after the turn.
+	defer o.runner.curator.wait(threadID)
+
 	role, ok := o.runner.roles.Get(contracts.RoleOrchestrator)
 	if !ok {
 		return errors.New("orchestrator role is not registered")

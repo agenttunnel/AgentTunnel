@@ -1121,8 +1121,23 @@ body.is-resizing * {
 .role-edit .model {
   padding: 7px 9px;
 }
-.role-edit.parked {
+.role-edit.parked,
+.role-edit.off {
   opacity: 0.45;
+}
+.aside-models .role-edit.has-switch {
+  grid-template-columns: 1fr 150px 1fr auto;
+}
+.aside-models .role-edit .role-switch {
+  margin: 0;
+}
+.role-switch.disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.role-switch.disabled:hover {
+  border-color: var(--border-soft);
+  color: var(--muted);
 }
 
 .lead-block {
@@ -1284,6 +1299,12 @@ body.is-resizing * {
   white-space: nowrap;
   font-weight: 550;
   letter-spacing: 0.02em;
+}
+.badge.experimental {
+  margin-left: 6px;
+  vertical-align: middle;
+  color: var(--accent);
+  border-color: var(--accent-line);
 }
 .badge.running {
   color: var(--warn);

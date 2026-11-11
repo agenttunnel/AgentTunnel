@@ -1205,6 +1205,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
+		// Validate the whole patch before mutating anything.
+		if p.RoleEnabled != nil && !p.RoleEnabled.Enabled {
+			if role, ok := d.roles.Get(contracts.RoleID(p.RoleEnabled.ID)); ok && role.Required {
+				return nil, fmt.Errorf("required role %q cannot be disabled", role.ID)
+			}
+		}
 		if p.Workdir != nil {
 			d.settings.SetWorkdir(*p.Workdir)
 		}
@@ -1226,6 +1232,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if p.Harness != nil {
 			d.settings.SetHarnessEnabled(contracts.Harness(p.Harness.ID), p.Harness.Enabled)
+		}
+		if p.RoleEnabled != nil {
+			d.settings.SetRoleEnabled(contracts.RoleID(p.RoleEnabled.ID), p.RoleEnabled.Enabled)
+		}
+		if p.ExperimentalRoles != nil {
+			d.settings.SetExperimentalRoles(*p.ExperimentalRoles)
 		}
 		return d.settingsView(), nil
 
@@ -1607,6 +1619,10 @@ type RoleConfigView struct {
 	Model   string `json:"model"`
 	Variant string `json:"variant"`
 	Builtin bool   `json:"builtin"`
+	// Enabled is the effective usability: required roles are always enabled.
+	Enabled      bool `json:"enabled"`
+	Required     bool `json:"required"`
+	Experimental bool `json:"experimental"`
 }
 
 // SettingsView is the settings screen's payload.
@@ -1617,6 +1633,7 @@ type SettingsView struct {
 	Roles             []RoleConfigView `json:"roles"`
 	ConfigPath        string           `json:"configPath"`
 	StaleAfterMinutes int              `json:"staleAfterMinutes"`
+	ExperimentalRoles bool             `json:"experimentalRoles"`
 }
 
 type settingsPatch struct {
@@ -1634,6 +1651,11 @@ type settingsPatch struct {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
 	} `json:"harness"`
+	RoleEnabled *struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	} `json:"roleEnabled"`
+	ExperimentalRoles *bool `json:"experimentalRoles"`
 }
 
 func (d *Dispatcher) settingsView() SettingsView {
@@ -1643,6 +1665,7 @@ func (d *Dispatcher) settingsView() SettingsView {
 		view.AutoMode = d.settings.AutoMode()
 		view.ConfigPath = d.settings.Path()
 		view.StaleAfterMinutes = d.settings.StaleAfterMinutes()
+		view.ExperimentalRoles = d.settings.ExperimentalRoles()
 		for m := range d.settings.ApprovedModels() {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}
@@ -1663,13 +1686,20 @@ func (d *Dispatcher) settingsView() SettingsView {
 				}
 			}
 		}
+		enabled := true
+		if d.settings != nil {
+			enabled = role.Required || d.settings.RoleEnabled(role.ID)
+		}
 		view.Roles = append(view.Roles, RoleConfigView{
-			ID:      string(role.ID),
-			Name:    role.Name,
-			Harness: string(harness),
-			Model:   model,
-			Variant: variant,
-			Builtin: role.Builtin,
+			ID:           string(role.ID),
+			Name:         role.Name,
+			Harness:      string(harness),
+			Model:        model,
+			Variant:      variant,
+			Builtin:      role.Builtin,
+			Enabled:      enabled,
+			Required:     role.Required,
+			Experimental: role.Experimental,
 		})
 	}
 	return view

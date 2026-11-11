@@ -40,6 +40,8 @@ type Store struct {
 	approved      map[string]struct{}
 	roles         map[contracts.RoleID]RoleConfig
 	disabled      map[contracts.Harness]bool
+	disabledRoles map[contracts.RoleID]bool
+	experimental  bool
 	custom        map[contracts.Harness][]string
 	projects      []Project
 	staleAfterMin int
@@ -65,6 +67,8 @@ type fileConfig struct {
 	ApprovedModels    []string                  `json:"approvedModels"`
 	Roles             map[string]fileRoleConfig `json:"roles"`
 	DisabledHarnesses []string                  `json:"disabledHarnesses"`
+	DisabledRoles     []string                  `json:"disabledRoles"`
+	ExperimentalRoles bool                      `json:"experimentalRoles"`
 	CustomModels      map[string][]string       `json:"customModels"`
 	Projects          []Project                 `json:"projects"`
 	StaleAfterMinutes int                       `json:"staleAfterMinutes"`
@@ -85,6 +89,7 @@ func New(workdir string) *Store {
 		approved:      map[string]struct{}{},
 		roles:         map[contracts.RoleID]RoleConfig{},
 		disabled:      map[contracts.Harness]bool{},
+		disabledRoles: map[contracts.RoleID]bool{},
 		custom:        map[contracts.Harness][]string{},
 		staleAfterMin: defaultStaleAfterMinutes,
 	}
@@ -148,6 +153,12 @@ func (s *Store) apply(fc fileConfig) {
 	for _, h := range fc.DisabledHarnesses {
 		s.disabled[contracts.Harness(h)] = true
 	}
+
+	s.disabledRoles = make(map[contracts.RoleID]bool, len(fc.DisabledRoles))
+	for _, id := range fc.DisabledRoles {
+		s.disabledRoles[contracts.RoleID(id)] = true
+	}
+	s.experimental = fc.ExperimentalRoles
 
 	s.custom = make(map[contracts.Harness][]string, len(fc.CustomModels))
 	for h, list := range fc.CustomModels {
@@ -324,6 +335,41 @@ func (s *Store) SetHarnessEnabled(h contracts.Harness, enabled bool) {
 	s.persistLocked()
 }
 
+// RoleEnabled reports whether a role may be used. Roles are enabled unless
+// explicitly disabled. Callers must still honor the role's Required flag.
+func (s *Store) RoleEnabled(id contracts.RoleID) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.disabledRoles[id]
+}
+
+// SetRoleEnabled enables or disables a role.
+func (s *Store) SetRoleEnabled(id contracts.RoleID, enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if enabled {
+		delete(s.disabledRoles, id)
+	} else {
+		s.disabledRoles[id] = true
+	}
+	s.persistLocked()
+}
+
+// ExperimentalRoles reports whether experimental roles may be used.
+func (s *Store) ExperimentalRoles() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.experimental
+}
+
+// SetExperimentalRoles toggles experimental roles.
+func (s *Store) SetExperimentalRoles(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.experimental = v
+	s.persistLocked()
+}
+
 // AddModel records a user-provided model for a harness, ignoring duplicates.
 func (s *Store) AddModel(h contracts.Harness, model string) {
 	model = strings.TrimSpace(model)
@@ -386,6 +432,8 @@ func (s *Store) snapshotLocked() fileConfig {
 		ApprovedModels:    make([]string, 0, len(s.approved)),
 		Roles:             make(map[string]fileRoleConfig, len(s.roles)),
 		DisabledHarnesses: make([]string, 0, len(s.disabled)),
+		DisabledRoles:     make([]string, 0, len(s.disabledRoles)),
+		ExperimentalRoles: s.experimental,
 		CustomModels:      make(map[string][]string, len(s.custom)),
 		Projects:          append([]Project(nil), s.projects...),
 		StaleAfterMinutes: s.staleAfterMin,
@@ -399,6 +447,9 @@ func (s *Store) snapshotLocked() fileConfig {
 	}
 	for h := range s.disabled {
 		fc.DisabledHarnesses = append(fc.DisabledHarnesses, string(h))
+	}
+	for id := range s.disabledRoles {
+		fc.DisabledRoles = append(fc.DisabledRoles, string(id))
 	}
 	for h, list := range s.custom {
 		fc.CustomModels[string(h)] = append([]string(nil), list...)
