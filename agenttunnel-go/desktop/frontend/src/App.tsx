@@ -2213,14 +2213,16 @@ export default function App() {
     }
     if (openMention && menuMatches && menuMatches.length > 0) {
       const n = menuMatches.length;
+      // Clamp like the render does: a stale index from a longer list would otherwise stall the wrap.
+      const cur = Math.min(mentionActive, n - 1);
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        setMentionActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        setMentionActive(e.key === "ArrowDown" ? (cur + 1) % n : (cur - 1 + n) % n);
         return;
       }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
         e.preventDefault();
-        pickMention(menuMatches[Math.min(mentionActive, n - 1)]);
+        pickMention(menuMatches[cur]);
         return;
       }
     }
@@ -3062,7 +3064,7 @@ export default function App() {
                   {draftAttachments.map((a) => (
                     <span key={a.path} className="attach-chip" title={a.path}>
                       <span className="attach-kind">{a.dir ? "folder" : "file"}</span>
-                      <span className="attach-name">{a.path}</span>
+                      <span className="attach-name">{a.dir ? `${a.path}/` : a.path}</span>
                       <button
                         type="button"
                         className="attach-remove"
