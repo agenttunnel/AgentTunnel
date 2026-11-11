@@ -125,3 +125,51 @@ func TestHarnessStatsScopesToProjectAndThread(t *testing.T) {
 		}
 	}
 }
+
+func TestModelStatsSplitsHarnessByModel(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	for _, id := range []contracts.ThreadID{"t1", "t2"} {
+		mustDispatch(t, e, ctx, contracts.Command{ID: "c-" + string(id), Type: contracts.CmdThreadCreate, ThreadID: id})
+	}
+	// The same harness on two models must stay two rows, so the leaderboard can
+	// rank a model against its siblings on the same harness.
+	modelOn := func(thread contracts.ThreadID, agent, parent, model string) {
+		t.Helper()
+		mustDispatch(t, e, ctx, contracts.Command{
+			ID: "d-" + string(thread) + "-" + agent, Type: contracts.CmdTaskDispatch, ThreadID: thread,
+			Dispatch: &contracts.DispatchTask{
+				AgentID:       contracts.AgentID(agent),
+				ParentAgentID: contracts.AgentID(parent),
+				Role:          contracts.RoleExecutor,
+				Task:          "work",
+				Harness:       contracts.HarnessClaude,
+				Model:         model,
+			},
+		})
+	}
+	modelOn("t1", "agent-orchestrator", "", "opus")
+	modelOn("t1", "agent-a-1", "agent-orchestrator", "sonnet")
+	modelOn("t2", "agent-orchestrator", "", "opus")
+
+	recordOn(t, e, "t1", "agent-orchestrator", contracts.TokenUsage{InputTokens: 100, OutputTokens: 10, CachedTokens: 40})
+	recordOn(t, e, "t1", "agent-a-1", contracts.TokenUsage{InputTokens: 300, OutputTokens: 30})
+	recordOn(t, e, "t2", "agent-orchestrator", contracts.TokenUsage{InputTokens: 1, OutputTokens: 2})
+
+	got, err := e.ModelStats(ctx, HarnessScope{})
+	if err != nil {
+		t.Fatalf("ModelStats: %v", err)
+	}
+	want := []ModelStat{
+		{
+			Harness: contracts.HarnessClaude, Model: "opus", Threads: 2, Agents: 2, Subagents: 0,
+			Usage: contracts.TokenUsage{InputTokens: 101, OutputTokens: 12, CachedTokens: 40},
+		},
+		{
+			Harness: contracts.HarnessClaude, Model: "sonnet", Threads: 1, Agents: 1, Subagents: 1,
+			Usage: contracts.TokenUsage{InputTokens: 300, OutputTokens: 30},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModelStats =\n%+v\nwant\n%+v", got, want)
+	}
+}
