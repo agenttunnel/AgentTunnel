@@ -174,6 +174,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Steering:     steerBox,
 		Audit:        actions.Func(),
 		Updater:      updater,
+		Version:      opts.Version,
 		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits()),
 		Relay:        relay,
 	})

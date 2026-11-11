@@ -68,6 +68,8 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// Version is the release version embedded at link time, reported by app.info.
+	Version string
 	// Limits reports subscription usage left per harness. Nil reports none.
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
@@ -143,6 +145,7 @@ type Dispatcher struct {
 	steering   *steering.Box
 	audit      actionlog.Func
 	updater    *update.Updater
+	version    string
 	limits     *providers.LimitsProvider
 	relay      RelayControl
 	prBoard    *scm.Board
@@ -182,6 +185,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		steering:   d.Steering,
 		audit:      d.Audit,
 		updater:    d.Updater,
+		version:    d.Version,
 		limits:     d.Limits,
 		relay:      d.Relay,
 		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
@@ -1043,6 +1047,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		return d.engine.HarnessStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
+	case "app.info":
+		version := d.version
+		if version == "" {
+			version = "dev"
+		}
+		return map[string]any{"version": version}, nil
 
 	case "update.check":
 		if d.updater == nil {
