@@ -21,6 +21,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agenttunnel/agenttunnel-go/internal/daemonlock"
+	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolcli"
 	"github.com/agenttunnel/agenttunnel-go/pkg/daemon"
@@ -66,6 +68,29 @@ func main() {
 		tok = mustToken()
 	}
 
+	// Serialize "no daemon here yet, so I may bind" across processes sharing
+	// this state dir. A daemon spawned by `at` is told (AT_AUTOSTART) that its
+	// parent already holds the lock across spawn+wait, so it only re-checks for
+	// a live daemon. A directly started atd takes the lock itself, making a
+	// second direct start exit instead of binding a duplicate.
+	var lock *daemonlock.Lock
+	if os.Getenv("AT_AUTOSTART") == "" {
+		lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		got, lerr := daemonlock.Acquire(lockCtx, *homeDir, 50*time.Millisecond)
+		cancel()
+		if lerr != nil {
+			log.Fatalf("atd: another AgentTunnel process is using %s: %v", *homeDir, lerr)
+		}
+		lock = got
+	}
+	defer lock.Release()
+	// Under the lock (or after the autostart handoff), re-check: another daemon
+	// may already own this state dir. Exiting 0 leaves exactly one daemon.
+	if daemonlock.Live(ctx, *homeDir, time.Second) {
+		log.Printf("atd: a daemon is already running in %s; not starting another", *homeDir)
+		return
+	}
+
 	daemon.EnrichPATH()
 
 	d, err := daemon.New(ctx, daemon.Options{
@@ -76,7 +101,8 @@ func main() {
 			MaxPasses:      *maxPasses,
 			MaxConcurrency: *concurrency,
 		},
-		Version: version,
+		Version:    version,
+		OnShutdown: stop,
 	})
 	if err != nil {
 		log.Fatalf("atd: %v", err)
@@ -95,6 +121,24 @@ func main() {
 	}
 	// Agents call the tool endpoint at this address.
 	d.SetEndpoint("http://" + ln.Addr().String())
+
+	// Publish how to reach this daemon, now that the port is known. A CLI
+	// (`at`) reads it to attach or stop; the file is removed on shutdown so a
+	// stale entry cannot outlive the process.
+	if err := discovery.Write(*homeDir, discovery.Info{
+		WSURL:     "ws://" + ln.Addr().String() + "/ws",
+		HTTPURL:   "http://" + ln.Addr().String(),
+		Token:     tok,
+		PID:       os.Getpid(),
+		Version:   version,
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		log.Fatalf("atd: write %s: %v", discovery.FileName, err)
+	}
+	// The lock only covers the first-daemon decision; release it now that a
+	// waiter can see this daemon in discovery and attach to it.
+	lock.Release()
+	defer discovery.Remove(*homeDir)
 
 	srv := &http.Server{
 		Handler:           d.Server.Handler(),

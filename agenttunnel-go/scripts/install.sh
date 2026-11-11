@@ -99,7 +99,7 @@ fi
 tar -xzf "$tmpdir/$asset" -C "$tmpdir"
 
 installed=0
-for name in atd agenttunnel; do
+for name in atd agenttunnel at; do
   for candidate in "$name" "$name.exe"; do
     if [ -f "$tmpdir/$candidate" ]; then
       if [ "$name" = "agenttunnel" ] && [ -n "$app_binary" ]; then
@@ -114,7 +114,7 @@ for name in atd agenttunnel; do
 done
 
 if [ "$installed" -eq 0 ]; then
-  echo "install: archive did not contain atd or agenttunnel" >&2
+  echo "install: archive did not contain atd, agenttunnel, or at" >&2
   exit 1
 fi
 
