@@ -109,8 +109,9 @@ func forwardToRunning(stateDir, dir string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ws, _, err := websocket.Dial(ctx, lock.WsURL+"?token="+lock.Token, &websocket.DialOptions{
+	ws, _, err := websocket.Dial(ctx, lock.WsURL, &websocket.DialOptions{
 		HTTPClient: &http.Client{Timeout: 2 * time.Second},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + lock.Token}},
 	})
 	if err != nil {
 		return false

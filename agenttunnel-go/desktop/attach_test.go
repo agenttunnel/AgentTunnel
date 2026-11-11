@@ -16,10 +16,17 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 )
 
-// fakeDaemon answers one project.list call on an accepted WebSocket.
-func fakeDaemon(t *testing.T) *httptest.Server {
+// fakeDaemon answers one project.list call on an accepted WebSocket and
+// reports the Authorization header it saw, so the test can prove the token
+// never rides in the query string.
+func fakeDaemon(t *testing.T) (*httptest.Server, *string) {
 	t.Helper()
+	var auth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		if r.URL.RawQuery != "" {
+			t.Errorf("unexpected query string %q (the token must be a header)", r.URL.RawQuery)
+		}
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			t.Errorf("accept: %v", err)
@@ -41,11 +48,11 @@ func fakeDaemon(t *testing.T) *httptest.Server {
 		_ = conn.Write(ctx, websocket.MessageText, resp)
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, &auth
 }
 
 func TestFindDaemonAttachesToReachableDaemon(t *testing.T) {
-	srv := fakeDaemon(t)
+	srv, auth := fakeDaemon(t)
 	state := t.TempDir()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 	if err := discovery.Write(state, discovery.Info{WSURL: wsURL, Token: "tok"}); err != nil {
@@ -55,6 +62,9 @@ func TestFindDaemonAttachesToReachableDaemon(t *testing.T) {
 	target, ok := findDaemon(state)
 	if !ok {
 		t.Fatal("findDaemon did not attach to a reachable daemon")
+	}
+	if *auth != "Bearer tok" {
+		t.Fatalf("Authorization = %q, want bearer token", *auth)
 	}
 	if target.wsURL != wsURL || target.token != "tok" {
 		t.Fatalf("target = %+v, want wsURL %q token tok", target, wsURL)
@@ -69,9 +79,14 @@ func TestFindDaemonAttachesToReachableDaemon(t *testing.T) {
 	}
 }
 
-func TestFindDaemonRemovesStaleDiscovery(t *testing.T) {
+// A failed probe must leave the file alone: a large environment can outlast the
+// 2s probe, and deleting a live daemon's file strands `at` and invites a second
+// daemon on the same state dir. Only a provably dead recorded pid may be
+// cleaned up.
+func TestFindDaemonKeepsUnreachableDiscovery(t *testing.T) {
 	state := t.TempDir()
 	// Port 1 is reserved and refuses connections; a short probe fails fast.
+	// PID 0 is "unknown", so nothing proves the owner is dead.
 	if err := discovery.Write(state, discovery.Info{WSURL: "ws://127.0.0.1:1/ws", Token: "tok"}); err != nil {
 		t.Fatalf("write discovery: %v", err)
 	}
@@ -79,8 +94,38 @@ func TestFindDaemonRemovesStaleDiscovery(t *testing.T) {
 	if _, ok := findDaemon(state); ok {
 		t.Fatal("findDaemon attached to an unreachable daemon")
 	}
+	if _, err := os.Stat(discovery.Path(state)); err != nil {
+		t.Fatalf("unreachable discovery file was removed: %v", err)
+	}
+}
+
+func TestFindDaemonRemovesProvablyDeadDiscovery(t *testing.T) {
+	state := t.TempDir()
+	// A pid far above any platform's pid_max cannot be running.
+	if err := discovery.Write(state, discovery.Info{WSURL: "ws://127.0.0.1:1/ws", Token: "tok", PID: 1 << 30}); err != nil {
+		t.Fatalf("write discovery: %v", err)
+	}
+
+	if _, ok := findDaemon(state); ok {
+		t.Fatal("findDaemon attached to a dead daemon")
+	}
 	if _, err := os.Stat(discovery.Path(state)); !os.IsNotExist(err) {
-		t.Fatalf("stale discovery file still exists (err=%v)", err)
+		t.Fatalf("dead discovery file still exists (err=%v)", err)
+	}
+}
+
+// An unreadable record has no pid to check, so the probe leaves it for the next
+// writer to replace atomically.
+func TestFindDaemonKeepsMalformedDiscovery(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(discovery.Path(state), []byte("not json"), 0o600); err != nil {
+		t.Fatalf("write malformed discovery: %v", err)
+	}
+	if _, ok := findDaemon(state); ok {
+		t.Fatal("findDaemon attached without a valid discovery file")
+	}
+	if _, err := os.Stat(discovery.Path(state)); err != nil {
+		t.Fatalf("malformed discovery file was removed: %v", err)
 	}
 }
 

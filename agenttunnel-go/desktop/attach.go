@@ -8,12 +8,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -35,30 +33,29 @@ type daemonTarget struct {
 }
 
 // findDaemon reads <state>/daemon.json and confirms the daemon answers. A
-// missing, malformed, or unreachable file is treated as stale and removed, so
-// the caller can boot its own daemon.
+// missing or unreachable file means "no daemon to attach to", but it is only
+// removed when the recorded process is provably dead: project.list walks every
+// thread, so a large environment can legitimately outlast the probe, and
+// deleting a live daemon's file would strand `at` and let this window boot a
+// second daemon on the same state dir.
 func findDaemon(stateDir string) (daemonTarget, bool) {
 	info, err := discovery.Read(stateDir)
 	if err != nil {
-		// A file we cannot read is either absent (nothing to do) or garbage
-		// from a crashed run; either way it must not block a fresh boot.
-		if !errors.Is(err, os.ErrNotExist) {
-			_ = discovery.Remove(stateDir)
-		}
 		return daemonTarget{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), attachTimeout)
 	defer cancel()
-	ws, _, err := websocket.Dial(ctx, tokenURL(info.WSURL, info.Token), &websocket.DialOptions{
+	ws, _, err := websocket.Dial(ctx, info.WSURL, &websocket.DialOptions{
 		HTTPClient: &http.Client{Timeout: attachTimeout},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + info.Token}},
 	})
 	if err != nil {
-		_ = discovery.Remove(stateDir)
+		removeIfDead(stateDir, info.PID)
 		return daemonTarget{}, false
 	}
 	defer ws.CloseNow()
 	if _, err := rpcCall(ctx, ws, "project.list", nil); err != nil {
-		_ = discovery.Remove(stateDir)
+		removeIfDead(stateDir, info.PID)
 		return daemonTarget{}, false
 	}
 	httpURL := info.HTTPURL
@@ -73,14 +70,14 @@ func findDaemon(stateDir string) (daemonTarget, bool) {
 	}, true
 }
 
-// tokenURL appends the discovery token to a WebSocket URL. The daemon accepts
-// it as a query token from a loopback peer.
-func tokenURL(ws, token string) string {
-	sep := "?"
-	if strings.Contains(ws, "?") {
-		sep = "&"
+// removeIfDead deletes the discovery file only when its recorded pid is
+// provably gone. A failed probe against a live process (or a record with no
+// pid) leaves the file for its owner; the next writer replaces it atomically.
+func removeIfDead(stateDir string, pid int) {
+	if pid <= 0 || processAlive(pid) {
+		return
 	}
-	return ws + sep + "token=" + url.QueryEscape(token)
+	_ = discovery.Remove(stateDir)
 }
 
 // hostFromWS returns the daemon's host:port for display, falling back to the

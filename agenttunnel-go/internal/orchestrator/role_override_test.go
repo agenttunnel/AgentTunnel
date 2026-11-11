@@ -86,7 +86,46 @@ func TestRoleRuntimeThreadOverridePrecedence(t *testing.T) {
 	}
 }
 
-// Model resolution for a role sees the thread override as the role's own model.
+// A thread override that names only a harness must not inherit the settings
+// model of the harness it replaced: sending "sonnet" to codex is the bug this
+// pins. The new harness runs its own default unless the override names a model.
+func TestRoleRuntimeHarnessOnlyOverrideDropsModel(t *testing.T) {
+	ctx := context.Background()
+	r, eng := newRoleRuntimeRunner(t)
+	if err := eng.Dispatch(ctx, contracts.Command{Type: contracts.CmdThreadCreate, ThreadID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	r.settings.SetRoleConfig(contracts.RoleExecutor, settings.RoleConfig{
+		Harness: contracts.HarnessClaude, Model: "sonnet", Variant: "v1",
+	})
+	executor, ok := r.roles.Get(contracts.RoleExecutor)
+	if !ok {
+		t.Fatal("executor role missing")
+	}
+
+	setRoleOverride(t, eng, "t1", contracts.RoleExecutor, contracts.LeadRuntime{Harness: contracts.HarnessCodex})
+	harness, model, variant := r.roleRuntimeFor(ctx, "t1", executor)
+	if harness != contracts.HarnessCodex || model != "" || variant != "" {
+		t.Fatalf("harness-only override = %s/%q/%q, want codex/empty/empty", harness, model, variant)
+	}
+	// resolveModelFor must not fall back to the settings model either.
+	if got := r.resolveModelFor(ctx, "t1", executor, contracts.HarnessCodex, "", false, false); got != "" {
+		t.Fatalf("resolveModelFor = %q, want empty for the new harness", got)
+	}
+	// The dispatch record follows the same resolution.
+	if got := r.dispatchHarness(ctx, "t1", contracts.RoleExecutor); got != contracts.HarnessCodex {
+		t.Fatalf("dispatch harness = %s, want codex", got)
+	}
+
+	// An explicit model in the same override is used; it belongs to the new harness.
+	setRoleOverride(t, eng, "t1", contracts.RoleExecutor, contracts.LeadRuntime{
+		Harness: contracts.HarnessCodex, Model: "gpt-5",
+	})
+	if h, m, v := r.roleRuntimeFor(ctx, "t1", executor); h != contracts.HarnessCodex || m != "gpt-5" || v != "" {
+		t.Fatalf("harness+model override = %s/%q/%q, want codex/gpt-5/empty", h, m, v)
+	}
+}
+
 func TestResolveModelUsesThreadRoleOverride(t *testing.T) {
 	ctx := context.Background()
 	r, eng := newRoleRuntimeRunner(t)

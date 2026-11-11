@@ -299,6 +299,10 @@ const THREAD_PR_POLL_MS = 20_000;
 /** How often a connected app asks for a newer release. At this rate a client
  * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
 const UPDATE_CHECK_MS = 5 * 60_000;
+/** After a detached send, how long to wait for the turn to appear before
+ * treating a busy flag with no visible turn as stale (the start failed before
+ * any agent existed). */
+const DETACHED_START_GRACE_MS = 60_000;
 /** Playful verbs for the setup view's Start button. */
 const START_VERBS = [
   "Brewing",
@@ -710,6 +714,46 @@ export default function App() {
   }, []);
   // Threads with a send in its RPC window; stops a double Enter from submitting twice.
   const sendingRef = useRef(new Set<string>());
+  // Detached turns outlive the RPC that starts them: thread.turn.start with
+  // detach replies before any agent exists, so the busy flag cannot be cleared
+  // when the call returns. The thread list shows a running turn as
+  // pending/running agents (and a new user message); clear the flag once the
+  // turn has appeared and gone quiet again, or after a start grace if it never
+  // appeared at all.
+  const detachedTurns = useRef<Record<string, { seen: boolean; messages: number; at: number }>>({});
+  const noteDetachedTurn = useCallback(
+    (threadId: string) => {
+      const summary = threads.find((t) => t.id === threadId);
+      // Prefer the live thread state for the thread on screen: the summary can
+      // lag one refresh behind, and a stale baseline would look like the turn
+      // already started.
+      const live = activeIdRef.current === threadId ? (thread?.messages?.length ?? 0) : 0;
+      detachedTurns.current[threadId] = {
+        seen: false,
+        messages: Math.max(summary?.messages ?? 0, live),
+        at: Date.now(),
+      };
+    },
+    [threads, thread],
+  );
+  const settleDetachedTurns = useCallback(
+    (list: ThreadSummary[]) => {
+      const now = Date.now();
+      for (const [id, entry] of Object.entries(detachedTurns.current)) {
+        const summary = list.find((t) => t.id === id);
+        const inFlight = (summary?.runningAgents ?? 0) > 0;
+        if (inFlight) entry.seen = true;
+        // The user message is recorded when the turn starts; a fast turn that
+        // began and ended between two refreshes still counts as started.
+        const started = entry.seen || (summary?.messages ?? 0) > entry.messages;
+        if ((started && !inFlight) || (!started && now - entry.at > DETACHED_START_GRACE_MS)) {
+          delete detachedTurns.current[id];
+          setTurnBusy(id, false);
+        }
+      }
+    },
+    [setTurnBusy],
+  );
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
   const busy = !!activeId && !!turnThreads[activeId];
@@ -945,8 +989,9 @@ export default function App() {
     // A reply for a thread the user has since left must not replace the one on screen.
     if (activeIdRef.current === id) setThread(state);
     setThreads(list);
+    settleDetachedTurns(list);
     setGlobalUsage(usage);
-  }, []);
+  }, [settleDetachedTurns]);
 
   // The daemon closes a question on the answer, so refresh right away: the card
   // flips to its answered state without waiting for the event debounce. Errors
@@ -1986,8 +2031,10 @@ export default function App() {
         return rest;
       });
     }
+    const detached = !command && !steer && (runInBackground || !!conn?.attached);
     sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
+    if (detached) noteDetachedTurn(threadId);
     if (command) setShellThread(threadId);
     try {
       if (command) {
@@ -2016,10 +2063,18 @@ export default function App() {
       setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
       if (sentFiles.length > 0) setAttachments((prev) => ({ ...prev, [key]: sentFiles }));
       setError(e instanceof Error ? e.message : String(e), threadId);
+      // A failed start left no turn behind: retract the busy flag now instead of
+      // waiting for it to end.
+      if (!steer) {
+        delete detachedTurns.current[threadId];
+        setTurnBusy(threadId, false);
+      }
     } finally {
       sendingRef.current.delete(sendKey);
-      // A finished steer must not clear the busy flag of the turn it joined.
-      if (!steer) setTurnBusy(threadId, false);
+      // A finished steer must not clear the busy flag of the turn it joined, and
+      // a detached turn replies before any agent exists: keep it busy until
+      // settleDetachedTurns sees the turn end.
+      if (!steer && !detached) setTurnBusy(threadId, false);
       setShellThread((cur) => (cur === threadId ? null : cur));
       refresh(threadId).catch(() => undefined);
     }
@@ -2031,16 +2086,22 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     const steer = running.length > 0 || busy;
+    const detached = !steer && (runInBackground || !!conn?.attached);
     if (!steer) setTurnBusy(threadId, true);
+    if (detached) noteDetachedTurn(threadId);
     setTab("chat");
     try {
       const params: Record<string, unknown> = { threadId, text };
-      if (runInBackground || conn?.attached) params.detach = true;
+      if (detached) params.detach = true;
       await rpc.call(steer ? "thread.steer" : "thread.turn.start", params);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e), threadId);
+      if (!steer) {
+        delete detachedTurns.current[threadId];
+        setTurnBusy(threadId, false);
+      }
     } finally {
-      if (!steer) setTurnBusy(threadId, false);
+      if (!steer && !detached) setTurnBusy(threadId, false);
       refresh(threadId).catch(() => undefined);
     }
   };

@@ -721,8 +721,12 @@ func (r *Runner) roleRuntimeFor(ctx context.Context, threadID contracts.ThreadID
 	if !ok {
 		return harness, model, variant
 	}
-	if ov.Harness.Valid() {
-		harness = ov.Harness
+	// Overriding the harness drops the inherited model and variant, which
+	// belong to the harness they were configured for. Mirror leadRuntime: a
+	// harness-only override must not send the old harness's model to the new
+	// one.
+	if ov.Harness.Valid() && ov.Harness != harness {
+		harness, model, variant = ov.Harness, "", ""
 	}
 	if ov.Model != "" {
 		model = ov.Model

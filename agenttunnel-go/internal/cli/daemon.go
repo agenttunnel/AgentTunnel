@@ -10,13 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agenttunnel/agenttunnel-go/internal/daemonlock"
 	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 )
 
-// atdEnvVars are the agent-session variables a spawned daemon must never
-// inherit: they would make it believe it runs inside an agent, or point it at
-// another daemon's socket and token.
-var atdEnvVars = []string{"AT_AGENT_ID", "AT_THREAD_ID", "AT_DAEMON_URL", "AT_TOKEN", "AT_TOOL"}
+// atdEnvVars are the variables a spawned daemon must never inherit: agent
+// session markers (they would make it believe it runs inside an agent, or point
+// it at another daemon's socket and token) and a stale AT_AUTOSTART marker,
+// which this process sets explicitly for the daemon it starts.
+var atdEnvVars = []string{"AT_AGENT_ID", "AT_THREAD_ID", "AT_DAEMON_URL", "AT_TOKEN", "AT_TOOL", "AT_AUTOSTART"}
 
 // scrubEnv removes the agent-session variables from an environment block.
 func scrubEnv(environ []string) []string {
@@ -63,7 +65,9 @@ func spawnDaemon(stateDir string) error {
 		return fmt.Errorf("atd was not found beside %s or on PATH: %w", os.Args[0], err)
 	}
 	cmd := exec.Command(bin, "--port", "0", "--home-dir", stateDir)
-	cmd.Env = scrubEnv(os.Environ())
+	// AT_AUTOSTART tells atd that this process already holds daemon.lock, so it
+	// must not wait on that lock before binding.
+	cmd.Env = append(scrubEnv(os.Environ()), "AT_AUTOSTART=1")
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -121,6 +125,18 @@ func (e *Env) Connect(ctx context.Context) (*Client, discovery.Info, error) {
 		return c, discovery.Info{WSURL: e.DaemonURL, Token: token}, nil
 	}
 
+	// One process at a time decides whether a daemon must start. The winner
+	// starts it and publishes discovery before releasing, so a competing `at`
+	// that was waiting attaches to that daemon instead of starting a second one
+	// on the same state dir.
+	lock, err := daemonlock.Acquire(ctx, e.StateDir(), 50*time.Millisecond)
+	if err != nil {
+		return nil, discovery.Info{}, err
+	}
+	defer lock.Release()
+
+	// Re-check under the lock: the winner may have brought a daemon up while
+	// this process waited for the lock.
 	if c, info, err := e.connectExisting(ctx); err == nil {
 		return c, info, nil
 	}
