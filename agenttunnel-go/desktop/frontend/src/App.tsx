@@ -25,6 +25,7 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
+import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
 import { switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
@@ -739,7 +740,7 @@ export default function App() {
   const setCouncilMembers = (update: (prev: CouncilMemberRow[]) => CouncilMemberRow[]) =>
     setCouncilSetup((s) => ({ ...s, members: update(s.members) }));
   const [workdirInput, setWorkdirInput] = useState("");
-  const [approvedInput, setApprovedInput] = useState("");
+  const [approvedModels, setApprovedModels] = useState<string[]>([]);
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
@@ -1236,7 +1237,7 @@ export default function App() {
     const s = await rpc.call<SettingsView>("settings.get");
     setSettings(s);
     setWorkdirInput(s.workdir ?? "");
-    setApprovedInput((s.approvedModels ?? []).join(", "));
+    setApprovedModels(s.approvedModels ?? []);
     setStaleAfterInput(String(s.staleAfterMinutes ?? 30));
     return s;
   }, []);
@@ -2280,10 +2281,7 @@ export default function App() {
     const s = await rpc.call<SettingsView>("settings.set", {
       workdir: workdirInput,
       autoMode: settings?.autoMode ?? false,
-      approvedModels: approvedInput
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean),
+      approvedModels,
       staleAfterMinutes: staleAfterInput,
     });
     setSettings(s);
@@ -3869,14 +3867,15 @@ export default function App() {
                 >
                   <span className="sw" /> Auto mode — orchestrator picks each task's model
                 </div>
-                <label className="field" style={{ marginTop: 12 }}>
-                  <span>Approved models (comma separated)</span>
-                  <input
-                    value={approvedInput}
-                    onChange={(e) => setApprovedInput(e.target.value)}
-                    placeholder="gpt-5, sonnet, …"
+                <div className="field" style={{ marginTop: 12 }}>
+                  <span>Approved models for auto mode</span>
+                  <ApprovedModelsPicker
+                    value={approvedModels}
+                    onChange={setApprovedModels}
+                    models={harnesses.models}
+                    harnessOrder={harnesses.all}
                   />
-                </label>
+                </div>
                 <label className="field" style={{ marginTop: 12 }}>
                   <span>Mark threads stale after this many minutes of inactivity</span>
                   <input
