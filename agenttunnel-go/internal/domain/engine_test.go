@@ -48,8 +48,8 @@ func TestEngineCreateTurnAndProject(t *testing.T) {
 	if len(state.Messages) != 1 || state.Messages[0].Text != "hello world" {
 		t.Fatalf("messages = %+v", state.Messages)
 	}
-	if state.Version != 3 {
-		t.Fatalf("version = %d, want 3", state.Version)
+	if state.Version != 4 {
+		t.Fatalf("version = %d, want 4", state.Version)
 	}
 }
 
@@ -361,7 +361,7 @@ func TestThreadCreateIsProvisionalUntilUsed(t *testing.T) {
 		Message: &contracts.MessageSent{MessageID: "m1", Author: "user", Text: "do something"},
 	})
 	st, _ = e.State(ctx, "t1")
-	if st.Provisional || st.Version != 3 || len(st.Messages) != 1 {
+	if st.Provisional || st.Version != 4 || len(st.Messages) != 1 {
 		t.Fatalf("materialized state = %+v", st)
 	}
 	files, _ = filepath.Glob(filepath.Join(dir, "*.jsonl"))

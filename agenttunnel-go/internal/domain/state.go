@@ -82,13 +82,16 @@ type ThreadState struct {
 	// thread is gone from listings and refuses further commands.
 	Deleted bool `json:"deleted"`
 	// Archived is set by the user; it moves the thread to the board's Archived column.
-	Archived    bool                     `json:"archived"`
-	Title       string                   `json:"title"`
-	ProjectID   string                   `json:"projectId,omitempty"`
-	UpdatedAt   time.Time                `json:"updatedAt"`
-	Model       contracts.ModelSelection `json:"model"`
-	AutoMode    bool                     `json:"autoMode"`
-	PeerMailbox bool                     `json:"peerMailbox"`
+	Archived  bool                     `json:"archived"`
+	Title     string                   `json:"title"`
+	ProjectID string                   `json:"projectId,omitempty"`
+	UpdatedAt time.Time                `json:"updatedAt"`
+	Model     contracts.ModelSelection `json:"model"`
+	AutoMode  bool                     `json:"autoMode"`
+	// StatusPeriodSeconds is how often a running turn posts a workflow status
+	// report into the thread. Zero means off.
+	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`
+	PeerMailbox         bool `json:"peerMailbox"`
 	// Leads is the stored orchestrator team size; zero means one. Read it
 	// through LeadCount.
 	Leads int `json:"leads"`

@@ -21,6 +21,7 @@ const (
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtArchiveSet         EventType = "thread.archive-set"
+	EvtStatusPeriodSet    EventType = "thread.status-period-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
@@ -124,6 +125,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AutoModeSet](data)
 	case EvtArchiveSet:
 		return decodePayload[ArchiveSet](data)
+	case EvtStatusPeriodSet:
+		return decodePayload[StatusPeriodSet](data)
 	case EvtPeerMailboxSet:
 		return decodePayload[PeerMailboxSet](data)
 	case EvtLeadsSet:
@@ -246,6 +249,10 @@ type SteeringConsumed struct {
 
 func (SteeringConsumed) eventType() EventType { return EvtSteeringConsumed }
 
+// AuthorStatus marks a daemon-written workflow status report. It is not a user
+// message, so recording one never opens a turn.
+const AuthorStatus = "status"
+
 type ModelSet struct{ Selection ModelSelection }
 
 func (ModelSet) eventType() EventType { return EvtModelSet }
@@ -259,6 +266,19 @@ func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
 type ArchiveSet struct{ Archived bool }
 
 func (ArchiveSet) eventType() EventType { return EvtArchiveSet }
+
+// Status report period limits, in seconds. Zero turns the report off; new
+// threads start at the default.
+const (
+	DefaultStatusPeriodSeconds = 60
+	MaxStatusPeriodSeconds     = 24 * 60 * 60
+)
+
+// StatusPeriodSet sets how often a running turn posts a workflow status
+// report into the thread. Zero disables it.
+type StatusPeriodSet struct{ PeriodSeconds int }
+
+func (StatusPeriodSet) eventType() EventType { return EvtStatusPeriodSet }
 
 // PeerMailboxSet toggles peer-to-peer agent messaging for a thread. On by
 // default: thread creation records it enabled.

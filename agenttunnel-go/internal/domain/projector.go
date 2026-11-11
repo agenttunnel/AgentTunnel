@@ -64,6 +64,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
 
+	case contracts.StatusPeriodSet:
+		s.StatusPeriodSeconds = p.PeriodSeconds
+
 	case contracts.PeerMailboxSet:
 		s.PeerMailbox = p.Enabled
 

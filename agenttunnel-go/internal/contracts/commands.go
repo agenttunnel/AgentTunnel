@@ -19,6 +19,7 @@ const (
 	CmdModelSet           CommandType = "thread.model.set"
 	CmdAutoModeSet        CommandType = "thread.automode.set"
 	CmdArchiveSet         CommandType = "thread.archive.set"
+	CmdStatusPeriodSet    CommandType = "thread.status-period.set"
 	CmdPeerMailboxSet     CommandType = "thread.peer-mailbox.set"
 	CmdLeadsSet           CommandType = "thread.leads.set"
 	CmdLeadRuntimeSet     CommandType = "thread.leads.runtime.set"
@@ -84,6 +85,7 @@ type Command struct {
 	ProjectID       string                     `json:"projectId,omitempty"`
 	ModelSelection  *ModelSelection            `json:"modelSelection,omitempty"`
 	AutoMode        *bool                      `json:"autoMode,omitempty"`
+	StatusPeriod    *int                       `json:"statusPeriod,omitempty"`
 	Archived        *bool                      `json:"archived,omitempty"`
 	PeerMailbox     *bool                      `json:"peerMailbox,omitempty"`
 	Leads           *int                       `json:"leads,omitempty"`

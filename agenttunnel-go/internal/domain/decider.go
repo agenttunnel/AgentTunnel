@@ -33,6 +33,7 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		return []contracts.EventPayload{
 			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree},
 			contracts.PeerMailboxSet{Enabled: true},
+			contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
 		}, nil
 
 	case contracts.CmdWorktreeAttach:
@@ -166,6 +167,19 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			return nil, nil // already tracked: nothing to record
 		}
 		return []contracts.EventPayload{contracts.PRTracked{PullRequest: *ref}}, nil
+
+	case contracts.CmdStatusPeriodSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.StatusPeriod == nil {
+			return nil, fmt.Errorf("%w: status period value is required", ErrInvalidCommand)
+		}
+		period := *cmd.StatusPeriod
+		if period < 0 || period > contracts.MaxStatusPeriodSeconds {
+			return nil, fmt.Errorf("%w: status period must be between 0 and %d seconds", ErrInvalidCommand, contracts.MaxStatusPeriodSeconds)
+		}
+		return []contracts.EventPayload{contracts.StatusPeriodSet{PeriodSeconds: period}}, nil
 
 	case contracts.CmdPeerMailboxSet:
 		if !s.Exists {
