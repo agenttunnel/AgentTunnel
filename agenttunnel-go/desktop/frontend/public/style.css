@@ -975,6 +975,29 @@ body.is-resizing * {
   margin-bottom: 8px;
 }
 
+/* Pre-run setup: the same settings, full width above the composer. Rows keep
+ * the aside's grid so the two surfaces read the same. */
+.setup-view {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 8px 0 24px;
+}
+.setup-view .model-summary {
+  margin: 0 0 12px;
+}
+.setup-view .toggle {
+  margin-bottom: 8px;
+}
+.setup-peer {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.toggle[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* One block per turn: the prompt heads it, the team's replies stack under it. */
 .turn {
   max-width: 900px;
