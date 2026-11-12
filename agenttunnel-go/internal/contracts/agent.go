@@ -44,8 +44,10 @@ type Agent struct {
 	Task          string      `json:"task"`
 	DependsOn     []string    `json:"dependsOn,omitempty"`
 	Status        AgentStatus `json:"status"`
-	StartedAt     time.Time   `json:"startedAt"`
-	EndedAt       *time.Time  `json:"endedAt,omitempty"`
+	// Reason says why the latest status change happened, e.g. why it failed.
+	Reason    string     `json:"reason,omitempty"`
+	StartedAt time.Time  `json:"startedAt"`
+	EndedAt   *time.Time `json:"endedAt,omitempty"`
 }
 
 // IsOrchestrator reports whether this agent is the thread's top-level team lead.
