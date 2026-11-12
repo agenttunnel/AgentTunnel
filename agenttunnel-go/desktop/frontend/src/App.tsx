@@ -74,6 +74,16 @@ import {
   type SlashCommand,
 } from "./lib/commands";
 import { SlashMenu } from "./components/SlashMenu";
+import { CommandPalette } from "./components/CommandPalette";
+import {
+  buildCommands as buildPaletteCommands,
+  composerItems,
+  groupItems,
+  projectItems,
+  threadItems,
+  type PaletteItem,
+  type PaletteSection,
+} from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
 import { MasterChat } from "./components/MasterChat";
 
@@ -2246,6 +2256,17 @@ export default function App() {
   // Slash popup: highlighted row, and the input it was dismissed on with Esc.
   const [slashIdx, setSlashIdx] = useState(0);
   const [slashClosed, setSlashClosed] = useState<string | null>(null);
+  // Cmd/Ctrl+P palette: whether it is open, whether it opened from the composer
+  // (which swaps the right pane to composer features), and where focus returns.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteFromComposer, setPaletteFromComposer] = useState(false);
+  const paletteReturn = useRef<HTMLElement | null>(null);
+  const closePalette = useCallback(() => {
+    setPaletteOpen(false);
+    const el = paletteReturn.current;
+    paletteReturn.current = null;
+    if (el?.isConnected) el.focus();
+  }, []);
 
   /** Asks the daemon a side question. It runs beside any running turn: no turn
    * slot, no steer, no message. Only the newest ask on a thread may settle. */
@@ -2322,6 +2343,23 @@ export default function App() {
   const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
+
+  // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
+  // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
+  // stops this listener from reopening it. Shift and Alt combos are left alone.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return;
+      if (e.key.toLowerCase() !== "p") return;
+      e.preventDefault();
+      const active = document.activeElement;
+      paletteReturn.current = active instanceof HTMLElement ? active : null;
+      setPaletteFromComposer(active === taRef.current);
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
   useLayoutEffect(() => {
     const el = taRef.current;
@@ -2930,6 +2968,87 @@ export default function App() {
     </div>
   );
 
+  // Cmd/Ctrl+P palette. Built only while open, per render, so every action is
+  // an arrow that resolves the current handlers and draft.
+  const attachFromPalette = () => {
+    if (!activeId) return;
+    const sep = input === "" || /\s$/.test(input) ? "" : " ";
+    const next = `${input}${sep}@`;
+    setInput(next);
+    pendingCaret.current = next.length;
+    setCaret(next.length);
+    taRef.current?.focus();
+  };
+  const refreshAll = () => {
+    loadProjects().catch(() => undefined);
+    if (activeId) refresh(activeId).catch(() => undefined);
+  };
+  const goToThread = (t: { id: string; projectId?: string }) => {
+    if (t.projectId) openWorktreeThread(t.projectId, t.id);
+    else selectThread(t.id);
+  };
+  const buildPaletteView = (): { left: PaletteSection[]; right: PaletteSection[]; rightTitle: string } => {
+    const left = groupItems(
+      buildPaletteCommands<AsideTabId>({
+        hasProject: !!projectId,
+        hasThread: !!activeId,
+        busy,
+        autoMode: !!thread?.autoMode,
+        peerMailbox: !!thread?.peerMailbox,
+        panels: ASIDE_META,
+        pinned: ASIDE_PINNED,
+        isPanelOpen: (id) => asideTabs.includes(id),
+        togglePanel: (id) => (asideTabs.includes(id) ? closePanel(id) : openPanel(id)),
+        setTab: (t) => setTab(t),
+        newThread: () => newThread(),
+        createProject: () => addProject(),
+        openSettings: () => openSettings(),
+        refresh: () => refreshAll(),
+        stopTurn: () => stopTurn(),
+        toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
+        togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
+      }),
+    );
+    if (paletteFromComposer && activeId) {
+      const right = groupItems(
+        composerItems({
+          attach: () => attachFromPalette(),
+          modelConfig: () => toggleModels(),
+          slash: slashCommands(),
+          runSlash: (cmd) => pickSlash(cmd, true),
+        }),
+      );
+      return { left, right, rightTitle: "Composer" };
+    }
+    const names = new Map(projects.map((p) => [p.id, p.name]));
+    const threadRows: PaletteItem[] = threadItems(
+      projectId ? threads.filter((t) => t.projectId === projectId) : threads,
+      names,
+      !projectId,
+      goToThread,
+    );
+    const projectRows: PaletteItem[] = projectId ? [] : projectItems(projects, (id) => openProject(id));
+    return {
+      left,
+      right: groupItems([...threadRows, ...projectRows]),
+      rightTitle: projectId ? "Threads" : "Threads & projects",
+    };
+  };
+  const palette = paletteOpen ? buildPaletteView() : null;
+  const runPalette = (item: PaletteItem) => {
+    closePalette();
+    item.run();
+  };
+  const paletteDialog = palette && (
+    <CommandPalette
+      left={palette.left}
+      right={palette.right}
+      rightTitle={palette.rightTitle}
+      onRun={runPalette}
+      onClose={closePalette}
+    />
+  );
+
   // Stats are their own page, not part of the projects grid.
   if (!projectId && homePage === "stats") {
     return (
@@ -2945,6 +3064,7 @@ export default function App() {
           </div>
           <StatsPage rpc={rpcRef.current} />
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -2966,6 +3086,7 @@ export default function App() {
             }}
           />
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -3033,6 +3154,7 @@ export default function App() {
             ))}
           </div>
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -3153,6 +3275,7 @@ export default function App() {
           </div>
           )}
           {threadOverlays}
+          {paletteDialog}
         </div>
       </div>
     );
@@ -4582,6 +4705,7 @@ export default function App() {
       )}
 
       {threadOverlays}
+      {paletteDialog}
     </div>
   );
 }
