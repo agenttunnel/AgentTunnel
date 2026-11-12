@@ -15,7 +15,7 @@ func init() {
 	Register(Command{
 		Name:    "logs",
 		Summary: "Print a thread's agent output, optionally following it",
-		Usage:   "agenttunnel logs <thread> [--follow] [--agent <id>] [--lines N]",
+		Usage:   "agenttunnel logs <thread> [agent] [-f|--follow] [--tail N]",
 		Run:     runLogs,
 	})
 }
@@ -44,47 +44,55 @@ type logsOptions struct {
 
 func parseLogsArgs(args []string) (logsOptions, error) {
 	opts := logsOptions{lines: logsDefaultLines}
+	var agentArg string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		flag, _, _ := strings.Cut(arg, "=")
 		switch {
 		case arg == "--follow" || arg == "-f":
 			opts.follow = true
-		case arg == "--agent" || strings.HasPrefix(arg, "--agent="):
+		case flag == "--agent":
 			value, next, err := usageFlagValue(args, i, "--agent")
 			if err != nil {
 				return opts, err
 			}
 			opts.agent, i = strings.TrimSpace(value), next
-		case arg == "--lines" || arg == "-n" || strings.HasPrefix(arg, "--lines="):
-			name := "--lines"
-			if arg == "-n" {
-				name = "-n"
-			}
-			value, next, err := usageFlagValue(args, i, name)
+		case flag == "--lines" || flag == "--tail" || arg == "-n":
+			value, next, err := usageFlagValue(args, i, flag)
 			if err != nil {
 				return opts, err
 			}
 			n, convErr := strconv.Atoi(strings.TrimSpace(value))
 			if convErr != nil || n < 0 {
-				return opts, usageError("--lines wants a non-negative number, got %q", value)
+				return opts, usageError("%s wants a non-negative number, got %q", flag, value)
 			}
 			if n > logsMaxLines {
-				return opts, usageError("--lines is capped at %d", logsMaxLines)
+				return opts, usageError("%s is capped at %d", flag, logsMaxLines)
 			}
 			opts.lines, i = n, next
 		case strings.HasPrefix(arg, "-"):
-			return opts, usageError("unknown flag %q (usage: agenttunnel logs <thread> [--follow] [--agent <id>] [--lines N])", arg)
-		case opts.ref != "":
-			return opts, usageError("agenttunnel logs takes one thread reference")
-		default:
+			return opts, usageError("unknown flag %q (usage: %s)", arg, logsUsage)
+		case opts.ref == "":
 			opts.ref = arg
+		case agentArg == "":
+			agentArg = arg
+		default:
+			return opts, usageError("agenttunnel logs takes one thread and at most one agent (usage: %s)", logsUsage)
 		}
 	}
 	if opts.ref == "" {
 		return opts, usageError("agenttunnel logs requires a thread id, id prefix, or title")
 	}
+	if agentArg != "" {
+		if opts.agent != "" {
+			return opts, usageError("name the agent once: positionally or with --agent")
+		}
+		opts.agent = agentArg
+	}
 	return opts, nil
 }
+
+const logsUsage = "agenttunnel logs <thread> [agent] [-f|--follow] [--tail N]"
 
 func runLogs(ctx context.Context, env *Env, args []string) error {
 	opts, err := parseLogsArgs(args)
@@ -100,6 +108,13 @@ func runLogs(ctx context.Context, env *Env, args []string) error {
 	row, err := resolveThreadRow(ctx, c, opts.ref)
 	if err != nil {
 		return err
+	}
+	if opts.agent != "" {
+		agentID, err := resolveAgentID(ctx, c, row.ID, opts.agent)
+		if err != nil {
+			return err
+		}
+		opts.agent = string(agentID)
 	}
 	if opts.follow && !env.JSON {
 		cancelled, stop := withInterrupt(ctx)
@@ -158,7 +173,50 @@ func streamLogs(ctx context.Context, env *Env, c *Client, row threadListRow, opt
 	if !opts.follow {
 		return nil
 	}
-	return followOutput(ctx, env, c, row, backlog, opts)
+	return followOutput(ctx, env, c, row, bufferedFrames(c, row.ID, backlog), opts)
+}
+
+// bufferedFrames takes the live frames already waiting when the backlog reply
+// arrived, dropping any that merely repeat a backlog line. The read loop hands
+// frames over in socket order and the daemon sends the backlog after every
+// frame that preceded it, so only these frames can duplicate history. Output
+// that arrives later is new even when its text matches an earlier line (a
+// second "$ go test ./..." in a later pass), so it is never suppressed.
+func bufferedFrames(c cliCaller, threadID string, backlog []contracts.LogEntry) []Event {
+	source, ok := c.(interface{ Events() <-chan Event })
+	if !ok {
+		return nil
+	}
+	dedupe := newLogDeduper(backlog)
+	var out []Event
+	for {
+		select {
+		case ev, open := <-source.Events():
+			if !open {
+				return out
+			}
+			if isBacklogRepeat(ev, threadID, dedupe) {
+				continue
+			}
+			out = append(out, ev)
+		default:
+			return out
+		}
+	}
+}
+
+// isBacklogRepeat reports whether a frame is agent output already printed
+// from the backlog. Other frames never repeat history.
+func isBacklogRepeat(ev Event, threadID string, dedupe *logDeduper) bool {
+	frame, ok := decodeEventFrame(ev)
+	if !ok || frame.ThreadID != threadID || contracts.EventType(frame.Type) != contracts.EvtAgentOutput {
+		return false
+	}
+	var out contracts.AgentOutput
+	if json.Unmarshal(frame.Payload, &out) != nil {
+		return false
+	}
+	return dedupe.duplicate(string(out.AgentID), out.Kind, out.Text)
 }
 
 // fetchBacklog reads the lines preceding the live stream. The daemon caps
@@ -221,8 +279,9 @@ func decodeEventFrame(ev Event) (followedEvent, bool) {
 }
 
 // followOutput is the live half of a tail: it prints agent output and status
-// lines for one thread until every agent is terminal.
-func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, backlog []contracts.LogEntry, opts followOptions) error {
+// lines for one thread until every agent is terminal. early holds frames read
+// before the backlog reply, already de-duplicated by bufferedFrames.
+func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, early []Event, opts followOptions) error {
 	statuses, err := fetchAgentStatuses(ctx, c, row.ID)
 	if err != nil {
 		// A following user still wants the backlog; a missing roster only
@@ -230,8 +289,13 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, b
 		statuses = map[string]contracts.AgentStatus{}
 	}
 	tracker := newTurnTracker(statuses, opts.requireActivity)
-	dedupe := newLogDeduper(backlog)
 	started := time.Now()
+	for _, ev := range early {
+		printFollowEvent(env, ev, row.ID, opts, tracker)
+	}
+	if tracker.ended() {
+		return nil
+	}
 
 	poll := time.NewTicker(followPollInterval)
 	defer poll.Stop()
@@ -254,7 +318,7 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, b
 			if !ok {
 				return nil
 			}
-			printFollowEvent(env, ev, row.ID, opts, tracker, dedupe)
+			printFollowEvent(env, ev, row.ID, opts, tracker)
 			if tracker.ended() {
 				return nil
 			}
@@ -263,7 +327,7 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, b
 }
 
 // printFollowEvent renders one frame if it belongs to this tail.
-func printFollowEvent(env *Env, ev Event, threadID string, opts followOptions, tracker *turnTracker, dedupe *logDeduper) {
+func printFollowEvent(env *Env, ev Event, threadID string, opts followOptions, tracker *turnTracker) {
 	frame, ok := decodeEventFrame(ev)
 	if !ok || frame.ThreadID != threadID {
 		return
@@ -275,9 +339,6 @@ func printFollowEvent(env *Env, ev Event, threadID string, opts followOptions, t
 			return
 		}
 		if opts.agent != "" && string(out.AgentID) != opts.agent {
-			return
-		}
-		if dedupe.duplicate(string(out.AgentID), out.Kind, out.Text) {
 			return
 		}
 		tracker.activity = true
