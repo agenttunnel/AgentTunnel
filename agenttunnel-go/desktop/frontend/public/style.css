@@ -327,6 +327,29 @@ select {
   border-color: transparent;
 }
 
+/* Titlebar settings gear — the one persistent control pinned to the top-right
+ * corner; the margin keeps it clear of the conditional update chips. */
+.title-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  margin-left: 8px;
+  flex: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.title-gear:hover {
+  background: var(--panel);
+  border-color: var(--border-soft);
+  color: var(--text);
+}
+
 .col {
   min-height: 0;
   overflow: hidden;
@@ -3464,26 +3487,10 @@ button.danger-text {
   color: var(--err);
 }
 
-/* --- sidebar footer + settings ---------------------------------------- */
+/* --- sidebar footer ------------------------------------------------------ */
 .sidebar-foot {
   border-top: 1px solid var(--border-soft);
   padding: 8px;
-}
-.foot-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  justify-content: flex-start;
-  background: transparent;
-  border-color: transparent;
-  color: var(--muted);
-  padding: 8px 10px;
-}
-.foot-btn:hover:not(:disabled) {
-  background: var(--panel);
-  color: var(--text);
-  border-color: var(--border-soft);
 }
 
 /* --- subscription usage left (LimitsMeter) ------------------------------- */
