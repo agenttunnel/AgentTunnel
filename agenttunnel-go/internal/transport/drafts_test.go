@@ -143,6 +143,7 @@ func TestIssuesListNonGitProjectReportsStatus(t *testing.T) {
 	if list.Status != scm.StatusUnsupported {
 		t.Fatalf("status = %s, want unsupported", list.Status)
 	}
+	assertIssuesIsArray(t, out)
 
 	out, err = f.call("issues.list", map[string]any{"projectId": "missing"})
 	if err != nil {
@@ -150,6 +151,26 @@ func TestIssuesListNonGitProjectReportsStatus(t *testing.T) {
 	}
 	if list := out.(scm.IssueList); list.Status != scm.StatusNone {
 		t.Fatalf("missing project status = %s, want none", list.Status)
+	}
+	assertIssuesIsArray(t, out)
+}
+
+// The board calls issues.filter on the reply, so "issues" must be a JSON array
+// on the wire, not null. The Go value alone cannot show that.
+func assertIssuesIsArray(t *testing.T, out any) {
+	t.Helper()
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		Issues []json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if wire.Issues == nil {
+		t.Fatalf("issues encoded as null: %s", raw)
 	}
 }
 

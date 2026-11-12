@@ -1162,11 +1162,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
+		// The board reads issues as an array on every status. A nil slice would
+		// encode as null and crash the board, so every reply carries a slice.
 		path, err := d.projectPath(p.ProjectID)
 		if err != nil {
-			return scm.IssueList{Status: scm.StatusNone, Message: err.Error()}, nil
+			return scm.IssueList{Status: scm.StatusNone, Message: err.Error(), Issues: []scm.Issue{}}, nil
 		}
-		return scm.ListIssues(ctx, path), nil
+		list := scm.ListIssues(ctx, path)
+		if list.Issues == nil {
+			list.Issues = []scm.Issue{}
+		}
+		return list, nil
 
 	case "review.submit":
 		var p struct {
