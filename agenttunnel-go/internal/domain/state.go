@@ -139,7 +139,8 @@ type ThreadState struct {
 	// were first seen. Keyed by URL.
 	PullRequests []contracts.PullRequestRef `json:"pullRequests,omitempty"`
 
-	// Turn counts user messages: the turn spend currently accrues to.
+	// Turn counts turn-opening messages — the user's own and the
+	// controller's relaunches: the turn spend currently accrues to.
 	Turn  int         `json:"turn"`
 	Turns []TurnUsage `json:"turns"`
 

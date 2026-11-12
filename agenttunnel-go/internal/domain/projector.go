@@ -68,8 +68,10 @@ func Project(s *ThreadState, e contracts.Event) error {
 			msg.Images = append([]contracts.ImageRef(nil), p.Images...)
 		}
 		s.Messages = append(s.Messages, msg)
-		// A user message opens a turn; steering and reports stay in the current one.
-		if p.Author == "user" {
+		// A user message opens a turn, and so does a message authored by the
+		// thread's controller — a relaunch is a real turn, with its own prompt
+		// and its own spend. Steering and reports stay in the current one.
+		if p.Author == "user" || (s.ControlledBy != "" && p.Author == string(s.ControlledBy)) {
 			s.Turn++
 			s.turnFor(s.Turn).At = e.At
 		}

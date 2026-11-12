@@ -174,7 +174,16 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if s.Waiting != nil {
 			payloads = append(payloads, contracts.ThreadTriggered{DependsOn: s.Waiting.DependsOn})
 		}
-		payloads = append(payloads, contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text, Images: images})
+		// The turn's message records who asked for it. The user asks for its
+		// own turns; a controlled thread's turns are asked for by its
+		// controller — a relaunch — so the transcript names the controller
+		// instead of a phantom user. The projector opens a turn for either
+		// author, keeping per-turn spend attributable.
+		author := "user"
+		if s.ControlledBy != "" {
+			author = string(s.ControlledBy)
+		}
+		payloads = append(payloads, contracts.MessageSent{MessageID: cmd.ID, Author: author, Text: cmd.Text, Images: images})
 		if s.Draft {
 			payloads = append(payloads, contracts.DraftStarted{})
 		}
