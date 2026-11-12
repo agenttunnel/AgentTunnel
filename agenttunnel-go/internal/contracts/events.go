@@ -12,6 +12,8 @@ type EventType string
 const (
 	EvtThreadCreated      EventType = "thread.created"
 	EvtThreadRenamed      EventType = "thread.renamed"
+	EvtThreadDescribed    EventType = "thread.described"
+	EvtDraftStarted       EventType = "thread.draft-started"
 	EvtThreadDeleted      EventType = "thread.deleted"
 	EvtWorktreeAttached   EventType = "thread.worktree-attached"
 	EvtWorktreeDetached   EventType = "thread.worktree-detached"
@@ -108,6 +110,10 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ThreadCreated](data)
 	case EvtThreadRenamed:
 		return decodePayload[ThreadRenamed](data)
+	case EvtThreadDescribed:
+		return decodePayload[ThreadDescribed](data)
+	case EvtDraftStarted:
+		return decodePayload[DraftStarted](data)
 	case EvtThreadDeleted:
 		return decodePayload[ThreadDeleted](data)
 	case EvtWorktreeAttached:
@@ -193,9 +199,36 @@ type ThreadCreated struct {
 	// Worktree is set when the thread was created with its worktree already
 	// cut, or inherits a parent's.
 	Worktree *WorktreeRef `json:"worktree,omitempty"`
+	// Draft threads hold a title and description and run nothing until a turn
+	// starts. They get their worktree on that first turn, like any thread.
+	Draft       bool      `json:"draft,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Issue       *IssueRef `json:"issue,omitempty"`
 }
 
 func (ThreadCreated) eventType() EventType { return EvtThreadCreated }
+
+// IssueRef links a thread to the forge issue it was started from. URL is the
+// issue's web address and is the identity: one issue starts at most one thread.
+type IssueRef struct {
+	Provider string `json:"provider"`
+	IID      int    `json:"iid"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+}
+
+// ThreadDescribed replaces a draft's description.
+type ThreadDescribed struct {
+	Description string `json:"description"`
+}
+
+func (ThreadDescribed) eventType() EventType { return EvtThreadDescribed }
+
+// DraftStarted turns a draft into a normal thread. It is written with the
+// first turn's MessageSent, after the turn's worktree gate has passed.
+type DraftStarted struct{}
+
+func (DraftStarted) eventType() EventType { return EvtDraftStarted }
 
 // WorktreeAttached gives a thread its worktree after creation, the first time a
 // turn runs in a git project. A thread has at most one worktree.

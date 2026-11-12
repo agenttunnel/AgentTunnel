@@ -148,8 +148,9 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 	// trace on disk. The creation events are written by the first durable
 	// command instead (materialize below). A create for an id that already
 	// exists — durable or provisional — still falls through to the decider,
-	// which rejects it.
-	if cmd.Type == contracts.CmdThreadCreate && !state.Exists {
+	// which rejects it. A draft is never provisional: it is the user's work to
+	// keep across a restart, so it is written at once.
+	if cmd.Type == contracts.CmdThreadCreate && !state.Exists && !cmd.Draft {
 		e.mu.Lock()
 		state.Exists = true
 		state.Provisional = true
@@ -162,6 +163,8 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 		state.ProjectID = cmd.ProjectID
 		state.ParentThreadID = cmd.ParentThreadID
 		state.Worktree = cmd.Worktree
+		state.Description = cmd.Description
+		state.Issue = cmd.Issue
 		state.UpdatedAt = e.clock()
 		e.states[cmd.ThreadID] = state
 		e.mu.Unlock()
@@ -229,7 +232,10 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 // tail of process.
 func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *ThreadState) error {
 	payloads := []contracts.EventPayload{
-		contracts.ThreadCreated{Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID, Worktree: state.Worktree},
+		contracts.ThreadCreated{
+			Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID, Worktree: state.Worktree,
+			Description: state.Description, Issue: state.Issue,
+		},
 		contracts.PeerMailboxSet{Enabled: true},
 		contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
 	}
