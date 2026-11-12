@@ -44,7 +44,7 @@ import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
-import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { FileEditor } from "./components/FileEditor";
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRListing } from "./components/PRPanel";
@@ -80,6 +80,16 @@ import {
   type SlashCommand,
 } from "./lib/commands";
 import { SlashMenu } from "./components/SlashMenu";
+import { CommandPalette } from "./components/CommandPalette";
+import {
+  buildCommands as buildPaletteCommands,
+  composerItems,
+  groupItems,
+  projectItems,
+  threadItems,
+  type PaletteItem,
+  type PaletteSection,
+} from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
 import { MasterChat } from "./components/MasterChat";
 
@@ -502,12 +512,6 @@ function loadLayout(): PanelLayout {
   }
 }
 
-type FileTreeState = {
-  root: string;
-  entries: FileEntryLike[];
-  status: Record<string, string>;
-};
-
 /** Elapsed shows how long the running work has been going; it ticks on its own so
  * only this tiny node re-renders. */
 function Elapsed({ since }: { since?: string }) {
@@ -523,6 +527,13 @@ function Elapsed({ since }: { since?: string }) {
   const label =
     secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
   return <span className="act-elapsed">{label}</span>;
+}
+
+// Release notes for the build that an update just installed. The daemon hands
+// them out once, on the first start of that version.
+interface ReleaseNotes {
+  version: string;
+  body: string;
 }
 
 /** fmtUpdated renders a thread's last activity as a short local date. */
@@ -694,6 +705,7 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes | null>(null);
   const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
   const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
   const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
@@ -832,10 +844,6 @@ export default function App() {
   const [docLoading, setDocLoading] = useState(false);
   const docReqRef = useRef(0);
 
-  // File browser state for the aside Files panel.
-  const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
-  const [fileTreeLoading, setFileTreeLoading] = useState(false);
-
   // Inherited context panel state: the environment's shared memory.
   const [inherited, setInherited] = useState<InheritedView | null>(null);
   const [inheritedGuide, setInheritedGuide] = useState("");
@@ -843,7 +851,6 @@ export default function App() {
   const [inheritedDirty, setInheritedDirty] = useState(false);
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
-  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
   // Pull requests the active thread opened; tagged with its thread so a late reply never shows elsewhere.
   const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
@@ -855,10 +862,6 @@ export default function App() {
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
   const [showWorktrees, setShowWorktrees] = useState(false);
-  const [selectedFile, setSelectedFile] = useThreadScoped<string | null>(activeId, null);
-  const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
-  const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [fileContentError, setFileContentError] = useState<string | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
@@ -1098,42 +1101,6 @@ export default function App() {
     }
   }, []);
 
-
-  const loadFileTree = useCallback(async (id: string | null) => {
-    const rpc = rpcRef.current;
-    if (!rpc || !id) return;
-    setFileTreeLoading(true);
-    setFileTreeError(null);
-    try {
-      const tree = await rpc.call<FileTreeState>("files.tree", { threadId: id });
-      if (activeIdRef.current !== id) return;
-      setFileTree(tree);
-      setSelectedFile(null);
-      setFileContent(null);
-      setFileContentError(null);
-    } catch (e) {
-      if (activeIdRef.current === id) setFileTreeError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (activeIdRef.current === id) setFileTreeLoading(false);
-    }
-  }, []);
-
-  const loadFileContent = useCallback(async (id: string | null, path: string) => {
-    const rpc = rpcRef.current;
-    if (!rpc || !id) return;
-    setSelectedFile(path);
-    setFileContent(null);
-    setFileContentError(null);
-    setFileContentLoading(true);
-    try {
-      const content = await rpc.call<FileContentLike>("files.read", { threadId: id, path });
-      if (activeIdRef.current === id) setFileContent(content);
-    } catch (e) {
-      if (activeIdRef.current === id) setFileContentError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (activeIdRef.current === id) setFileContentLoading(false);
-    }
-  }, []);
 
   const loadDoc = useCallback(async (id: string | null, path: string) => {
     const rpc = rpcRef.current;
@@ -1563,6 +1530,13 @@ export default function App() {
       if (conn.attached || conn.keepRunning) setRunInBackground(true);
       // Not awaited: a slow GitHub lookup must not hold up startup.
       checkForUpdate();
+      // Read-and-clear on the daemon: a null answer means nothing is pending.
+      rpc
+        .call<ReleaseNotes | null>("update.takeReleaseNotes")
+        .then((n) => {
+          if (n && !cancelled) setReleaseNotes(n);
+        })
+        .catch(() => {});
       rpc.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
@@ -1645,12 +1619,6 @@ export default function App() {
     setPRState(null);
     setPRError(null);
     setPRLoading(false);
-    setFileTree(null);
-    setFileTreeError(null);
-    setFileTreeLoading(false);
-    setFileContent(null);
-    setFileContentError(null);
-    setFileContentLoading(false);
   }, [activeId]);
   useEffect(() => {
     const rpc = rpcRef.current;
@@ -1732,10 +1700,6 @@ export default function App() {
     if (!(asideActive in ASIDE_META)) setAsideActive("agents");
   }, [asideActive, setAsideActive]);
 
-  // The file tree loads when its panel is shown.
-  useEffect(() => {
-    if (asideActive === "files") loadFileTree(activeId);
-  }, [asideActive, activeId, loadFileTree]);
 
   // Inherited context loads when its panel is opened, and stays fresh on
   // thread changes since agents can record learnings mid-turn.
@@ -1916,6 +1880,7 @@ export default function App() {
           latestId: latest?.id ?? null,
           latestStatus: latest?.status ?? "pending",
           current: running[running.length - 1] ?? null,
+          off: r.experimental && !settings?.experimentalRoles,
         };
       }),
     [settings, agents, thread],
@@ -2357,6 +2322,17 @@ export default function App() {
   // Slash popup: highlighted row, and the input it was dismissed on with Esc.
   const [slashIdx, setSlashIdx] = useState(0);
   const [slashClosed, setSlashClosed] = useState<string | null>(null);
+  // Cmd/Ctrl+P palette: whether it is open, whether it opened from the composer
+  // (which swaps the right pane to composer features), and where focus returns.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteFromComposer, setPaletteFromComposer] = useState(false);
+  const paletteReturn = useRef<HTMLElement | null>(null);
+  const closePalette = useCallback(() => {
+    setPaletteOpen(false);
+    const el = paletteReturn.current;
+    paletteReturn.current = null;
+    if (el?.isConnected) el.focus();
+  }, []);
 
   /** Asks the daemon a side question. It runs beside any running turn: no turn
    * slot, no steer, no message. Only the newest ask on a thread may settle. */
@@ -2433,6 +2409,23 @@ export default function App() {
   const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
+
+  // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
+  // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
+  // stops this listener from reopening it. Shift and Alt combos are left alone.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return;
+      if (e.key.toLowerCase() !== "p") return;
+      e.preventDefault();
+      const active = document.activeElement;
+      paletteReturn.current = active instanceof HTMLElement ? active : null;
+      setPaletteFromComposer(active === taRef.current);
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
   useLayoutEffect(() => {
     const el = taRef.current;
@@ -3041,6 +3034,87 @@ export default function App() {
     </div>
   );
 
+  // Cmd/Ctrl+P palette. Built only while open, per render, so every action is
+  // an arrow that resolves the current handlers and draft.
+  const attachFromPalette = () => {
+    if (!activeId) return;
+    const sep = input === "" || /\s$/.test(input) ? "" : " ";
+    const next = `${input}${sep}@`;
+    setInput(next);
+    pendingCaret.current = next.length;
+    setCaret(next.length);
+    taRef.current?.focus();
+  };
+  const refreshAll = () => {
+    loadProjects().catch(() => undefined);
+    if (activeId) refresh(activeId).catch(() => undefined);
+  };
+  const goToThread = (t: { id: string; projectId?: string }) => {
+    if (t.projectId) openWorktreeThread(t.projectId, t.id);
+    else selectThread(t.id);
+  };
+  const buildPaletteView = (): { left: PaletteSection[]; right: PaletteSection[]; rightTitle: string } => {
+    const left = groupItems(
+      buildPaletteCommands<AsideTabId>({
+        hasProject: !!projectId,
+        hasThread: !!activeId,
+        busy,
+        autoMode: !!thread?.autoMode,
+        peerMailbox: !!thread?.peerMailbox,
+        panels: ASIDE_META,
+        pinned: ASIDE_PINNED,
+        isPanelOpen: (id) => asideTabs.includes(id),
+        togglePanel: (id) => (asideTabs.includes(id) ? closePanel(id) : openPanel(id)),
+        setTab: (t) => setTab(t),
+        newThread: () => newThread(),
+        createProject: () => addProject(),
+        openSettings: () => openSettings(),
+        refresh: () => refreshAll(),
+        stopTurn: () => stopTurn(),
+        toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
+        togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
+      }),
+    );
+    if (paletteFromComposer && activeId) {
+      const right = groupItems(
+        composerItems({
+          attach: () => attachFromPalette(),
+          modelConfig: () => toggleModels(),
+          slash: slashCommands(),
+          runSlash: (cmd) => pickSlash(cmd, true),
+        }),
+      );
+      return { left, right, rightTitle: "Composer" };
+    }
+    const names = new Map(projects.map((p) => [p.id, p.name]));
+    const threadRows: PaletteItem[] = threadItems(
+      projectId ? threads.filter((t) => t.projectId === projectId) : threads,
+      names,
+      !projectId,
+      goToThread,
+    );
+    const projectRows: PaletteItem[] = projectId ? [] : projectItems(projects, (id) => openProject(id));
+    return {
+      left,
+      right: groupItems([...threadRows, ...projectRows]),
+      rightTitle: projectId ? "Threads" : "Threads & projects",
+    };
+  };
+  const palette = paletteOpen ? buildPaletteView() : null;
+  const runPalette = (item: PaletteItem) => {
+    closePalette();
+    item.run();
+  };
+  const paletteDialog = palette && (
+    <CommandPalette
+      left={palette.left}
+      right={palette.right}
+      rightTitle={palette.rightTitle}
+      onRun={runPalette}
+      onClose={closePalette}
+    />
+  );
+
   // Stats are their own page, not part of the projects grid.
   if (!projectId && homePage === "stats") {
     return (
@@ -3056,6 +3130,7 @@ export default function App() {
           </div>
           <StatsPage rpc={rpcRef.current} />
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -3077,6 +3152,7 @@ export default function App() {
             }}
           />
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -3144,6 +3220,7 @@ export default function App() {
             ))}
           </div>
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -3264,6 +3341,7 @@ export default function App() {
           </div>
           )}
           {threadOverlays}
+          {paletteDialog}
         </div>
       </div>
     );
@@ -3891,6 +3969,17 @@ export default function App() {
         )}
 
         <div className="aside-body">
+          {/* Kept mounted while hidden so unsaved edits survive a tab switch. */}
+          {activeId && (
+            <div className="section files-section" hidden={asideActive !== "files"}>
+              <FileEditor
+                key={activeId}
+                rpc={rpcRef.current}
+                threadId={activeId}
+                active={asideActive === "files"}
+              />
+            </div>
+          )}
           {asideActive === "models" ? (
             <div className="aside-models">
               <ThreadSetup
@@ -3981,7 +4070,7 @@ export default function App() {
                       {...(r.latestId ? clickable(() => setDetailId(r.latestId)) : {})}
                     >
                       <div className="role-head">
-                        <span className={`dot ${r.running.length > 0 ? "running" : r.latestStatus}`} />
+                        <span className={`dot ${r.running.length > 0 ? "running" : r.off ? "off" : r.latestStatus}`} />
                         <span className="role-name">{r.name}</span>
                         <span className="harness" title={`${r.harness} · ${r.model}`}>
                           {r.harness}
@@ -3989,7 +4078,13 @@ export default function App() {
                         </span>
                       </div>
                       <div className="role-meta">
-                        {r.running.length > 0 ? `${r.running.length} running` : "idle"}
+                        {r.running.length > 0
+                          ? `${r.running.length} running`
+                          : r.off
+                            ? "off · enable Experimental roles in Settings"
+                            : r.latestId
+                              ? `last: ${r.latestStatus}`
+                              : "idle"}
                         {r.mine.length > 0 &&
                           ` · ${r.done}/${r.mine.length} done · ${fmtTokens(r.tokens)} tok`}
                       </div>
@@ -4284,24 +4379,7 @@ export default function App() {
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
             />
           </div>
-        ) : asideActive === "files" ? (
-          <div className="section files-section">
-            <FilesPanel
-              key={activeId ?? "none"}
-              root={fileTree?.root ?? null}
-              entries={fileTree?.entries ?? []}
-              status={fileTree?.status ?? {}}
-              loading={fileTreeLoading}
-              error={fileTreeError}
-              selectedPath={selectedFile}
-              content={fileContent}
-              contentLoading={fileContentLoading}
-              contentError={fileContentError}
-              onSelectFile={(p) => loadFileContent(activeId, p)}
-              onRefresh={() => loadFileTree(activeId)}
-            />
-          </div>
-        ) : asideActive === "council" ? (
+        ) : asideActive === "files" ? null : asideActive === "council" ? (
           <div className="section council-section">
             {!activeId && <p className="hint">Open a thread to convene a council.</p>}
             <div className="council-pane">
@@ -4453,6 +4531,38 @@ export default function App() {
           roleName={rolesById[detailAgent.role] || detailAgent.role}
           onClose={() => setDetailId(null)}
         />
+      )}
+
+      {releaseNotes && (
+        <div className="overlay" onClick={() => setReleaseNotes(null)}>
+          <section
+            className="sheet notes-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="release-notes-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="sheet-head notes-head">
+              <button
+                type="button"
+                className="notes-close"
+                onClick={() => setReleaseNotes(null)}
+                aria-label="Close release notes"
+                title="Close"
+              >
+                ×
+              </button>
+              <strong id="release-notes-title">AgentTunnel {releaseNotes.version}</strong>
+            </header>
+            <div className="sheet-body">
+              {releaseNotes.body.trim() ? (
+                <Markdown text={releaseNotes.body} />
+              ) : (
+                <p className="hint">This release has no notes.</p>
+              )}
+            </div>
+          </section>
+        </div>
       )}
 
       {settingsOpen && settings && (
@@ -4732,6 +4842,7 @@ export default function App() {
       )}
 
       {threadOverlays}
+      {paletteDialog}
     </div>
     </DocLinkContext.Provider>
   );

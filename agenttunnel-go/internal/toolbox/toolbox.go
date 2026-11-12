@@ -56,6 +56,17 @@ const (
 	KindReviewComment Kind = "review-comment"
 	KindReviewReply   Kind = "review-reply"
 	KindReviewResolve Kind = "review-resolve"
+	// KindThreadList and KindThreadDelete let a team lead see and remove the
+	// other threads in the environment. Both are answered at once and only
+	// leads may call them; see transport's handleThreadCall.
+	KindThreadList   Kind = "thread-list"
+	KindThreadDelete Kind = "thread-delete"
+	// KindReadFile, KindWriteFile and KindShell give a team lead the thread's
+	// working tree and a shell in it. Answered at once, and only leads may call
+	// them; see transport's handleEnvCall.
+	KindReadFile  Kind = "read-file"
+	KindWriteFile Kind = "write-file"
+	KindShell     Kind = "shell"
 	// KindSteer redirects a subagent the lead dispatched. It is answered at
 	// once, not queued: the reply tells the lead whether the steer was queued
 	// for that agent's next run. See Runner.Steer.

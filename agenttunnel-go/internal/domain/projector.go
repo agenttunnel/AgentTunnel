@@ -129,6 +129,7 @@ func Project(s *ThreadState, e contracts.Event) error {
 			return fmt.Errorf("project: status for unknown agent %q", p.AgentID)
 		}
 		a.Status = p.Status
+		a.Reason = p.Reason
 		if p.Status.Terminal() {
 			t := e.At
 			a.EndedAt = &t

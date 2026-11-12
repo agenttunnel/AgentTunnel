@@ -19,6 +19,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/deps"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/fileedit"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
@@ -188,7 +189,7 @@ type Dispatcher struct {
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
-	turns   map[contracts.ThreadID]context.CancelFunc
+	turns   map[contracts.ThreadID]turnRun
 
 	// worktreeFailures holds, per thread, the reason its last first-worktree cut
 	// failed. It only dedupes the audit line: every turn still retries the cut.
@@ -603,43 +604,66 @@ func (d *Dispatcher) postStatusReport(ctx context.Context, threadID contracts.Th
 	})
 }
 
-// statusReportText renders a concise workflow status: agents with their
-// statuses, task progress, and how long the turn has been running.
+// statusReportText renders a workflow status: what is done, what is still open,
+// and what needs the human's attention. Tasks and agents are read in one pass
+// each; the report is built in a single builder.
 func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
-
-	// Live agents are the useful part of a heartbeat; finished ones collapse to
-	// a count so a long thread does not repost its whole roster every period.
-	var active strings.Builder
-	activeCount := 0
-	settled := map[contracts.AgentStatus]int{}
-	for _, id := range st.AgentOrder {
-		a := st.Agents[id]
-		if a.Status.Terminal() {
-			settled[a.Status]++
+	var (
+		doneLines, todoLines, worthLines []string
+		doneTasks                        int
+		settled                          = map[contracts.AgentStatus]int{}
+	)
+	for _, t := range st.Tasks {
+		label := strings.TrimSpace(t.Title)
+		if label == "" {
+			label = t.Name
+		}
+		if t.Status == contracts.TaskDone {
+			doneTasks++
+			doneLines = append(doneLines, "- task "+label)
 			continue
 		}
-		activeCount++
+		todoLines = append(todoLines, fmt.Sprintf("- task %s (%s)", label, t.Status))
+	}
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
 		name := strings.TrimSpace(a.Name)
 		if name == "" {
 			name = string(id)
 		}
-		role := string(a.Role)
-		if role == "" {
-			role = "agent"
+		switch a.Status {
+		case contracts.AgentSucceeded:
+			settled[a.Status]++
+			doneLines = append(doneLines, "- agent "+name+" succeeded")
+		case contracts.AgentFailed, contracts.AgentCancelled:
+			settled[a.Status]++
+			line := "- agent " + name + " " + string(a.Status)
+			if reason := oneLine(a.Reason); reason != "" {
+				line += ": " + reason
+			}
+			worthLines = append(worthLines, line)
+		default:
+			role := string(a.Role)
+			if role == "" {
+				role = "agent"
+			}
+			todoLines = append(todoLines, fmt.Sprintf("- agent %s (%s): %s", name, role, a.Status))
 		}
-		fmt.Fprintf(&active, "- %s (%s): %s\n", name, role, a.Status)
 	}
-	if activeCount == 0 {
-		b.WriteString("Agents: none active\n")
-	} else {
-		b.WriteString("Agents:\n")
-		b.WriteString(active.String())
+	for _, q := range st.Questions {
+		if q.Status == domain.QuestionPending {
+			worthLines = append(worthLines, "- question waiting: "+oneLine(q.Question))
+		}
 	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
+	writeReportSection(&b, "Done so far", doneLines)
+	writeReportSection(&b, "Still to do", todoLines)
+	writeReportSection(&b, "Worth knowing", worthLines)
 	if len(settled) > 0 {
 		total := 0
 		var parts []string
@@ -651,15 +675,25 @@ func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
 		}
 		fmt.Fprintf(&b, "Settled: %d (%s)\n", total, strings.Join(parts, ", "))
 	}
-
-	done := 0
-	for _, t := range st.Tasks {
-		if t.Status == contracts.TaskDone {
-			done++
-		}
-	}
-	fmt.Fprintf(&b, "Tasks: %d/%d done", done, len(st.Tasks))
+	fmt.Fprintf(&b, "Tasks: %d/%d done", doneTasks, len(st.Tasks))
 	return b.String()
+}
+
+// writeReportSection writes a titled list, skipping the section when empty.
+func writeReportSection(b *strings.Builder, title string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString(title + ":\n")
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+}
+
+// oneLine collapses whitespace so a multi-line reason or question stays on one
+// report line.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -687,13 +721,13 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 	d.turnsMu.Lock()
 	defer d.turnsMu.Unlock()
 	if d.turns == nil {
-		d.turns = map[contracts.ThreadID]context.CancelFunc{}
+		d.turns = map[contracts.ThreadID]turnRun{}
 	}
 	if _, running := d.turns[threadID]; running {
 		return nil, nil, fmt.Errorf("a turn is already running on thread %s", threadID)
 	}
 	turnCtx, cancel := context.WithCancel(ctx)
-	d.turns[threadID] = cancel
+	d.turns[threadID] = turnRun{ctx: turnCtx, cancel: cancel}
 	return turnCtx, func() {
 		cancel()
 		// Nothing is left to hear an answer once the turn is over.
@@ -711,12 +745,48 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 // thread's turn slot stays taken until the turn finishes unwinding.
 func (d *Dispatcher) stopTurn(threadID contracts.ThreadID) bool {
 	d.turnsMu.Lock()
-	cancel, running := d.turns[threadID]
+	run, running := d.turns[threadID]
 	d.turnsMu.Unlock()
 	if running {
-		cancel()
+		run.cancel()
 	}
 	return running
+}
+
+// turnRun is a thread's claimed turn slot: its context ends when the turn is
+// stopped or finishes, and cancel ends it.
+type turnRun struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// recordShell writes a finished command into the thread log, so the command and
+// its output show in the chat. Author "shell" keeps it from counting as a turn.
+func (d *Dispatcher) recordShell(ctx context.Context, threadID contracts.ThreadID, command string, res shellResult) error {
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID:       d.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
+	})
+}
+
+// toolContext returns a context for a tool call's shell: it ends when the
+// thread's running turn is stopped, or when the calling process goes away. With
+// no turn running on the thread, only the caller's disconnect ends it.
+func (d *Dispatcher) toolContext(reqCtx context.Context, threadID contracts.ThreadID) (context.Context, context.CancelFunc) {
+	base := reqCtx
+	d.turnsMu.Lock()
+	if run, running := d.turns[threadID]; running {
+		base = run.ctx
+	}
+	d.turnsMu.Unlock()
+	ctx, cancel := context.WithCancel(base)
+	stop := context.AfterFunc(reqCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // Handle executes one RPC method, recording it in the action log.
@@ -1061,12 +1131,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID:       d.nextID(),
-			Type:     contracts.CmdMessageAppend,
-			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
-		}); err != nil {
+		if err := d.recordShell(ctx, p.ThreadID, command, res); err != nil {
 			return nil, err
 		}
 		return map[string]any{
@@ -1183,22 +1248,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		st, err := d.engine.State(ctx, p.ThreadID)
-		if err != nil {
-			return nil, err
-		}
-		if !st.Exists {
-			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
-		}
-		// A refused removal (dirty worktree, running turn) aborts the delete.
-		if p.RemoveWorktree && st.Worktree != nil && !st.Worktree.Inherited {
-			if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
-				return nil, err
-			}
-		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: p.ThreadID,
-		}); err != nil {
+		if err := d.deleteThread(ctx, p.ThreadID, p.RemoveWorktree); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -1525,6 +1575,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.updater.Apply(ctx)
 
+	case "update.takeReleaseNotes":
+		// Read-and-clear: null when nothing is pending for the running build.
+		if d.updater == nil {
+			return nil, nil
+		}
+		n, ok, err := d.updater.TakeReleaseNotes()
+		if err != nil || !ok {
+			return nil, err
+		}
+		return n, nil
+
 	case "deps.check":
 		// Probes the forge CLIs on PATH with `--version`; local and read-only,
 		// so the headless daemon reports the same answer as the desktop app.
@@ -1650,6 +1711,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		return files.ReadMarkdown(d.threadWorkdir(ctx, p.ThreadID), p.Path)
+
+	case "fs.list", "fs.read", "fs.write":
+		return d.fileEdit(ctx, req)
 
 	case "review.comment":
 		var p struct {
@@ -2072,17 +2136,67 @@ func (d *Dispatcher) threadWorkdir(ctx context.Context, id contracts.ThreadID) s
 	if d.settings == nil {
 		return ""
 	}
-	base := d.settings.Workdir()
 	st, err := d.engine.State(ctx, id)
 	if err != nil {
-		return base
+		return d.settings.Workdir()
 	}
+	return d.stateWorkdir(st)
+}
+
+// threadRoot is threadWorkdir for callers that must not guess: an unknown
+// thread is an error, never the daemon default. engine.State returns an empty
+// state rather than failing for an id it has never seen, so Exists is the test.
+func (d *Dispatcher) threadRoot(ctx context.Context, id contracts.ThreadID) (string, error) {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if !st.Exists {
+		return "", fmt.Errorf("thread %q does not exist", id)
+	}
+	return d.stateWorkdir(st), nil
+}
+
+// stateWorkdir picks the checkout for a thread's state: its worktree when it
+// declares one, otherwise its project's path, otherwise the daemon default.
+func (d *Dispatcher) stateWorkdir(st *domain.ThreadState) string {
+	if d.settings == nil {
+		return ""
+	}
+	base := d.settings.Workdir()
 	if st.ProjectID != "" {
 		if project, ok := d.settings.Project(st.ProjectID); ok && project.Path != "" {
 			base = project.Path
 		}
 	}
 	return worktree.Resolve(st.Worktree, base)
+}
+
+// fileEdit serves the desktop file editor. The root is always the thread's own
+// working directory: clients name a path inside it, never a directory. An
+// unknown thread fails instead of falling back to the daemon default.
+func (d *Dispatcher) fileEdit(ctx context.Context, req Request) (any, error) {
+	var p struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Path     string             `json:"path"`
+		Text     string             `json:"text"`
+		Hash     string             `json:"hash"`
+	}
+	if err := decode(req.Params, &p); err != nil {
+		return nil, err
+	}
+	root, err := d.threadRoot(ctx, p.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	switch req.Method {
+	case "fs.list":
+		return fileedit.List(root, p.Path)
+	case "fs.read":
+		return fileedit.Read(root, p.Path)
+	default:
+		return fileedit.Write(root, p.Path, p.Text, p.Hash)
+	}
 }
 
 // prAction runs one git or forge write from the PR tab in the thread's worktree.
@@ -2128,6 +2242,49 @@ func (d *Dispatcher) prAction(ctx context.Context, req Request) (any, error) {
 		return nil, err
 	}
 	return map[string]any{"message": msg}, nil
+}
+
+// threadBusy reports whether a thread has a turn in flight or an agent that
+// has not finished. Both thread.delete and the lead's thread-delete refuse it.
+func (d *Dispatcher) threadBusy(id contracts.ThreadID, st *domain.ThreadState) bool {
+	if d.threadRunning(id) {
+		return true
+	}
+	for _, a := range st.Agents {
+		if !a.Status.Terminal() {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteThread tombstones a thread, and with removeWorktree also removes the
+// thread's own worktree before the tombstone. The running check and the dirty
+// check (worktreeRemove refuses a dirty tree) both run before anything is
+// removed, so those refusals keep the worktree. The decider is the last gate and
+// runs after the removal, so a turn or agent that starts between the running
+// check and the dispatch can still get the delete refused, leaving the thread
+// with its worktree already gone. The window is one engine round-trip. Closing it
+// would need worktree removal inside the decider, which the engine does not do.
+func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, removeWorktree bool) error {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !st.Exists {
+		return fmt.Errorf("thread %q does not exist: %w", id, domain.ErrThreadNotFound)
+	}
+	if d.threadBusy(id, st) {
+		return fmt.Errorf("%w: thread %q is running; stop it first", domain.ErrInvalidCommand, id)
+	}
+	if removeWorktree && st.Worktree != nil && !st.Worktree.Inherited {
+		if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
+			return err
+		}
+	}
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
+	})
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {
