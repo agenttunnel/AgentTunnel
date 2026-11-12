@@ -65,12 +65,13 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 		cmd.Env = append(os.Environ(), spec.Env...)
 	}
 
-	// Only open a stdin pipe when the prompt is delivered that way. When the
-	// prompt is an argument, stdin is left closed (the child gets /dev/null):
+	// Only open a stdin pipe when the prompt is delivered that way, or when
+	// the invocation carries stdin JSON frames (claude's image input). When
+	// neither applies, stdin is left closed (the child gets /dev/null):
 	// several harness CLIs read stdin whenever it is not a TTY and would
 	// otherwise block forever waiting for EOF.
 	var stdin io.WriteCloser
-	if inv.PromptVia == "stdin" {
+	if inv.PromptVia == "stdin" || len(inv.StdinJSONFrames) > 0 {
 		stdin, err = cmd.StdinPipe()
 		if err != nil {
 			return err
@@ -90,7 +91,23 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 	p.cmd = cmd
 	p.stdin = stdin
 
-	if inv.PromptVia == "stdin" && stdin != nil && spec.Prompt != "" {
+	switch {
+	case len(inv.StdinJSONFrames) > 0:
+		// Frames are written and closed right away: a stream-json child
+		// answers the whole message at EOF, and Send has nothing to add.
+		for _, f := range inv.StdinJSONFrames {
+			if _, err := io.WriteString(stdin, f); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(stdin, "\n"); err != nil {
+				return err
+			}
+		}
+		if err := stdin.Close(); err != nil {
+			return err
+		}
+		p.stdin = nil
+	case inv.PromptVia == "stdin" && stdin != nil && spec.Prompt != "":
 		_, _ = io.WriteString(stdin, spec.Prompt)
 		if !strings.HasSuffix(spec.Prompt, "\n") {
 			_, _ = io.WriteString(stdin, "\n")

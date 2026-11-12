@@ -30,7 +30,7 @@ func newMessageFixture(t *testing.T) (*domain.Engine, *orchestrator.Runner, *Ser
 		Mailbox: contextstore.NewMailbox(),
 	})
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Runner: runner})
-	return eng, runner, NewServer(disp, eng, runner, "", toolbox.New())
+	return eng, runner, NewServer(disp, eng, runner, "", toolbox.New(), nil)
 }
 
 func postToolCall(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {

@@ -83,6 +83,7 @@ type Command struct {
 	SharedContext  *SharedContextSet          `json:"sharedContext,omitempty"`
 	Mailbox        *MailboxPosted             `json:"mailbox,omitempty"`
 	Message        *MessageSent               `json:"message,omitempty"`
+	Images         []ImageRef                 `json:"images,omitempty"`
 	ReviewComment  *ReviewCommentAdded        `json:"reviewComment,omitempty"`
 	ReviewSubmit   *ReviewCommentsSubmitted   `json:"reviewSubmit,omitempty"`
 	ReviewOpen     *ReviewThreadOpened        `json:"reviewOpen,omitempty"`

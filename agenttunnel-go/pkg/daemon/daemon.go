@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -124,6 +125,9 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	var endpoint atomic.Value
 	endpoint.Store("")
 
+	// Image attachments live under the state dir, one directory per thread.
+	attachStore := attachments.New(filepath.Join(opts.StateDir, "attachments"))
+
 	runner := orchestrator.NewRunner(orchestrator.Deps{
 		Engine:    eng,
 		Registry:  opts.Registry,
@@ -176,13 +180,14 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Updater:      updater,
 		Limits:       providers.NewLimitsProvider(providers.NewClaudeLimits()),
 		Relay:        relay,
+		Attachments:  attachStore,
 	})
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
 		return nil, fmt.Errorf("close stale questions: %w", err)
 	}
 
-	srv := transport.NewServer(disp, eng, runner, opts.Token, box)
+	srv := transport.NewServer(disp, eng, runner, opts.Token, box, attachStore)
 	relay.Bind(srv)
 	relay.Start(ctx)
 

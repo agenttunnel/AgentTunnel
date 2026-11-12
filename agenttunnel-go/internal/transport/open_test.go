@@ -37,7 +37,7 @@ func newOpenFixture(t *testing.T) (*Dispatcher, *Server, string) {
 		Logs:     logstore.New(t.TempDir()),
 		Settings: settings.New(t.TempDir()),
 	})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 	return disp, srv, httpSrv.URL

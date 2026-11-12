@@ -34,7 +34,7 @@ func newCLIServer(t *testing.T) (*domain.Engine, *orchestrator.Runner) {
 	})
 	runner.Mailbox().SetEnabled(true)
 	disp := transport.NewDispatcher(transport.DispatcherDeps{Engine: eng, Runner: runner})
-	srv := transport.NewServer(disp, eng, runner, "secret", toolbox.New())
+	srv := transport.NewServer(disp, eng, runner, "secret", toolbox.New(), nil)
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 

@@ -2,10 +2,12 @@ package orchestrator
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
 // askHelp documents the ask tool for every agent. Asking is not gated on the peer
@@ -56,6 +58,27 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews s
 	if peerMailbox {
 		b.WriteString("\nYou can also message another agent (or the team lead) while work is running:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name or 'orchestrator'> --text \"<what to tell them>\"\n")
+	}
+	return b.String()
+}
+
+// imagesNote renders attached images for a harness that cannot take them
+// natively. The files stay in the attachment store and are readable, so the
+// model decides itself what to do with them. "" when there are none.
+func imagesNote(images []providers.ImageInput) string {
+	if len(images) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Attached images\n")
+	b.WriteString("The user attached these images. This harness may not be able to view them directly;\n")
+	b.WriteString("you may be able to read the file yourself, so decide what to do:\n")
+	for _, img := range images {
+		name := img.Name
+		if name == "" {
+			name = filepath.Base(img.Path)
+		}
+		fmt.Fprintf(&b, "- %s (%s) %s\n", name, img.Mime, img.Path)
 	}
 	return b.String()
 }

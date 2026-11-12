@@ -184,7 +184,7 @@ func TestSessionServesRPCThroughTheSink(t *testing.T) {
 	eng.Start(context.Background())
 	t.Cleanup(eng.Close)
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Relay: &fakeRelay{}})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 
 	replies := make(chan Response, 4)
 	sess := srv.NewSession(func(r Response) { replies <- r })
@@ -209,7 +209,7 @@ func TestSessionRefusesRelayMethods(t *testing.T) {
 	t.Cleanup(eng.Close)
 	rc := &fakeRelay{}
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Relay: rc})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 
 	replies := make(chan Response, 1)
 	sess := srv.NewSession(func(r Response) { replies <- r })

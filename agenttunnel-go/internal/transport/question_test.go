@@ -27,7 +27,7 @@ type askFixture struct {
 func newAskFixture(t *testing.T) askFixture {
 	t.Helper()
 	eng, disp := newCommandFixture(t)
-	srv := httptest.NewServer(NewServer(disp, eng, disp.runner, "", toolbox.New()).Handler())
+	srv := httptest.NewServer(NewServer(disp, eng, disp.runner, "", toolbox.New(), nil).Handler())
 	t.Cleanup(srv.Close)
 	return askFixture{eng: eng, disp: disp, url: srv.URL}
 }

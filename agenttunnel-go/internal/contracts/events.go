@@ -221,10 +221,23 @@ type ThreadDeleted struct{}
 
 func (ThreadDeleted) eventType() EventType { return EvtThreadDeleted }
 
+// ImageRef is one image attached to a message: enough to render and refetch
+// the bytes, never the bytes themselves. Image data lives in the attachment
+// store on disk and never rides the event log or the WebSocket.
+type ImageRef struct {
+	ID     string `json:"id"` // daemon-minted attachment id, hex
+	Name   string `json:"name,omitempty"`
+	Mime   string `json:"mime"` // image/png|jpeg|webp|gif
+	Size   int64  `json:"size"`
+	Width  int    `json:"width,omitempty"` // 0 when undecodable
+	Height int    `json:"height,omitempty"`
+}
+
 type MessageSent struct {
-	MessageID string `json:"messageId"`
-	Author    string `json:"author"` // "user" | "orchestrator" | agent id
-	Text      string `json:"text"`
+	MessageID string     `json:"messageId"`
+	Author    string     `json:"author"` // "user" | "orchestrator" | agent id
+	Text      string     `json:"text"`
+	Images    []ImageRef `json:"images,omitempty"`
 }
 
 func (MessageSent) eventType() EventType { return EvtMessageSent }

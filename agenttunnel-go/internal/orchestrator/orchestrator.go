@@ -10,6 +10,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
@@ -379,6 +380,8 @@ type turn struct {
 	leads    []contracts.AgentID
 	role     contracts.Role
 	message  string
+	// images are the turn's attachments, handed to every lead's session.
+	images []providers.ImageInput
 }
 
 // RunTurn executes one user turn end to end. The thread's team of leads takes a
@@ -387,7 +390,7 @@ type turn struct {
 // round loop repeats while work is dispatched, steering or a spawn decision is
 // pending, or a lead has mail; it ends after the pass budget regardless. With
 // one lead this is the classic single-orchestrator loop.
-func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) (err error) {
+func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string, images ...providers.ImageInput) (err error) {
 	// An auto context-manager run started by this turn must finish before the
 	// turn reports done, so none of its events land after the turn.
 	defer o.runner.curator.wait(threadID)
@@ -401,7 +404,7 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		return err
 	}
 
-	t := turn{threadID: threadID, role: role, message: userMessage, leads: make([]contracts.AgentID, state.LeadCount())}
+	t := turn{threadID: threadID, role: role, message: userMessage, images: images, leads: make([]contracts.AgentID, state.LeadCount())}
 	seed := make([]contracts.DispatchTask, 0, len(t.leads))
 	for i := range t.leads {
 		t.leads[i] = leadAgentID(i)
@@ -448,11 +451,19 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	var dispatched []contracts.DispatchTask
 	for pass := 0; pass < o.runner.maxPasses(); pass++ {
 		// Steering is drained once per round so every lead weighs it, not just
-		// the first one to speak.
-		steering := o.runner.DrainSteering(threadID)
+		// the first one to speak. Images steering carries join the turn's on
+		// the pass that weighs them.
+		var steerTexts []string
+		var steerImages []providers.ImageInput
+		for _, it := range o.runner.DrainSteering(threadID) {
+			if it.Text != "" {
+				steerTexts = append(steerTexts, it.Text)
+			}
+			steerImages = append(steerImages, it.Images...)
+		}
 		dispatchedThisRound := false
 		for i := range t.leads {
-			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering)
+			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steerTexts, steerImages)
 			if err != nil {
 				return err
 			}
@@ -533,7 +544,7 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 
 // runLeadPass runs one pass of lead i and executes whatever that pass
 // dispatched. It returns the lead's text and the tasks it dispatched.
-func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, steering []string) (string, []contracts.DispatchTask, error) {
+func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, steering []string, steeringImages []providers.ImageInput) (string, []contracts.DispatchTask, error) {
 	orchID := t.leads[i]
 	// Calls that arrived while the previous wave ran — a subagent proposing a
 	// spawn, a late note, a printed peer message — fold in before the prompt is
@@ -570,7 +581,17 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		RuntimeChoices: runtimeChoices,
 	})
 
-	text, calls, err := o.runner.runOrchestratorPass(ctx, t.threadID, i, orchID, t.role, prompt, pass)
+	// The turn's attachments, plus any steering images, reach the lead every
+	// pass: each pass is a fresh one-shot process. A harness that cannot take
+	// images natively gets them as a path note instead and decides itself
+	// what to do — it may still be able to read the file.
+	images := append(append([]providers.ImageInput(nil), t.images...), steeringImages...)
+	harness, _, _ := o.runner.leadRuntime(ctx, t.threadID, i, t.role)
+	if o.runner.registry != nil && o.runner.registry.ImageSupport(harness) != providers.ImagesSupported {
+		prompt += imagesNote(images)
+	}
+
+	text, calls, err := o.runner.runOrchestratorPass(ctx, t.threadID, i, orchID, t.role, prompt, pass, images)
 	if err != nil {
 		return "", nil, err
 	}

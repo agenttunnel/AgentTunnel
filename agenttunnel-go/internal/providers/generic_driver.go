@@ -17,12 +17,23 @@ type GenericDriver struct {
 	binary     string
 	invoke     InvocationFunc
 	translator Translator
+	img        ImageSupport
 }
 
 // NewGenericDriver constructs a driver for a harness.
 func NewGenericDriver(kind contracts.Harness, binary string, invoke InvocationFunc, translator Translator) *GenericDriver {
 	return &GenericDriver{kind: kind, binary: binary, invoke: invoke, translator: translator}
 }
+
+// WithImageSupport sets the driver's declared image capability. Unset reads as
+// unknown, which degrades to a prompt note.
+func (g *GenericDriver) WithImageSupport(s ImageSupport) *GenericDriver {
+	g.img = s
+	return g
+}
+
+// ImageSupport reports the declared image capability.
+func (g *GenericDriver) ImageSupport() ImageSupport { return g.img }
 
 func (g *GenericDriver) Harness() contracts.Harness { return g.kind }
 func (g *GenericDriver) Binary() string             { return g.binary }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -72,6 +73,8 @@ type DispatcherDeps struct {
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
+	// Attachments stores image uploads. Nil refuses image-bearing turns.
+	Attachments *attachments.Store
 }
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
@@ -145,6 +148,7 @@ type Dispatcher struct {
 	updater    *update.Updater
 	limits     *providers.LimitsProvider
 	relay      RelayControl
+	attach     *attachments.Store
 	prBoard    *scm.Board
 	dirtyBoard *scm.DirtyBoard
 	seq        atomic.Int64
@@ -184,6 +188,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		updater:    d.Updater,
 		limits:     d.Limits,
 		relay:      d.Relay,
+		attach:     d.Attachments,
 		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
 		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
@@ -284,6 +289,10 @@ type (
 		// Attachments are workdir-relative files or folders the composer attached.
 		// They reach the agent's prompt, not the transcript.
 		Attachments []string `json:"attachments,omitempty"`
+		// Images are attachment ids minted by a prior POST /attachments
+		// upload. They render in the transcript and reach harnesses that
+		// accept image input.
+		Images []string `json:"images,omitempty"`
 	}
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -316,8 +325,10 @@ const threadLogTail = 400
 const defaultStaleAfterSeconds = 30 * 60
 
 // runTurn starts a user turn: it claims the thread's turn slot first, so a busy
-// thread is refused before cmd is recorded, then records cmd and runs the lead
-// orchestrators on text. A stop from the client is reported as ok, not an error.
+// thread is refused before cmd is recorded, and the turn's image attachments
+// must resolve to readable files before cmd is recorded too. It then records
+// cmd and runs the lead orchestrators on text. A stop from the client is
+// reported as ok, not an error.
 func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
 	turnCtx, done, err := d.beginTurn(ctx, threadID)
 	if err != nil {
@@ -329,16 +340,69 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	if err := d.ensureWorktree(ctx, threadID); err != nil {
 		return nil, err
 	}
+	// Attachment files resolve before the turn is recorded: a message that
+	// names an image the harness cannot read would otherwise sit in the
+	// transcript as if it had been delivered.
+	inputs, err := d.imageInputs(threadID, cmd.Images)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
-	if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
+	if err := d.orch.RunTurn(turnCtx, threadID, text, inputs...); err != nil {
 		if turnCtx.Err() != nil {
 			return map[string]any{"ok": true, "stopped": true}, nil
 		}
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// resolveImages decodes uploaded attachment ids into their stored meta, so a
+// turn can record them in the transcript. Raw ids are never forwarded: only
+// pairs the store can vouch for pass through.
+func (d *Dispatcher) resolveImages(threadID contracts.ThreadID, ids []string) ([]contracts.ImageRef, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > contracts.MaxTurnImages {
+		return nil, fmt.Errorf("a turn carries at most %d images", contracts.MaxTurnImages)
+	}
+	if d.attach == nil {
+		return nil, errors.New("image attachments are unavailable")
+	}
+	var refs []contracts.ImageRef
+	for _, id := range ids {
+		if !contracts.ValidImageID(id) {
+			return nil, fmt.Errorf("%q is not an attachment id", id)
+		}
+		ref, err := d.attach.Meta(threadID, id)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+// imageInputs maps recorded refs to the files the harnesses read. The store
+// resolves each path from the thread's own directory. A ref that cannot be
+// resolved is an error, never a silent drop: the transcript records the image
+// the moment the turn starts, so it must be readable by then.
+func (d *Dispatcher) imageInputs(threadID contracts.ThreadID, refs []contracts.ImageRef) ([]providers.ImageInput, error) {
+	if d.attach == nil || len(refs) == 0 {
+		return nil, nil
+	}
+	var inputs []providers.ImageInput
+	for _, r := range refs {
+		path := d.attach.Path(threadID, r.ID)
+		if path == "" {
+			return nil, fmt.Errorf("attachment %s is not readable", r.ID)
+		}
+		inputs = append(inputs, providers.ImageInput{Path: path, Mime: r.Mime, Name: r.Name})
+	}
+	return inputs, nil
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -431,6 +495,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 	case "harness.list":
 		enabled := make([]contracts.Harness, 0, len(contracts.AllHarnesses()))
 		modelsByHarness := make(map[string][]string, len(contracts.AllHarnesses()))
+		imageSupport := make(map[string]string, len(contracts.AllHarnesses()))
 		for _, h := range contracts.AllHarnesses() {
 			if d.settings == nil || d.settings.HarnessEnabled(h) {
 				enabled = append(enabled, h)
@@ -438,12 +503,14 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			if d.models != nil {
 				modelsByHarness[string(h)] = d.models.List(h)
 			}
+			imageSupport[string(h)] = d.registry.ImageSupport(h).String()
 		}
 		return map[string]any{
-			"all":       contracts.AllHarnesses(),
-			"available": d.registry.Available(),
-			"enabled":   enabled,
-			"models":    modelsByHarness,
+			"all":          contracts.AllHarnesses(),
+			"available":    d.registry.Available(),
+			"enabled":      enabled,
+			"models":       modelsByHarness,
+			"imageSupport": imageSupport,
 		}, nil
 
 	case "models.refresh":
@@ -633,8 +700,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		refs, err := d.resolveImages(p.ThreadID, p.Images)
+		if err != nil {
+			return nil, err
+		}
 		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
+			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text, Images: refs,
 		})
 
 	case "review.submit":
@@ -865,17 +936,25 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		refs, err := d.resolveImages(p.ThreadID, p.Images)
+		if err != nil {
+			return nil, err
+		}
+		inputs, err := d.imageInputs(p.ThreadID, refs)
+		if err != nil {
+			return nil, err
+		}
 		// Record it in the transcript, marked as steering, then queue it for the
 		// next orchestrator pass to weigh.
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID:       d.nextID(),
 			Type:     contracts.CmdMessageAppend,
 			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "steering", Text: p.Text},
+			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "steering", Text: p.Text, Images: refs},
 		}); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, prompt)
+		d.steering.Post(p.ThreadID, prompt, inputs...)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.btw":
