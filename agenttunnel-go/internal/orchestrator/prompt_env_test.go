@@ -20,7 +20,7 @@ func TestOrchestratorPromptDocumentsEnvironmentTools(t *testing.T) {
 			t.Fatalf("orchestrator prompt lacks %q:\n%s", line, lead)
 		}
 	}
-	sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "sub"}, "task", "", "", "", false, nil)
+	sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "sub"}, "task", "", "", "", false, nil, nil)
 	if strings.Contains(sub, "tool shell") || strings.Contains(sub, "tool read-file") {
 		t.Fatalf("subagent prompt offers environment tools:\n%s", sub)
 	}

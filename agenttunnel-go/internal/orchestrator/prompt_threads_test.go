@@ -20,7 +20,7 @@ func TestOrchestratorPromptDocumentsThreadTools(t *testing.T) {
 			t.Fatalf("orchestrator prompt lacks %q:\n%s", line, lead)
 		}
 	}
-	sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "sub"}, "task", "", "", "", false, nil)
+	sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "sub"}, "task", "", "", "", false, nil, nil)
 	if strings.Contains(sub, "thread-delete") {
 		t.Fatalf("subagent prompt offers thread-delete:\n%s", sub)
 	}
