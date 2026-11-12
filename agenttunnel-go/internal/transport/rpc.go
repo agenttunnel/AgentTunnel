@@ -18,6 +18,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/fileedit"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
@@ -1165,6 +1166,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return files.Read(wd, p.Path)
 
+	case "fs.list", "fs.read", "fs.write":
+		return d.fileEdit(ctx, req)
+
 	case "review.comment":
 		var p struct {
 			ThreadID contracts.ThreadID `json:"threadId"`
@@ -1506,17 +1510,67 @@ func (d *Dispatcher) threadWorkdir(ctx context.Context, id contracts.ThreadID) s
 	if d.settings == nil {
 		return ""
 	}
-	base := d.settings.Workdir()
 	st, err := d.engine.State(ctx, id)
 	if err != nil {
-		return base
+		return d.settings.Workdir()
 	}
+	return d.stateWorkdir(st)
+}
+
+// threadRoot is threadWorkdir for callers that must not guess: an unknown
+// thread is an error, never the daemon default. engine.State returns an empty
+// state rather than failing for an id it has never seen, so Exists is the test.
+func (d *Dispatcher) threadRoot(ctx context.Context, id contracts.ThreadID) (string, error) {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if !st.Exists {
+		return "", fmt.Errorf("thread %q does not exist", id)
+	}
+	return d.stateWorkdir(st), nil
+}
+
+// stateWorkdir picks the checkout for a thread's state: its worktree when it
+// declares one, otherwise its project's path, otherwise the daemon default.
+func (d *Dispatcher) stateWorkdir(st *domain.ThreadState) string {
+	if d.settings == nil {
+		return ""
+	}
+	base := d.settings.Workdir()
 	if st.ProjectID != "" {
 		if project, ok := d.settings.Project(st.ProjectID); ok && project.Path != "" {
 			base = project.Path
 		}
 	}
 	return worktree.Resolve(st.Worktree, base)
+}
+
+// fileEdit serves the desktop file editor. The root is always the thread's own
+// working directory: clients name a path inside it, never a directory. An
+// unknown thread fails instead of falling back to the daemon default.
+func (d *Dispatcher) fileEdit(ctx context.Context, req Request) (any, error) {
+	var p struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Path     string             `json:"path"`
+		Text     string             `json:"text"`
+		Hash     string             `json:"hash"`
+	}
+	if err := decode(req.Params, &p); err != nil {
+		return nil, err
+	}
+	root, err := d.threadRoot(ctx, p.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	switch req.Method {
+	case "fs.list":
+		return fileedit.List(root, p.Path)
+	case "fs.read":
+		return fileedit.Read(root, p.Path)
+	default:
+		return fileedit.Write(root, p.Path, p.Text, p.Hash)
+	}
 }
 
 // prAction runs one git or forge write from the PR tab in the thread's worktree.
