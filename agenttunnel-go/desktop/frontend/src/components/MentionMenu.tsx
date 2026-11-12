@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { FileMatch } from "../lib/mentions";
 
 /**
@@ -15,6 +16,11 @@ export function MentionMenu({
   onPick: (match: FileMatch) => void;
   onActive: (index: number) => void;
 }) {
+  const activeRef = useRef<HTMLDivElement>(null);
+  // Keep the highlighted row in view while arrowing; "nearest" scrolls only as far as needed.
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [active, matches]);
   return (
     <div className="mention-menu" role="listbox" aria-label="Attach a file or folder">
       {matches.length === 0 ? (
@@ -27,6 +33,7 @@ export function MentionMenu({
           return (
             <div
               key={m.path}
+              ref={i === active ? activeRef : undefined}
               role="option"
               aria-selected={i === active}
               className={`mention-item${i === active ? " active" : ""}`}

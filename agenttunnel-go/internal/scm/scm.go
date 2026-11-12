@@ -124,11 +124,11 @@ func (c Client) resolve(ctx context.Context, workdir string) (provider, branch s
 		return "", "", Snapshot{Status: StatusNone, Message: "Detached HEAD: no branch to look up"}, false
 	}
 
-	out, _, err = c.Run(ctx, workdir, "git", "remote", "get-url", "origin")
-	if err != nil {
+	remote, ok := c.origin(ctx, workdir)
+	if !ok {
 		return "", "", Snapshot{Status: StatusUnsupported, Branch: branch, Message: "No origin remote"}, false
 	}
-	provider = providerFor(strings.TrimSpace(string(out)))
+	provider = providerFor(remote)
 	if provider == "" {
 		return "", "", Snapshot{Status: StatusUnsupported, Branch: branch, Message: "origin is not GitHub or GitLab"}, false
 	}
@@ -139,6 +139,15 @@ func (c Client) resolve(ctx context.Context, workdir string) (provider, branch s
 			Message: cli + " is not installed"}, false
 	}
 	return provider, branch, Snapshot{}, true
+}
+
+// origin reads the URL of the origin remote. ok is false when there is none.
+func (c Client) origin(ctx context.Context, workdir string) (remote string, ok bool) {
+	out, _, err := c.Run(ctx, workdir, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
 }
 
 func (c Client) fetchGitHub(ctx context.Context, workdir, branch string) Snapshot {
@@ -193,6 +202,7 @@ func providerFor(remote string) string {
 	if i := strings.LastIndex(host, "@"); i >= 0 {
 		host = host[i+1:]
 	}
+	host = strings.ToLower(host)
 	switch {
 	case strings.Contains(host, "github"):
 		return "github"
@@ -298,13 +308,14 @@ type glPipeline struct {
 }
 
 type glMR struct {
-	IID            int         `json:"iid"`
-	Title          string      `json:"title"`
-	WebURL         string      `json:"web_url"`
-	State          string      `json:"state"`
-	Draft          bool        `json:"draft"`
-	WorkInProgress bool        `json:"work_in_progress"`
-	HeadPipeline   *glPipeline `json:"head_pipeline"`
+	IID                 int         `json:"iid"`
+	Title               string      `json:"title"`
+	WebURL              string      `json:"web_url"`
+	State               string      `json:"state"`
+	Draft               bool        `json:"draft"`
+	WorkInProgress      bool        `json:"work_in_progress"`
+	HeadPipeline        *glPipeline `json:"head_pipeline"`
+	DetailedMergeStatus string      `json:"detailed_merge_status"`
 }
 
 func parseGitLab(raw []byte) (*Request, error) {
@@ -312,20 +323,42 @@ func parseGitLab(raw []byte) (*Request, error) {
 	if err := json.Unmarshal(raw, &mr); err != nil {
 		return nil, fmt.Errorf("could not read glab output: %w", err)
 	}
-	state := map[string]string{"opened": "open", "merged": "merged", "closed": "closed", "locked": "closed"}[mr.State]
 	req := &Request{
 		Number: mr.IID,
 		Title:  mr.Title,
 		URL:    mr.WebURL,
-		State:  state,
+		State:  gitlabRequestState(mr.State),
 		Draft:  mr.Draft || mr.WorkInProgress,
 		Checks: "none",
+		Review: gitlabReview(mr.DetailedMergeStatus),
 	}
 	if mr.HeadPipeline != nil {
 		req.Checks = pipelineState(mr.HeadPipeline.Status)
 		req.CheckRuns = []Check{{Name: "pipeline", State: req.Checks}}
 	}
 	return req, nil
+}
+
+// gitlabRequestState maps GitLab's request states onto the shared buckets.
+func gitlabRequestState(state string) string {
+	return map[string]string{"opened": "open", "merged": "merged", "closed": "closed", "locked": "closed"}[strings.ToLower(state)]
+}
+
+// gitlabReview folds GitLab's detailed_merge_status into the shared review
+// buckets. The MR JSON glab prints carries no approval flag of its own, and
+// "mergeable" is the only status that means the MR is approved and ready, so
+// that is what counts as approved. An unreported status stays empty so the UI
+// omits the row.
+func gitlabReview(mergeStatus string) string {
+	switch strings.ToLower(strings.TrimSpace(mergeStatus)) {
+	case "mergeable":
+		return "approved"
+	case "not_approved":
+		return "review_required"
+	case "requested_changes", "discussions_not_resolved":
+		return "changes_requested"
+	}
+	return ""
 }
 
 func checkRunState(status, conclusion string) string {

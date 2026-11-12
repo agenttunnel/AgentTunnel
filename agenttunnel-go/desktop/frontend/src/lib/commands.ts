@@ -22,6 +22,7 @@ export type SlashActions<P extends string> = {
   openPanel: (id: P) => void;
   setTab: (tab: CenterTab) => void;
   openSettings: () => void;
+  openHelp: () => void;
   askBtw: (question: string) => void;
   toggleAutoMode: () => void;
   togglePeerMailbox: () => void;
@@ -64,6 +65,7 @@ export function buildCommands<P extends string>(a: SlashActions<P>): SlashComman
     { name: "new", description: "Start a new thread in this project", run: () => a.newThread() },
     { name: "defaults", description: "Save this view as the default for new threads", run: () => a.saveDefaults() },
     { name: "settings", description: "Open settings", run: () => a.openSettings() },
+    { name: "help", description: "Show the how-to sheet", run: () => a.openHelp() },
   ];
 }
 

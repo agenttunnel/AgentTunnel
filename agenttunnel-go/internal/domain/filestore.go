@@ -154,8 +154,13 @@ func (s *FileStore) DropEmptyThreads() ([]contracts.ThreadID, error) {
 		}
 		empty := true
 		for _, ev := range events {
-			switch ev.Payload.(type) {
-			case contracts.ThreadCreated, contracts.PeerMailboxSet:
+			switch p := ev.Payload.(type) {
+			case contracts.ThreadCreated:
+				// A draft is the user's unfinished work, not a ghost.
+				if p.Draft {
+					empty = false
+				}
+			case contracts.PeerMailboxSet:
 			default:
 				empty = false
 			}
