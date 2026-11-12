@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/files"
 )
 
 // stringList is a repeatable string flag, as in --option a --option b.
@@ -30,7 +31,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -52,36 +53,47 @@ func Run(args []string) int {
 	var options stringList
 	fs.Var(&options, "option", "an answer option; repeat for each (for ask)")
 	notify := fs.String("notify", "", "agent or 'orchestrator' that also hears the answer (for ask)")
-	timeout := fs.Int("timeout", 0, "seconds to wait for the answer, default 600, max 3600 (for ask)")
+	timeout := fs.Int("timeout", 0, "seconds to wait for the answer, default 600, max 3600 (for ask); seconds a shell may run, default 120, max 600 (for shell)")
 	file := fs.String("file", "", "file a review comment is anchored to (for review-comment)")
 	line := fs.Int("line", 0, "line a review comment is anchored to (for review-comment)")
 	endLine := fs.Int("end-line", 0, "last line of a review comment's range (for review-comment)")
 	side := fs.String("side", "", "old or new: which side of the diff a review comment is on (for review-comment)")
 	thread := fs.String("thread", "", "review thread id (for review-reply and review-resolve)")
 	reopen := fs.Bool("reopen", false, "move a resolved review thread back to open (for review-resolve)")
+	threadID := fs.String("id", "", "thread to delete (for thread-delete)")
+	removeWorktree := fs.Bool("remove-worktree", false, "also remove the deleted thread's worktree (for thread-delete)")
+	filePath := fs.String("path", "", "file, relative to the thread's worktree (for read-file and write-file)")
+	command := fs.String("command", "", "shell command to run in the worktree (for shell)")
+	cwd := fs.String("cwd", "", "directory to run the command in, relative to the worktree (for shell)")
+	fromStdin := fs.Bool("stdin", false, "read the file's content from stdin instead of --text (for write-file)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 
 	payload := map[string]any{
-		"threadId": os.Getenv("AT_THREAD_ID"),
-		"agentId":  os.Getenv("AT_AGENT_ID"),
-		"kind":     kind,
-		"name":     *name,
-		"lane":     *lane,
-		"role":     *role,
-		"task":     *task,
-		"harness":  *harness,
-		"model":    *model,
-		"text":     *text,
-		"to":       *to,
-		"status":   *status,
-		"file":     *file,
-		"line":     *line,
-		"endLine":  *endLine,
-		"side":     *side,
-		"thread":   *thread,
-		"reopen":   *reopen,
+		"threadId":       os.Getenv("AT_THREAD_ID"),
+		"agentId":        os.Getenv("AT_AGENT_ID"),
+		"kind":           kind,
+		"name":           *name,
+		"lane":           *lane,
+		"role":           *role,
+		"task":           *task,
+		"harness":        *harness,
+		"model":          *model,
+		"text":           *text,
+		"to":             *to,
+		"status":         *status,
+		"file":           *file,
+		"line":           *line,
+		"endLine":        *endLine,
+		"side":           *side,
+		"thread":         *thread,
+		"reopen":         *reopen,
+		"target":         *threadID,
+		"removeWorktree": *removeWorktree,
+		"path":           *filePath,
+		"command":        *command,
+		"cwd":            *cwd,
 	}
 	if *summary != "" {
 		payload["text"] = *summary
@@ -92,6 +104,35 @@ func Run(args []string) int {
 		payload["questionKind"] = *questionKind
 		payload["options"] = []string(options)
 		payload["timeoutSec"] = *timeout
+	}
+	if kind == "shell" {
+		payload["timeoutSec"] = *timeout
+	}
+	if kind == "write-file" {
+		// The content is exactly one of --text or --stdin. Stdin is read only when
+		// asked for, so a call never waits on a pipe that nothing closes. An
+		// explicit empty --text truncates the file.
+		textSet := false
+		fs.Visit(func(f *flag.Flag) { textSet = textSet || f.Name == "text" })
+		switch {
+		case textSet && *fromStdin:
+			fmt.Fprintln(os.Stderr, "tool write-file: pass --text or --stdin, not both")
+			return 2
+		case *fromStdin:
+			data, err := io.ReadAll(io.LimitReader(os.Stdin, files.MaxWriteBytes+1))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "tool: reading stdin: %v\n", err)
+				return 1
+			}
+			if len(data) > files.MaxWriteBytes {
+				fmt.Fprintf(os.Stderr, "tool write-file: content is over %d bytes\n", files.MaxWriteBytes)
+				return 1
+			}
+			payload["text"] = string(data)
+		case !textSet:
+			fmt.Fprintln(os.Stderr, "tool write-file: pass --text, or --stdin to read the content from stdin")
+			return 2
+		}
 	}
 	if *dependsOn != "" {
 		payload["dependsOn"] = strings.Split(*dependsOn, ",")
@@ -136,7 +177,7 @@ func Run(args []string) int {
 	if kind == "ask" {
 		return printAnswer(resp.Body)
 	}
-	if kind == "task-list" {
+	if kind == "task-list" || kind == "thread-list" {
 		// A list is the answer itself, so it is printed as the daemon sends it.
 		out, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -145,6 +186,12 @@ func Run(args []string) int {
 		}
 		fmt.Println(strings.TrimSpace(string(out)))
 		return 0
+	}
+	if kind == "read-file" {
+		return printFile(resp.Body)
+	}
+	if kind == "shell" {
+		return printShell(resp.Body)
 	}
 	if kind == "subthread" {
 		// The new thread's id is the only handle on the subthread the lead can
@@ -158,6 +205,62 @@ func Run(args []string) int {
 		}
 	}
 	fmt.Println("ok")
+	return 0
+}
+
+// printFile writes a file's text as it is, so the agent reads the file itself.
+// A binary file has no text to show and fails the command; a file cut at the
+// read cap is noted on stderr.
+func printFile(body io.Reader) int {
+	var res files.ReadResult
+	if err := json.NewDecoder(body).Decode(&res); err != nil {
+		fmt.Fprintf(os.Stderr, "tool read-file: %v\n", err)
+		return 1
+	}
+	if res.Binary {
+		fmt.Fprintf(os.Stderr, "tool read-file: %s is a binary file (%d bytes); not printed\n", res.Path, res.Size)
+		return 1
+	}
+	fmt.Print(res.Text)
+	if res.Truncated {
+		fmt.Fprintf(os.Stderr, "tool read-file: %s is %d bytes; only the first %d were shown\n", res.Path, res.Size, files.MaxReadBytes)
+	}
+	return 0
+}
+
+// shellReply is the daemon's answer to `tool shell`.
+type shellReply struct {
+	ExitCode  int    `json:"exitCode"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
+	TimedOut  bool   `json:"timedOut"`
+	Stopped   bool   `json:"stopped"`
+}
+
+// printShell writes the command's output, then one status line with its exit
+// code. The call itself succeeds whenever the daemon ran the command, so a
+// failing command is read from the status line, not from this exit status.
+func printShell(body io.Reader) int {
+	var reply shellReply
+	if err := json.NewDecoder(body).Decode(&reply); err != nil {
+		fmt.Fprintf(os.Stderr, "tool shell: %v\n", err)
+		return 1
+	}
+	fmt.Print(reply.Output)
+	if reply.Output != "" && !strings.HasSuffix(reply.Output, "\n") {
+		fmt.Println()
+	}
+	status := fmt.Sprintf("exit: %d", reply.ExitCode)
+	if reply.TimedOut {
+		status += " (timed out)"
+	}
+	if reply.Stopped {
+		status += " (stopped)"
+	}
+	if reply.Truncated {
+		status += " (output truncated)"
+	}
+	fmt.Println(status)
 	return 0
 }
 
