@@ -48,8 +48,8 @@ func TestEngineCreateTurnAndProject(t *testing.T) {
 	if len(state.Messages) != 1 || state.Messages[0].Text != "hello world" {
 		t.Fatalf("messages = %+v", state.Messages)
 	}
-	if state.Version != 3 {
-		t.Fatalf("version = %d, want 3", state.Version)
+	if state.Version != 4 {
+		t.Fatalf("version = %d, want 4", state.Version)
 	}
 }
 
@@ -82,6 +82,49 @@ func TestEngineSubscribeReceivesEvents(t *testing.T) {
 			seen++
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for materialization + message events")
+		}
+	}
+}
+
+// SubscribeAll hears every thread, including threads it never asked about by
+// id. Committed events and Publish both reach it.
+func TestEngineSubscribeAllReceivesEveryThread(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	ch, unsub := e.SubscribeAll()
+	defer unsub()
+
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c2", Type: contracts.CmdThreadCreate, ThreadID: "t2"})
+	mustDispatch(t, e, ctx, contracts.Command{
+		ID: "m1", Type: contracts.CmdMessageAppend, ThreadID: "t1",
+		Message: &contracts.MessageSent{MessageID: "m1", Author: "user", Text: "one"},
+	})
+	mustDispatch(t, e, ctx, contracts.Command{
+		ID: "m2", Type: contracts.CmdMessageAppend, ThreadID: "t2",
+		Message: &contracts.MessageSent{MessageID: "m2", Author: "user", Text: "two"},
+	})
+
+	seen := map[contracts.ThreadID]bool{}
+	for len(seen) < 2 {
+		select {
+		case ev := <-ch:
+			if ev.Type() == contracts.EvtMessageSent {
+				seen[ev.ThreadID] = true
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("global subscriber did not hear both threads, saw %v", seen)
+		}
+	}
+
+	e.Publish("t2", contracts.QuestionAsked{QuestionID: "q1", Question: "ship?"})
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type() == contracts.EvtQuestionAsked && ev.ThreadID == "t2" {
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("global subscriber did not hear the published question")
 		}
 	}
 }
@@ -318,7 +361,7 @@ func TestThreadCreateIsProvisionalUntilUsed(t *testing.T) {
 		Message: &contracts.MessageSent{MessageID: "m1", Author: "user", Text: "do something"},
 	})
 	st, _ = e.State(ctx, "t1")
-	if st.Provisional || st.Version != 3 || len(st.Messages) != 1 {
+	if st.Provisional || st.Version != 4 || len(st.Messages) != 1 {
 		t.Fatalf("materialized state = %+v", st)
 	}
 	files, _ = filepath.Glob(filepath.Join(dir, "*.jsonl"))

@@ -15,11 +15,18 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ThreadCreated{Title: "sub", ProjectID: "proj_1", ParentThreadID: "t1"},
 		ThreadCreated{Title: "user-owned", ProjectID: "proj_1", Owner: ThreadOwnerUser},
 		ThreadCreated{Title: "spawned", ProjectID: "proj_1", ParentThreadID: "t0", Owner: ThreadOwnerOrchestrator},
+		ThreadCreated{Title: "draft", ProjectID: "proj_1", Draft: true, Description: "fix the login",
+			Issue: &IssueRef{Provider: "gitlab", IID: 7, Title: "Login fails", URL: "https://gitlab.example/g/p/-/issues/7"}},
 		SubthreadSpawned{ThreadID: "t2"},
 		ThreadRenamed{Title: "renamed thread"},
+		ThreadDescribed{Description: "more detail"},
+		DraftStarted{},
 		MessageSent{MessageID: "m1", Author: "user", Text: "hello"},
+		SteeringInjected{Count: 2},
+		SteeringConsumed{MessageIDs: []string{"m2", "m3"}},
 		ModelSet{Selection: ModelSelection{InstanceID: "i", Model: "gpt-5"}},
 		AutoModeSet{Enabled: true},
+		StatusPeriodSet{PeriodSeconds: 60},
 		PeerMailboxSet{Enabled: true},
 		TaskDispatched{AgentID: "a1", ParentAgentID: "orch", Name: "explore", Role: RolePlanner, Task: "map it", Model: "m", PipelineID: "p1"},
 		AgentStatusChanged{AgentID: "a1", Status: AgentRunning, Reason: "go"},
@@ -34,6 +41,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ReviewThreadReplied{ThreadID: "rt1", AuthorID: "exe", Body: "done", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusResolved, Body: "looks good", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusOpen, CreatedAt: at},
+		RoleRuntimeSet{ThreadID: "t1", Role: RoleExecutor, Runtime: LeadRuntime{Harness: HarnessCodex, Model: "gpt-x", Variant: "high"}},
 	}
 
 	for _, payload := range payloads {

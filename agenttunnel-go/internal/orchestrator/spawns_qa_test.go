@@ -21,7 +21,9 @@ import (
 // newPromptCaptureHarness mirrors newHarness but delivers each pass prompt as
 // the script's first positional argument (PromptVia "arg"), so tests can
 // capture exactly what the lead saw. MaxPasses is left unset so the default
-// budget of 3 applies.
+// budget of 3 applies. The returned path is the base name the capture script
+// appends its pid-suffixed section files beside, keeping concurrent harness
+// processes (title generation runs off the turn) from interleaving sections.
 func newPromptCaptureHarness(t *testing.T, script string) (*Runner, *domain.Engine, context.Context, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -57,51 +59,90 @@ func newPromptCaptureHarness(t *testing.T, script string) (*Runner, *domain.Engi
 	return r, eng, ctx, filepath.Join(t.TempDir(), "prompts.log")
 }
 
-type capturedPrompt struct{ thread, pass string }
+type capturedPrompt struct{ thread, pass, body string }
 
-// parseCapturedPrompts reads a prompt log written by a capture script: each
-// section starts with a <<<thread|pass>>> marker line and holds the full pass
-// prompt that followed it.
-func parseCapturedPrompts(t *testing.T, path string) map[capturedPrompt]string {
+// isTitlePrompt reports whether a captured prompt is the off-turn thread-title
+// generation rather than a real pass. RunTurn retitles a default-named thread
+// at turn start and again after the cycle; those dispatches run the same
+// orchestrator harness concurrently with the turn's own passes, and their
+// capture key carries whatever AT_ROLE/AT_PASS the harness process inherited
+// from the environment the test itself runs under, so only the content tells
+// them apart (the same marker titleScript matches on).
+func isTitlePrompt(body string) bool {
+	return strings.Contains(body, "Name this coding session")
+}
+
+// capturedPass reports whether the real (non-title) prompt for one pass of a
+// thread's turn was captured.
+func capturedPass(prompts []capturedPrompt, thread, pass string) bool {
+	for _, p := range prompts {
+		if p.thread == thread && p.pass == pass && !isTitlePrompt(p.body) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseCapturedPrompts reads the prompt logs written by a capture script: each
+// harness process appends its section to a pid-suffixed sidecar of path, so
+// concurrent processes (a turn's passes and the off-turn title generation)
+// never interleave or overwrite each other's sections. Every section starts
+// with a <<<thread|pass>>> marker line and holds the full prompt that process
+// received. A marker with no body behind it is a reader that raced a writer
+// still going; completed pass prompts always embed the role instructions, so
+// dropping empty sections loses nothing a test would act on.
+func parseCapturedPrompts(t *testing.T, path string) []capturedPrompt {
 	t.Helper()
-	blob, err := os.ReadFile(path)
+	names, err := filepath.Glob(path + ".*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := map[capturedPrompt]string{}
-	var key capturedPrompt
-	var buf strings.Builder
-	flush := func() {
-		if key.thread != "" {
-			out[key] = buf.String()
+	var out []capturedPrompt
+	for _, name := range names {
+		blob, err := os.ReadFile(name)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			t.Fatal(err)
 		}
-	}
-	for _, line := range strings.Split(string(blob), "\n") {
-		if strings.HasPrefix(line, "<<<") && strings.HasSuffix(line, ">>>") {
-			flush()
-			parts := strings.SplitN(strings.TrimSuffix(strings.TrimPrefix(line, "<<<"), ">>>"), "|", 2)
-			if len(parts) == 2 {
-				key = capturedPrompt{parts[0], parts[1]}
+		key := ""
+		var buf strings.Builder
+		flush := func() {
+			if key != "" && strings.TrimSpace(buf.String()) != "" {
+				if parts := strings.SplitN(key, "|", 2); len(parts) == 2 {
+					out = append(out, capturedPrompt{parts[0], parts[1], buf.String()})
+				}
+			}
+		}
+		for _, line := range strings.Split(string(blob), "\n") {
+			if strings.HasPrefix(line, "<<<") && strings.HasSuffix(line, ">>>") {
+				flush()
+				key = strings.TrimSuffix(strings.TrimPrefix(line, "<<<"), ">>>")
 				buf.Reset()
 				continue
 			}
+			if key != "" {
+				buf.WriteString(line)
+				buf.WriteString("\n")
+			}
 		}
-		if key.thread != "" {
-			buf.WriteString(line)
-			buf.WriteString("\n")
-		}
+		flush()
 	}
-	flush()
 	return out
 }
 
 // A pending request in one thread must never surface in another thread's lead
 // prompt, even though both turns share one Runner and the lead agent id is
 // thread-agnostic. Drives real RunTurn calls on both threads and inspects the
-// prompts the leads actually received.
+// prompts the leads actually received. Each turn also names its thread (the
+// default title is still set), whose concurrent title-generation dispatch runs
+// the same harness against the same capture channel; the capture script keys
+// each section by pid-suffixed file so writers never interleave, and the
+// assertions below skip title prompts by content.
 func TestRunTurnPromptNeverCarriesAnotherThreadsPendingRequest(t *testing.T) {
 	script := `if [ "$AT_ROLE" = orchestrator ]; then
-  printf '<<<%s|%s>>>\n%s\n' "$AT_THREAD_ID" "$AT_PASS" "$1" >> "$QA_PROMPT_LOG"
+  printf '<<<%s|%s>>>\n%s\n' "$AT_THREAD_ID" "$AT_PASS" "$1" >> "$QA_PROMPT_LOG".$$
 fi
 printf '{"type":"text","text":"ok"}\n'`
 	r, eng, ctx, logPath := newPromptCaptureHarness(t, script)
@@ -121,15 +162,15 @@ printf '{"type":"text","text":"ok"}\n'`
 		t.Fatalf("run turn t2: %v", err)
 	}
 	prompts := parseCapturedPrompts(t, logPath)
-	if _, ok := prompts[capturedPrompt{"t2", "0"}]; !ok {
+	if !capturedPass(prompts, "t2", "0") {
 		t.Fatalf("expected t2's pass 0 prompt to be captured: %+v", prompts)
 	}
-	for key, body := range prompts {
-		if key.thread != "t2" {
+	for _, p := range prompts {
+		if p.thread != "t2" {
 			continue
 		}
-		if strings.Contains(body, "Pending spawn requests") || strings.Contains(body, "inner") {
-			t.Fatalf("t2 pass %s prompt leaked t1's pending request:\n%s", key.pass, body)
+		if strings.Contains(p.body, "Pending spawn requests") || strings.Contains(p.body, "inner") {
+			t.Fatalf("t2 pass %s prompt leaked t1's pending request:\n%s", p.pass, p.body)
 		}
 	}
 	// t1's request must have survived t2's full turn untouched.
@@ -143,9 +184,23 @@ printf '{"type":"text","text":"ok"}\n'`
 		t.Fatalf("run turn t1: %v", err)
 	}
 	prompts = parseCapturedPrompts(t, logPath)
-	body := prompts[capturedPrompt{"t1", "0"}]
-	if !strings.Contains(body, "## Pending spawn requests") || !strings.Contains(body, "inner") {
-		t.Fatalf("t1 pass 0 prompt missing its own pending request:\n%s", body)
+	// t1 was still default-named, so its turn also ran the two title
+	// generations concurrently with its passes. The first real prompt is the
+	// non-title capture with the lowest pass number.
+	var first *capturedPrompt
+	for i, p := range prompts {
+		if p.thread != "t1" || isTitlePrompt(p.body) {
+			continue
+		}
+		if first == nil || p.pass < first.pass {
+			first = &prompts[i]
+		}
+	}
+	if first == nil {
+		t.Fatalf("no t1 pass prompt captured: %+v", prompts)
+	}
+	if !strings.Contains(first.body, "## Pending spawn requests") || !strings.Contains(first.body, "inner") {
+		t.Fatalf("t1 first pass prompt missing its own pending request:\n%s", first.body)
 	}
 	// The undecided request is dropped when its turn ends...
 	if got := r.spawns.list("t1"); len(got) != 0 {
@@ -153,7 +208,7 @@ printf '{"type":"text","text":"ok"}\n'`
 	}
 	// ...but only after earning passes up to the default budget of 3.
 	for _, pass := range []string{"0", "1", "2"} {
-		if _, ok := prompts[capturedPrompt{"t1", pass}]; !ok {
+		if !capturedPass(prompts, "t1", pass) {
 			t.Fatalf("expected a t1 pass %s prompt while the request stayed undecided: %+v", pass, prompts)
 		}
 	}

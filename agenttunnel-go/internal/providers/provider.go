@@ -15,6 +15,17 @@ type Event struct {
 	Usage    *contracts.TokenUsage `json:"usage,omitempty"`
 }
 
+// ImageInput is one image a harness should see, as a process-readable file
+// in the attachment store. The file is passed by reference; only harnesses
+// that read stdin frames (claude) see the bytes inline.
+type ImageInput struct {
+	Path string `json:"path"`
+	Mime string `json:"mime"`
+	// Name is the original filename; prompts reference it even when the
+	// harness cannot view the image.
+	Name string `json:"name,omitempty"`
+}
+
 // SessionSpec describes one agent run handed to an adapter.
 type SessionSpec struct {
 	AgentID  contracts.AgentID  `json:"agentId"`
@@ -24,8 +35,12 @@ type SessionSpec struct {
 	Model    string             `json:"model,omitempty"`
 	Variant  string             `json:"variant,omitempty"`
 	Prompt   string             `json:"prompt"`
-	Workdir  string             `json:"workdir,omitempty"`
-	Env      []string           `json:"env,omitempty"`
+	// Images are the turn's attachments. Each harness consumes them through
+	// its own mechanism; a harness with none ignores them (the orchestrator
+	// degrades to a path note in the prompt).
+	Images  []ImageInput `json:"images,omitempty"`
+	Workdir string       `json:"workdir,omitempty"`
+	Env     []string     `json:"env,omitempty"`
 }
 
 // Adapter is the per-provider runtime contract. Implementations translate a
@@ -47,6 +62,44 @@ type CommandSpec struct {
 	Binary    string
 	Args      []string
 	PromptVia string // "stdin" or "arg"
+	// StdinJSONFrames are newline-delimited JSON frames written to the
+	// child's stdin right after start, then closed. claude uses this to feed
+	// a stream-json user message (images as base64 blocks plus the prompt).
+	StdinJSONFrames []string
+}
+
+// ImageSupport is the tri-state verdict on a driver's image input.
+type ImageSupport int
+
+const (
+	// ImagesUnknown means no evidence either way: the turn is accepted and
+	// the images degrade to a path note in the prompt.
+	ImagesUnknown ImageSupport = iota
+	// ImagesSupported means the harness ingests images through its own flag
+	// or input format.
+	ImagesSupported
+	// ImagesUnsupported means the harness has no image input in its
+	// non-interactive mode.
+	ImagesUnsupported
+)
+
+// String renders the verdict as harness.list reports it.
+func (s ImageSupport) String() string {
+	switch s {
+	case ImagesSupported:
+		return "supported"
+	case ImagesUnsupported:
+		return "unsupported"
+	default:
+		return "unknown"
+	}
+}
+
+// ImageCapable is the optional capability a driver implements to declare how
+// it takes image input. Drivers without it read as ImagesUnknown, which
+// degrades to a prompt note rather than refusing the turn.
+type ImageCapable interface {
+	ImageSupport() ImageSupport
 }
 
 // Translator maps a raw stdout line into zero or more normalized events.

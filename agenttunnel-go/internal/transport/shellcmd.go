@@ -43,7 +43,7 @@ func shellMessage(command string, res shellResult) string {
 	case res.Stopped:
 		status = "stopped"
 	case res.TimedOut:
-		status = fmt.Sprintf("timed out after %s", shellTimeout)
+		status = fmt.Sprintf("timed out after %s", res.Timeout)
 	default:
 		status = fmt.Sprintf("exit %d", res.ExitCode)
 	}
@@ -60,6 +60,7 @@ type shellResult struct {
 	Truncated bool
 	TimedOut  bool
 	Stopped   bool // ctx was cancelled (the Stop button or a dropped client)
+	Timeout   time.Duration
 }
 
 // runShell runs a command through the shell with stdin closed, merging stdout
@@ -102,6 +103,7 @@ func runShell(ctx context.Context, run shellRun) (shellResult, error) {
 		Truncated: out.truncated,
 		TimedOut:  errors.Is(ctx.Err(), context.DeadlineExceeded),
 		Stopped:   errors.Is(ctx.Err(), context.Canceled),
+		Timeout:   run.Timeout,
 	}, nil
 }
 

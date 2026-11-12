@@ -5,14 +5,18 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
@@ -20,21 +24,24 @@ import (
 )
 
 // Server exposes the daemon over HTTP: a health probe, an authenticated
-// JSON-RPC WebSocket, and the tool endpoint agents call from their shell.
+// JSON-RPC WebSocket, the tool endpoint agents call from their shell, and the
+// attachment upload/download surface image data rides instead of the socket.
 type Server struct {
-	disp   *Dispatcher
-	engine *domain.Engine
-	runner *orchestrator.Runner
-	token  string
-	box    *toolbox.Box
+	disp        *Dispatcher
+	engine      *domain.Engine
+	runner      *orchestrator.Runner
+	token       string
+	box         *toolbox.Box
+	attachments *attachments.Store
 
 	connMu sync.Mutex
 	conns  map[*conn]struct{}
 }
 
 // NewServer builds the HTTP surface. An empty token disables auth (dev only).
-func NewServer(disp *Dispatcher, engine *domain.Engine, runner *orchestrator.Runner, token string, box *toolbox.Box) *Server {
-	return &Server{disp: disp, engine: engine, runner: runner, token: token, box: box}
+// A nil attachment store keeps /attachments answering, but refuseful.
+func NewServer(disp *Dispatcher, engine *domain.Engine, runner *orchestrator.Runner, token string, box *toolbox.Box, attach *attachments.Store) *Server {
+	return &Server{disp: disp, engine: engine, runner: runner, token: token, box: box, attachments: attach}
 }
 
 // Handler returns the HTTP handler.
@@ -45,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/tool/call", s.handleToolCall)
+	mux.HandleFunc("/attachments", s.handleAttachments)
 	mux.HandleFunc("/ws", s.handleWS)
 	return mux
 }
@@ -81,6 +89,12 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindTaskCreate, toolbox.KindTaskUpdate, toolbox.KindTaskList:
 		s.handleTaskCall(w, r, req)
 		return
+	case toolbox.KindThreadList, toolbox.KindThreadDelete:
+		s.handleThreadCall(w, r, req)
+		return
+	case toolbox.KindReadFile, toolbox.KindWriteFile, toolbox.KindShell:
+		s.handleEnvCall(w, r, req)
+		return
 	case toolbox.KindSubthread:
 		s.handleSubthreadCall(w, r, req)
 		return
@@ -89,6 +103,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	case toolbox.KindReviewComment, toolbox.KindReviewReply, toolbox.KindReviewResolve:
 		s.handleReviewCall(w, r, req)
+		return
+	case toolbox.KindSteer:
+		s.handleSteerCall(w, r, req)
 		return
 	}
 
@@ -157,6 +174,89 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
+// handleAttachments is the image surface: POST with raw image bytes stores
+// one under the thread and answers with its meta; GET fetches the bytes back
+// by id. Image data never rides the WebSocket.
+func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.attachments == nil {
+		http.Error(w, "image attachments are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	threadID := contracts.ThreadID(r.URL.Query().Get("threadId"))
+	if threadID == "" {
+		http.Error(w, "threadId is required", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		st, err := s.engine.State(r.Context(), threadID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !st.Exists {
+			http.Error(w, "thread does not exist", http.StatusNotFound)
+			return
+		}
+		// One byte of headroom so an over-cap upload reads as too large
+		// rather than a connection error mid-body.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, contracts.MaxImageBytes+1))
+		if err != nil {
+			http.Error(w, "image exceeds the size limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		ref, err := s.attachments.Save(threadID, r.URL.Query().Get("name"), body)
+		if err != nil {
+			http.Error(w, err.Error(), badAttachmentStatus(err))
+			return
+		}
+		s.disp.auditLog("attachment.save", map[string]any{
+			"threadId": string(threadID), "id": ref.ID, "mime": ref.Mime, "size": ref.Size,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ref)
+
+	case http.MethodGet:
+		id := r.URL.Query().Get("id")
+		if !contracts.ValidImageID(id) {
+			http.Error(w, "invalid attachment id", http.StatusBadRequest)
+			return
+		}
+		ref, data, err := s.attachments.Open(threadID, id)
+		if err != nil {
+			http.Error(w, err.Error(), badAttachmentStatus(err))
+			return
+		}
+		w.Header().Set("Content-Type", ref.Mime)
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// badAttachmentStatus maps store errors to the client-facing status code:
+// anything about the bytes' shape or the pair's identity is a 400, a missing
+// pair is a 404, and the rest are the server's fault.
+func badAttachmentStatus(err error) int {
+	switch {
+	case errors.Is(err, attachments.ErrTooLarge):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, attachments.ErrUnsupportedMime), errors.Is(err, attachments.ErrInvalidID):
+		return http.StatusBadRequest
+	case errors.Is(err, attachments.ErrNotFound):
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // toolCallRequest is the body the `atd tool` command posts to /tool/call.
 type toolCallRequest struct {
 	ThreadID  contracts.ThreadID `json:"threadId"`
@@ -174,6 +274,16 @@ type toolCallRequest struct {
 	// answer.
 	Text string `json:"text"`
 	To   string `json:"to"`
+	// Target names the thread a thread-delete removes; RemoveWorktree also
+	// removes that thread's own worktree.
+	Target         string `json:"target"`
+	RemoveWorktree bool   `json:"removeWorktree"`
+	// Path names the file a read-file or write-file touches, relative to the
+	// thread's worktree. Command and Cwd shape a shell call; TimeoutSec, as for
+	// an ask, bounds it.
+	Path    string `json:"path"`
+	Command string `json:"command"`
+	Cwd     string `json:"cwd"`
 	// QuestionKind, Options and TimeoutSec shape an ask.
 	QuestionKind string   `json:"questionKind"`
 	Options      []string `json:"options"`
@@ -269,6 +379,42 @@ func (s *Server) handleTaskCall(w http.ResponseWriter, r *http.Request, req tool
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// handleSteerCall queues the lead's steer for one subagent and answers with the
+// outcome, so the lead learns at once whether it was queued. It bypasses the
+// tool inbox: the steer must not wait for the pass to end.
+func (s *Server) handleSteerCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if s.runner == nil {
+		http.Error(w, "steering is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if strings.TrimSpace(req.To) == "" || strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "to and text are required for a steer", http.StatusBadRequest)
+		return
+	}
+	reply, err := s.runner.Steer(r.Context(), req.ThreadID, req.AgentID, req.To, req.Text)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, orchestrator.ErrSteerNotLead):
+			status = http.StatusForbidden
+		case errors.Is(err, orchestrator.ErrUnknownRecipient),
+			errors.Is(err, orchestrator.ErrSteerTargetLead),
+			errors.Is(err, orchestrator.ErrSteerFinished),
+			errors.Is(err, orchestrator.ErrEmptyMessage),
+			errors.Is(err, domain.ErrThreadNotFound):
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.disp.auditLog("tool", map[string]any{
+		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+		"to": req.To,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "outcome": "queued", "message": reply})
+}
+
 // handleSubthreadCall starts a subthread for the caller's thread. Only a team
 // lead may start one; a subagent's request is refused here, not queued, so the
 // refusal reaches the agent that asked.
@@ -292,6 +438,93 @@ func (s *Server) handleSubthreadCall(w http.ResponseWriter, r *http.Request, req
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "threadId": child})
+}
+
+// toolThread is one row of `tool thread-list`.
+type toolThread struct {
+	ID             contracts.ThreadID `json:"id"`
+	Title          string             `json:"title"`
+	Status         string             `json:"status"`
+	ProjectID      string             `json:"projectId,omitempty"`
+	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
+	Branch         string             `json:"branch,omitempty"`
+	Worktree       string             `json:"worktree,omitempty"`
+}
+
+// handleThreadCall lists the environment's threads, or deletes one, on behalf
+// of a team lead. Only a lead may do either: a subagent's call is refused here,
+// not queued, so the refusal reaches the agent that asked. A lead may not delete
+// its own thread, and deleteThread refuses any thread with work still running.
+// Like every tool call, it is accepted only from this machine: the agent id is
+// a body field a remote caller can set to anything.
+func (s *Server) handleThreadCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if !isLoopbackPeer(r) {
+		http.Error(w, "tool calls are accepted only from this machine", http.StatusForbidden)
+		return
+	}
+	if !orchestrator.IsLead(req.AgentID) {
+		http.Error(w, "only the orchestrator can list or delete threads", http.StatusForbidden)
+		return
+	}
+	ctx := r.Context()
+	var resp any = map[string]any{"ok": true}
+	var err error
+	switch toolbox.Kind(req.Kind) {
+	case toolbox.KindThreadList:
+		var rows []toolThread
+		rows, err = s.threadList(ctx)
+		resp = map[string]any{"ok": true, "threads": rows}
+	case toolbox.KindThreadDelete:
+		target := contracts.ThreadID(strings.TrimSpace(req.Target))
+		switch {
+		case target == "":
+			err = fmt.Errorf("%w: target thread id is required", domain.ErrInvalidCommand)
+		case target == req.ThreadID:
+			err = fmt.Errorf("%w: a thread cannot delete itself", domain.ErrInvalidCommand)
+		default:
+			err = s.disp.deleteThread(ctx, target, req.RemoveWorktree)
+			s.disp.auditLog("tool", map[string]any{
+				"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+				"target": string(target), "removeWorktree": req.RemoveWorktree,
+			})
+		}
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, domain.ErrInvalidCommand) || errors.Is(err, domain.ErrThreadNotFound) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// threadList reuses the thread.list RPC, so the rows match what the desktop
+// sees, and adds the lead-facing status and branch.
+func (s *Server) threadList(ctx context.Context) ([]toolThread, error) {
+	out, err := s.disp.handle(ctx, Request{Method: "thread.list"})
+	if err != nil {
+		return nil, err
+	}
+	summaries, ok := out.([]ThreadSummary)
+	if !ok {
+		return nil, errors.New("thread list unavailable")
+	}
+	rows := make([]toolThread, 0, len(summaries))
+	for _, t := range summaries {
+		row := toolThread{ID: t.ID, Title: t.Title, Status: "idle", ProjectID: t.ProjectID, ParentThreadID: t.ParentThreadID}
+		if t.RunningAgents > 0 || s.disp.threadRunning(t.ID) {
+			row.Status = "running"
+		}
+		if t.Worktree != nil {
+			row.Branch = t.Worktree.Branch
+			row.Worktree = t.Worktree.Path
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // authorized accepts the token as "Authorization: Bearer" from any peer. The
@@ -447,6 +680,13 @@ func (c *conn) handleFrame(ctx context.Context, data []byte) {
 	}
 	if req.Method == "app.open" {
 		c.srv.handleAppOpen(c, req)
+		return
+	}
+	if req.Method == "daemon.shutdown" {
+		// Acknowledge before tearing the server down: the client's `agenttunnel daemon
+		// stop` waits for this reply, then for daemon.json to disappear.
+		c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
+		go c.disp.Shutdown()
 		return
 	}
 	go func() {

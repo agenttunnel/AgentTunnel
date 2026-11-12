@@ -1,6 +1,6 @@
 package main
 
-// Launch handling for `agenttunnel [dir]`: opening a project directory from
+// Launch handling for `agenttunnel-desktop [dir]`: opening a project directory from
 // the terminal. When the app is already running (its lock file answers), the
 // invocation forwards the open-request over the daemon's WebSocket and exits;
 // otherwise the app boots with the directory as its launch target.
@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 )
 
 // launchLock is the running app's handoff point: where its daemon listens and
@@ -46,11 +49,38 @@ func writeLock(stateDir string, lock launchLock) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(lockPath(stateDir), data, 0o600)
+	if err := os.WriteFile(lockPath(stateDir), data, 0o600); err != nil {
+		return err
+	}
+	// The daemon is reachable over the same socket the CLI's discovery file
+	// describes, so `agenttunnel` can drive a desktop-hosted daemon. Both files describe
+	// one server and are removed together.
+	return discovery.Write(stateDir, discovery.Info{
+		WSURL:     lock.WsURL,
+		HTTPURL:   httpURLFromWS(lock.WsURL),
+		Token:     lock.Token,
+		PID:       os.Getpid(),
+		Version:   version,
+		StartedAt: time.Now().UTC(),
+	})
 }
 
 func removeLock(stateDir string) {
 	_ = os.Remove(lockPath(stateDir))
+	_ = discovery.Remove(stateDir)
+}
+
+// httpURLFromWS converts the daemon's WebSocket URL into its HTTP base, since
+// discovery records both and the desktop only knows the socket.
+func httpURLFromWS(ws string) string {
+	switch {
+	case strings.HasPrefix(ws, "wss://"):
+		return "https://" + strings.TrimSuffix(strings.TrimPrefix(ws, "wss://"), "/ws")
+	case strings.HasPrefix(ws, "ws://"):
+		return "http://" + strings.TrimSuffix(strings.TrimPrefix(ws, "ws://"), "/ws")
+	default:
+		return strings.TrimSuffix(ws, "/ws")
+	}
 }
 
 // launchDirArg validates a command-line argument as a project directory and
@@ -70,28 +100,30 @@ func launchDirArg(arg string) (string, error) {
 }
 
 // forwardToRunning hands the open-request to an already-running app over its
-// daemon WebSocket, then reports true. A missing or stale lock, or any
-// connection failure, reports false so the caller boots a fresh app instead.
-func forwardToRunning(stateDir, dir string) bool {
+// daemon WebSocket, then reports true. A directory opens a fresh thread in it;
+// a thread id focuses that thread. A missing or stale lock, or any connection
+// failure, reports false so the caller boots a fresh app instead.
+func forwardToRunning(stateDir, dir, thread string) bool {
 	lock, ok := readLock(stateDir)
 	if !ok {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ws, _, err := websocket.Dial(ctx, lock.WsURL+"?token="+lock.Token, &websocket.DialOptions{
+	ws, _, err := websocket.Dial(ctx, lock.WsURL, &websocket.DialOptions{
 		HTTPClient: &http.Client{Timeout: 2 * time.Second},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + lock.Token}},
 	})
 	if err != nil {
 		return false
 	}
 	defer ws.CloseNow()
 
-	var threadID string
+	threadID := thread
 	if dir != "" {
 		res, err := rpcCall(ctx, ws, "thread.open", map[string]string{"dir": dir})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agenttunnel: open %s: %v\n", dir, err)
+			fmt.Fprintf(os.Stderr, "agenttunnel-desktop: open %s: %v\n", dir, err)
 			return false
 		}
 		threadID, _ = res["threadId"].(string)
@@ -99,7 +131,7 @@ func forwardToRunning(stateDir, dir string) bool {
 	if _, err := rpcCall(ctx, ws, "app.open", map[string]string{"threadId": threadID}); err != nil {
 		return false
 	}
-	if dir == "" {
+	if dir == "" && thread == "" {
 		fmt.Println("AgentTunnel is already running — focused it.")
 	}
 	return true

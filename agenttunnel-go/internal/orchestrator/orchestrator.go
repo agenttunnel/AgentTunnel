@@ -10,6 +10,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
@@ -379,15 +380,18 @@ type turn struct {
 	leads    []contracts.AgentID
 	role     contracts.Role
 	message  string
+	// images are the turn's attachments, handed to every lead's session.
+	images []providers.ImageInput
 }
 
 // RunTurn executes one user turn end to end. The thread's team of leads takes a
 // pass each round, in order: a lead's dispatches run before the next lead
 // speaks, so its peer message reaches the next lead in the same round. The
 // round loop repeats while work is dispatched, steering or a spawn decision is
-// pending, or a lead has mail; it ends after the pass budget regardless. With
+// pending, or a lead has mail; it ends after the pass budget unless a steer is
+// still pending, which earns one more round. With
 // one lead this is the classic single-orchestrator loop.
-func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) (err error) {
+func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string, images ...providers.ImageInput) (err error) {
 	// An auto context-manager run started by this turn must finish before the
 	// turn reports done, so none of its events land after the turn.
 	defer o.runner.curator.wait(threadID)
@@ -401,7 +405,21 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		return err
 	}
 
-	t := turn{threadID: threadID, role: role, message: userMessage, leads: make([]contracts.AgentID, state.LeadCount())}
+	// A thread that still carries its placeholder name is titled right away,
+	// from the first prompt alone, off the turn so it cannot delay the reply.
+	// The cycle's summary refines it once the turn lands. titleDone orders the
+	// two generations so the summary-informed title is the one that stays.
+	var titleDone chan struct{}
+	if isDefaultTitle(state.Title) {
+		titleDone = make(chan struct{})
+		done := titleDone
+		go func() {
+			defer close(done)
+			o.runner.generateTitle(context.Background(), threadID, role, userMessage, "")
+		}()
+	}
+
+	t := turn{threadID: threadID, role: role, message: userMessage, images: images, leads: make([]contracts.AgentID, state.LeadCount())}
 	seed := make([]contracts.DispatchTask, 0, len(t.leads))
 	for i := range t.leads {
 		t.leads[i] = leadAgentID(i)
@@ -446,13 +464,49 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 
 	var finalText string
 	var dispatched []contracts.DispatchTask
-	for pass := 0; pass < o.runner.maxPasses(); pass++ {
+	// Steering that arrives during the last budgeted pass earns one more round:
+	// the user typed it into this turn, and a queued steer would otherwise
+	// surface in an unrelated later turn. Each extra round needs a new steer.
+	for pass := 0; pass < o.runner.maxPasses() || o.runner.HasSteering(threadID); pass++ {
 		// Steering is drained once per round so every lead weighs it, not just
-		// the first one to speak.
-		steering := o.runner.DrainSteering(threadID)
+		// the first one to speak. Draining is the moment the pass takes it:
+		// record that in the transcript so the client can retire its pending
+		// style. Images steering carries join the turn's on the pass that
+		// weighs them.
+		entries := o.runner.DrainSteering(threadID)
+		steering := make([]string, len(entries))
+		consumed := make([]string, 0, len(entries))
+		var steerImages []providers.ImageInput
+		for i, entry := range entries {
+			steering[i] = entry.Text
+			steerImages = append(steerImages, entry.Images...)
+			if entry.MessageID != "" {
+				consumed = append(consumed, entry.MessageID)
+			}
+		}
+		if len(steering) > 0 {
+			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
+				ID:       o.runner.nextID(),
+				Type:     contracts.CmdSteeringInjected,
+				ThreadID: threadID,
+				Injected: &contracts.SteeringInjected{Count: len(steering)},
+			}); err != nil {
+				return err
+			}
+		}
+		if len(consumed) > 0 {
+			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
+				ID:              o.runner.nextID(),
+				Type:            contracts.CmdSteeringConsume,
+				ThreadID:        threadID,
+				SteeringConsume: &contracts.SteeringConsumed{MessageIDs: consumed},
+			}); err != nil {
+				return err
+			}
+		}
 		dispatchedThisRound := false
 		for i := range t.leads {
-			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering)
+			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering, steerImages)
 			if err != nil {
 				return err
 			}
@@ -523,17 +577,36 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
-	// Name the thread once, from the first exchange, using the orchestrator's
-	// model. It runs off the turn so it cannot delay the reply.
-	if state, err := o.runner.engine.State(ctx, threadID); err == nil && isDefaultTitle(state.Title) {
-		go o.runner.generateTitle(context.Background(), threadID, role, userMessage, finalText)
+	// The first cycle names the thread twice: once from the prompt at the start
+	// of the turn, and now again from the prompt plus what the team actually
+	// did. The second pass waits for the first and overwrites it.
+	if titleDone != nil {
+		go func() {
+			<-titleDone
+			o.runner.generateTitle(context.Background(), threadID, role, userMessage, finalText)
+		}()
 	}
 	return nil
 }
 
+// priorMessages returns the thread's conversation before the current turn. The
+// engine appends the turn's user message before RunTurn, so the last user
+// message with the current text marks where this turn starts; everything after
+// it is this run's own output, carried by other prompt sections. A subthread
+// appends no user message, so nothing matches and the whole history is prior.
+func priorMessages(state *domain.ThreadState, current string) []domain.Message {
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		m := state.Messages[i]
+		if m.Author == "user" && m.Text == current {
+			return state.Messages[:i]
+		}
+	}
+	return state.Messages
+}
+
 // runLeadPass runs one pass of lead i and executes whatever that pass
 // dispatched. It returns the lead's text and the tasks it dispatched.
-func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, steering []string) (string, []contracts.DispatchTask, error) {
+func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, steering []string, steeringImages []providers.ImageInput) (string, []contracts.DispatchTask, error) {
 	orchID := t.leads[i]
 	// Calls that arrived while the previous wave ran — a subagent proposing a
 	// spawn, a late note, a printed peer message — fold in before the prompt is
@@ -557,6 +630,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
 		Role:           t.role,
 		UserMessage:    t.message,
+		History:        renderHistory(priorMessages(state, t.message)),
 		Inherited:      inherited,
 		Shared:         o.runner.notebookFor(t.threadID).Render(),
 		Roster:         o.runner.Roster(state),
@@ -567,10 +641,21 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Team:           teamBrief(t.leads, i, peerMailbox),
 		Pass:           pass,
 		Steering:       steering,
+		Steer:          hasSubagents(state),
 		RuntimeChoices: runtimeChoices,
 	})
 
-	text, calls, err := o.runner.runOrchestratorPass(ctx, t.threadID, i, orchID, t.role, prompt, pass)
+	// The turn's attachments, plus any steering images, reach the lead every
+	// pass: each pass is a fresh one-shot process. A harness that cannot take
+	// images natively gets them as a path note instead and decides itself
+	// what to do — it may still be able to read the file.
+	images := append(append([]providers.ImageInput(nil), t.images...), steeringImages...)
+	harness, _, _ := o.runner.leadRuntime(ctx, t.threadID, i, t.role)
+	if o.runner.registry != nil && o.runner.registry.ImageSupport(harness) != providers.ImagesSupported {
+		prompt += imagesNote(images)
+	}
+
+	text, calls, err := o.runner.runOrchestratorPass(ctx, t.threadID, i, orchID, t.role, prompt, pass, images)
 	if err != nil {
 		return "", nil, err
 	}

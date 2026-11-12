@@ -37,7 +37,7 @@ func newOpenFixture(t *testing.T) (*Dispatcher, *Server, string) {
 		Logs:     logstore.New(t.TempDir()),
 		Settings: settings.New(t.TempDir()),
 	})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 	return disp, srv, httpSrv.URL
@@ -171,6 +171,8 @@ func TestThreadOpenReusesProjectByDir(t *testing.T) {
 func TestAppOpenBroadcastsToClients(t *testing.T) {
 	_, _, url := newOpenFixture(t)
 	ctx := context.Background()
+	deadline, cancel := context.WithTimeout(ctx, waitDeadline)
+	defer cancel()
 
 	// The listener: the running desktop's connection.
 	listener, _, err := websocket.Dial(ctx, url+"/ws", nil)
@@ -178,7 +180,17 @@ func TestAppOpenBroadcastsToClients(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.CloseNow()
-	// Drain nothing first; the frame we want is the only unsolicited one.
+	// Dial returns once the handshake is written, but the server only registers
+	// the socket for broadcasts after that. A round-trip proves registration
+	// (the server reads frames only after registering), so the app.open below
+	// cannot race past the listener.
+	ready, _ := json.Marshal(map[string]any{"id": "ready", "method": "project.list"})
+	if err := listener.Write(deadline, websocket.MessageText, ready); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := listener.Read(deadline); err != nil {
+		t.Fatalf("listener round-trip: %v", err)
+	}
 
 	// The forwarder: opens a thread, then asks the app to show it.
 	res := callOpen(t, url, t.TempDir())
@@ -194,8 +206,6 @@ func TestAppOpenBroadcastsToClients(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline, cancel := context.WithTimeout(ctx, waitDeadline)
-	defer cancel()
 	for {
 		_, msg, err := listener.Read(deadline)
 		if err != nil {

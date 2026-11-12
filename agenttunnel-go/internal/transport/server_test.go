@@ -30,12 +30,27 @@ func newMessageFixture(t *testing.T) (*domain.Engine, *orchestrator.Runner, *Ser
 		Mailbox: contextstore.NewMailbox(),
 	})
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Runner: runner})
-	return eng, runner, NewServer(disp, eng, runner, "", toolbox.New())
+	return eng, runner, NewServer(disp, eng, runner, "", toolbox.New(), nil)
 }
 
+// postToolCall posts from httptest's default peer, which is not loopback. Tool
+// calls from a remote peer are refused, so tests of the agent-side gates post
+// from a local peer with postLocalToolCall.
 func postToolCall(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/tool/call", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// postLocalToolCall posts from this machine, the only peer the tool surface
+// accepts.
+func postLocalToolCall(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/tool/call", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:50000"
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)

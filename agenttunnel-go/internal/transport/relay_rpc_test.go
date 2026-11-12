@@ -16,6 +16,7 @@ import (
 type fakeRelay struct {
 	mu        sync.Mutex
 	enabled   bool
+	connected bool
 	url       string
 	unpairAll bool
 	unpairID  string
@@ -25,7 +26,7 @@ type fakeRelay struct {
 func (f *fakeRelay) Status() RelayStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return RelayStatus{Enabled: f.enabled, URL: f.url}
+	return RelayStatus{Enabled: f.enabled, URL: f.url, Connected: f.connected}
 }
 
 func (f *fakeRelay) Enable(url string) error {
@@ -184,7 +185,7 @@ func TestSessionServesRPCThroughTheSink(t *testing.T) {
 	eng.Start(context.Background())
 	t.Cleanup(eng.Close)
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Relay: &fakeRelay{}})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 
 	replies := make(chan Response, 4)
 	sess := srv.NewSession(func(r Response) { replies <- r })
@@ -209,7 +210,7 @@ func TestSessionRefusesRelayMethods(t *testing.T) {
 	t.Cleanup(eng.Close)
 	rc := &fakeRelay{}
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Relay: rc})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 
 	replies := make(chan Response, 1)
 	sess := srv.NewSession(func(r Response) { replies <- r })

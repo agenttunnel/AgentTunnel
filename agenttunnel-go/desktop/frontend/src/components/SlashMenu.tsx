@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { SlashCommand } from "../lib/commands";
 
 /**
@@ -15,8 +15,15 @@ export const SlashMenu = memo(function SlashMenu({
   index: number;
   onPick: (cmd: SlashCommand) => void;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Arrow keys move the highlight; keep the highlighted row inside the scroll box.
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(".slash-item.on")?.scrollIntoView({ block: "nearest" });
+  }, [index]);
+
   return (
-    <div className="slash-menu" role="listbox" aria-label="Slash commands">
+    <div ref={listRef} className="slash-menu" role="listbox" aria-label="Slash commands">
       {items.map((cmd, i) => (
         <button
           key={cmd.name}

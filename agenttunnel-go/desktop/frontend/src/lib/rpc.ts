@@ -7,11 +7,21 @@ export type Conn = {
   /** A project directory passed on the command line (agenttunnel <dir>): open
    * a thread in it once connected. Empty for a plain launch. */
   launchDir?: string;
+  /** A thread id passed on the command line (agenttunnel open): select that
+   * thread once connected. Empty for a plain launch. */
+  launchThread?: string;
+  /** Host:port of the daemon, for the "local" vs "attached" header badge. */
+  host?: string;
+  /** True when the window attached to a daemon it did not start. */
+  attached?: boolean;
+  /** The shell's saved keep-running preference. */
+  keepRunning?: boolean;
 };
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 type ThreadEventHandler = (event: unknown) => void;
 type AppOpenHandler = (params: { threadId?: string; projectId?: string }) => void;
+type NotificationHandler = (notification: { method: string; params: unknown }) => void;
 
 /**
  * Rpc is a tiny JSON-RPC-over-WebSocket client. It is the same surface any
@@ -24,6 +34,7 @@ export class Rpc {
   private pending = new Map<string, Pending>();
   private handlers = new Set<ThreadEventHandler>();
   private appOpenHandlers = new Set<AppOpenHandler>();
+  private notificationHandlers = new Set<NotificationHandler>();
 
   constructor(private readonly conn: Conn) {}
 
@@ -56,6 +67,10 @@ export class Rpc {
     }
     if (msg.method === "app.open") {
       this.appOpenHandlers.forEach((h) => h((msg.params ?? {}) as { threadId?: string; projectId?: string }));
+      return;
+    }
+    if (msg.method) {
+      this.notificationHandlers.forEach((h) => h({ method: msg.method as string, params: msg.params }));
       return;
     }
     if (!msg.id) return;
@@ -97,9 +112,80 @@ export class Rpc {
     };
   }
 
+  /** onNotification subscribes to server pushes that are not thread events.
+   * Handlers see the method and params, so a client refreshes only what changed. */
+  onNotification(handler: NotificationHandler): () => void {
+    this.notificationHandlers.add(handler);
+    return () => {
+      this.notificationHandlers.delete(handler);
+    };
+  }
+
   close() {
     this.ws?.close();
   }
+}
+
+/** One image attached to a message: enough to render and refetch the bytes.
+ * Mirrors contracts.ImageRef on the daemon — never the bytes themselves. */
+export type ImageRef = {
+  id: string;
+  name?: string;
+  mime: string;
+  size: number;
+  width?: number;
+  height?: number;
+};
+
+/** Reads a failed /attachments response: the daemon replies with a short
+ * plain-language message (bad mime, too large, unknown thread). */
+async function attachmentsError(res: Response): Promise<Error> {
+  let detail = "";
+  try {
+    detail = (await res.text()).trim();
+  } catch {
+    /* fall through to the status line */
+  }
+  return new Error(detail || `attachment upload failed (${res.status})`);
+}
+
+/**
+ * uploadImage POSTs raw image bytes to the daemon's HTTP /attachments
+ * endpoint and resolves to the stored ImageRef. Images ride HTTP with Bearer
+ * auth — they never go over the WebSocket or into the event log.
+ */
+export async function uploadImage(
+  httpUrl: string,
+  token: string,
+  threadId: string,
+  blob: Blob,
+  name: string,
+): Promise<ImageRef> {
+  const res = await fetch(
+    `${httpUrl}/attachments?threadId=${encodeURIComponent(threadId)}&name=${encodeURIComponent(name)}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: blob,
+    },
+  );
+  if (!res.ok) throw await attachmentsError(res);
+  return (await res.json()) as ImageRef;
+}
+
+/** fetchImageBlob GETs one stored image attachment's bytes for rendering. */
+export async function fetchImageBlob(
+  httpUrl: string,
+  token: string,
+  threadId: string,
+  id: string,
+): Promise<Blob> {
+  const res = await fetch(
+    `${httpUrl}/attachments?threadId=${encodeURIComponent(threadId)}&id=${encodeURIComponent(id)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw await attachmentsError(res);
+  return res.blob();
 }
 
 /** discover asks the desktop shell for the daemon's loopback address + token. */
@@ -153,6 +239,19 @@ export function installExternalLinks(): void {
     },
     true,
   );
+}
+
+/**
+ * setKeepRunning asks the desktop shell to persist whether its daemon should
+ * outlive the window. A capability event, not daemon data: outside the shell it
+ * is a no-op.
+ */
+export function setKeepRunning(enabled: boolean): void {
+  try {
+    Events.Emit("at:keep-running", { enabled });
+  } catch {
+    /* not running under the desktop shell */
+  }
 }
 
 /**

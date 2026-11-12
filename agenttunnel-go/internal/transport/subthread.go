@@ -74,6 +74,10 @@ func (d *Dispatcher) startSubthread(ctx context.Context, parent contracts.Thread
 	}
 	go func() {
 		defer done()
+		// A subthread turn reports its own status on the same schedule as a user
+		// turn; the loop stops when the turn context ends.
+		stopReports := d.startStatusReports(turnCtx, child)
+		defer stopReports()
 		// The same gate as a user turn: if the shared directory vanished since the
 		// spawn, the child re-follows the parent's live worktree before any agent runs.
 		runErr := d.ensureWorktree(turnCtx, child)
