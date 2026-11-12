@@ -65,7 +65,8 @@ type Daemon struct {
 	Remote   *remote.Bridge
 	Token    string
 
-	endpoint *atomic.Value
+	endpoint      *atomic.Value
+	stopScheduler func()
 }
 
 // New assembles a daemon and starts its engine.
@@ -233,6 +234,11 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	// Inbound WhatsApp control routes through the daemon's own RPC surface, with
 	// a fixed whitelist; see transport.ControlRouter.
 	router = transport.NewControlRouter(disp)
+	// The thread scheduler follows the whole engine. It subscribes and runs its
+	// boot recovery here, before the server exists, so no schedule can be
+	// armed — and no dependency can finish — past its back. Closing the daemon
+	// stops the loop; trigger turns already running unwind through it.
+	stopScheduler := disp.StartScheduler(ctx)
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
 		return nil, fmt.Errorf("close stale questions: %w", err)
@@ -264,7 +270,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Relay:    relay,
 		Remote:   bridge,
 		Token:    opts.Token,
-		endpoint: &endpoint,
+		endpoint: &endpoint, stopScheduler: stopScheduler,
 	}, nil
 }
 
@@ -293,6 +299,9 @@ func followRelayTransitions(ctx context.Context, relay *relayclient.Client, disp
 
 // Close stops the engine and flushes the action log.
 func (d *Daemon) Close() {
+	if d.stopScheduler != nil {
+		d.stopScheduler()
+	}
 	if d.Remote != nil {
 		d.Remote.Close()
 	}
