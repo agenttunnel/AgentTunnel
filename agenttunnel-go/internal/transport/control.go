@@ -12,6 +12,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 )
 
 // The chat control surface: the user's own WhatsApp chat can list threads, pick
@@ -48,6 +49,9 @@ type ControlActions interface {
 	// ControlAnswer answers one question. selected carries a choice option;
 	// text carries free text.
 	ControlAnswer(ctx context.Context, id contracts.ThreadID, questionID string, selected []string, text string) error
+	// ControlMaster asks the home-screen orchestrator one message, with the
+	// chat's own prior exchange as history.
+	ControlMaster(ctx context.Context, text string, history []orchestrator.MasterMessage) (orchestrator.MasterResult, error)
 }
 
 // ControlRouter turns one chat message into one whitelisted action and a reply.
@@ -56,12 +60,17 @@ type ControlActions interface {
 type ControlRouter struct {
 	actions ControlActions
 
-	mu         sync.Mutex
-	selected   contracts.ThreadID
-	tokens     float64
-	refilledAt time.Time
-	noticedAt  time.Time
-	now        func() time.Time
+	mu       sync.Mutex
+	selected contracts.ThreadID
+	// master points plain text at the home-screen orchestrator instead of a
+	// thread. masterHistory is the chat's own exchange with it, so follow-ups
+	// have context without sharing the desktop's conversation.
+	master        bool
+	masterHistory []orchestrator.MasterMessage
+	tokens        float64
+	refilledAt    time.Time
+	noticedAt     time.Time
+	now           func() time.Time
 }
 
 // NewControlRouter builds a router over the daemon's control actions.
@@ -93,9 +102,14 @@ func (r *ControlRouter) Handle(ctx context.Context, text string) string {
 		return r.answer(ctx, arg)
 	case "/turn":
 		return r.turn(ctx, arg)
+	case "/master":
+		if arg == "" {
+			return "Ask Master what? Send /master <text>."
+		}
+		return r.askMaster(ctx, arg)
 	}
 	if strings.HasPrefix(cmd, "/") {
-		return fmt.Sprintf("Unknown command %s. Use /threads, /use, /steer, /answer, or /turn.", clipRunes(cmd, 24))
+		return fmt.Sprintf("Unknown command %s. Use /threads, /use, /master, /steer, /answer, or /turn.", clipRunes(cmd, 24))
 	}
 	return r.message(ctx, text)
 }
@@ -121,7 +135,8 @@ func (r *ControlRouter) listThreads(ctx context.Context) string {
 		return "No threads yet."
 	}
 	selected := r.selection()
-	lines := make([]string, 0, len(threads)+2)
+	masterActive := r.isMaster()
+	lines := make([]string, 0, len(threads)+3)
 	lines = append(lines, "Threads:")
 	for i, t := range threads {
 		if i >= controlListMax {
@@ -137,14 +152,20 @@ func (r *ControlRouter) listThreads(ctx context.Context) string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", "Send /use <number> to select one.")
+	if masterActive {
+		lines = append(lines, "", "Active: Master (home screen).")
+	}
+	lines = append(lines, "", "Send /use <number> to select one, or /use master.")
 	return strings.Join(lines, "\n")
 }
 
 func (r *ControlRouter) use(ctx context.Context, arg string) string {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
-		return "Which thread? Send /threads, then /use <number>."
+		return "Which target? Send /threads, then /use <number>, or /use master."
+	}
+	if arg == "master" {
+		return r.selectMaster()
 	}
 	threads, err := r.actions.ControlThreads(ctx)
 	if err != nil {
@@ -174,8 +195,66 @@ func (r *ControlRouter) use(ctx context.Context, arg string) string {
 func (r *ControlRouter) selectThread(t ControlThread) string {
 	r.mu.Lock()
 	r.selected = t.ID
+	r.master = false
 	r.mu.Unlock()
 	return "Selected " + controlThreadLabel(t) + "."
+}
+
+// selectMaster points plain text at the home-screen orchestrator. It clears the
+// thread selection so the two targets can never be active at once.
+func (r *ControlRouter) selectMaster() string {
+	r.mu.Lock()
+	r.selected = ""
+	r.master = true
+	r.mu.Unlock()
+	return "Selected Master (home screen). Plain text goes to Master; send /use <number> to return to a thread."
+}
+
+// askMaster sends one message to the home-screen orchestrator and replies with
+// its answer. A thread the orchestrator proposes is started by the actions, the
+// same way the desktop starts it.
+func (r *ControlRouter) askMaster(ctx context.Context, text string) string {
+	r.mu.Lock()
+	history := append([]orchestrator.MasterMessage(nil), r.masterHistory...)
+	r.mu.Unlock()
+	result, err := r.actions.ControlMaster(ctx, text, history)
+	if err != nil {
+		return "Master failed: " + err.Error()
+	}
+	reply := strings.TrimSpace(result.Reply)
+	if reply == "" {
+		reply = "Master had no answer."
+	}
+	r.remember(text, reply)
+	out := "Master: " + reply
+	switch {
+	case result.Action != nil && result.ThreadID != "":
+		out += "\n\nStarted a thread: " + result.Action.Title + "."
+	case result.Error != "":
+		out += "\n\nNo thread was started: " + result.Error + "."
+	}
+	return out
+}
+
+// remember appends one exchange to the chat's Master history, keeping only the
+// most recent messages.
+func (r *ControlRouter) remember(text, reply string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.masterHistory = append(r.masterHistory,
+		orchestrator.MasterMessage{Role: "user", Text: text},
+		orchestrator.MasterMessage{Role: "assistant", Text: reply},
+	)
+	if over := len(r.masterHistory) - controlMasterHistory; over > 0 {
+		r.masterHistory = r.masterHistory[over:]
+	}
+}
+
+// isMaster reports whether plain text currently goes to Master.
+func (r *ControlRouter) isMaster() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.master
 }
 
 func (r *ControlRouter) steer(ctx context.Context, text string) string {
@@ -239,6 +318,9 @@ func (r *ControlRouter) answer(ctx context.Context, arg string) string {
 // message routes plain text to the selected thread: steering while a turn is
 // running, a new turn when it is idle.
 func (r *ControlRouter) message(ctx context.Context, text string) string {
+	if r.isMaster() {
+		return r.askMaster(ctx, text)
+	}
 	thread, problem := r.selectedThread(ctx)
 	if problem != "" {
 		return problem
@@ -258,6 +340,9 @@ func (r *ControlRouter) message(ctx context.Context, text string) string {
 // selectedThread resolves the selection against the current list. A thread that
 // was deleted clears the selection instead of leaving every command confused.
 func (r *ControlRouter) selectedThread(ctx context.Context) (ControlThread, string) {
+	if r.isMaster() {
+		return ControlThread{}, "Master is selected, not a thread. Send /threads, then /use <number>."
+	}
 	id := r.selection()
 	if id == "" {
 		return ControlThread{}, "No thread selected. Send /threads, then /use <number>."
@@ -338,6 +423,9 @@ const (
 	controlNoticeInterval = 10 * time.Second
 	// controlListMax bounds /threads so the reply stays one readable message.
 	controlListMax = 10
+	// controlMasterHistory bounds the chat's exchange with Master. The
+	// orchestrator reads at most this many messages anyway.
+	controlMasterHistory = 12
 )
 
 // turnRunning reports whether a turn holds the thread's slot, which is the
@@ -476,4 +564,23 @@ func (d *Dispatcher) ControlAnswer(ctx context.Context, id contracts.ThreadID, q
 	}
 	_, err = d.Handle(ctx, Request{ID: d.nextID(), Method: "question.answer", Params: params})
 	return err
+}
+
+// ControlMaster asks the home-screen orchestrator one message through the same
+// Send master.send uses, and starts a proposed thread the way master.send does,
+// so the chat and the desktop agree on what a proposal does.
+func (d *Dispatcher) ControlMaster(ctx context.Context, text string, history []orchestrator.MasterMessage) (orchestrator.MasterResult, error) {
+	if d.master == nil {
+		return orchestrator.MasterResult{}, errors.New("master chat is unavailable")
+	}
+	result, err := d.master.Send(ctx, text, history)
+	if err != nil {
+		return orchestrator.MasterResult{}, err
+	}
+	if result.Action != nil {
+		if err := d.startMasterThread(ctx, result.Action, &result); err != nil {
+			return orchestrator.MasterResult{}, err
+		}
+	}
+	return result, nil
 }
