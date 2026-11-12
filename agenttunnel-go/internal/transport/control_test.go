@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,15 @@ type fakeControlActions struct {
 	turns   []controlTextCall
 	steers  []controlTextCall
 	answers []controlAnswerCall
+
+	masterResult orchestrator.MasterResult
+	masterErr    error
+	masters      []controlMasterCall
+}
+
+type controlMasterCall struct {
+	text    string
+	history []orchestrator.MasterMessage
 }
 
 // unthrottle advances the clock on every call, so a command test exercises the
@@ -76,6 +86,11 @@ func (f *fakeControlActions) ControlPendingQuestion(context.Context, contracts.T
 func (f *fakeControlActions) ControlAnswer(_ context.Context, id contracts.ThreadID, questionID string, selected []string, text string) error {
 	f.answers = append(f.answers, controlAnswerCall{id, questionID, selected, text})
 	return f.answerErr
+}
+
+func (f *fakeControlActions) ControlMaster(_ context.Context, text string, history []orchestrator.MasterMessage) (orchestrator.MasterResult, error) {
+	f.masters = append(f.masters, controlMasterCall{text, append([]orchestrator.MasterMessage(nil), history...)})
+	return f.masterResult, f.masterErr
 }
 
 func newFakeActions() *fakeControlActions {
@@ -401,5 +416,164 @@ func TestControlTurnRefusesBusyThread(t *testing.T) {
 	defer release()
 	if err := disp.ControlTurn(ctx, "t1", "go"); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("ControlTurn on a busy thread = %v, want the busy refusal", err)
+	}
+}
+
+// /use master points plain text at Master, and /use <number> hands it back to a
+// thread. Routing is sequential, so the order of these calls is the order the
+// bridge's worker would run them.
+func TestControlRouterUseMasterThenTextGoesToMaster(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	actions.masterResult = orchestrator.MasterResult{Reply: "Fix flaky test is running."}
+	router := NewControlRouter(actions)
+	unthrottle(router)
+
+	if reply := router.Handle(ctx, "/use master"); !strings.Contains(reply, "Selected Master") {
+		t.Fatalf("use master reply = %q", reply)
+	}
+	reply := router.Handle(ctx, "what is running?")
+	if reply != "Master: Fix flaky test is running." {
+		t.Fatalf("master reply = %q", reply)
+	}
+	if len(actions.masters) != 1 || actions.masters[0].text != "what is running?" {
+		t.Fatalf("masters = %+v, want the text sent to Master", actions.masters)
+	}
+	if len(actions.turns)+len(actions.steers) != 0 {
+		t.Fatal("plain text with Master selected must not act on a thread")
+	}
+
+	if reply := router.Handle(ctx, "/use 2"); !strings.Contains(reply, "Write docs") {
+		t.Fatalf("use thread reply = %q", reply)
+	}
+	router.Handle(ctx, "please add examples")
+	if len(actions.masters) != 1 {
+		t.Fatalf("masters = %d after /use 2, want no further Master calls", len(actions.masters))
+	}
+	if len(actions.steers) != 1 || actions.steers[0] != (controlTextCall{"t2", "please add examples"}) {
+		t.Fatalf("steers = %+v, want text back on the selected thread", actions.steers)
+	}
+}
+
+// /master <text> is one-shot: it reaches Master without changing the selection.
+func TestControlRouterMasterCommandIsOneShot(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	actions.masterResult = orchestrator.MasterResult{Reply: "Two threads are running."}
+	router := NewControlRouter(actions)
+	unthrottle(router)
+
+	if reply := router.Handle(ctx, "/master"); !strings.Contains(reply, "Send /master <text>") || len(actions.masters) != 0 {
+		t.Fatalf("empty /master reply = %q, masters = %d", reply, len(actions.masters))
+	}
+	if reply := router.Handle(ctx, "/master what is running?"); reply != "Master: Two threads are running." {
+		t.Fatalf("master reply = %q", reply)
+	}
+	if len(actions.masters) != 1 || actions.masters[0].text != "what is running?" {
+		t.Fatalf("masters = %+v", actions.masters)
+	}
+	if reply := router.Handle(ctx, "ship it"); !strings.Contains(reply, "No thread selected") {
+		t.Fatalf("plain text after one-shot = %q, want the thread target unchanged", reply)
+	}
+}
+
+// The chat carries its own short exchange with Master into the next question.
+func TestControlRouterMasterKeepsChatHistory(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	actions.masterResult = orchestrator.MasterResult{Reply: "First answer."}
+	router := NewControlRouter(actions)
+	unthrottle(router)
+	router.Handle(ctx, "/use master")
+
+	router.Handle(ctx, "first question")
+	actions.masterResult.Reply = "Second answer."
+	router.Handle(ctx, "second question")
+
+	if len(actions.masters) != 2 {
+		t.Fatalf("masters = %d, want 2", len(actions.masters))
+	}
+	want := []orchestrator.MasterMessage{
+		{Role: "user", Text: "first question"},
+		{Role: "assistant", Text: "First answer."},
+	}
+	got := actions.masters[1].history
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("second history = %+v, want %+v", got, want)
+	}
+}
+
+// Thread-only commands are refused while Master is the target, so a /steer
+// cannot silently land on a thread the user is no longer looking at.
+func TestControlRouterMasterTargetRefusesThreadCommands(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	actions.question = &ControlQuestion{ID: "q1", Text: "Ship it?"}
+	router := NewControlRouter(actions)
+	unthrottle(router)
+	router.Handle(ctx, "/use 1")
+	router.Handle(ctx, "/use master")
+
+	for _, cmd := range []string{"/steer focus", "/turn go", "/answer yes"} {
+		if reply := router.Handle(ctx, cmd); !strings.Contains(reply, "Master is selected") {
+			t.Fatalf("%s reply = %q, want the Master target named", cmd, reply)
+		}
+	}
+	if len(actions.steers)+len(actions.turns)+len(actions.answers)+len(actions.masters) != 0 {
+		t.Fatalf("thread commands acted: steers=%+v turns=%+v answers=%+v masters=%+v",
+			actions.steers, actions.turns, actions.answers, actions.masters)
+	}
+}
+
+// A proposed thread is reported by title, and a proposal the daemon could not
+// honor says why, so the chat never implies work started when it did not.
+func TestControlRouterMasterReportsProposals(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	router := NewControlRouter(actions)
+	unthrottle(router)
+
+	actions.masterResult = orchestrator.MasterResult{
+		Reply:    "Starting the docs pass.",
+		Action:   &orchestrator.MasterAction{Title: "Docs pass"},
+		ThreadID: "t9",
+	}
+	if reply := router.Handle(ctx, "/master start a docs pass"); !strings.Contains(reply, "Started a thread: Docs pass.") {
+		t.Fatalf("started reply = %q", reply)
+	}
+
+	actions.masterResult = orchestrator.MasterResult{
+		Reply: "Which project?",
+		Error: `project "x" is not configured`,
+	}
+	if reply := router.Handle(ctx, "/master start it"); !strings.Contains(reply, `No thread was started: project "x" is not configured.`) {
+		t.Fatalf("refused reply = %q", reply)
+	}
+}
+
+func TestControlRouterMasterFailureReply(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	actions.masterErr = errors.New("harness down")
+	router := NewControlRouter(actions)
+	unthrottle(router)
+
+	if reply := router.Handle(ctx, "/master hello"); reply != "Master failed: harness down" {
+		t.Fatalf("failure reply = %q", reply)
+	}
+}
+
+// Through the real dispatcher, /master reaches the orchestrator's one-shot send
+// and the scripted model's answer comes back in the chat.
+func TestControlMasterAnswersThroughDispatcher(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	script := masterDispatchScript(filepath.Join(dir, "prompt.txt"), filepath.Join(dir, "release"), "Two threads are idle.")
+	_, disp := newMasterRPCFixture(t, script)
+	router := NewControlRouter(disp)
+	unthrottle(router)
+
+	if reply := router.Handle(ctx, "/master what is idle?"); reply != "Master: Two threads are idle." {
+		t.Fatalf("master reply = %q", reply)
 	}
 }
