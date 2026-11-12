@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -11,7 +13,7 @@ import {
   type MouseEvent,
 } from "react";
 import { Window } from "@wailsio/runtime";
-import { discover, pickFolder, Rpc, type Conn } from "./lib/rpc";
+import { discover, pickFolder, Rpc, setKeepRunning as emitKeepRunning, type Conn } from "./lib/rpc";
 import {
   addUsage,
   deriveThreadUsage,
@@ -25,6 +27,7 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
+import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
 import { switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
@@ -41,15 +44,20 @@ import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
-import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { FileEditor } from "./components/FileEditor";
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRListing } from "./components/PRPanel";
 import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
+import { StatsPage } from "./components/StatsPage";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
-import { RelayPairing } from "./components/RelayPairing";
-import { Markdown } from "./components/Markdown";
+import { RemoteSection } from "./components/RemoteSection";
+import { DocLinkContext, Markdown } from "./components/Markdown";
+import type { MarkdownDocLike } from "./components/MarkdownViewer";
+import { docPathFromHref } from "./lib/markdownLinks";
+// The viewer is only needed once a markdown file is opened, so it loads on demand.
+const MarkdownViewer = lazy(() => import("./components/MarkdownViewer"));
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
@@ -60,9 +68,15 @@ import {
   saveCheatSheetOptedOut,
 } from "./components/CheatSheet";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
+import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
+import type {
+  HarnessUpdateReport,
+  HarnessUpdateResult,
+} from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
-import { arrangeThreads } from "./lib/threads";
+import { arrangeThreads, visibleThreadRows } from "./lib/threads";
+import { fuzzyScore } from "./lib/fuzzy";
 import {
   buildCommands,
   matchCommands,
@@ -71,7 +85,18 @@ import {
   type SlashCommand,
 } from "./lib/commands";
 import { SlashMenu } from "./components/SlashMenu";
+import { CommandPalette } from "./components/CommandPalette";
+import {
+  buildCommands as buildPaletteCommands,
+  composerItems,
+  groupItems,
+  projectItems,
+  threadItems,
+  type PaletteItem,
+  type PaletteSection,
+} from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import { MasterChat } from "./components/MasterChat";
 
 type Role = {
   id: string;
@@ -95,7 +120,7 @@ type Agent = {
   endedAt?: string;
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
-type Message = { id: string; author: string; text: string; at: string };
+type Message = { id: string; author: string; text: string; at: string; consumed?: boolean };
 /** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
 const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
 function isFailedBlock(m: Message): boolean {
@@ -133,6 +158,8 @@ export type ThreadState = {
   title: string;
   autoMode: boolean;
   peerMailbox: boolean;
+  /** Seconds between workflow status reports while a turn runs; 0 is off. */
+  statusPeriodSeconds?: number;
   /** Orchestrator team size; zero or absent means one lead. */
   leads?: number;
   /** Per-lead runtime overrides by lead index; an empty harness inherits the Orchestrator role. */
@@ -158,19 +185,37 @@ type ThreadSummary = {
   id: string;
   title: string;
   projectId?: string;
+  /** The first human message, truncated by the daemon for list search. */
+  firstPrompt?: string;
   /** Set on a subthread: the thread that started it. */
   parentThreadId?: string;
   updatedAt?: string;
   messages: number;
   agents: number;
   autoMode: boolean;
+  /** Filed by the user; shown in the board's Archived column. */
+  archived?: boolean;
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
 };
-type Project = { id: string; name: string; path: string; threads: number };
+
+// A prompt hit must be stronger than a title hit to win, so a thread whose
+// title matches leads a thread that only mentions the query in its prompt.
+const PROMPT_WEIGHT = 0.7;
+
+function threadSearchScore(t: ThreadSummary, query: string): number | null {
+  const title = fuzzyScore(query, t.title);
+  const prompt = t.firstPrompt ? fuzzyScore(query, t.firstPrompt) : null;
+  if (title === null && prompt === null) return null;
+  return Math.max(title ?? -Infinity, (prompt ?? -Infinity) * PROMPT_WEIGHT);
+}
+export type Project = { id: string; name: string; path: string; threads: number };
+
+/** The top-level pages shown when no project is open. */
+type HomePage = "projects" | "orchestrator" | "stats";
 
 /** The environment's cross-project memory: guide, learnings log, rules. */
 type InheritedView = {
@@ -221,8 +266,18 @@ export type SettingsView = {
   approvedModels: string[] | null;
   experimentalRoles: boolean;
   roles: RoleConfigView[];
+  /** Master orchestrator override; empty fields inherit the Orchestrator role. */
+  lead?: LeadRuntimeView;
   configPath: string;
   staleAfterMinutes?: number;
+};
+export type DependencyStatus = "ok" | "outdated" | "missing";
+export type DependencyView = {
+  name: string;
+  installed: boolean;
+  version?: string;
+  minVersion: string;
+  status: DependencyStatus;
 };
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
@@ -264,6 +319,36 @@ function loadThreadView(): ThreadView {
 
 /** How often the board re-reads PR state while it is open. */
 const THREAD_PR_POLL_MS = 20_000;
+/** How often a connected app asks for a newer release. At this rate a client
+ * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
+const UPDATE_CHECK_MS = 5 * 60_000;
+/** After a detached send, how long to wait for the turn to appear before
+ * treating a busy flag with no visible turn as stale (the start failed before
+ * any agent existed). */
+const DETACHED_START_GRACE_MS = 60_000;
+/** Playful verbs for the setup view's Start button. */
+const START_VERBS = [
+  "Brewing",
+  "Noodling",
+  "Wrangling",
+  "Tinkering",
+  "Conjuring",
+  "Herding",
+  "Scheming",
+  "Juggling",
+  "Puzzling",
+  "Dreaming",
+];
+
+/** The activity log box is shown unless the viewer collapsed it; the choice persists. */
+function loadLogsOpen(): boolean {
+  try {
+    return window.localStorage.getItem("at.logsOpen") !== "false";
+  } catch {
+    /* private mode: default to shown */
+  }
+  return true;
+}
 
 function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
   if (a.dirty !== b.dirty) return false;
@@ -432,12 +517,6 @@ function loadLayout(): PanelLayout {
   }
 }
 
-type FileTreeState = {
-  root: string;
-  entries: FileEntryLike[];
-  status: Record<string, string>;
-};
-
 /** Elapsed shows how long the running work has been going; it ticks on its own so
  * only this tiny node re-renders. */
 function Elapsed({ since }: { since?: string }) {
@@ -453,6 +532,13 @@ function Elapsed({ since }: { since?: string }) {
   const label =
     secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
   return <span className="act-elapsed">{label}</span>;
+}
+
+// Release notes for the build that an update just installed. The daemon hands
+// them out once, on the first start of that version.
+interface ReleaseNotes {
+  version: string;
+  body: string;
 }
 
 /** fmtUpdated renders a thread's last activity as a short local date. */
@@ -616,10 +702,33 @@ export default function App() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadState | null>(null);
+  // Last loaded state per thread, so switching back paints the thread at once
+  // instead of an empty screen until thread.get returns. Keyed by id, so a
+  // thread never shows another thread's messages.
+  const threadCacheRef = useRef<Record<string, ThreadState>>({});
   const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes | null>(null);
+  const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
+  const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
+  const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
+  // A check keeps the "restart to run" state after an install; the daemon's
+  // plain check result does not know about it.
+  const checkForUpdate = useCallback(() => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    rpc
+      .call<UpdateStatus>("update.check")
+      .then((s) => setUpdate((prev) => (prev?.installed ? prev : s)))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (status !== "online") return;
+    const id = window.setInterval(checkForUpdate, UPDATE_CHECK_MS);
+    return () => window.clearInterval(id);
+  }, [status, checkForUpdate]);
 
   // Threads with a turn, council, or review in flight. Keyed by thread so a turn
   // running in one thread never gates or steers another.
@@ -634,6 +743,46 @@ export default function App() {
   }, []);
   // Threads with a send in its RPC window; stops a double Enter from submitting twice.
   const sendingRef = useRef(new Set<string>());
+  // Detached turns outlive the RPC that starts them: thread.turn.start with
+  // detach replies before any agent exists, so the busy flag cannot be cleared
+  // when the call returns. The thread list shows a running turn as
+  // pending/running agents (and a new user message); clear the flag once the
+  // turn has appeared and gone quiet again, or after a start grace if it never
+  // appeared at all.
+  const detachedTurns = useRef<Record<string, { seen: boolean; messages: number; at: number }>>({});
+  const noteDetachedTurn = useCallback(
+    (threadId: string) => {
+      const summary = threads.find((t) => t.id === threadId);
+      // Prefer the live thread state for the thread on screen: the summary can
+      // lag one refresh behind, and a stale baseline would look like the turn
+      // already started.
+      const live = activeIdRef.current === threadId ? (thread?.messages?.length ?? 0) : 0;
+      detachedTurns.current[threadId] = {
+        seen: false,
+        messages: Math.max(summary?.messages ?? 0, live),
+        at: Date.now(),
+      };
+    },
+    [threads, thread],
+  );
+  const settleDetachedTurns = useCallback(
+    (list: ThreadSummary[]) => {
+      const now = Date.now();
+      for (const [id, entry] of Object.entries(detachedTurns.current)) {
+        const summary = list.find((t) => t.id === id);
+        const inFlight = (summary?.runningAgents ?? 0) > 0;
+        if (inFlight) entry.seen = true;
+        // The user message is recorded when the turn starts; a fast turn that
+        // began and ended between two refreshes still counts as started.
+        const started = entry.seen || (summary?.messages ?? 0) > entry.messages;
+        if ((started && !inFlight) || (!started && now - entry.at > DETACHED_START_GRACE_MS)) {
+          delete detachedTurns.current[id];
+          setTurnBusy(id, false);
+        }
+      }
+    },
+    [setTurnBusy],
+  );
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
   const busy = !!activeId && !!turnThreads[activeId];
@@ -673,8 +822,19 @@ export default function App() {
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
+  // The live log box can be collapsed to a header; the choice persists per viewer.
+  const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
+  const toggleLogs = () => {
+    const next = !logsOpen;
+    setLogsOpen(next);
+    try {
+      window.localStorage.setItem("at.logsOpen", String(next));
+    } catch {
+      /* private mode: the choice lasts this session */
+    }
+  };
 
-  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board">(
+  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board" | "doc">(
     activeId,
     "chat",
     "at.tab",
@@ -682,10 +842,12 @@ export default function App() {
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
-
-  // File browser state for the aside Files panel.
-  const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
-  const [fileTreeLoading, setFileTreeLoading] = useState(false);
+  /** The markdown file open in the center viewer tab, relative to the thread's root. */
+  const [docPath, setDocPath] = useThreadScoped<string | null>(activeId, null);
+  const [doc, setDoc] = useState<MarkdownDocLike | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
+  const docReqRef = useRef(0);
 
   // Inherited context panel state: the environment's shared memory.
   const [inherited, setInherited] = useState<InheritedView | null>(null);
@@ -694,7 +856,6 @@ export default function App() {
   const [inheritedDirty, setInheritedDirty] = useState(false);
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
-  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
   // Pull requests the active thread opened; tagged with its thread so a late reply never shows elsewhere.
   const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
@@ -706,10 +867,6 @@ export default function App() {
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
   const [showWorktrees, setShowWorktrees] = useState(false);
-  const [selectedFile, setSelectedFile] = useThreadScoped<string | null>(activeId, null);
-  const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
-  const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [fileContentError, setFileContentError] = useState<string | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The how-to sheet opens on every launch unless the user opted out (persisted).
@@ -730,6 +887,14 @@ export default function App() {
     null,
   );
   const [settings, setSettings] = useState<SettingsView | null>(null);
+  // Shell capability state: where the daemon lives and whether it should
+  // outlive the window. Connection data only — thread data stays on the
+  // daemon WebSocket.
+  const [conn, setConn] = useState<Conn | null>(null);
+  const [keepRunning, setKeepRunningState] = useState(false);
+  // Send turns detached (daemon-scoped) so closing the window cannot cancel
+  // them. Defaults on when the daemon already outlives this window.
+  const [runInBackground, setRunInBackground] = useState(false);
 
   // Council of agents: convene several perspectives on one question and let
   // them debate to a synthesized outcome.
@@ -747,10 +912,14 @@ export default function App() {
   const setCouncilMembers = (update: (prev: CouncilMemberRow[]) => CouncilMemberRow[]) =>
     setCouncilSetup((s) => ({ ...s, members: update(s.members) }));
   const [workdirInput, setWorkdirInput] = useState("");
-  const [approvedInput, setApprovedInput] = useState("");
+  const [approvedModels, setApprovedModels] = useState<string[]>([]);
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [deps, setDeps] = useState<DependencyView[] | null>(null);
+  const [depsBusy, setDepsBusy] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -775,6 +944,8 @@ export default function App() {
   );
   // Projects stay open as tabs; each one remembers the thread it was showing.
   const [openProjectIds, setOpenProjectIds] = useState<string[]>(loadOpenProjects);
+  // Which top-level page shows when no project is open.
+  const [homePage, setHomePage] = useState<HomePage>("projects");
   const lastThreadByProject = useRef<Record<string, string | null>>({});
 
   // Thread context-menu flow: the menu itself, plus the three dialogs it can
@@ -824,13 +995,18 @@ export default function App() {
   };
 
   // Live log follows the newest output, unless the user scrolled up to read.
+  // Reopening a collapsed box jumps back to the newest output.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
+  const logsWasOpen = useRef(logsOpen);
   useEffect(() => {
+    const opening = !logsWasOpen.current && logsOpen;
+    logsWasOpen.current = logsOpen;
     const el = actBodyRef.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [live]);
+    if (opening || el.scrollHeight - el.scrollTop - el.clientHeight < 48) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [live, logsOpen]);
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -840,11 +1016,13 @@ export default function App() {
       rpc.call<ThreadSummary[]>("thread.list"),
       rpc.call<ThreadUsage>("usage.get"),
     ]);
+    threadCacheRef.current[id] = state;
     // A reply for a thread the user has since left must not replace the one on screen.
     if (activeIdRef.current === id) setThread(state);
     setThreads(list);
+    settleDetachedTurns(list);
     setGlobalUsage(usage);
-  }, []);
+  }, [settleDetachedTurns]);
 
   // The daemon closes a question on the answer, so refresh right away: the card
   // flips to its answered state without waiting for the event debounce. Errors
@@ -882,6 +1060,24 @@ export default function App() {
     }
   }, []);
 
+  const updateHarnesses = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setHarnessUpdateBusy(true);
+    setHarnessUpdateError(null);
+    try {
+      const res = await rpc.call<HarnessUpdateResult>("harness.update", { harnesses: [] });
+      setHarnessUpdates(res.report);
+      if (res.failed && res.failed.length > 0) {
+        setHarnessUpdateError(res.failed.map((f) => `${f.harness}: ${f.error}`).join("; "));
+      }
+    } catch (e) {
+      setHarnessUpdateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHarnessUpdateBusy(false);
+    }
+  }, []);
+
   const loadDiff = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -914,41 +1110,43 @@ export default function App() {
   }, []);
 
 
-  const loadFileTree = useCallback(async (id: string | null) => {
+  const loadDoc = useCallback(async (id: string | null, path: string) => {
     const rpc = rpcRef.current;
     if (!rpc || !id) return;
-    setFileTreeLoading(true);
-    setFileTreeError(null);
+    // Only the newest request may write: a slow earlier read must not overwrite a later document.
+    const req = ++docReqRef.current;
+    const current = () => activeIdRef.current === id && req === docReqRef.current;
+    setDoc(null);
+    setDocError(null);
+    setDocLoading(true);
     try {
-      const tree = await rpc.call<FileTreeState>("files.tree", { threadId: id });
-      if (activeIdRef.current !== id) return;
-      setFileTree(tree);
-      setSelectedFile(null);
-      setFileContent(null);
-      setFileContentError(null);
+      const d = await rpc.call<MarkdownDocLike>("markdown.read", { threadId: id, path });
+      if (current()) setDoc(d);
     } catch (e) {
-      if (activeIdRef.current === id) setFileTreeError(e instanceof Error ? e.message : String(e));
+      if (current()) setDocError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (activeIdRef.current === id) setFileTreeLoading(false);
+      if (current()) setDocLoading(false);
     }
   }, []);
 
-  const loadFileContent = useCallback(async (id: string | null, path: string) => {
-    const rpc = rpcRef.current;
-    if (!rpc || !id) return;
-    setSelectedFile(path);
-    setFileContent(null);
-    setFileContentError(null);
-    setFileContentLoading(true);
-    try {
-      const content = await rpc.call<FileContentLike>("files.read", { threadId: id, path });
-      if (activeIdRef.current === id) setFileContent(content);
-    } catch (e) {
-      if (activeIdRef.current === id) setFileContentError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (activeIdRef.current === id) setFileContentLoading(false);
-    }
-  }, []);
+  const openDoc = useCallback(
+    (path: string) => {
+      setDocPath(path);
+      setTab("doc");
+    },
+    [setDocPath, setTab],
+  );
+  // Chat links carry raw hrefs (percent-encoded, maybe with #fragments); the viewer's own links are already resolved.
+  const openChatDoc = useCallback((href: string) => openDoc(docPathFromHref(href)), [openDoc]);
+  const closeDoc = useCallback(() => {
+    setDocPath(null);
+    setTab("chat");
+  }, [setDocPath, setTab]);
+
+  // Waits for the RPC: a document persisted as the open tab loads once status turns online.
+  useEffect(() => {
+    if (tab === "doc" && docPath && status === "online") loadDoc(activeId, docPath).catch(() => undefined);
+  }, [tab, docPath, activeId, status, loadDoc]);
 
   const openPanel = useCallback((id: AsideTabId) => {
     if (id === "council" && draftRef.current) setCouncilTopic(draftRef.current);
@@ -966,6 +1164,20 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     setHarnesses(await rpc.call<HarnessInfo>("harness.list"));
+  }, []);
+
+  const loadDeps = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setDepsBusy(true);
+    try {
+      setDeps(await rpc.call<DependencyView[]>("deps.check"));
+      setDepsError(null);
+    } catch (e) {
+      setDepsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDepsBusy(false);
+    }
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -1018,8 +1230,16 @@ export default function App() {
     setActiveId(rememberedThread(id));
   };
 
-  const showProjects = () => {
+  const showHome = (page: HomePage) => {
     setProjectId(null);
+    setActiveId(null);
+    setHomePage(page);
+  };
+  const showProjects = () => showHome("projects");
+
+  /** From a thread, leave it for its project's board. */
+  const showProjectBoard = () => {
+    setThreadView("board");
     setActiveId(null);
   };
 
@@ -1111,6 +1331,41 @@ export default function App() {
     setRenameTarget(null);
     await reloadThreads();
     if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
+  };
+
+  /** Archives or restores several threads in one go. A failure stops the batch
+   * and reports the first error; threads already changed stay changed. */
+  const setThreadsArchived = async (ids: string[], archived: boolean) => {
+    const rpc = rpcRef.current;
+    if (!rpc || ids.length === 0) return;
+    try {
+      for (const threadId of ids) {
+        await rpc.call("thread.setArchived", { threadId, enabled: archived });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    await reloadThreads();
+  };
+
+  /** Deletes several threads. Deleting the open thread closes back to the list. */
+  const deleteThreadsById = async (ids: string[]) => {
+    const rpc = rpcRef.current;
+    if (!rpc || ids.length === 0) return;
+    const deleted: string[] = [];
+    try {
+      for (const threadId of ids) {
+        await rpc.call("thread.delete", { threadId });
+        deleted.push(threadId);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    await reloadThreads();
+    if (activeId && deleted.includes(activeId)) {
+      selectThread(null);
+      setThread(null);
+    }
   };
 
   const confirmDeleteThread = async () => {
@@ -1244,9 +1499,20 @@ export default function App() {
     const s = await rpc.call<SettingsView>("settings.get");
     setSettings(s);
     setWorkdirInput(s.workdir ?? "");
-    setApprovedInput((s.approvedModels ?? []).join(", "));
+    setApprovedModels(s.approvedModels ?? []);
     setStaleAfterInput(String(s.staleAfterMinutes ?? 30));
     return s;
+  }, []);
+
+  const loadAppInfo = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      const info = await rpc.call<{ version?: string }>("app.info");
+      setAppVersion(info?.version || "dev");
+    } catch {
+      setAppVersion("dev");
+    }
   }, []);
 
   // Connect to the embedded daemon once the shell hands us its address.
@@ -1265,8 +1531,21 @@ export default function App() {
       if (cancelled) return;
       rpcRef.current = rpc;
       setStatus("online");
+      setConn(conn);
+      setKeepRunningState(!!conn.keepRunning);
+      // A daemon that outlives this window (external, or kept running) makes
+      // detached turns the sane default.
+      if (conn.attached || conn.keepRunning) setRunInBackground(true);
       // Not awaited: a slow GitHub lookup must not hold up startup.
-      rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
+      checkForUpdate();
+      // Read-and-clear on the daemon: a null answer means nothing is pending.
+      rpc
+        .call<ReleaseNotes | null>("update.takeReleaseNotes")
+        .then((n) => {
+          if (n && !cancelled) setReleaseNotes(n);
+        })
+        .catch(() => {});
+      rpc.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -1337,22 +1616,17 @@ export default function App() {
   // Subscribe to the active thread and keep the local view fresh. The activity
   // log box restores this thread's persisted output on switch, then appends
   // "agent.output" frames for this thread as they stream.
-  // Switching threads drops what was on screen. Each thread's own data is
-  // reloaded for it, and late replies for the old thread are ignored by the loaders.
+  // Switching threads drops the other thread's data. The new thread paints from
+  // its cached state (or nothing if never loaded) while refresh reloads it, and
+  // late replies for the old thread are ignored by the loaders.
   useEffect(() => {
-    setThread(null);
+    setThread(activeId ? (threadCacheRef.current[activeId] ?? null) : null);
     setLogs([]);
     setDiff(null);
     setDiffError(null);
     setPRState(null);
     setPRError(null);
     setPRLoading(false);
-    setFileTree(null);
-    setFileTreeError(null);
-    setFileTreeLoading(false);
-    setFileContent(null);
-    setFileContentError(null);
-    setFileContentLoading(false);
   }, [activeId]);
   useEffect(() => {
     const rpc = rpcRef.current;
@@ -1434,10 +1708,6 @@ export default function App() {
     if (!(asideActive in ASIDE_META)) setAsideActive("agents");
   }, [asideActive, setAsideActive]);
 
-  // The file tree loads when its panel is shown.
-  useEffect(() => {
-    if (asideActive === "files") loadFileTree(activeId);
-  }, [asideActive, activeId, loadFileTree]);
 
   // Inherited context loads when its panel is opened, and stays fresh on
   // thread changes since agents can record learnings mid-turn.
@@ -1534,6 +1804,12 @@ export default function App() {
     return map;
   }, [roles]);
 
+  // The master orchestrator (lead) runs on the Orchestrator role's runtime
+  // unless it is pinned, in which case the pin is the persisted lead setting.
+  const leadSettings = settings?.lead ?? {};
+  const orchestratorRole = settings?.roles.find((r) => r.id === "orchestrator");
+  const leadHarness = leadSettings.harness || orchestratorRole?.harness || "";
+
   const agents = useMemo<Agent[]>(() => {
     const out: Agent[] = [];
     if (thread?.agentOrder) {
@@ -1612,6 +1888,7 @@ export default function App() {
           latestId: latest?.id ?? null,
           latestStatus: latest?.status ?? "pending",
           current: running[running.length - 1] ?? null,
+          off: r.experimental && !settings?.experimentalRoles,
         };
       }),
     [settings, agents, thread],
@@ -1638,17 +1915,29 @@ export default function App() {
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
-  const needle = threadFilter.trim().toLowerCase();
-  const projectThreads = useMemo(
-    () =>
-      arrangeThreads(
-        threads.filter(
-          (t) =>
-            t.projectId === projectId && (needle === "" || t.title.toLowerCase().includes(needle)),
-        ),
-      ),
-    [threads, projectId, needle],
-  );
+  // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
+  // has subthreads toggles this, so a long tree can be folded away.
+  const [collapsedThreads, setCollapsedThreads] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSubthreads = (id: string) =>
+    setCollapsedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const query = threadFilter.trim();
+  const projectThreads = useMemo(() => {
+    const scoped = threads.filter((t) => t.projectId === projectId);
+    if (query === "") return arrangeThreads(scoped);
+    const ranked: { thread: ThreadSummary; score: number }[] = [];
+    for (const thread of scoped) {
+      const score = threadSearchScore(thread, query);
+      if (score !== null) ranked.push({ thread, score });
+    }
+    // Array.sort is stable, so equal scores keep the daemon's recency order.
+    ranked.sort((a, b) => b.score - a.score);
+    return arrangeThreads(ranked.map((r) => r.thread));
+  }, [threads, projectId, query]);
 
   // The board is an alternative to the card list, not a replacement: the choice
   // is remembered, and both views read the same thread list.
@@ -1791,18 +2080,30 @@ export default function App() {
         return rest;
       });
     }
+    const detached = !command && !steer && (runInBackground || !!conn?.attached);
     sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
+    if (detached) noteDetachedTurn(threadId);
     if (command) setShellThread(threadId);
     try {
       if (command) {
         await rpc.call("thread.runCommand", { threadId, command });
-      } else {
-        await rpc.call(steer ? "thread.steer" : "thread.turn.start", {
+      } else if (steer) {
+        await rpc.call("thread.steer", {
           threadId,
           text,
           attachments: sentFiles.map((a) => a.path),
         });
+      } else {
+        const params: Record<string, unknown> = {
+          threadId,
+          text,
+          attachments: sentFiles.map((a) => a.path),
+        };
+        // Detached turns run on the daemon's lifetime context: closing the
+        // window cannot cancel them. An external daemon always detaches.
+        if (runInBackground || conn?.attached) params.detach = true;
+        await rpc.call("thread.turn.start", params);
       }
     } catch (e) {
       // Put the typed text back into its own thread's draft, even if the user has moved on.
@@ -1811,10 +2112,18 @@ export default function App() {
       setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
       if (sentFiles.length > 0) setAttachments((prev) => ({ ...prev, [key]: sentFiles }));
       setError(e instanceof Error ? e.message : String(e), threadId);
+      // A failed start left no turn behind: retract the busy flag now instead of
+      // waiting for it to end.
+      if (!steer) {
+        delete detachedTurns.current[threadId];
+        setTurnBusy(threadId, false);
+      }
     } finally {
       sendingRef.current.delete(sendKey);
-      // A finished steer must not clear the busy flag of the turn it joined.
-      if (!steer) setTurnBusy(threadId, false);
+      // A finished steer must not clear the busy flag of the turn it joined, and
+      // a detached turn replies before any agent exists: keep it busy until
+      // settleDetachedTurns sees the turn end.
+      if (!steer && !detached) setTurnBusy(threadId, false);
       setShellThread((cur) => (cur === threadId ? null : cur));
       refresh(threadId).catch(() => undefined);
     }
@@ -1826,14 +2135,22 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     const steer = running.length > 0 || busy;
+    const detached = !steer && (runInBackground || !!conn?.attached);
     if (!steer) setTurnBusy(threadId, true);
+    if (detached) noteDetachedTurn(threadId);
     setTab("chat");
     try {
-      await rpc.call(steer ? "thread.steer" : "thread.turn.start", { threadId, text });
+      const params: Record<string, unknown> = { threadId, text };
+      if (detached) params.detach = true;
+      await rpc.call(steer ? "thread.steer" : "thread.turn.start", params);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e), threadId);
+      if (!steer) {
+        delete detachedTurns.current[threadId];
+        setTurnBusy(threadId, false);
+      }
     } finally {
-      if (!steer) setTurnBusy(threadId, false);
+      if (!steer && !detached) setTurnBusy(threadId, false);
       refresh(threadId).catch(() => undefined);
     }
   };
@@ -1843,6 +2160,18 @@ export default function App() {
     if (!rpc || !activeId) return;
     const method = field === "autoMode" ? "thread.setAutoMode" : "thread.setPeerMailbox";
     await rpc.call(method, { threadId: activeId, enabled: value });
+    refresh(activeId).catch(() => undefined);
+  };
+
+  /** Sets how often a running turn reports workflow status; 0 turns it off. */
+  const setStatusPeriod = async (seconds: number) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setStatusPeriod", { threadId: activeId, seconds });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
     refresh(activeId).catch(() => undefined);
   };
 
@@ -2001,6 +2330,17 @@ export default function App() {
   // Slash popup: highlighted row, and the input it was dismissed on with Esc.
   const [slashIdx, setSlashIdx] = useState(0);
   const [slashClosed, setSlashClosed] = useState<string | null>(null);
+  // Cmd/Ctrl+P palette: whether it is open, whether it opened from the composer
+  // (which swaps the right pane to composer features), and where focus returns.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteFromComposer, setPaletteFromComposer] = useState(false);
+  const paletteReturn = useRef<HTMLElement | null>(null);
+  const closePalette = useCallback(() => {
+    setPaletteOpen(false);
+    const el = paletteReturn.current;
+    paletteReturn.current = null;
+    if (el?.isConnected) el.focus();
+  }, []);
 
   /** Asks the daemon a side question. It runs beside any running turn: no turn
    * slot, no steer, no message. Only the newest ask on a thread may settle. */
@@ -2072,8 +2412,29 @@ export default function App() {
   };
 
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Thread whose pre-run setup the user confirmed; the composer stays hidden until then.
+  const [setupReadyId, setSetupReadyId] = useState<string | null>(null);
+  // One playful verb per thread's setup view, picked when the thread changes.
+  const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
+
+  // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
+  // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
+  // stops this listener from reopening it. Shift and Alt combos are left alone.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return;
+      if (e.key.toLowerCase() !== "p") return;
+      e.preventDefault();
+      const active = document.activeElement;
+      paletteReturn.current = active instanceof HTMLElement ? active : null;
+      setPaletteFromComposer(active === taRef.current);
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
   useLayoutEffect(() => {
     const el = taRef.current;
@@ -2222,14 +2583,16 @@ export default function App() {
     }
     if (openMention && menuMatches && menuMatches.length > 0) {
       const n = menuMatches.length;
+      // Clamp like the render does: a stale index from a longer list would otherwise stall the wrap.
+      const cur = Math.min(mentionActive, n - 1);
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        setMentionActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+        setMentionActive(e.key === "ArrowDown" ? (cur + 1) % n : (cur - 1 + n) % n);
         return;
       }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
         e.preventDefault();
-        pickMention(menuMatches[Math.min(mentionActive, n - 1)]);
+        pickMention(menuMatches[cur]);
         return;
       }
     }
@@ -2269,13 +2632,27 @@ export default function App() {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
+        const [s] = await Promise.all([
+          loadSettings(),
+          loadHarnesses(),
+          loadProjects(),
+          loadAppInfo(),
+          loadDeps(),
+        ]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
+  };
+
+  /** Persists the shell's keep-running preference; a background daemon makes
+   * detached turns the right default. */
+  const toggleKeepRunning = (enabled: boolean) => {
+    setKeepRunningState(enabled);
+    emitKeepRunning(enabled);
+    if (enabled) setRunInBackground(true);
   };
 
   const flashSaved = () => {
@@ -2289,10 +2666,7 @@ export default function App() {
     const s = await rpc.call<SettingsView>("settings.set", {
       workdir: workdirInput,
       autoMode: settings?.autoMode ?? false,
-      approvedModels: approvedInput
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean),
+      approvedModels,
       staleAfterMinutes: staleAfterInput,
     });
     setSettings(s);
@@ -2320,6 +2694,21 @@ export default function App() {
     if (!rpc) return;
     const s = await rpc.call<SettingsView>("settings.set", {
       role: { id: row.id, harness: row.harness, model: row.model, variant: row.variant },
+    });
+    setSettings(s);
+    flashSaved();
+  };
+
+  /** Pins the master orchestrator's runtime; empty fields inherit the role. */
+  const persistLeadRuntime = async (runtime: LeadRuntimeView) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const s = await rpc.call<SettingsView>("settings.set", {
+      lead: {
+        harness: runtime.harness ?? "",
+        model: runtime.model ?? "",
+        variant: runtime.variant ?? "",
+      },
     });
     setSettings(s);
     flashSaved();
@@ -2371,12 +2760,33 @@ export default function App() {
           Agent<b>Tunnel</b>
         </span>
       </div>
-      <div className={`conn ${status}`}>
-        <span className="led" />
-        <span>
-          {enabledHarnesses.length} harness
-          {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
-        </span>
+      <div className="title-meta">
+        <div className={`conn ${status}`}>
+          <span className="led" />
+          <span>
+            {enabledHarnesses.length} harness
+            {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
+          </span>
+        </div>
+        {conn && (
+          <div
+            className={`daemon-badge ${conn.attached ? "attached" : "local"}`}
+            title={
+              conn.attached
+                ? `Attached to a daemon this window did not start (${conn.host || "unknown"})`
+                : "The daemon runs inside this app"
+            }
+          >
+            <span className="led" />
+            {conn.attached ? (
+              <>
+                attached <span className="host">{conn.host || "remote"}</span>
+              </>
+            ) : (
+              "local daemon"
+            )}
+          </div>
+        )}
       </div>
       <UpdateChip
         status={update}
@@ -2384,83 +2794,130 @@ export default function App() {
         error={updateError}
         onInstall={installUpdate}
       />
+      <HarnessUpdateChip
+        report={harnessUpdates}
+        busy={harnessUpdateBusy}
+        error={harnessUpdateError}
+        onUpdate={updateHarnesses}
+      />
     </div>
   );
 
   // Open projects live in a persistent tab strip, so switching projects is one
   // click and never loses what the other project was doing.
-  const projectTabs =
-    openProjects.length > 0 ? (
-      <div className="project-tabs">
-        <div
-          className={`ptab pt-home${projectId ? "" : " on"}`}
-          {...tabProps(projectId === null, showProjects)}
-          title="All projects"
+  // Home pages (Projects, Orchestrator) sit in the strip even with no project open.
+  const homeTabOn = (page: HomePage) => projectId === null && homePage === page;
+  const projectTabs = (
+    <div className="project-tabs">
+      <div
+        className={`ptab pt-home${homeTabOn("projects") ? " on" : ""}`}
+        {...tabProps(homeTabOn("projects"), showProjects)}
+        title="All projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
         >
-          <svg
-            viewBox="0 0 24 24"
-            width="13"
-            height="13"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="3" y="3" width="7" height="7" rx="1.5" />
-            <rect x="14" y="3" width="7" height="7" rx="1.5" />
-            <rect x="3" y="14" width="7" height="7" rx="1.5" />
-            <rect x="14" y="14" width="7" height="7" rx="1.5" />
-          </svg>
-          Projects
-        </div>
-        <div className="pt-scroll" role="tablist" aria-label="Open projects">
-          {openProjects.map((p) => {
-            const busy = runningByProject[p.id] ?? 0;
-            return (
-              <div
-                key={p.id}
-                className={`ptab${p.id === projectId ? " on" : ""}`}
-                {...tabProps(p.id === projectId, () => openProject(p.id))}
-                title={p.path || p.name}
-              >
-                <span className={`pt-led${busy > 0 ? " run" : ""}`} />
-                <span className="pt-name">{p.name}</span>
-                {busy > 0 && (
-                  <span className="pt-count" title={`${busy} running agent${busy === 1 ? "" : "s"}`}>
-                    {busy}
-                  </span>
-                )}
-                <span
-                  className="pt-x"
-                  role="button"
-                  tabIndex={0}
-                  title={`Close ${p.name}`}
-                  aria-label={`Close ${p.name}`}
-                  onClick={(e) => {
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </svg>
+        Projects
+      </div>
+      <div
+        className={`ptab pt-home${homeTabOn("orchestrator") ? " on" : ""}`}
+        {...tabProps(homeTabOn("orchestrator"), () => showHome("orchestrator"))}
+        title="Master orchestrator"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        Orchestrator
+      </div>
+      <div
+        className={`ptab pt-home${homeTabOn("stats") ? " on" : ""}`}
+        {...tabProps(homeTabOn("stats"), () => showHome("stats"))}
+        title="Harness stats across all projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+        </svg>
+        Stats
+      </div>
+      <div className="pt-scroll" role="tablist" aria-label="Open projects">
+        {openProjects.map((p) => {
+          const busy = runningByProject[p.id] ?? 0;
+          return (
+            <div
+              key={p.id}
+              className={`ptab${p.id === projectId ? " on" : ""}`}
+              {...tabProps(p.id === projectId, () => openProject(p.id))}
+              title={p.path || p.name}
+            >
+              <span className={`pt-led${busy > 0 ? " run" : ""}`} />
+              <span className="pt-name">{p.name}</span>
+              {busy > 0 && (
+                <span className="pt-count" title={`${busy} running agent${busy === 1 ? "" : "s"}`}>
+                  {busy}
+                </span>
+              )}
+              <span
+                className="pt-x"
+                role="button"
+                tabIndex={0}
+                title={`Close ${p.name}`}
+                aria-label={`Close ${p.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeProjectTab(p.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
                     e.stopPropagation();
                     closeProjectTab(p.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      closeProjectTab(p.id);
-                    }
-                  }}
-                >
-                  ×
-                </span>
-              </div>
-            );
-          })}
-        </div>
-        <button className="pt-add" onClick={showProjects} title="Projects" aria-label="Projects">
-          +
-        </button>
+                  }
+                }}
+              >
+                ×
+              </span>
+            </div>
+          );
+        })}
       </div>
-    ) : null;
+      <button className="pt-add" onClick={showProjects} title="Projects" aria-label="Projects">
+        +
+      </button>
+    </div>
+  );
 
   const menuItems: MenuItem[] = threadMenu
     ? [
@@ -2586,6 +3043,129 @@ export default function App() {
     </div>
   );
 
+  // Cmd/Ctrl+P palette. Built only while open, per render, so every action is
+  // an arrow that resolves the current handlers and draft.
+  const attachFromPalette = () => {
+    if (!activeId) return;
+    const sep = input === "" || /\s$/.test(input) ? "" : " ";
+    const next = `${input}${sep}@`;
+    setInput(next);
+    pendingCaret.current = next.length;
+    setCaret(next.length);
+    taRef.current?.focus();
+  };
+  const refreshAll = () => {
+    loadProjects().catch(() => undefined);
+    if (activeId) refresh(activeId).catch(() => undefined);
+  };
+  const goToThread = (t: { id: string; projectId?: string }) => {
+    if (t.projectId) openWorktreeThread(t.projectId, t.id);
+    else selectThread(t.id);
+  };
+  const buildPaletteView = (): { left: PaletteSection[]; right: PaletteSection[]; rightTitle: string } => {
+    const left = groupItems(
+      buildPaletteCommands<AsideTabId>({
+        hasProject: !!projectId,
+        hasThread: !!activeId,
+        busy,
+        autoMode: !!thread?.autoMode,
+        peerMailbox: !!thread?.peerMailbox,
+        panels: ASIDE_META,
+        pinned: ASIDE_PINNED,
+        isPanelOpen: (id) => asideTabs.includes(id),
+        togglePanel: (id) => (asideTabs.includes(id) ? closePanel(id) : openPanel(id)),
+        setTab: (t) => setTab(t),
+        newThread: () => newThread(),
+        createProject: () => addProject(),
+        openSettings: () => openSettings(),
+        refresh: () => refreshAll(),
+        stopTurn: () => stopTurn(),
+        toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
+        togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
+      }),
+    );
+    if (paletteFromComposer && activeId) {
+      const right = groupItems(
+        composerItems({
+          attach: () => attachFromPalette(),
+          modelConfig: () => toggleModels(),
+          slash: slashCommands(),
+          runSlash: (cmd) => pickSlash(cmd, true),
+        }),
+      );
+      return { left, right, rightTitle: "Composer" };
+    }
+    const names = new Map(projects.map((p) => [p.id, p.name]));
+    const threadRows: PaletteItem[] = threadItems(
+      projectId ? threads.filter((t) => t.projectId === projectId) : threads,
+      names,
+      !projectId,
+      goToThread,
+    );
+    const projectRows: PaletteItem[] = projectId ? [] : projectItems(projects, (id) => openProject(id));
+    return {
+      left,
+      right: groupItems([...threadRows, ...projectRows]),
+      rightTitle: projectId ? "Threads" : "Threads & projects",
+    };
+  };
+  const palette = paletteOpen ? buildPaletteView() : null;
+  const runPalette = (item: PaletteItem) => {
+    closePalette();
+    item.run();
+  };
+  const paletteDialog = palette && (
+    <CommandPalette
+      left={palette.left}
+      right={palette.right}
+      rightTitle={palette.rightTitle}
+      onRun={runPalette}
+      onClose={closePalette}
+    />
+  );
+
+  // Stats are their own page, not part of the projects grid.
+  if (!projectId && homePage === "stats") {
+    return (
+      <div className="screen">
+        {titlebar}
+        {projectTabs}
+        <div className="screen-body">
+          <div className="screen-head">
+            <div className="screen-title">
+              <h2>Stats</h2>
+              <p className="screen-sub">Across all projects</p>
+            </div>
+          </div>
+          <StatsPage rpc={rpcRef.current} />
+        </div>
+        {paletteDialog}
+      </div>
+    );
+  }
+
+  // The master orchestrator has its own page; it never shares the projects grid.
+  if (!projectId && homePage === "orchestrator") {
+    return (
+      <div className="screen">
+        {titlebar}
+        {projectTabs}
+        <div className="screen-body master-page">
+          <MasterChat
+            rpc={rpcRef.current}
+            projects={projects}
+            onOpenThread={(projectId, threadId) => {
+              openProject(projectId);
+              lastThreadByProject.current[projectId] = threadId;
+              setActiveId(threadId);
+            }}
+          />
+        </div>
+        {paletteDialog}
+      </div>
+    );
+  }
+
   // Screen 1 — the projects configured in this environment.
   if (!projectId) {
     return (
@@ -2648,11 +3228,8 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="section stats-section">
-            <h3>Harnesses across all projects</h3>
-            <HarnessStatsView rpc={rpcRef.current} threadId={null} projectId={null} />
-          </div>
         </div>
+        {paletteDialog}
       </div>
     );
   }
@@ -2675,7 +3252,7 @@ export default function App() {
             <div className="screen-actions">
               <input
                 className="thread-filter"
-                placeholder="Filter threads…"
+                placeholder="Search threads…"
                 value={threadFilter}
                 onChange={(e) => setThreadFilter(e.target.value)}
               />
@@ -2722,7 +3299,7 @@ export default function App() {
               />
             </div>
           )}
-          {threadView === "list" && projectThreads.length === 0 && needle && (
+          {threadView === "list" && projectThreads.length === 0 && query !== "" && (
             <div className="empty">No threads match that filter.</div>
           )}
           {threadView === "board" ? (
@@ -2731,6 +3308,8 @@ export default function App() {
               states={threadStates}
               formatUpdated={fmtUpdated}
               onOpen={openBoardThread}
+              onArchive={(ids, archived) => void setThreadsArchived(ids, archived)}
+              onDelete={(ids) => void deleteThreadsById(ids)}
             />
           ) : (
           <div className="thread-cards">
@@ -2771,16 +3350,22 @@ export default function App() {
           </div>
           )}
           {threadOverlays}
+          {paletteDialog}
         </div>
       </div>
     );
   }
 
-  const setupMode =
+  // A new thread shows its setup until the user presses Start; then the setup
+  // view and the hidden composer both give way to the normal empty chat.
+  const setupPending =
     tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
+  const setupMode = setupPending && setupReadyId !== activeId;
+  const composerHidden = setupMode;
   const asideCollapsed = !layout.asideOpen || setupMode;
 
   return (
+    <DocLinkContext.Provider value={openChatDoc}>
     <div
       className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}`}
       ref={shellRef}
@@ -2803,18 +3388,38 @@ export default function App() {
           />
           <button onClick={newThread}>New</button>
         </div>
+        <div className="sidebar-search">
+          <input
+            className="thread-filter"
+            placeholder="Search threads…"
+            value={threadFilter}
+            onChange={(e) => setThreadFilter(e.target.value)}
+          />
+        </div>
         <div className="col-body">
-          {projectThreads.length === 0 && <div className="empty">No threads yet</div>}
-          {projectThreads.map((t) => (
+          {projectThreads.length === 0 && (
+            <div className="empty">
+              {query !== "" ? "No threads match that search." : "No threads yet"}
+            </div>
+          )}
+          {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
               className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-              {...clickable(() => selectThread(t.id))}
+              {...clickable(() => {
+                if (t.subthreads > 0) toggleSubthreads(t.id);
+                selectThread(t.id);
+              })}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
               <div className="t" title={t.title}>
                 {t.title}
+                {t.subthreads > 0 && (
+                  <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
+                    {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
+                  </span>
+                )}
               </div>
               <div className="m">
                 {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
@@ -2828,6 +3433,7 @@ export default function App() {
         </div>
         <div className="sidebar-foot">
           <LimitsMeter rpc={rpcRef.current} />
+          <RemoteSection rpc={rpcRef.current} />
           <button className="foot-btn" onClick={openSettings}>
             <svg
               viewBox="0 0 24 24"
@@ -2892,8 +3498,49 @@ export default function App() {
                 <span className="pill">{agents.filter((a) => a.role !== "orchestrator").length}</span>
               )}
             </div>
+            {docPath !== null && (
+              <div
+                className={`tab ${tab === "doc" ? "on" : ""}`}
+                title={docPath}
+                {...tabProps(tab === "doc", () => setTab("doc"))}
+              >
+                {docPath.slice(docPath.lastIndexOf("/") + 1)}
+                <button
+                  type="button"
+                  className="tab-x"
+                  title="Close document"
+                  aria-label={`Close ${docPath}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeDoc();
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
           <div className="toggles">
+            {projectId && (
+              <button title="Open this project's board" onClick={showProjectBoard}>
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="4" width="5" height="16" rx="1.5" />
+                  <rect x="10" y="4" width="5" height="11" rx="1.5" />
+                  <rect x="17" y="4" width="4" height="7" rx="1.5" />
+                </svg>
+                Project board
+              </button>
+            )}
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               {...switchProps(!!thread?.peerMailbox, () =>
@@ -2929,10 +3576,20 @@ export default function App() {
                     modelOptions={modelOptions}
                     harnessOptionsFor={harnessOptionsFor}
                     toggleRoleEnabled={toggleRoleEnabled}
+                    setStatusPeriod={setStatusPeriod}
                   />
+                  {composerHidden && (
+                    <button
+                      type="button"
+                      className="setup-continue"
+                      onClick={() => setSetupReadyId(activeId)}
+                    >
+                      Start {startVerb}...
+                    </button>
+                  )}
                 </div>
               )}
-              {!setupMode && (!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
+              {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
                 <div className="stream-empty">
                   <img src="/brand-mark.svg" alt="" />
                   <div className="stream-empty-title">Start a thread</div>
@@ -2946,21 +3603,25 @@ export default function App() {
                   {turn.map((m) => (
                   <div
                     key={m.id}
-                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${isFailedBlock(m) ? " failed" : ""}`}
+                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
                   >
                     <div className="who">
                       <span className="role">
                         {m.author === "user"
                           ? "You"
                           : m.author === "steering"
-                            ? "Steering"
+                            ? m.consumed
+                              ? "Steering"
+                              : "Steering · queued"
                             : m.author === "system"
                               ? "System"
                               : m.author === "shell"
                                 ? "Shell"
                                 : m.author === "subthread"
                                   ? "Subthread"
-                                  : "Orchestrator"}
+                                  : m.author === "status"
+                                    ? "Status"
+                                    : "Orchestrator"}
                       </span>
                     </div>
                     <div className="msg-actions">
@@ -2990,7 +3651,7 @@ export default function App() {
                 />
               ))}
               {running.length > 0 && (
-                <div className="activity agents">
+                <div className={`activity agents${logsOpen ? "" : " collapsed"}`}>
                   <div className="act-head">
                     <span className="act-led" />
                     <span className="act-label">
@@ -2999,6 +3660,15 @@ export default function App() {
                     </span>
                     <Elapsed since={running[0]?.startedAt} />
                     <button
+                      className="act-toggle"
+                      onClick={toggleLogs}
+                      aria-expanded={logsOpen}
+                      aria-label={logsOpen ? "Hide logs" : "Show logs"}
+                      title={logsOpen ? "Hide logs" : "Show logs"}
+                    >
+                      {logsOpen ? "▾" : "▸"} Logs
+                    </button>
+                    <button
                       className="stop-btn"
                       onClick={stopTurn}
                       title="Stop this turn — running agents are cancelled"
@@ -3006,20 +3676,22 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  <div className="act-body" ref={actBodyRef}>
-                    {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
-                    {live.slice(-60).map((l, i) =>
-                      l.kind === "text" || l.kind === "reasoning" ? (
-                        <div key={i} className={`act-md ${l.kind}`}>
-                          <Markdown text={l.text} />
-                        </div>
-                      ) : (
-                        <div key={i} className={`log-line ${l.kind}`}>
-                          {l.text}
-                        </div>
-                      ),
-                    )}
-                  </div>
+                  {logsOpen && (
+                    <div className="act-body" ref={actBodyRef}>
+                      {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
+                      {live.slice(-60).map((l, i) =>
+                        l.kind === "text" || l.kind === "reasoning" ? (
+                          <div key={i} className={`act-md ${l.kind}`}>
+                            <Markdown text={l.text} />
+                          </div>
+                        ) : (
+                          <div key={i} className={`log-line ${l.kind}`}>
+                            {l.text}
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               {shellThread === activeId && shellThread !== null && (
@@ -3049,6 +3721,7 @@ export default function App() {
 
             <div
               className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
+              hidden={composerHidden}
             >
               {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
               {slashOpen && (
@@ -3071,7 +3744,7 @@ export default function App() {
                   {draftAttachments.map((a) => (
                     <span key={a.path} className="attach-chip" title={a.path}>
                       <span className="attach-kind">{a.dir ? "folder" : "file"}</span>
-                      <span className="attach-name">{a.path}</span>
+                      <span className="attach-name">{a.dir ? `${a.path}/` : a.path}</span>
                       <button
                         type="button"
                         className="attach-remove"
@@ -3114,6 +3787,25 @@ export default function App() {
                   <span className="ctx-chip" title={selectedProject.path}>
                     {selectedProject.name}
                   </span>
+                )}
+                {(conn?.attached || keepRunning) && (
+                  <label
+                    className={`bg-turn${runInBackground || conn?.attached ? " on" : ""}`}
+                    title={
+                      conn?.attached
+                        ? "Attached to an external daemon: turns always run in the background"
+                        : "The turn keeps running after you close the window"
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={runInBackground || !!conn?.attached}
+                      disabled={!!conn?.attached}
+                      onChange={(e) => setRunInBackground(e.target.checked)}
+                    />
+                    Run in background
+                    <span className="bg-hint">keeps running after you close the window</span>
+                  </label>
                 )}
                 <button
                   className={`model-btn${modelsOpen ? " open" : ""}`}
@@ -3168,6 +3860,17 @@ export default function App() {
             {tasks.length > 0 && <TaskList tasks={tasks} />}
             <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
           </div>
+        ) : tab === "doc" && docPath !== null ? (
+          <Suspense fallback={<div className="stream empty">Loading…</div>}>
+            <MarkdownViewer
+              path={docPath}
+              doc={doc}
+              loading={docLoading}
+              error={docError}
+              onOpenPath={openDoc}
+              onClose={closeDoc}
+            />
+          </Suspense>
         ) : (
           <AgentGraph
             key={activeId ?? ""}
@@ -3275,6 +3978,17 @@ export default function App() {
         )}
 
         <div className="aside-body">
+          {/* Kept mounted while hidden so unsaved edits survive a tab switch. */}
+          {activeId && (
+            <div className="section files-section" hidden={asideActive !== "files"}>
+              <FileEditor
+                key={activeId}
+                rpc={rpcRef.current}
+                threadId={activeId}
+                active={asideActive === "files"}
+              />
+            </div>
+          )}
           {asideActive === "models" ? (
             <div className="aside-models">
               <ThreadSetup
@@ -3291,6 +4005,7 @@ export default function App() {
                 modelOptions={modelOptions}
                 harnessOptionsFor={harnessOptionsFor}
                 toggleRoleEnabled={toggleRoleEnabled}
+                setStatusPeriod={setStatusPeriod}
               />
             </div>
           ) : asideActive === "agents" ? (
@@ -3364,7 +4079,7 @@ export default function App() {
                       {...(r.latestId ? clickable(() => setDetailId(r.latestId)) : {})}
                     >
                       <div className="role-head">
-                        <span className={`dot ${r.running.length > 0 ? "running" : r.latestStatus}`} />
+                        <span className={`dot ${r.running.length > 0 ? "running" : r.off ? "off" : r.latestStatus}`} />
                         <span className="role-name">{r.name}</span>
                         <span className="harness" title={`${r.harness} · ${r.model}`}>
                           {r.harness}
@@ -3372,7 +4087,13 @@ export default function App() {
                         </span>
                       </div>
                       <div className="role-meta">
-                        {r.running.length > 0 ? `${r.running.length} running` : "idle"}
+                        {r.running.length > 0
+                          ? `${r.running.length} running`
+                          : r.off
+                            ? "off · enable Experimental roles in Settings"
+                            : r.latestId
+                              ? `last: ${r.latestStatus}`
+                              : "idle"}
                         {r.mine.length > 0 &&
                           ` · ${r.done}/${r.mine.length} done · ${fmtTokens(r.tokens)} tok`}
                       </div>
@@ -3667,24 +4388,7 @@ export default function App() {
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
             />
           </div>
-        ) : asideActive === "files" ? (
-          <div className="section files-section">
-            <FilesPanel
-              key={activeId ?? "none"}
-              root={fileTree?.root ?? null}
-              entries={fileTree?.entries ?? []}
-              status={fileTree?.status ?? {}}
-              loading={fileTreeLoading}
-              error={fileTreeError}
-              selectedPath={selectedFile}
-              content={fileContent}
-              contentLoading={fileContentLoading}
-              contentError={fileContentError}
-              onSelectFile={(p) => loadFileContent(activeId, p)}
-              onRefresh={() => loadFileTree(activeId)}
-            />
-          </div>
-        ) : asideActive === "council" ? (
+        ) : asideActive === "files" ? null : asideActive === "council" ? (
           <div className="section council-section">
             {!activeId && <p className="hint">Open a thread to convene a council.</p>}
             <div className="council-pane">
@@ -3850,6 +4554,38 @@ export default function App() {
         />
       )}
 
+      {releaseNotes && (
+        <div className="overlay" onClick={() => setReleaseNotes(null)}>
+          <section
+            className="sheet notes-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="release-notes-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="sheet-head notes-head">
+              <button
+                type="button"
+                className="notes-close"
+                onClick={() => setReleaseNotes(null)}
+                aria-label="Close release notes"
+                title="Close"
+              >
+                ×
+              </button>
+              <strong id="release-notes-title">AgentTunnel {releaseNotes.version}</strong>
+            </header>
+            <div className="sheet-body">
+              {releaseNotes.body.trim() ? (
+                <Markdown text={releaseNotes.body} />
+              ) : (
+                <p className="hint">This release has no notes.</p>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
       {settingsOpen && settings && (
         <div className="overlay" onClick={() => setSettingsOpen(false)}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
@@ -3871,6 +4607,22 @@ export default function App() {
                   <button onClick={saveThreadDefaults}>Save this view as default</button>
                 </div>
               </section>
+              {!conn?.attached && (
+                <section className="set-section">
+                  <h4>Desktop</h4>
+                  <p className="hint">
+                    When this is on, closing the window leaves the daemon (and any running
+                    turns) alive in the background so <code>at</code> can still reach it.
+                    Turn it off to stop the daemon with the window.
+                  </p>
+                  <div
+                    className={`toggle ${keepRunning ? "on" : ""}`}
+                    {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
+                  >
+                    <span className="sw" /> Keep daemon running after the window closes
+                  </div>
+                </section>
+              )}
               <section className="set-section">
                 <h4>Environment</h4>
                 <label className="field">
@@ -3890,14 +4642,15 @@ export default function App() {
                 >
                   <span className="sw" /> Auto mode — orchestrator picks each task's model
                 </div>
-                <label className="field" style={{ marginTop: 12 }}>
-                  <span>Approved models (comma separated)</span>
-                  <input
-                    value={approvedInput}
-                    onChange={(e) => setApprovedInput(e.target.value)}
-                    placeholder="gpt-5, sonnet, …"
+                <div className="field" style={{ marginTop: 12 }}>
+                  <span>Approved models for auto mode</span>
+                  <ApprovedModelsPicker
+                    value={approvedModels}
+                    onChange={setApprovedModels}
+                    models={harnesses.models}
+                    harnessOrder={harnesses.all}
                   />
-                </label>
+                </div>
                 <label className="field" style={{ marginTop: 12 }}>
                   <span>Mark threads stale after this many minutes of inactivity</span>
                   <input
@@ -3918,11 +4671,6 @@ export default function App() {
                     Save environment
                   </button>
                 </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Phones</h4>
-                <RelayPairing rpc={rpcRef.current} />
               </section>
 
               <section className="set-section">
@@ -3948,9 +4696,98 @@ export default function App() {
               </section>
 
               <section className="set-section">
+                <h4>Master orchestrator</h4>
+                <p className="hint">
+                  The team lead runs on this harness and model. Leave it on the Orchestrator role
+                  to inherit that role's default; each thread can still override its own leads.
+                </p>
+                <div className="role-edit">
+                  <span className="rn">Lead agent</span>
+                  <Dropdown
+                    value={leadSettings.harness ?? ""}
+                    options={[
+                      {
+                        value: "",
+                        label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
+                      },
+                      ...harnessOptionsFor(leadSettings.harness ?? ""),
+                    ]}
+                    onChange={(v) => {
+                      persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
+                        () => undefined,
+                      );
+                      if (v) refreshModels(v).catch(() => undefined);
+                    }}
+                  />
+                  <Dropdown
+                    value={leadSettings.model ?? ""}
+                    options={modelOptions(leadHarness, leadSettings.model ?? "")}
+                    searchable
+                    align="end"
+                    placeholder="model (default)"
+                    footNote="Discovered from the harness CLI"
+                    onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
+                    addLabel="Add model"
+                    onAdd={(m) => {
+                      addModel(leadHarness, m)
+                        .then(() =>
+                          persistLeadRuntime({
+                            harness: leadSettings.harness ?? "",
+                            model: m,
+                            variant: leadSettings.variant ?? "",
+                          }),
+                        )
+                        .catch(() => undefined);
+                    }}
+                    onChange={(v) =>
+                      persistLeadRuntime({
+                        harness: leadSettings.harness ?? "",
+                        model: v,
+                        variant: leadSettings.variant ?? "",
+                      }).catch(() => undefined)
+                    }
+                  />
+                </div>
+              </section>
+
+              <section className="set-section">
+                <h4>Dependencies</h4>
+                <p className="hint">
+                  The forge CLIs the Pull request tab shells out to. Versions are read from the
+                  tools on PATH.
+                </p>
+                {depsError && <p className="hint warn">{depsError}</p>}
+                {deps === null && !depsError && <p className="hint">Checking…</p>}
+                {(deps ?? []).map((d) => (
+                  <div className="dep-row" key={d.name}>
+                    <span className="dn">{d.name}</span>
+                    <span className={`dv ${d.status}`}>
+                      {d.status === "missing"
+                        ? "not installed"
+                        : `${d.version || "unknown version"}${
+                            d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
+                          }`}
+                    </span>
+                    <span
+                      className={`dot ${
+                        d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
+                      }`}
+                      title={d.status}
+                    />
+                  </div>
+                ))}
+                <div className="sheet-actions">
+                  <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
+                    {depsBusy ? "Checking…" : "Recheck"}
+                  </button>
+                </div>
+              </section>
+
+              <section className="set-section">
                 <h4>Roles</h4>
                 <p className="hint">
-                  Each role runs on its own harness and model. Changes apply to the next turn.
+                  Each subagent role runs on its own harness and model; the Orchestrator role is the
+                  master orchestrator above. Changes apply to the next turn.
                 </p>
                 <div
                   className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
@@ -3965,48 +4802,60 @@ export default function App() {
                   Experimental roles are off by default. Turn this on to dispatch them.
                 </p>
                 {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
-                {settings.roles.map((r) => (
-                  <div className="role-edit" key={r.id}>
-                    <span className="rn">
-                      {r.name}
-                      {r.experimental && <span className="badge experimental">Experimental</span>}
-                    </span>
-                    <Dropdown
-                      value={r.harness}
-                      options={harnessOptionsFor(r.harness)}
-                      onChange={(v) => {
-                        const row = { ...r, harness: v };
-                        updateRole(r.id, { harness: v });
-                        persistRole(row).catch(() => undefined);
-                        refreshModels(v).catch(() => undefined);
-                      }}
-                    />
-                    <Dropdown
-                      value={r.model}
-                      options={modelOptions(r.harness, r.model)}
-                      searchable
-                      align="end"
-                      placeholder="model (default)"
-                      footNote="Discovered from the harness CLI"
-                      onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                      addLabel="Add model"
-                      onAdd={(m) => {
-                        addModel(r.harness, m)
-                          .then(() => {
-                            const row = { ...r, model: m };
-                            updateRole(r.id, { model: m });
-                            persistRole(row).catch(() => undefined);
-                          })
-                          .catch(() => undefined);
-                      }}
-                      onChange={(v) => {
-                        const row = { ...r, model: v };
-                        updateRole(r.id, { model: v });
-                        persistRole(row).catch(() => undefined);
-                      }}
-                    />
-                  </div>
-                ))}
+                {settings.roles
+                  .filter((r) => r.id !== "orchestrator")
+                  .map((r) => (
+                    <div className="role-edit" key={r.id}>
+                      <span className="rn">
+                        {r.name}
+                        {r.experimental && <span className="badge experimental">Experimental</span>}
+                      </span>
+                      <Dropdown
+                        value={r.harness}
+                        options={harnessOptionsFor(r.harness)}
+                        onChange={(v) => {
+                          const row = { ...r, harness: v };
+                          updateRole(r.id, { harness: v });
+                          persistRole(row).catch(() => undefined);
+                          refreshModels(v).catch(() => undefined);
+                        }}
+                      />
+                      <Dropdown
+                        value={r.model}
+                        options={modelOptions(r.harness, r.model)}
+                        searchable
+                        align="end"
+                        placeholder="model (default)"
+                        footNote="Discovered from the harness CLI"
+                        onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
+                        addLabel="Add model"
+                        onAdd={(m) => {
+                          addModel(r.harness, m)
+                            .then(() => {
+                              const row = { ...r, model: m };
+                              updateRole(r.id, { model: m });
+                              persistRole(row).catch(() => undefined);
+                            })
+                            .catch(() => undefined);
+                        }}
+                        onChange={(v) => {
+                          const row = { ...r, model: v };
+                          updateRole(r.id, { model: v });
+                          persistRole(row).catch(() => undefined);
+                        }}
+                      />
+                    </div>
+                  ))}
+              </section>
+
+              <section className="set-section about-section">
+                <h4>About</h4>
+                <p className="hint">
+                  AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
+                </p>
+                <p className="hint">
+                  <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
+                </p>
               </section>
             </div>
           </div>
@@ -4014,6 +4863,8 @@ export default function App() {
       )}
 
       {threadOverlays}
+      {paletteDialog}
     </div>
+    </DocLinkContext.Provider>
   );
 }

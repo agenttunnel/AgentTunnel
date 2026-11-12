@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -81,6 +82,12 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindTaskCreate, toolbox.KindTaskUpdate, toolbox.KindTaskList:
 		s.handleTaskCall(w, r, req)
 		return
+	case toolbox.KindThreadList, toolbox.KindThreadDelete:
+		s.handleThreadCall(w, r, req)
+		return
+	case toolbox.KindReadFile, toolbox.KindWriteFile, toolbox.KindShell:
+		s.handleEnvCall(w, r, req)
+		return
 	case toolbox.KindSubthread:
 		s.handleSubthreadCall(w, r, req)
 		return
@@ -89,6 +96,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	case toolbox.KindReviewComment, toolbox.KindReviewReply, toolbox.KindReviewResolve:
 		s.handleReviewCall(w, r, req)
+		return
+	case toolbox.KindSteer:
+		s.handleSteerCall(w, r, req)
 		return
 	}
 
@@ -174,6 +184,16 @@ type toolCallRequest struct {
 	// answer.
 	Text string `json:"text"`
 	To   string `json:"to"`
+	// Target names the thread a thread-delete removes; RemoveWorktree also
+	// removes that thread's own worktree.
+	Target         string `json:"target"`
+	RemoveWorktree bool   `json:"removeWorktree"`
+	// Path names the file a read-file or write-file touches, relative to the
+	// thread's worktree. Command and Cwd shape a shell call; TimeoutSec, as for
+	// an ask, bounds it.
+	Path    string `json:"path"`
+	Command string `json:"command"`
+	Cwd     string `json:"cwd"`
 	// QuestionKind, Options and TimeoutSec shape an ask.
 	QuestionKind string   `json:"questionKind"`
 	Options      []string `json:"options"`
@@ -269,6 +289,42 @@ func (s *Server) handleTaskCall(w http.ResponseWriter, r *http.Request, req tool
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// handleSteerCall queues the lead's steer for one subagent and answers with the
+// outcome, so the lead learns at once whether it was queued. It bypasses the
+// tool inbox: the steer must not wait for the pass to end.
+func (s *Server) handleSteerCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if s.runner == nil {
+		http.Error(w, "steering is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if strings.TrimSpace(req.To) == "" || strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "to and text are required for a steer", http.StatusBadRequest)
+		return
+	}
+	reply, err := s.runner.Steer(r.Context(), req.ThreadID, req.AgentID, req.To, req.Text)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, orchestrator.ErrSteerNotLead):
+			status = http.StatusForbidden
+		case errors.Is(err, orchestrator.ErrUnknownRecipient),
+			errors.Is(err, orchestrator.ErrSteerTargetLead),
+			errors.Is(err, orchestrator.ErrSteerFinished),
+			errors.Is(err, orchestrator.ErrEmptyMessage),
+			errors.Is(err, domain.ErrThreadNotFound):
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.disp.auditLog("tool", map[string]any{
+		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+		"to": req.To,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "outcome": "queued", "message": reply})
+}
+
 // handleSubthreadCall starts a subthread for the caller's thread. Only a team
 // lead may start one; a subagent's request is refused here, not queued, so the
 // refusal reaches the agent that asked.
@@ -292,6 +348,93 @@ func (s *Server) handleSubthreadCall(w http.ResponseWriter, r *http.Request, req
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "threadId": child})
+}
+
+// toolThread is one row of `tool thread-list`.
+type toolThread struct {
+	ID             contracts.ThreadID `json:"id"`
+	Title          string             `json:"title"`
+	Status         string             `json:"status"`
+	ProjectID      string             `json:"projectId,omitempty"`
+	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
+	Branch         string             `json:"branch,omitempty"`
+	Worktree       string             `json:"worktree,omitempty"`
+}
+
+// handleThreadCall lists the environment's threads, or deletes one, on behalf
+// of a team lead. Only a lead may do either: a subagent's call is refused here,
+// not queued, so the refusal reaches the agent that asked. A lead may not delete
+// its own thread, and deleteThread refuses any thread with work still running.
+// Like every tool call, it is accepted only from this machine: the agent id is
+// a body field a remote caller can set to anything.
+func (s *Server) handleThreadCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if !isLoopbackPeer(r) {
+		http.Error(w, "tool calls are accepted only from this machine", http.StatusForbidden)
+		return
+	}
+	if !orchestrator.IsLead(req.AgentID) {
+		http.Error(w, "only the orchestrator can list or delete threads", http.StatusForbidden)
+		return
+	}
+	ctx := r.Context()
+	var resp any = map[string]any{"ok": true}
+	var err error
+	switch toolbox.Kind(req.Kind) {
+	case toolbox.KindThreadList:
+		var rows []toolThread
+		rows, err = s.threadList(ctx)
+		resp = map[string]any{"ok": true, "threads": rows}
+	case toolbox.KindThreadDelete:
+		target := contracts.ThreadID(strings.TrimSpace(req.Target))
+		switch {
+		case target == "":
+			err = fmt.Errorf("%w: target thread id is required", domain.ErrInvalidCommand)
+		case target == req.ThreadID:
+			err = fmt.Errorf("%w: a thread cannot delete itself", domain.ErrInvalidCommand)
+		default:
+			err = s.disp.deleteThread(ctx, target, req.RemoveWorktree)
+			s.disp.auditLog("tool", map[string]any{
+				"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+				"target": string(target), "removeWorktree": req.RemoveWorktree,
+			})
+		}
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, domain.ErrInvalidCommand) || errors.Is(err, domain.ErrThreadNotFound) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// threadList reuses the thread.list RPC, so the rows match what the desktop
+// sees, and adds the lead-facing status and branch.
+func (s *Server) threadList(ctx context.Context) ([]toolThread, error) {
+	out, err := s.disp.handle(ctx, Request{Method: "thread.list"})
+	if err != nil {
+		return nil, err
+	}
+	summaries, ok := out.([]ThreadSummary)
+	if !ok {
+		return nil, errors.New("thread list unavailable")
+	}
+	rows := make([]toolThread, 0, len(summaries))
+	for _, t := range summaries {
+		row := toolThread{ID: t.ID, Title: t.Title, Status: "idle", ProjectID: t.ProjectID, ParentThreadID: t.ParentThreadID}
+		if t.RunningAgents > 0 || s.disp.threadRunning(t.ID) {
+			row.Status = "running"
+		}
+		if t.Worktree != nil {
+			row.Branch = t.Worktree.Branch
+			row.Worktree = t.Worktree.Path
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // authorized accepts the token as "Authorization: Bearer" from any peer. The
@@ -447,6 +590,13 @@ func (c *conn) handleFrame(ctx context.Context, data []byte) {
 	}
 	if req.Method == "app.open" {
 		c.srv.handleAppOpen(c, req)
+		return
+	}
+	if req.Method == "daemon.shutdown" {
+		// Acknowledge before tearing the server down: the client's `agenttunnel daemon
+		// stop` waits for this reply, then for daemon.json to disappear.
+		c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
+		go c.disp.Shutdown()
 		return
 	}
 	go func() {

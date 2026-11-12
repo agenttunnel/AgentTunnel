@@ -2,7 +2,10 @@ package domain
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"sort"
+	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -67,22 +70,34 @@ func (s HarnessScope) includes(id contracts.ThreadID, st *ThreadState) bool {
 	return s.ProjectID == "" || st.ProjectID == s.ProjectID
 }
 
-// HarnessStats returns the per-harness rollup across the threads in scope, busiest
-// harness first (by agent count, then by name for a stable order).
-func (e *Engine) HarnessStats(ctx context.Context, scope HarnessScope) ([]HarnessStat, error) {
+// scopedStates returns the read model of every thread in scope.
+func (e *Engine) scopedStates(ctx context.Context, scope HarnessScope) ([]*ThreadState, error) {
 	ids, err := e.Threads(ctx)
 	if err != nil {
 		return nil, err
 	}
-	acc := map[contracts.Harness]*HarnessStat{}
+	var out []*ThreadState
 	for _, id := range ids {
 		st, err := e.State(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		if !scope.includes(id, st) {
-			continue
+		if scope.includes(id, st) {
+			out = append(out, st)
 		}
+	}
+	return out, nil
+}
+
+// HarnessStats returns the per-harness rollup across the threads in scope, busiest
+// harness first (by agent count, then by name for a stable order).
+func (e *Engine) HarnessStats(ctx context.Context, scope HarnessScope) ([]HarnessStat, error) {
+	states, err := e.scopedStates(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	acc := map[contracts.Harness]*HarnessStat{}
+	for _, st := range states {
 		addHarnessStats(acc, st)
 	}
 	out := make([]HarnessStat, 0, len(acc))
@@ -94,6 +109,230 @@ func (e *Engine) HarnessStats(ctx context.Context, scope HarnessScope) ([]Harnes
 			return out[i].Agents > out[j].Agents
 		}
 		return out[i].Harness < out[j].Harness
+	})
+	return out, nil
+}
+
+// ModelStat rolls up one harness and model pair across the threads in scope. An
+// empty Model is an agent that ran on the harness default.
+type ModelStat struct {
+	Harness   contracts.Harness    `json:"harness"`
+	Model     string               `json:"model"`
+	Threads   int                  `json:"threads"`
+	Agents    int                  `json:"agents"`
+	Subagents int                  `json:"subagents"`
+	Usage     contracts.TokenUsage `json:"usage"`
+	// Resolved counts subagent runs that succeeded. Only those feed the timing
+	// fields: a run that failed or was cancelled says nothing about how long the
+	// model takes to finish a task.
+	Resolved int `json:"resolved"`
+	// MedianSeconds and P90Seconds are the wall-clock time of resolved subagent
+	// runs. Both are zero when Resolved is zero.
+	MedianSeconds float64 `json:"medianSeconds"`
+	P90Seconds    float64 `json:"p90Seconds"`
+}
+
+type modelKey struct {
+	harness contracts.Harness
+	model   string
+}
+
+// modelAcc is one model's rollup while the environment is still being walked.
+// Durations stay here until the walk ends, so quantiles see every thread at once.
+type modelAcc struct {
+	stat      ModelStat
+	durations []float64
+}
+
+// addModelStats folds one thread's read model into the per-model rollup, keyed
+// the way addHarnessStats keys harnesses, with the model as the second part.
+func addModelStats(acc map[modelKey]*modelAcc, st *ThreadState) {
+	touched := map[modelKey]bool{}
+	get := func(a contracts.Agent) *modelAcc {
+		k := modelKey{a.Harness, a.Model}
+		m, ok := acc[k]
+		if !ok {
+			m = &modelAcc{stat: ModelStat{Harness: a.Harness, Model: a.Model}}
+			acc[k] = m
+		}
+		touched[k] = true
+		return m
+	}
+
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
+		m := get(a)
+		m.stat.Agents++
+		if a.IsOrchestrator() {
+			continue
+		}
+		m.stat.Subagents++
+		if a.Status == contracts.AgentSucceeded && a.EndedAt != nil {
+			m.stat.Resolved++
+			m.durations = append(m.durations, a.EndedAt.Sub(a.StartedAt).Seconds())
+		}
+	}
+	for id, au := range st.Usage {
+		m := get(st.Agents[id])
+		m.stat.Usage = m.stat.Usage.Add(au.Usage)
+	}
+	for k := range touched {
+		acc[k].stat.Threads++
+	}
+}
+
+// quantile reads the p-th quantile (0..1) of sorted values by linear
+// interpolation between the two nearest ranks, so the median of an even count
+// is the mean of the middle pair.
+func quantile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	pos := p * float64(len(sorted)-1)
+	lo := int(math.Floor(pos))
+	hi := int(math.Ceil(pos))
+	return sorted[lo] + (sorted[hi]-sorted[lo])*(pos-float64(lo))
+}
+
+// ModelStats returns the harness-and-model rollup across the threads in scope,
+// most-used first (by agent count, then by harness and model for a stable order).
+// Clients re-rank by tokens themselves, so this list stays the source of truth.
+func (e *Engine) ModelStats(ctx context.Context, scope HarnessScope) ([]ModelStat, error) {
+	states, err := e.scopedStates(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	acc := map[modelKey]*modelAcc{}
+	for _, st := range states {
+		addModelStats(acc, st)
+	}
+	out := make([]ModelStat, 0, len(acc))
+	for _, m := range acc {
+		s := m.stat
+		if len(m.durations) > 0 {
+			sort.Float64s(m.durations)
+			s.MedianSeconds = quantile(m.durations, 0.5)
+			s.P90Seconds = quantile(m.durations, 0.9)
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Agents != b.Agents {
+			return a.Agents > b.Agents
+		}
+		if a.Harness != b.Harness {
+			return a.Harness < b.Harness
+		}
+		return a.Model < b.Model
+	})
+	return out, nil
+}
+
+// TeamStat rolls up one team across the threads in scope. A team is the set of
+// distinct harness and model pairs that worked a turn, so "claude/opus with
+// codex/gpt" and "claude/opus alone" are different teams. A task is a turn the
+// leads finished; a resolved task is one where no lead failed.
+type TeamStat struct {
+	// Members lists the team's "harness/model" pairs, sorted; "default" stands
+	// for an unset model.
+	Members []string `json:"members"`
+	// Tasks counts turns that ended. Resolved counts those with no failed lead.
+	Tasks    int `json:"tasks"`
+	Resolved int `json:"resolved"`
+	// MedianSeconds and P90Seconds time resolved tasks from the turn's start to
+	// the lead's terminal status. MedianTokens is input plus output per resolved
+	// task, so cache reads do not make a team look cheaper or dearer than it is.
+	MedianSeconds float64 `json:"medianSeconds"`
+	P90Seconds    float64 `json:"p90Seconds"`
+	MedianTokens  float64 `json:"medianTokens"`
+}
+
+type teamAcc struct {
+	stat   TeamStat
+	times  []float64
+	tokens []float64
+}
+
+// teamMembers returns the sorted, de-duplicated harness/model pairs that ran in a turn.
+func teamMembers(st *ThreadState, tu TurnUsage) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range tu.AgentOrder {
+		a := st.Agents[id]
+		model := a.Model
+		if model == "" {
+			model = "default"
+		}
+		label := fmt.Sprintf("%s/%s", a.Harness, model)
+		if !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TeamStats returns the team rollup across the threads in scope, best first: by
+// resolve rate, then by median time per resolved task, then by team name. Turns
+// that have no end time (open, or recorded before it was tracked) are skipped.
+func (e *Engine) TeamStats(ctx context.Context, scope HarnessScope) ([]TeamStat, error) {
+	states, err := e.scopedStates(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	acc := map[string]*teamAcc{}
+	for _, st := range states {
+		for _, tu := range st.Turns {
+			if tu.EndedAt.IsZero() || tu.At.IsZero() {
+				continue
+			}
+			members := teamMembers(st, tu)
+			if len(members) == 0 {
+				continue
+			}
+			key := strings.Join(members, " + ")
+			ta, ok := acc[key]
+			if !ok {
+				ta = &teamAcc{stat: TeamStat{Members: members}}
+				acc[key] = ta
+			}
+			ta.stat.Tasks++
+			if tu.Failed {
+				continue
+			}
+			ta.stat.Resolved++
+			ta.times = append(ta.times, tu.EndedAt.Sub(tu.At).Seconds())
+			var io int64
+			for _, u := range tu.Agents {
+				io += u.InputTokens + u.OutputTokens
+			}
+			ta.tokens = append(ta.tokens, float64(io))
+		}
+	}
+	out := make([]TeamStat, 0, len(acc))
+	for _, ta := range acc {
+		s := ta.stat
+		if len(ta.times) > 0 {
+			sort.Float64s(ta.times)
+			sort.Float64s(ta.tokens)
+			s.MedianSeconds = quantile(ta.times, 0.5)
+			s.P90Seconds = quantile(ta.times, 0.9)
+			s.MedianTokens = quantile(ta.tokens, 0.5)
+		}
+		out = append(out, s)
+	}
+	rate := func(s TeamStat) float64 { return float64(s.Resolved) / float64(s.Tasks) }
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if rate(a) != rate(b) {
+			return rate(a) > rate(b)
+		}
+		if a.MedianSeconds != b.MedianSeconds {
+			return a.MedianSeconds < b.MedianSeconds
+		}
+		return strings.Join(a.Members, " + ") < strings.Join(b.Members, " + ")
 	})
 	return out, nil
 }

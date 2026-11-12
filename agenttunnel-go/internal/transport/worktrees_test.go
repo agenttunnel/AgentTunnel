@@ -358,7 +358,7 @@ func TestWorktreeRemoveRefusedWhileTurnRuns(t *testing.T) {
 	path := f.state(id).Worktree.Path
 
 	f.disp.turnsMu.Lock()
-	f.disp.turns = map[contracts.ThreadID]context.CancelFunc{id: func() {}}
+	f.disp.turns = map[contracts.ThreadID]turnRun{id: {cancel: func() {}}}
 	f.disp.turnsMu.Unlock()
 
 	if _, err := f.call("worktree.remove", map[string]any{"projectId": f.projectID, "path": path, "force": true}); err == nil {
