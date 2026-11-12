@@ -21,10 +21,11 @@ type Engine struct {
 	roles *contracts.RoleRegistry
 	clock Clock
 
-	mu     sync.RWMutex
-	states map[contracts.ThreadID]*ThreadState
-	subs   map[contracts.ThreadID]map[int]chan contracts.Event
-	nextID int
+	mu      sync.RWMutex
+	states  map[contracts.ThreadID]*ThreadState
+	subs    map[contracts.ThreadID]map[int]chan contracts.Event
+	allSubs map[int]chan contracts.Event
+	nextID  int
 
 	cmds chan envelope
 	done chan struct{}
@@ -147,12 +148,14 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 	// trace on disk. The creation events are written by the first durable
 	// command instead (materialize below). A create for an id that already
 	// exists — durable or provisional — still falls through to the decider,
-	// which rejects it.
-	if cmd.Type == contracts.CmdThreadCreate && !state.Exists {
+	// which rejects it. A draft is never provisional: it is the user's work to
+	// keep across a restart, so it is written at once.
+	if cmd.Type == contracts.CmdThreadCreate && !state.Exists && !cmd.Draft {
 		e.mu.Lock()
 		state.Exists = true
 		state.Provisional = true
 		state.PeerMailbox = true
+		state.StatusPeriodSeconds = contracts.DefaultStatusPeriodSeconds
 		state.Title = strings.TrimSpace(cmd.Title)
 		if state.Title == "" {
 			state.Title = contracts.DefaultThreadTitle
@@ -160,6 +163,8 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 		state.ProjectID = cmd.ProjectID
 		state.ParentThreadID = cmd.ParentThreadID
 		state.Worktree = cmd.Worktree
+		state.Description = cmd.Description
+		state.Issue = cmd.Issue
 		state.UpdatedAt = e.clock()
 		e.states[cmd.ThreadID] = state
 		e.mu.Unlock()
@@ -207,10 +212,7 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 			return err
 		}
 	}
-	listeners := make([]chan contracts.Event, 0, len(e.subs[cmd.ThreadID]))
-	for _, ch := range e.subs[cmd.ThreadID] {
-		listeners = append(listeners, ch)
-	}
+	listeners := e.listenersLocked(cmd.ThreadID)
 	e.mu.Unlock()
 
 	for _, ev := range events {
@@ -219,12 +221,7 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 			"threadId": string(ev.ThreadID),
 			"seq":      ev.Seq,
 		})
-		for _, ch := range listeners {
-			select {
-			case ch <- ev:
-			default: // slow subscriber: drop rather than block the worker
-			}
-		}
+		deliver(listeners, ev)
 	}
 	return nil
 }
@@ -235,8 +232,12 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 // tail of process.
 func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *ThreadState) error {
 	payloads := []contracts.EventPayload{
-		contracts.ThreadCreated{Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID, Worktree: state.Worktree},
+		contracts.ThreadCreated{
+			Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID, Worktree: state.Worktree,
+			Description: state.Description, Issue: state.Issue,
+		},
 		contracts.PeerMailboxSet{Enabled: true},
+		contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
 	}
 	events, err := e.store.Append(ctx, id, payloads, e.clock)
 	if err != nil {
@@ -250,18 +251,10 @@ func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *
 		}
 	}
 	state.Provisional = false
-	listeners := make([]chan contracts.Event, 0, len(e.subs[id]))
-	for _, ch := range e.subs[id] {
-		listeners = append(listeners, ch)
-	}
+	listeners := e.listenersLocked(id)
 	e.mu.Unlock()
 	for _, ev := range events {
-		for _, ch := range listeners {
-			select {
-			case ch <- ev:
-			default: // slow subscriber: drop rather than block the worker
-			}
-		}
+		deliver(listeners, ev)
 	}
 	return nil
 }
@@ -346,16 +339,33 @@ func (e *Engine) Publish(threadID contracts.ThreadID, payload contracts.EventPay
 	ev := contracts.Event{ThreadID: threadID, At: e.clock(), Payload: payload}
 
 	e.mu.RLock()
-	listeners := make([]chan contracts.Event, 0, len(e.subs[threadID]))
-	for _, ch := range e.subs[threadID] {
-		listeners = append(listeners, ch)
-	}
+	listeners := e.listenersLocked(threadID)
 	e.mu.RUnlock()
 
+	deliver(listeners, ev)
+}
+
+// listenersLocked snapshots every subscriber that should hear an event for
+// threadID: the thread's own subscribers and the engine-wide ones. Callers hold
+// e.mu.
+func (e *Engine) listenersLocked(threadID contracts.ThreadID) []chan contracts.Event {
+	out := make([]chan contracts.Event, 0, len(e.subs[threadID])+len(e.allSubs))
+	for _, ch := range e.subs[threadID] {
+		out = append(out, ch)
+	}
+	for _, ch := range e.allSubs {
+		out = append(out, ch)
+	}
+	return out
+}
+
+// deliver queues ev to every listener, dropping it for a listener that is not
+// keeping up rather than blocking the engine.
+func deliver(listeners []chan contracts.Event, ev contracts.Event) {
 	for _, ch := range listeners {
 		select {
 		case ch <- ev:
-		default: // slow subscriber: drop rather than block the producer
+		default: // slow subscriber: drop rather than block the worker
 		}
 	}
 }
@@ -382,6 +392,27 @@ func (e *Engine) Subscribe(id contracts.ThreadID) (<-chan contracts.Event, func(
 		if m := e.subs[id]; m != nil {
 			delete(m, key)
 		}
+	}
+}
+
+// SubscribeAll returns a channel of committed events from every thread, plus an
+// unsubscribe function. Use it for daemon-wide observers (like the remote
+// bridge) that do not know which threads exist yet. The channel is never
+// closed, for the same reason Subscribe's is not.
+func (e *Engine) SubscribeAll() (<-chan contracts.Event, func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.allSubs == nil {
+		e.allSubs = make(map[int]chan contracts.Event)
+	}
+	key := e.nextID
+	e.nextID++
+	ch := make(chan contracts.Event, 256)
+	e.allSubs[key] = ch
+	return ch, func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		delete(e.allSubs, key)
 	}
 }
 

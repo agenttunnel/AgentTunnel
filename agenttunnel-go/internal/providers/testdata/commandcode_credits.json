@@ -1,0 +1,26 @@
+{
+  "credits": {
+    "planId": "individual-pro",
+    "monthlyCredits": 30,
+    "purchasedCredits": 5,
+    "freeCredits": 0
+  },
+  "windowLimits": {
+    "limited": true,
+    "fiveHour": {
+      "used": 120.5,
+      "cap": 500,
+      "resetAt": 1762794000000
+    },
+    "weekly": {
+      "used": 2400,
+      "cap": 2000,
+      "resetAt": 1763136000000
+    }
+  },
+  "sandboxMinutes": {
+    "usedMinutes": 0,
+    "limitMinutes": 0
+  },
+  "sandboxAccess": false
+}

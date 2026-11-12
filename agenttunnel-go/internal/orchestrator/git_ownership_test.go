@@ -38,9 +38,12 @@ func TestPromptsAssignGitToLead(t *testing.T) {
 	if !strings.Contains(lead.SystemPrompt, "You own git") {
 		t.Fatalf("orchestrator prompt should claim git ownership:\n%s", lead.SystemPrompt)
 	}
+	if !strings.Contains(lead.SystemPrompt, "own commit") {
+		t.Fatalf("orchestrator prompt should ask for a separate commit per job:\n%s", lead.SystemPrompt)
+	}
 	custom := contracts.Role{ID: "auditor", SystemPrompt: "You audit."}
 	for _, role := range []contracts.Role{custom, mustRole(t, roles, contracts.RoleExecutor)} {
-		prompt := BuildSubagentPrompt(role, "task", "", "", "", false, nil)
+		prompt := BuildSubagentPrompt(role, "task", "", "", "", false, nil, nil)
 		if !strings.Contains(prompt, "Do not run state-changing git") || !strings.Contains(prompt, "the lead commits your work") {
 			t.Fatalf("subagent prompt for %s should forbid state-changing git:\n%s", role.ID, prompt)
 		}

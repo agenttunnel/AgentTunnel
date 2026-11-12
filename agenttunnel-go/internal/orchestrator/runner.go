@@ -81,6 +81,10 @@ type Runner struct {
 
 	spawns *spawnStore
 
+	// steers holds the team lead's steers to subagents, read when each
+	// subagent's next run prompt is built.
+	steers *steerQueue
+
 	// notebooks holds each thread's shared notebook. A thread's context is its
 	// own: a subthread running beside its parent must not read or write the
 	// parent's notes.
@@ -115,6 +119,7 @@ func NewRunner(d Deps) *Runner {
 		clock:     d.Clock,
 		cfg:       d.Cfg,
 		spawns:    newSpawnStore(),
+		steers:    newSteerQueue(),
 		notebooks: map[contracts.ThreadID]*contextstore.Notebook{},
 	}
 }
@@ -154,7 +159,7 @@ func (r *Runner) Dispatch(ctx context.Context, threadID contracts.ThreadID, task
 	for _, t := range tasks {
 		task := t
 		if task.Harness == "" {
-			task.Harness = r.dispatchHarness(task.Role)
+			task.Harness = r.dispatchHarness(ctx, threadID, task.Role)
 		}
 		if err := r.engine.Dispatch(ctx, contracts.Command{
 			ID:       r.nextID(),
@@ -171,7 +176,7 @@ func (r *Runner) Dispatch(ctx context.Context, threadID contracts.ThreadID, task
 // dispatchHarness is the harness a task with none requested will run on, so the
 // agent record names it instead of reading as unknown in harness stats. It is the
 // same role runtime run uses, so the recorded harness matches what executes.
-func (r *Runner) dispatchHarness(role contracts.RoleID) contracts.Harness {
+func (r *Runner) dispatchHarness(ctx context.Context, threadID contracts.ThreadID, role contracts.RoleID) contracts.Harness {
 	if r.roles == nil {
 		return ""
 	}
@@ -182,7 +187,7 @@ func (r *Runner) dispatchHarness(role contracts.RoleID) contracts.Harness {
 	if !ok {
 		return ""
 	}
-	h, _, _ := r.roleRuntime(rl)
+	h, _, _ := r.roleRuntimeFor(ctx, threadID, rl)
 	return h
 }
 
@@ -340,7 +345,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	// An explicit user choice (council membership) is honored regardless of
 	// auto mode; an orchestrator pick still needs auto mode to override.
 	overrideRuntime := auto || t.Override
-	roleHarness, _, roleVariant := r.roleRuntime(role)
+	roleHarness, _, roleVariant := r.roleRuntimeFor(ctx, threadID, role)
 	// In auto mode the orchestrator picks the runtime per task: a requested
 	// harness wins when it is known and enabled, mirroring how resolveModel
 	// treats requested models. Otherwise the role's configured harness stands.
@@ -352,7 +357,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	if !r.harnessAllowed(harness) {
 		return "", fmt.Errorf("harness %q is disabled", harness)
 	}
-	model := r.resolveModel(role, harness, t.Model, auto, t.Override)
+	model := r.resolveModelFor(ctx, threadID, role, harness, t.Model, auto, t.Override)
 	r.setStatus(ctx, threadID, t.AgentID, contracts.AgentRunning, "")
 
 	inherited, _ := r.inherited.Render()
@@ -362,7 +367,8 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	if curate {
 		shared = curatorInput(r.notebookFor(threadID))
 	}
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox))
+	steering := r.steers.Drain(threadID, t.AgentID)
+	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox), steering)
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -420,6 +426,13 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	r.auditLog("agent.exit", map[string]any{
 		"agentId": string(t.AgentID), "status": statusWord(werr), "error": errString(werr),
 	})
+	// A steer that arrived during this run has no run left to read it. Say so
+	// in the agent's log rather than let it vanish.
+	if late := r.steers.Drain(threadID, t.AgentID); len(late) > 0 {
+		msg := fmt.Sprintf("%d steer(s) from the team lead arrived during this run and were not delivered: the agent has no further run", len(late))
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: t.AgentID, Kind: contracts.LogError, Text: msg, At: r.clock()})
+		r.publishOutput(threadID, t.AgentID, contracts.LogError, msg)
+	}
 
 	// A harness that exits cleanly but emitted nothing is a silent failure —
 	// a dead API key, a swallowed quota error — and must not read as success.
@@ -503,7 +516,7 @@ func routedPrintedKind(k toolbox.Kind) bool {
 // role's runtime, with the thread's per-lead override on top. Overriding the
 // harness drops the role's model, which belongs to the role's harness.
 func (r *Runner) leadRuntime(ctx context.Context, threadID contracts.ThreadID, lead int, role contracts.Role) (contracts.Harness, string, string) {
-	harness, model, variant := r.roleRuntime(role)
+	harness, model, variant := r.roleRuntimeFor(ctx, threadID, role)
 	if r.engine == nil {
 		return harness, model, variant
 	}
@@ -690,8 +703,42 @@ func (r *Runner) workdirFor(ctx context.Context, threadID contracts.ThreadID) st
 	return worktree.Resolve(st.Worktree, base)
 }
 
-// roleRuntime resolves a role's harness/model/variant, preferring a user override
-// from settings over the role's built-in default.
+// roleRuntimeFor resolves a role's runtime for one thread: the thread's
+// thread-scoped override wins over the daemon-wide settings, over the role's
+// built-in default. It reads the engine snapshot, never a shared mutable map, so
+// concurrent turns running different jobs do not see each other's overrides.
+// Empty override fields inherit the lower layer.
+func (r *Runner) roleRuntimeFor(ctx context.Context, threadID contracts.ThreadID, role contracts.Role) (contracts.Harness, string, string) {
+	harness, model, variant := r.roleRuntime(role)
+	if r.engine == nil || threadID == "" {
+		return harness, model, variant
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil {
+		return harness, model, variant
+	}
+	ov, ok := st.RoleRuntimeFor(role.ID)
+	if !ok {
+		return harness, model, variant
+	}
+	// Overriding the harness drops the inherited model and variant, which
+	// belong to the harness they were configured for. Mirror leadRuntime: a
+	// harness-only override must not send the old harness's model to the new
+	// one.
+	if ov.Harness.Valid() && ov.Harness != harness {
+		harness, model, variant = ov.Harness, "", ""
+	}
+	if ov.Model != "" {
+		model = ov.Model
+	}
+	if ov.Variant != "" {
+		variant = ov.Variant
+	}
+	return harness, model, variant
+}
+
+// roleRuntime resolves a role's harness/model/variant from settings and the
+// role's built-in default, ignoring any thread-scoped override.
 func (r *Runner) roleRuntime(role contracts.Role) (contracts.Harness, string, string) {
 	harness, model, variant := role.DefaultHarness, role.DefaultModel, role.DefaultVariant
 	if r.settings == nil {
@@ -766,7 +813,6 @@ func (r *Runner) harnessList() []contracts.Harness {
 		contracts.HarnessClaude,
 		contracts.HarnessCodex,
 		contracts.HarnessCursor,
-		contracts.HarnessGrok,
 		contracts.HarnessPi,
 		contracts.HarnessCommandCode,
 	}
@@ -831,6 +877,16 @@ func (r *Runner) teammateMessages(threadID contracts.ThreadID, id contracts.Agen
 // Anything else falls back to the role's model.
 func (r *Runner) resolveModel(role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
 	roleHarness, model, _ := r.roleRuntime(role)
+	return r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+}
+
+// resolveModelFor is resolveModel with the thread's role override applied.
+func (r *Runner) resolveModelFor(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
+	roleHarness, model, _ := r.roleRuntimeFor(ctx, threadID, role)
+	return r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+}
+
+func (r *Runner) resolveModelAgainst(roleHarness contracts.Harness, model string, harness contracts.Harness, requested string, auto, override bool) string {
 	sameHarness := harness == roleHarness
 	if !sameHarness {
 		model = ""
@@ -969,7 +1025,7 @@ func (r *Runner) DrainTools(threadID contracts.ThreadID) []toolbox.Call {
 }
 
 // DrainSteering returns and clears the user's pending mid-run steering messages.
-func (r *Runner) DrainSteering(threadID contracts.ThreadID) []string {
+func (r *Runner) DrainSteering(threadID contracts.ThreadID) []steering.Entry {
 	if r.steering == nil {
 		return nil
 	}
@@ -986,7 +1042,7 @@ func (r *Runner) HasSteering(threadID contracts.ThreadID) bool {
 // completes (prompt plus the cycle's summary). It runs off the turn so it
 // cannot delay the reply.
 func (r *Runner) generateTitle(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, userMessage, summary string) {
-	harness, model, variant := r.roleRuntime(role)
+	harness, model, variant := r.roleRuntimeFor(ctx, threadID, role)
 	if !r.harnessAllowed(harness) {
 		return
 	}
