@@ -450,6 +450,16 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		// Steering is drained once per round so every lead weighs it, not just
 		// the first one to speak.
 		steering := o.runner.DrainSteering(threadID)
+		if len(steering) > 0 {
+			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
+				ID:       o.runner.nextID(),
+				Type:     contracts.CmdSteeringInjected,
+				ThreadID: threadID,
+				Injected: &contracts.SteeringInjected{Count: len(steering)},
+			}); err != nil {
+				return err
+			}
+		}
 		dispatchedThisRound := false
 		for i := range t.leads {
 			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering)

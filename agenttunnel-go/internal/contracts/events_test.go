@@ -16,6 +16,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		SubthreadSpawned{ThreadID: "t2"},
 		ThreadRenamed{Title: "renamed thread"},
 		MessageSent{MessageID: "m1", Author: "user", Text: "hello"},
+		SteeringInjected{Count: 2},
 		ModelSet{Selection: ModelSelection{InstanceID: "i", Model: "gpt-5"}},
 		AutoModeSet{Enabled: true},
 		PeerMailboxSet{Enabled: true},

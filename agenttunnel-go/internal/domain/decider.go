@@ -331,6 +331,15 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{*cmd.Message}, nil
 
+	case contracts.CmdSteeringInjected:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Injected == nil || cmd.Injected.Count < 1 {
+			return nil, fmt.Errorf("%w: injected steering count must be at least 1", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{*cmd.Injected}, nil
+
 	case contracts.CmdReviewCommentAdd:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

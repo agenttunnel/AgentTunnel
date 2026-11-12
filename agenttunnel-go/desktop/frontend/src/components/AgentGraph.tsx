@@ -537,6 +537,11 @@ export function AgentGraph({
               "live"
             )}
           </span>
+          {view.steering.pending > 0 && (
+            <span className="graph-steer" title="Steering waiting for the next round">
+              {view.steering.pending} steering queued
+            </span>
+          )}
         </div>
       )}
       {messageCount === 0 && (

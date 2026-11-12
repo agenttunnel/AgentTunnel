@@ -38,6 +38,7 @@ const (
 	CmdQuestionAsk        CommandType = "thread.question.ask"
 	CmdQuestionClose      CommandType = "thread.question.close"
 	CmdPRTrack            CommandType = "thread.pr.track"
+	CmdSteeringInjected   CommandType = "thread.steering.injected"
 )
 
 // DispatchTask is the orchestrator's instruction to spawn a subagent.
@@ -83,6 +84,7 @@ type Command struct {
 	SharedContext  *SharedContextSet          `json:"sharedContext,omitempty"`
 	Mailbox        *MailboxPosted             `json:"mailbox,omitempty"`
 	Message        *MessageSent               `json:"message,omitempty"`
+	Injected       *SteeringInjected          `json:"injected,omitempty"`
 	ReviewComment  *ReviewCommentAdded        `json:"reviewComment,omitempty"`
 	ReviewSubmit   *ReviewCommentsSubmitted   `json:"reviewSubmit,omitempty"`
 	ReviewOpen     *ReviewThreadOpened        `json:"reviewOpen,omitempty"`
