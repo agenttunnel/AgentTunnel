@@ -90,6 +90,68 @@ func TestThreadCreateSurfacesUserOwner(t *testing.T) {
 	if st.Owner != contracts.ThreadOwnerUser {
 		t.Fatalf("thread.get owner = %q, want %q", st.Owner, contracts.ThreadOwnerUser)
 	}
+
+	// Pin the literal wire key, not just the Go field: the desktop owner chip
+	// reads "owner" from raw JSON, and renaming the json tag would keep every
+	// struct-level assertion green while the wire (and the chip) silently
+	// changes. A tag rename has bit this repo before.
+	listRaw, err := json.Marshal(threads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listRows []map[string]any
+	if err := json.Unmarshal(listRaw, &listRows); err != nil {
+		t.Fatal(err)
+	}
+	if len(listRows) != 1 {
+		t.Fatalf("raw thread.list rows = %d, want 1", len(listRows))
+	}
+	if got, ok := listRows[0]["owner"]; !ok || got != "user" {
+		t.Fatalf(`raw thread.list row owner = %v (present=%t), want key "owner" = "user"`, got, ok)
+	}
+
+	stateRaw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stateRow map[string]any
+	if err := json.Unmarshal(stateRaw, &stateRow); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := stateRow["owner"]; !ok || got != "user" {
+		t.Fatalf(`raw thread.get state owner = %v (present=%t), want key "owner" = "user"`, got, ok)
+	}
+
+	// omitempty means a pre-change thread (empty owner) serializes WITHOUT the
+	// key; the frontend reads absence as user. Work on copies so a zeroed
+	// owner cannot leak back into the assertions above.
+	legacy := threads[0]
+	legacy.Owner = ""
+	legacyRaw, err := json.Marshal([]ThreadSummary{legacy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyRows []map[string]any
+	if err := json.Unmarshal(legacyRaw, &legacyRows); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := legacyRows[0]["owner"]; ok {
+		t.Fatal(`legacy (empty-owner) thread.list row still carries the "owner" key; omitempty broken`)
+	}
+
+	legacyState := st.Clone()
+	legacyState.Owner = ""
+	legacyStateRaw, err := json.Marshal(legacyState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyStateRow map[string]any
+	if err := json.Unmarshal(legacyStateRaw, &legacyStateRow); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := legacyStateRow["owner"]; ok {
+		t.Fatal(`legacy (empty-owner) thread.get state still carries the "owner" key; omitempty broken`)
+	}
 }
 
 // TestSubthreadOwnerIsOrchestrator covers the point of the feature: a subthread
@@ -130,6 +192,42 @@ func TestSubthreadOwnerIsOrchestrator(t *testing.T) {
 	}
 	if got := owners[child]; got != contracts.ThreadOwnerOrchestrator {
 		t.Fatalf("child owner = %q, want %q", got, contracts.ThreadOwnerOrchestrator)
+	}
+
+	// Pin the literal wire keys on the raw JSON rows, so a json tag rename
+	// cannot slip past the struct-level assertions above and silently break
+	// desktop consumers that read "owner" from the wire.
+	listRaw, err := json.Marshal(threads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listRows []map[string]any
+	if err := json.Unmarshal(listRaw, &listRows); err != nil {
+		t.Fatal(err)
+	}
+	rowsByID := map[string]map[string]any{}
+	for _, row := range listRows {
+		if id, ok := row["id"].(string); ok {
+			rowsByID[id] = row
+		}
+	}
+	if got, ok := rowsByID[string(parent)]["owner"]; !ok || got != "user" {
+		t.Fatalf(`raw parent row owner = %v (present=%t), want key "owner" = "user"`, got, ok)
+	}
+	if got, ok := rowsByID[string(child)]["owner"]; !ok || got != "orchestrator" {
+		t.Fatalf(`raw child row owner = %v (present=%t), want key "owner" = "orchestrator"`, got, ok)
+	}
+
+	childRaw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var childRow map[string]any
+	if err := json.Unmarshal(childRaw, &childRow); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := childRow["owner"]; !ok || got != "orchestrator" {
+		t.Fatalf(`raw child state owner = %v (present=%t), want key "owner" = "orchestrator"`, got, ok)
 	}
 
 	// Wait for the subthread's turn to finish and report back, so the test
