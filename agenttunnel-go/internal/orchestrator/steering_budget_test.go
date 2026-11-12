@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -32,6 +33,7 @@ printf '{"type":"text","text":"report-%s"}\n' "$AT_PASS"
 printf '{"usage":{"input_tokens":1,"output_tokens":1}}\n'`
 
 	const steer = "drop the parser work"
+	var mu sync.Mutex
 	prompts := map[int]string{}
 	var r *Runner
 	var eng *domain.Engine
@@ -39,7 +41,9 @@ printf '{"usage":{"input_tokens":1,"output_tokens":1}}\n'`
 	r, eng, ctx = newHarnessInvoking(t, func(spec providers.SessionSpec) (providers.CommandSpec, error) {
 		if spec.Role == contracts.RoleOrchestrator {
 			pass := passOf(spec)
+			mu.Lock()
 			prompts[pass] = spec.Prompt
+			mu.Unlock()
 			if pass == 1 {
 				// The user steers while the team's second pass is running.
 				_ = eng.Dispatch(ctx, contracts.Command{
@@ -58,7 +62,10 @@ printf '{"usage":{"input_tokens":1,"output_tokens":1}}\n'`
 	if r.HasSteering("t1") {
 		t.Fatal("steering was left queued after the turn ended; it would surface in an unrelated later turn")
 	}
-	if !strings.Contains(prompts[2], steer) {
-		t.Fatalf("the steer posted during the last pass was never weighed in this turn; pass 2 prompt:\n%s", prompts[2])
+	mu.Lock()
+	pass2 := prompts[2]
+	mu.Unlock()
+	if !strings.Contains(pass2, steer) {
+		t.Fatalf("the steer posted during the last pass was never weighed in this turn; pass 2 prompt:\n%s", pass2)
 	}
 }
