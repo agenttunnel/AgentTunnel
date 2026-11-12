@@ -28,10 +28,13 @@ type fakeControlActions struct {
 	turnErr     error
 	steerErr    error
 	answerErr   error
+	btwAnswer   string
+	btwErr      error
 
 	turns   []controlTextCall
 	steers  []controlTextCall
 	answers []controlAnswerCall
+	btws    []controlTextCall
 
 	masterResult orchestrator.MasterResult
 	masterErr    error
@@ -86,6 +89,11 @@ func (f *fakeControlActions) ControlPendingQuestion(context.Context, contracts.T
 func (f *fakeControlActions) ControlAnswer(_ context.Context, id contracts.ThreadID, questionID string, selected []string, text string) error {
 	f.answers = append(f.answers, controlAnswerCall{id, questionID, selected, text})
 	return f.answerErr
+}
+
+func (f *fakeControlActions) ControlBtw(_ context.Context, id contracts.ThreadID, question string) (string, error) {
+	f.btws = append(f.btws, controlTextCall{id, question})
+	return f.btwAnswer, f.btwErr
 }
 
 func (f *fakeControlActions) ControlMaster(_ context.Context, text string, history []orchestrator.MasterMessage) (orchestrator.MasterResult, error) {
@@ -194,6 +202,70 @@ func TestControlRouterExplicitCommands(t *testing.T) {
 	}
 }
 
+// /btw asks the selected thread a side question: recorded nowhere, no turn
+// slot, no steer — on a running thread and an idle one alike, which is the
+// app's /btw contract.
+func TestControlRouterBtw(t *testing.T) {
+	ctx := context.Background()
+	actions := newFakeActions()
+	actions.btwAnswer = "It is running the suite."
+	router := NewControlRouter(actions)
+	unthrottle(router)
+
+	// Without a selection, and with no question, nothing reaches a thread.
+	if reply := router.Handle(ctx, "/btw what is it doing?"); !strings.Contains(reply, "No thread selected") {
+		t.Fatalf("unselected reply = %q", reply)
+	}
+	if reply := router.Handle(ctx, "/btw"); !strings.Contains(reply, "Send /btw <question>") {
+		t.Fatalf("bare /btw reply = %q, want usage", reply)
+	}
+	if len(actions.btws) != 0 {
+		t.Fatalf("btws = %+v, want no ask yet", actions.btws)
+	}
+
+	// A running thread is asked without steering or turning it.
+	router.Handle(ctx, "/use 2")
+	if reply := router.Handle(ctx, "/btw what is it doing?"); reply != "Btw: It is running the suite." {
+		t.Fatalf("btw reply = %q", reply)
+	}
+	if len(actions.btws) != 1 || actions.btws[0] != (controlTextCall{"t2", "what is it doing?"}) {
+		t.Fatalf("btws = %+v", actions.btws)
+	}
+	if len(actions.turns)+len(actions.steers) != 0 {
+		t.Fatal("/btw must not start a turn or steer, even on a running thread")
+	}
+
+	// An idle thread is just as askable; the app's /btw has no running gate.
+	router.Handle(ctx, "/use t1")
+	if reply := router.Handle(ctx, "/btw status?"); reply != "Btw: It is running the suite." {
+		t.Fatalf("idle-thread reply = %q", reply)
+	}
+
+	// Action errors surface, and an empty answer is reported, not sent.
+	actions.btwErr = errors.New("side questions are unavailable")
+	if reply := router.Handle(ctx, "/btw again"); !strings.Contains(reply, "side questions are unavailable") {
+		t.Fatalf("error reply = %q", reply)
+	}
+	actions.btwErr = nil
+	actions.btwAnswer = "  "
+	if reply := router.Handle(ctx, "/btw hi"); !strings.Contains(reply, "no answer") {
+		t.Fatalf("empty answer reply = %q", reply)
+	}
+}
+
+// A long side answer is clipped, so one stays a readable chat message.
+func TestControlRouterBtwClipsLongAnswers(t *testing.T) {
+	actions := newFakeActions()
+	actions.btwAnswer = strings.Repeat("a", controlBtwMax+100)
+	router := NewControlRouter(actions)
+	unthrottle(router)
+	router.Handle(context.Background(), "/use 1")
+
+	if reply, want := router.Handle(context.Background(), "/btw tell me more"), "Btw: "+strings.Repeat("a", controlBtwMax)+"…"; reply != want {
+		t.Fatalf("reply length = %d runes, want the clipped %d", len([]rune(reply)), len([]rune(want)))
+	}
+}
+
 func TestControlRouterThreadsAndUnknownCommands(t *testing.T) {
 	ctx := context.Background()
 	actions := newFakeActions()
@@ -209,8 +281,8 @@ func TestControlRouterThreadsAndUnknownCommands(t *testing.T) {
 	}
 
 	before := len(actions.turns) + len(actions.steers) + len(actions.answers)
-	if reply := router.Handle(ctx, "/exec rm -rf /"); !strings.Contains(reply, "Unknown command") {
-		t.Fatalf("unknown command reply = %q", reply)
+	if reply := router.Handle(ctx, "/exec rm -rf /"); !strings.Contains(reply, "Unknown command") || !strings.Contains(reply, "/btw") {
+		t.Fatalf("unknown command reply = %q, want the unknown-command notice naming /btw", reply)
 	}
 	if after := len(actions.turns) + len(actions.steers) + len(actions.answers); after != before {
 		t.Fatal("an unknown slash command must not reach any action")
@@ -514,14 +586,14 @@ func TestControlRouterMasterTargetRefusesThreadCommands(t *testing.T) {
 	router.Handle(ctx, "/use 1")
 	router.Handle(ctx, "/use master")
 
-	for _, cmd := range []string{"/steer focus", "/turn go", "/answer yes"} {
+	for _, cmd := range []string{"/steer focus", "/turn go", "/answer yes", "/btw what is left?"} {
 		if reply := router.Handle(ctx, cmd); !strings.Contains(reply, "Master is selected") {
 			t.Fatalf("%s reply = %q, want the Master target named", cmd, reply)
 		}
 	}
-	if len(actions.steers)+len(actions.turns)+len(actions.answers)+len(actions.masters) != 0 {
-		t.Fatalf("thread commands acted: steers=%+v turns=%+v answers=%+v masters=%+v",
-			actions.steers, actions.turns, actions.answers, actions.masters)
+	if len(actions.steers)+len(actions.turns)+len(actions.answers)+len(actions.btws)+len(actions.masters) != 0 {
+		t.Fatalf("thread commands acted: steers=%+v turns=%+v answers=%+v btws=%+v masters=%+v",
+			actions.steers, actions.turns, actions.answers, actions.btws, actions.masters)
 	}
 }
 
@@ -575,5 +647,41 @@ func TestControlMasterAnswersThroughDispatcher(t *testing.T) {
 
 	if reply := router.Handle(ctx, "/master what is idle?"); reply != "Master: Two threads are idle." {
 		t.Fatalf("master reply = %q", reply)
+	}
+}
+
+// Through the real dispatcher, /btw rides thread.btw: the same answer the
+// desktop's /btw gets, no turn slot taken, and nothing recorded — so it keeps
+// working while a turn holds the thread.
+func TestControlBtwAnswersThroughDispatcher(t *testing.T) {
+	ctx := context.Background()
+	eng, disp := newBtwFixture(t)
+	router := NewControlRouter(disp)
+	unthrottle(router)
+
+	if reply := router.Handle(ctx, "/use 1"); !strings.Contains(reply, "Selected") {
+		t.Fatalf("use reply = %q", reply)
+	}
+
+	// A turn holding the slot must not refuse the side question; the app's
+	// /btw answers beside a running turn.
+	_, release, err := disp.beginTurn(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	before, _ := eng.State(ctx, "t1")
+	if reply := router.Handle(ctx, "/btw what is it doing?"); reply != "Btw: ANSWER" {
+		t.Fatalf("busy-thread btw reply = %q, want the scripted answer", reply)
+	}
+	after, _ := eng.State(ctx, "t1")
+	if len(after.Messages) != len(before.Messages) {
+		t.Fatalf("messages = %d, want unchanged at %d: a side question is recorded nowhere", len(after.Messages), len(before.Messages))
+	}
+
+	// A blank question is refused before the runner is reached, matching the
+	// RPC's validation the desktop also sees.
+	if reply := router.Handle(ctx, "/btw   "); !strings.Contains(reply, "Send /btw <question>") {
+		t.Fatalf("blank question reply = %q", reply)
 	}
 }

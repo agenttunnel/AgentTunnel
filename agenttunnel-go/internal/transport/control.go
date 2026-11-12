@@ -49,6 +49,10 @@ type ControlActions interface {
 	// ControlAnswer answers one question. selected carries a choice option;
 	// text carries free text.
 	ControlAnswer(ctx context.Context, id contracts.ThreadID, questionID string, selected []string, text string) error
+	// ControlBtw asks a thread one side question. The answer comes from a
+	// snapshot and is recorded nowhere, so it works while a turn runs —
+	// the same contract as the desktop's /btw.
+	ControlBtw(ctx context.Context, id contracts.ThreadID, question string) (string, error)
 	// ControlMaster asks the home-screen orchestrator one message, with the
 	// chat's own prior exchange as history.
 	ControlMaster(ctx context.Context, text string, history []orchestrator.MasterMessage) (orchestrator.MasterResult, error)
@@ -102,6 +106,8 @@ func (r *ControlRouter) Handle(ctx context.Context, text string) string {
 		return r.answer(ctx, arg)
 	case "/turn":
 		return r.turn(ctx, arg)
+	case "/btw":
+		return r.btw(ctx, arg)
 	case "/master":
 		if arg == "" {
 			return "Ask Master what? Send /master <text>."
@@ -109,7 +115,7 @@ func (r *ControlRouter) Handle(ctx context.Context, text string) string {
 		return r.askMaster(ctx, arg)
 	}
 	if strings.HasPrefix(cmd, "/") {
-		return fmt.Sprintf("Unknown command %s. Use /threads, /use, /master, /steer, /answer, or /turn.", clipRunes(cmd, 24))
+		return fmt.Sprintf("Unknown command %s. Use /threads, /use, /btw, /master, /steer, /answer, or /turn.", clipRunes(cmd, 24))
 	}
 	return r.message(ctx, text)
 }
@@ -285,6 +291,29 @@ func (r *ControlRouter) turn(ctx context.Context, text string) string {
 	return "Started a turn on " + controlThreadLabel(thread) + "."
 }
 
+// btw asks the selected thread a side question. Like the app's /btw it works
+// whether a turn is running or not: the answer comes from a snapshot, is
+// recorded nowhere, and takes no turn slot, so an idle thread is fine and a
+// running one is never steered or interrupted.
+func (r *ControlRouter) btw(ctx context.Context, text string) string {
+	if strings.TrimSpace(text) == "" {
+		return "Ask what? Send /btw <question>."
+	}
+	thread, problem := r.selectedThread(ctx)
+	if problem != "" {
+		return problem
+	}
+	answer, err := r.actions.ControlBtw(ctx, thread.ID, text)
+	if err != nil {
+		return "Could not ask: " + err.Error()
+	}
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return "Btw came back with no answer."
+	}
+	return "Btw: " + clipRunes(answer, controlBtwMax)
+}
+
 func (r *ControlRouter) answer(ctx context.Context, arg string) string {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
@@ -426,6 +455,8 @@ const (
 	// controlMasterHistory bounds the chat's exchange with Master. The
 	// orchestrator reads at most this many messages anyway.
 	controlMasterHistory = 12
+	// controlBtwMax bounds a side answer so one stays a readable chat message.
+	controlBtwMax = 4000
 )
 
 // turnRunning reports whether a turn holds the thread's slot, which is the
@@ -521,6 +552,25 @@ func (d *Dispatcher) ControlSteer(ctx context.Context, id contracts.ThreadID, te
 	}
 	_, err = d.Handle(ctx, Request{ID: d.nextID(), Method: "thread.steer", Params: params})
 	return err
+}
+
+// ControlBtw asks a thread one side question through the same RPC the desktop's
+// /btw uses, so the chat and the app get the identical answer and validation.
+func (d *Dispatcher) ControlBtw(ctx context.Context, id contracts.ThreadID, question string) (string, error) {
+	params, err := json.Marshal(map[string]any{"threadId": id, "question": question})
+	if err != nil {
+		return "", err
+	}
+	out, err := d.Handle(ctx, Request{ID: d.nextID(), Method: "thread.btw", Params: params})
+	if err != nil {
+		return "", err
+	}
+	reply, ok := out.(map[string]any)
+	if !ok {
+		return "", errors.New("side questions are unavailable")
+	}
+	answer, _ := reply["answer"].(string)
+	return answer, nil
 }
 
 // ControlPendingQuestion reads the oldest unanswered question from the thread's
