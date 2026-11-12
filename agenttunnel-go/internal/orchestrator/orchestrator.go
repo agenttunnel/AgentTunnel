@@ -402,6 +402,20 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		return err
 	}
 
+	// A thread that still carries its placeholder name is titled right away,
+	// from the first prompt alone, off the turn so it cannot delay the reply.
+	// The cycle's summary refines it once the turn lands. titleDone orders the
+	// two generations so the summary-informed title is the one that stays.
+	var titleDone chan struct{}
+	if isDefaultTitle(state.Title) {
+		titleDone = make(chan struct{})
+		done := titleDone
+		go func() {
+			defer close(done)
+			o.runner.generateTitle(context.Background(), threadID, role, userMessage, "")
+		}()
+	}
+
 	t := turn{threadID: threadID, role: role, message: userMessage, leads: make([]contracts.AgentID, state.LeadCount())}
 	seed := make([]contracts.DispatchTask, 0, len(t.leads))
 	for i := range t.leads {
@@ -557,10 +571,14 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
-	// Name the thread once, from the first exchange, using the orchestrator's
-	// model. It runs off the turn so it cannot delay the reply.
-	if state, err := o.runner.engine.State(ctx, threadID); err == nil && isDefaultTitle(state.Title) {
-		go o.runner.generateTitle(context.Background(), threadID, role, userMessage, finalText)
+	// The first cycle names the thread twice: once from the prompt at the start
+	// of the turn, and now again from the prompt plus what the team actually
+	// did. The second pass waits for the first and overwrites it.
+	if titleDone != nil {
+		go func() {
+			<-titleDone
+			o.runner.generateTitle(context.Background(), threadID, role, userMessage, finalText)
+		}()
 	}
 	return nil
 }

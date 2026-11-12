@@ -2319,8 +2319,8 @@ export default function App() {
   const newThread = async () => {
     const rpc = rpcRef.current;
     if (!rpc || !projectId) return;
-    // No title: the server names it, and the orchestrator model renames it after
-    // the first exchange.
+    // No title: the server names it, and the orchestrator model renames it from
+    // the first prompt, then again once that turn completes.
     const created = await rpc.call<{ threadId: string }>("thread.create", { projectId });
     const list = await rpc.call<ThreadSummary[]>("thread.list");
     setThreads(list);

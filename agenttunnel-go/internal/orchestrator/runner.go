@@ -1037,8 +1037,10 @@ func (r *Runner) HasSteering(threadID contracts.ThreadID) bool {
 	return r.steering != nil && r.steering.Has(threadID)
 }
 
-// generateTitle asks the orchestrator's model to name the session, once, after
-// the first exchange. It runs off the turn so it cannot delay the reply.
+// generateTitle asks the orchestrator's model to name the session. It is
+// invoked at the start of the first turn (prompt only) and again when that turn
+// completes (prompt plus the cycle's summary). It runs off the turn so it
+// cannot delay the reply.
 func (r *Runner) generateTitle(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, userMessage, summary string) {
 	harness, model, variant := r.roleRuntimeFor(ctx, threadID, role)
 	if !r.harnessAllowed(harness) {
