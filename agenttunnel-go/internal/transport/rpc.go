@@ -189,7 +189,7 @@ type Dispatcher struct {
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
-	turns   map[contracts.ThreadID]context.CancelFunc
+	turns   map[contracts.ThreadID]turnRun
 
 	// worktreeFailures holds, per thread, the reason its last first-worktree cut
 	// failed. It only dedupes the audit line: every turn still retries the cut.
@@ -688,13 +688,13 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 	d.turnsMu.Lock()
 	defer d.turnsMu.Unlock()
 	if d.turns == nil {
-		d.turns = map[contracts.ThreadID]context.CancelFunc{}
+		d.turns = map[contracts.ThreadID]turnRun{}
 	}
 	if _, running := d.turns[threadID]; running {
 		return nil, nil, fmt.Errorf("a turn is already running on thread %s", threadID)
 	}
 	turnCtx, cancel := context.WithCancel(ctx)
-	d.turns[threadID] = cancel
+	d.turns[threadID] = turnRun{ctx: turnCtx, cancel: cancel}
 	return turnCtx, func() {
 		cancel()
 		// Nothing is left to hear an answer once the turn is over.
@@ -712,12 +712,48 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 // thread's turn slot stays taken until the turn finishes unwinding.
 func (d *Dispatcher) stopTurn(threadID contracts.ThreadID) bool {
 	d.turnsMu.Lock()
-	cancel, running := d.turns[threadID]
+	run, running := d.turns[threadID]
 	d.turnsMu.Unlock()
 	if running {
-		cancel()
+		run.cancel()
 	}
 	return running
+}
+
+// turnRun is a thread's claimed turn slot: its context ends when the turn is
+// stopped or finishes, and cancel ends it.
+type turnRun struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// recordShell writes a finished command into the thread log, so the command and
+// its output show in the chat. Author "shell" keeps it from counting as a turn.
+func (d *Dispatcher) recordShell(ctx context.Context, threadID contracts.ThreadID, command string, res shellResult) error {
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID:       d.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
+	})
+}
+
+// toolContext returns a context for a tool call's shell: it ends when the
+// thread's running turn is stopped, or when the calling process goes away. With
+// no turn running on the thread, only the caller's disconnect ends it.
+func (d *Dispatcher) toolContext(reqCtx context.Context, threadID contracts.ThreadID) (context.Context, context.CancelFunc) {
+	base := reqCtx
+	d.turnsMu.Lock()
+	if run, running := d.turns[threadID]; running {
+		base = run.ctx
+	}
+	d.turnsMu.Unlock()
+	ctx, cancel := context.WithCancel(base)
+	stop := context.AfterFunc(reqCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // Handle executes one RPC method, recording it in the action log.
@@ -1062,12 +1098,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID:       d.nextID(),
-			Type:     contracts.CmdMessageAppend,
-			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
-		}); err != nil {
+		if err := d.recordShell(ctx, p.ThreadID, command, res); err != nil {
 			return nil, err
 		}
 		return map[string]any{
@@ -1184,22 +1215,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		st, err := d.engine.State(ctx, p.ThreadID)
-		if err != nil {
-			return nil, err
-		}
-		if !st.Exists {
-			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
-		}
-		// A refused removal (dirty worktree, running turn) aborts the delete.
-		if p.RemoveWorktree && st.Worktree != nil && !st.Worktree.Inherited {
-			if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
-				return nil, err
-			}
-		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: p.ThreadID,
-		}); err != nil {
+		if err := d.deleteThread(ctx, p.ThreadID, p.RemoveWorktree); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -2170,6 +2186,49 @@ func (d *Dispatcher) prAction(ctx context.Context, req Request) (any, error) {
 		return nil, err
 	}
 	return map[string]any{"message": msg}, nil
+}
+
+// threadBusy reports whether a thread has a turn in flight or an agent that
+// has not finished. Both thread.delete and the lead's thread-delete refuse it.
+func (d *Dispatcher) threadBusy(id contracts.ThreadID, st *domain.ThreadState) bool {
+	if d.threadRunning(id) {
+		return true
+	}
+	for _, a := range st.Agents {
+		if !a.Status.Terminal() {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteThread tombstones a thread, and with removeWorktree also removes the
+// thread's own worktree before the tombstone. The running check and the dirty
+// check (worktreeRemove refuses a dirty tree) both run before anything is
+// removed, so those refusals keep the worktree. The decider is the last gate and
+// runs after the removal, so a turn or agent that starts between the running
+// check and the dispatch can still get the delete refused, leaving the thread
+// with its worktree already gone. The window is one engine round-trip. Closing it
+// would need worktree removal inside the decider, which the engine does not do.
+func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, removeWorktree bool) error {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !st.Exists {
+		return fmt.Errorf("thread %q does not exist: %w", id, domain.ErrThreadNotFound)
+	}
+	if d.threadBusy(id, st) {
+		return fmt.Errorf("%w: thread %q is running; stop it first", domain.ErrInvalidCommand, id)
+	}
+	if removeWorktree && st.Worktree != nil && !st.Worktree.Inherited {
+		if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
+			return err
+		}
+	}
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
+	})
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {
