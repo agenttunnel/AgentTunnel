@@ -1056,6 +1056,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.updater.Apply(ctx)
 
+	case "update.takeReleaseNotes":
+		// Read-and-clear: null when nothing is pending for the running build.
+		if d.updater == nil {
+			return nil, nil
+		}
+		n, ok, err := d.updater.TakeReleaseNotes()
+		if err != nil || !ok {
+			return nil, err
+		}
+		return n, nil
+
 	case "review.diff":
 		var p struct {
 			ThreadID contracts.ThreadID `json:"threadId"`

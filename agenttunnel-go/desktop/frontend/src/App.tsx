@@ -450,6 +450,13 @@ function Elapsed({ since }: { since?: string }) {
   return <span className="act-elapsed">{label}</span>;
 }
 
+// Release notes for the build that an update just installed. The daemon hands
+// them out once, on the first start of that version.
+interface ReleaseNotes {
+  version: string;
+  body: string;
+}
+
 /** fmtUpdated renders a thread's last activity as a short local date. */
 function fmtUpdated(at?: string): string {
   if (!at) return "";
@@ -615,6 +622,7 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes | null>(null);
 
   // Threads with a turn, council, or review in flight. Keyed by thread so a turn
   // running in one thread never gates or steers another.
@@ -1259,6 +1267,13 @@ export default function App() {
       setStatus("online");
       // Not awaited: a slow GitHub lookup must not hold up startup.
       rpc.call<UpdateStatus>("update.check").then(setUpdate).catch(() => {});
+      // Read-and-clear on the daemon: a null answer means nothing is pending.
+      rpc
+        .call<ReleaseNotes | null>("update.takeReleaseNotes")
+        .then((n) => {
+          if (n && !cancelled) setReleaseNotes(n);
+        })
+        .catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -3827,6 +3842,38 @@ export default function App() {
           roleName={rolesById[detailAgent.role] || detailAgent.role}
           onClose={() => setDetailId(null)}
         />
+      )}
+
+      {releaseNotes && (
+        <div className="overlay" onClick={() => setReleaseNotes(null)}>
+          <section
+            className="sheet notes-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="release-notes-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="sheet-head notes-head">
+              <button
+                type="button"
+                className="notes-close"
+                onClick={() => setReleaseNotes(null)}
+                aria-label="Close release notes"
+                title="Close"
+              >
+                ×
+              </button>
+              <strong id="release-notes-title">AgentTunnel {releaseNotes.version}</strong>
+            </header>
+            <div className="sheet-body">
+              {releaseNotes.body.trim() ? (
+                <Markdown text={releaseNotes.body} />
+              ) : (
+                <p className="hint">This release has no notes.</p>
+              )}
+            </div>
+          </section>
+        </div>
       )}
 
       {settingsOpen && settings && (
