@@ -144,6 +144,8 @@ export type ThreadState = {
   reviewComments: ReviewComment[] | null;
   /** Reviewer threads on diff lines. Absent on daemons that predate them. */
   reviewThreads?: ReviewThread[] | null;
+  /** Who started this thread; absent on daemons that predate it means user. */
+  owner?: "user" | "orchestrator";
   /** Agent questions for the human, oldest first. Pending ones await an answer. */
   questions?: AgentQuestion[] | null;
   /** The agreed task list, in the order the leads added it. */
@@ -155,6 +157,8 @@ type ThreadSummary = {
   projectId?: string;
   /** Set on a subthread: the thread that started it. */
   parentThreadId?: string;
+  /** Who started this thread; absent (older threads) means user. */
+  owner?: "user" | "orchestrator";
   updatedAt?: string;
   messages: number;
   agents: number;
@@ -2747,6 +2751,11 @@ export default function App() {
                   <div className="tc-title" title={t.title}>
                     {t.title}
                   </div>
+                  {t.owner === "orchestrator" && (
+                    <span className="tc-owner" title="Started by the orchestrator">
+                      Orchestrator
+                    </span>
+                  )}
                 </div>
                 <div className="tc-meta">
                   {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}

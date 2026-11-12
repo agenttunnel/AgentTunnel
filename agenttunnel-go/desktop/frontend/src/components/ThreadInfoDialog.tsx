@@ -26,6 +26,8 @@ type AgentLike = {
 type StateLike = {
   title: string;
   turn: number;
+  /** Who started this thread; absent (older threads) means user. */
+  owner?: "user" | "orchestrator";
   messages?: { id: string }[] | null;
   agents: Record<string, AgentLike> | null;
   agentOrder: string[] | null;
@@ -73,7 +75,11 @@ export function ThreadInfoDialog({
           <div className="detail-title">
             <strong>{thread?.title ?? "Thread"}</strong>
             <span className="detail-sub">
-              {thread ? `${agents.length} agents · turn #${thread.turn}` : "loading…"}
+              {thread
+                ? `${agents.length} agents · turn #${thread.turn} · ${
+                    thread.owner === "orchestrator" ? "started by the orchestrator" : "started by you"
+                  }`
+                : "loading…"}
             </span>
           </div>
           <button onClick={onClose}>Close</button>
