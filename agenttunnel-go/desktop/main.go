@@ -1,6 +1,6 @@
-// Command agenttunnel is the desktop client. It either embeds the AgentTunnel
+// Command agenttunnel-desktop is the desktop client. It either embeds the AgentTunnel
 // daemon on a loopback port, or attaches to a daemon another process owns
-// (started by the `at` CLI or left running in the background), and opens a
+// (started by the `agenttunnel` CLI or left running in the background), and opens a
 // native window (system webview) onto the UI. The UI is just another client: it
 // talks to the daemon over the same WebSocket API that web and mobile use.
 package main
@@ -55,12 +55,12 @@ func main() {
 			usage()
 			os.Exit(0)
 		case args[0] == "--version":
-			fmt.Println("agenttunnel", version)
+			fmt.Println("agenttunnel-desktop", version)
 			os.Exit(0)
 		case len(args) == 1:
 			d, err := launchDirArg(args[0])
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "agenttunnel:", err)
+				fmt.Fprintln(os.Stderr, "agenttunnel-desktop:", err)
 				os.Exit(2)
 			}
 			dir = d
@@ -90,7 +90,7 @@ func main() {
 
 	keepRunning.Store(loadPrefs(state).KeepRunning)
 
-	// A daemon someone else owns (an `at` autostart, or a desktop left in the
+	// A daemon someone else owns (an `agenttunnel` autostart, or a desktop left in the
 	// background) answers discovery. Attach to it: never start a second daemon
 	// and never touch its state files.
 	if target, ok := findDaemon(state); ok {
@@ -133,7 +133,7 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string)
 		Workdir:  cwd,
 		Config:   orchestrator.Config{MaxPasses: 3, MaxConcurrency: 4},
 		Version:  version,
-		// `at daemon stop` must take the window down with the daemon.
+		// `agenttunnel daemon stop` must take the window down with the daemon.
 		OnShutdown: func() {
 			cancel()
 			if a := appRef.Load(); a != nil {
@@ -142,13 +142,13 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string)
 		},
 	})
 	if err != nil {
-		log.Fatalf("agenttunnel: %v", err)
+		log.Fatalf("agenttunnel-desktop: %v", err)
 	}
 	defer d.Close()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Fatalf("agenttunnel: %v", err)
+		log.Fatalf("agenttunnel-desktop: %v", err)
 	}
 	// Agents call the tool endpoint at this address.
 	d.SetEndpoint("http://" + ln.Addr().String())
@@ -165,7 +165,7 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string)
 
 	wsURL := fmt.Sprintf("ws://%s/ws", ln.Addr().String())
 	if err := writeLock(state, launchLock{WsURL: wsURL, Token: d.Token}); err != nil {
-		log.Fatalf("agenttunnel: write launch lock: %v", err)
+		log.Fatalf("agenttunnel-desktop: write launch lock: %v", err)
 	}
 	defer removeLock(state)
 
@@ -181,7 +181,7 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string)
 		if keepRunning.Load() {
 			// The daemon stays; drop this window's launch lock so a fresh
 			// `agenttunnel` attaches to the daemon instead of forwarding into a
-			// window that no longer exists. daemon.json stays for `at`.
+			// window that no longer exists. daemon.json stays for `agenttunnel`.
 			_ = os.Remove(lockPath(state))
 			return
 		}
@@ -320,7 +320,7 @@ func installShellEvents(app *application.App, conn shellConn, state string) {
 		enabled, _ := data["enabled"].(bool)
 		keepRunning.Store(enabled)
 		if err := savePrefs(state, prefs{KeepRunning: enabled}); err != nil {
-			log.Printf("agenttunnel: save desktop preferences: %v", err)
+			log.Printf("agenttunnel-desktop: save desktop preferences: %v", err)
 		}
 	})
 
@@ -333,10 +333,10 @@ func installShellEvents(app *application.App, conn shellConn, state string) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agenttunnel            start the app")
-	fmt.Fprintln(os.Stderr, "       agenttunnel <dir>      open a thread in that project (creates the project if unknown)")
-	fmt.Fprintln(os.Stderr, "       agenttunnel tool ...   agent-callable tool")
-	fmt.Fprintln(os.Stderr, "       agenttunnel --version  print the release version")
+	fmt.Fprintln(os.Stderr, "usage: agenttunnel-desktop            start the app")
+	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop <dir>      open a thread in that project (creates the project if unknown)")
+	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop tool ...   agent-callable tool")
+	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop --version  print the release version")
 }
 
 func stateDir() string {
@@ -350,7 +350,7 @@ func stateDir() string {
 func mustToken() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		log.Fatalf("agenttunnel: generate token: %v", err)
+		log.Fatalf("agenttunnel-desktop: generate token: %v", err)
 	}
 	return hex.EncodeToString(b[:])
 }

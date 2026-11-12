@@ -24,8 +24,8 @@ const jobScript = `printf '{"type":"text","text":"job finished"}\n'
 printf '{"usage":{"input_tokens":5,"output_tokens":2}}\n'`
 
 // TestRunDetachedJobEndToEnd starts a real daemon with a scripted harness and
-// drives `at run` through its own RPC client: project resolution, thread
-// creation, per-role runtimes, a detached turn, then `at ps` and `at logs`
+// drives `agenttunnel run` through its own RPC client: project resolution, thread
+// creation, per-role runtimes, a detached turn, then `agenttunnel ps` and `agenttunnel logs`
 // against the thread it made.
 //
 // The project directory is a plain temp dir, not a git repository: the
@@ -150,7 +150,7 @@ func testRunEndToEnd(t *testing.T, script string, follow bool, release ...func()
 	// anything: poll the durable state until the lead is terminal.
 	waitForThreadIdle(t, c, result.ThreadID)
 
-	// `at ps` sees the thread, named after the template, in its own project.
+	// `agenttunnel ps` sees the thread, named after the template, in its own project.
 	var psOut strings.Builder
 	psEnv := &Env{Out: &psOut, Err: &psOut, HomeDir: stateDir}
 	if err := renderPs(context.Background(), psEnv, c, psOptions{all: true}, time.Now()); err != nil {
@@ -162,7 +162,7 @@ func testRunEndToEnd(t *testing.T, script string, follow bool, release ...func()
 		}
 	}
 
-	// `at logs` shows the scripted harness's output.
+	// `agenttunnel logs` shows the scripted harness's output.
 	var logsOut strings.Builder
 	logsEnv := &Env{Out: &logsOut, Err: &logsOut, HomeDir: stateDir}
 	row := threadListRow{ID: result.ThreadID}
@@ -173,7 +173,7 @@ func testRunEndToEnd(t *testing.T, script string, follow bool, release ...func()
 		t.Fatalf("logs output missing the harness report:\n%s", logsOut.String())
 	}
 
-	// `at stop` on a finished turn reports that nothing was running.
+	// `agenttunnel stop` on a finished turn reports that nothing was running.
 	var stopped struct {
 		Stopped bool `json:"stopped"`
 	}
@@ -187,7 +187,7 @@ func testRunEndToEnd(t *testing.T, script string, follow bool, release ...func()
 
 // waitForThreadIdle polls thread.get until no agent is running or pending. The
 // turn runs on the daemon's context, so this observes the same durable state a
-// later `at ps` would.
+// later `agenttunnel ps` would.
 func waitForThreadIdle(t *testing.T, c cliCaller, threadID string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)

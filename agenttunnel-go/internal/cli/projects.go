@@ -17,7 +17,7 @@ func init() {
 	Register(Command{
 		Name:    "projects",
 		Summary: "Manage the daemon's project registry",
-		Usage:   "at projects <add|ls|rm> [args]",
+		Usage:   "agenttunnel projects <add|ls|rm> [args]",
 		Run:     runProjects,
 	})
 }
@@ -38,7 +38,7 @@ type projectsCreateReply struct {
 }
 
 // runProjects dispatches the subcommands by hand: the registry prints help and
-// exits for a bare group, but `at projects` must list instead.
+// exits for a bare group, but `agenttunnel projects` must list instead.
 func runProjects(ctx context.Context, env *Env, args []string) error {
 	if len(args) == 0 {
 		return runProjectsLs(ctx, env, nil)
@@ -54,14 +54,14 @@ func runProjects(ctx context.Context, env *Env, args []string) error {
 		printProjectsUsage(env.Out)
 		return nil
 	default:
-		fmt.Fprintf(env.Err, "at: unknown projects command %q\n\n", args[0])
+		fmt.Fprintf(env.Err, "agenttunnel: unknown projects command %q\n\n", args[0])
 		printProjectsUsage(env.Err)
 		return exitError{code: 2}
 	}
 }
 
 func printProjectsUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: at projects <add|ls|rm> [args]")
+	fmt.Fprintln(w, "Usage: agenttunnel projects <add|ls|rm> [args]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  add <path> [--name <name>]  Register a project by its directory")
@@ -71,7 +71,7 @@ func printProjectsUsage(w io.Writer) {
 
 // connectProjects resolves the daemon without starting one. Project commands
 // are registry edits, not job launches, so they must not spawn a daemon as a
-// side effect (autostart belongs to `at run`). An explicit --daemon still wins.
+// side effect (autostart belongs to `agenttunnel run`). An explicit --daemon still wins.
 func connectProjects(ctx context.Context, env *Env) (*Client, error) {
 	if env.DaemonURL != "" {
 		c, _, err := env.Connect(ctx)
@@ -79,7 +79,7 @@ func connectProjects(ctx context.Context, env *Env) (*Client, error) {
 	}
 	c, _, err := env.connectExisting(ctx)
 	if err != nil {
-		return nil, errors.New("no AgentTunnel daemon is running; start one with `at daemon start`")
+		return nil, errors.New("no AgentTunnel daemon is running; start one with `agenttunnel daemon start`")
 	}
 	return c, nil
 }
@@ -98,15 +98,15 @@ func runProjectsAdd(ctx context.Context, env *Env, args []string) error {
 		case strings.HasPrefix(arg, "--name="):
 			name = strings.TrimPrefix(arg, "--name=")
 		case strings.HasPrefix(arg, "-"):
-			return usageError("unknown flag %q for at projects add", arg)
+			return usageError("unknown flag %q for agenttunnel projects add", arg)
 		case path != "":
-			return usageError("at projects add takes one path and an optional --name")
+			return usageError("agenttunnel projects add takes one path and an optional --name")
 		default:
 			path = arg
 		}
 	}
 	if path == "" {
-		return usageError("at projects add requires a directory path")
+		return usageError("agenttunnel projects add requires a directory path")
 	}
 
 	resolved, err := resolveProjectDir(path)
@@ -148,7 +148,7 @@ func runProjectsAdd(ctx context.Context, env *Env, args []string) error {
 
 func runProjectsLs(ctx context.Context, env *Env, args []string) error {
 	if len(args) > 0 {
-		return usageError("at projects ls takes no arguments")
+		return usageError("agenttunnel projects ls takes no arguments")
 	}
 	c, err := connectProjects(ctx, env)
 	if err != nil {
@@ -174,15 +174,15 @@ func runProjectsRm(ctx context.Context, env *Env, args []string) error {
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "-"):
-			return usageError("unknown flag %q for at projects rm", arg)
+			return usageError("unknown flag %q for agenttunnel projects rm", arg)
 		case ref != "":
-			return usageError("at projects rm takes one project id or path")
+			return usageError("agenttunnel projects rm takes one project id or path")
 		default:
 			ref = arg
 		}
 	}
 	if ref == "" {
-		return usageError("at projects rm requires a project id or path")
+		return usageError("agenttunnel projects rm requires a project id or path")
 	}
 
 	c, err := connectProjects(ctx, env)
@@ -289,7 +289,7 @@ func matchProject(projects []projectsRow, ref string) (projectsRow, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return projectsRow{}, fmt.Errorf("no project matches %q; run `at projects ls` to see ids and paths", ref)
+		return projectsRow{}, fmt.Errorf("no project matches %q; run `agenttunnel projects ls` to see ids and paths", ref)
 	case 1:
 		return matches[0], nil
 	default:

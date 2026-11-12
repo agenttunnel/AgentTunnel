@@ -1,4 +1,4 @@
-// Package cli implements the `at` command-line client for AgentTunnel. It is a
+// Package cli implements the `agenttunnel` command-line client for AgentTunnel. It is a
 // thin client over the daemon's JSON-RPC WebSocket: commands are registered in
 // init() by the files that own them, so adding a command never edits this file.
 package cli
@@ -16,14 +16,14 @@ import (
 	"strings"
 )
 
-// Command is one node of the `at <group> <sub> [args]` tree. A command with
+// Command is one node of the `agenttunnel <group> <sub> [args]` tree. A command with
 // Subcommands is a group: it only dispatches. Later command files call
 // Register from init().
 type Command struct {
 	Name    string
 	Summary string
-	// Usage is the full usage line shown by `at <command> --help`, e.g.
-	// "at daemon stop". Defaults to "at <name>" when empty.
+	// Usage is the full usage line shown by `agenttunnel <command> --help`, e.g.
+	// "agenttunnel daemon stop". Defaults to "agenttunnel <name>" when empty.
 	Usage string
 	// Run executes a leaf command. Groups leave it nil.
 	Run func(ctx context.Context, env *Env, args []string) error
@@ -124,13 +124,13 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 
 	// A bare --version is the one global flag that is itself a command.
 	if len(args) == 1 && args[0] == "--version" {
-		fmt.Fprintln(env.Out, "at "+version)
+		fmt.Fprintln(env.Out, "agenttunnel "+version)
 		return 0
 	}
 
 	rest, help, err := parseGlobal(args, env)
 	if err != nil {
-		fmt.Fprintln(env.Err, "at:", err)
+		fmt.Fprintln(env.Err, "agenttunnel:", err)
 		return 2
 	}
 	if help {
@@ -152,14 +152,14 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 
 	cmd, ok := findCommand(registry, rest[0])
 	if !ok {
-		fmt.Fprintf(env.Err, "at: unknown command %q\n\n", rest[0])
+		fmt.Fprintf(env.Err, "agenttunnel: unknown command %q\n\n", rest[0])
 		printHelp(env.Err, nil)
 		return 2
 	}
 	args = rest[1:]
 
 	// Walk groups until a leaf command is reached.
-	path := "at " + cmd.Name
+	path := "agenttunnel " + cmd.Name
 	for len(cmd.Subcommands) > 0 {
 		if len(args) == 0 {
 			printHelp(env.Out, &cmd)
@@ -167,7 +167,7 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 		}
 		next, ok := findCommand(cmd.Subcommands, args[0])
 		if !ok {
-			fmt.Fprintf(env.Err, "at: unknown command %q\n\n", path+" "+args[0])
+			fmt.Fprintf(env.Err, "agenttunnel: unknown command %q\n\n", path+" "+args[0])
 			printHelp(env.Err, &cmd)
 			return 2
 		}
@@ -181,11 +181,11 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 		var ee exitError
 		if errors.As(err, &ee) {
 			if ee.err != nil {
-				fmt.Fprintln(env.Err, "at:", ee.err)
+				fmt.Fprintln(env.Err, "agenttunnel:", ee.err)
 			}
 			return ee.code
 		}
-		fmt.Fprintln(env.Err, "at:", err)
+		fmt.Fprintln(env.Err, "agenttunnel:", err)
 		return 1
 	}
 	return 0
@@ -243,7 +243,7 @@ func printHelp(w io.Writer, cmd *Command) {
 	if cmd != nil {
 		usage := cmd.Usage
 		if usage == "" {
-			usage = "at " + cmd.Name
+			usage = "agenttunnel " + cmd.Name
 		}
 		if len(cmd.Subcommands) == 0 {
 			fmt.Fprintf(w, "Usage: %s\n\n%s\n", usage, cmd.Summary)
@@ -253,7 +253,7 @@ func printHelp(w io.Writer, cmd *Command) {
 		printCommands(w, cmd.Subcommands)
 		return
 	}
-	fmt.Fprintln(w, "Usage: at <command> [args]")
+	fmt.Fprintln(w, "Usage: agenttunnel <command> [args]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run a coding agent through the AgentTunnel daemon.")
 	fmt.Fprintln(w)
@@ -284,14 +284,14 @@ func printCommands(w io.Writer, cmds []Command) {
 	}
 }
 
-// printCommandHelp resolves a command path for `at help …`.
+// printCommandHelp resolves a command path for `agenttunnel help …`.
 func printCommandHelp(w io.Writer, path []string) {
 	cmds := registry
 	var found Command
 	for _, name := range path {
 		c, ok := findCommand(cmds, name)
 		if !ok {
-			fmt.Fprintf(w, "at: unknown command %q\n", name)
+			fmt.Fprintf(w, "agenttunnel: unknown command %q\n", name)
 			return
 		}
 		found = c

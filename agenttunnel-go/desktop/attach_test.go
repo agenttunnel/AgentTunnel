@@ -80,7 +80,7 @@ func TestFindDaemonAttachesToReachableDaemon(t *testing.T) {
 }
 
 // A failed probe must leave the file alone: a large environment can outlast the
-// 2s probe, and deleting a live daemon's file strands `at` and invites a second
+// 2s probe, and deleting a live daemon's file strands `agenttunnel` and invites a second
 // daemon on the same state dir. Only a provably dead recorded pid may be
 // cleaned up.
 func TestFindDaemonKeepsUnreachableDiscovery(t *testing.T) {

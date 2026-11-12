@@ -1,6 +1,6 @@
 package main
 
-// Launch handling for `agenttunnel [dir]`: opening a project directory from
+// Launch handling for `agenttunnel-desktop [dir]`: opening a project directory from
 // the terminal. When the app is already running (its lock file answers), the
 // invocation forwards the open-request over the daemon's WebSocket and exits;
 // otherwise the app boots with the directory as its launch target.
@@ -53,7 +53,7 @@ func writeLock(stateDir string, lock launchLock) error {
 		return err
 	}
 	// The daemon is reachable over the same socket the CLI's discovery file
-	// describes, so `at` can drive a desktop-hosted daemon. Both files describe
+	// describes, so `agenttunnel` can drive a desktop-hosted daemon. Both files describe
 	// one server and are removed together.
 	return discovery.Write(stateDir, discovery.Info{
 		WSURL:     lock.WsURL,
@@ -122,7 +122,7 @@ func forwardToRunning(stateDir, dir string) bool {
 	if dir != "" {
 		res, err := rpcCall(ctx, ws, "thread.open", map[string]string{"dir": dir})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agenttunnel: open %s: %v\n", dir, err)
+			fmt.Fprintf(os.Stderr, "agenttunnel-desktop: open %s: %v\n", dir, err)
 			return false
 		}
 		threadID, _ = res["threadId"].(string)

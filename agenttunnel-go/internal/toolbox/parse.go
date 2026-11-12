@@ -138,7 +138,7 @@ func isToolBinary(token string) bool {
 	if idx := strings.LastIndexByte(base, '/'); idx >= 0 {
 		base = base[idx+1:]
 	}
-	return base == "atd" || base == "agenttunnel" || base == "tunnel" || base == "tool"
+	return base == "atd" || base == "agenttunnel" || base == "agenttunnel-desktop" || base == "tunnel" || base == "tool"
 }
 
 // shellFields splits a command line into arguments, honoring single and double

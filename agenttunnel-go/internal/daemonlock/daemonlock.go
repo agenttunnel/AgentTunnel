@@ -1,5 +1,5 @@
 // Package daemonlock serializes the "is a daemon running? if not, start one"
-// decision across processes that share a state directory. `at` holds the lock
+// decision across processes that share a state directory. `agenttunnel` holds the lock
 // across connect -> spawn -> wait, and atd takes it before binding, so two
 // simultaneous first runs cannot both start a daemon and orphan one of them.
 package daemonlock

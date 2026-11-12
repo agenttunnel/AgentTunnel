@@ -18,7 +18,7 @@ type runCall struct {
 	params map[string]any
 }
 
-// recordingCaller is the smallest RPC client `at run` needs. It records each
+// recordingCaller is the smallest RPC client `agenttunnel run` needs. It records each
 // call's params so a test can assert the exact request the CLI builds, and
 // answers from canned results.
 type recordingCaller struct {

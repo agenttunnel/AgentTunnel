@@ -12,12 +12,12 @@ func init() {
 	Register(Command{
 		Name:    "stop",
 		Summary: "Stop a thread's running turn, or its agents",
-		Usage:   "at stop <thread> [--agents]",
+		Usage:   "agenttunnel stop <thread> [--agents]",
 		Run:     runStop,
 	})
 }
 
-// stopOptions is the parsed `at stop` invocation.
+// stopOptions is the parsed `agenttunnel stop` invocation.
 type stopOptions struct {
 	ref    string
 	agents bool
@@ -30,15 +30,15 @@ func parseStopArgs(args []string) (stopOptions, error) {
 		case arg == "--agents":
 			opts.agents = true
 		case strings.HasPrefix(arg, "-"):
-			return opts, usageError("unknown flag %q (usage: at stop <thread> [--agents])", arg)
+			return opts, usageError("unknown flag %q (usage: agenttunnel stop <thread> [--agents])", arg)
 		case opts.ref != "":
-			return opts, usageError("at stop takes one thread reference")
+			return opts, usageError("agenttunnel stop takes one thread reference")
 		default:
 			opts.ref = arg
 		}
 	}
 	if opts.ref == "" {
-		return opts, usageError("at stop requires a thread id, id prefix, or title")
+		return opts, usageError("agenttunnel stop requires a thread id, id prefix, or title")
 	}
 	return opts, nil
 }

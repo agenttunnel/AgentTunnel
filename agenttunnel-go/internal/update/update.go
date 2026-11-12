@@ -192,7 +192,7 @@ func (u *Updater) binaryNames() []string {
 	if u.GOOS == "windows" {
 		ext = ".exe"
 	}
-	return []string{"atd" + ext, "agenttunnel" + ext, "at" + ext}
+	return []string{"atd" + ext, "agenttunnel" + ext, "agenttunnel-desktop" + ext}
 }
 
 // enabled reports whether version identifies a release build.

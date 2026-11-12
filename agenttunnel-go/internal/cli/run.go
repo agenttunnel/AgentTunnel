@@ -15,12 +15,12 @@ func init() {
 	Register(Command{
 		Name:    "run",
 		Summary: "Start a job from a template as a background thread",
-		Usage:   "at run <file|name> [--follow] [--no-follow]",
+		Usage:   "agenttunnel run <file|name> [--follow] [--no-follow]",
 		Run:     runJob,
 	})
 }
 
-// runOptions is the parsed `at run` invocation.
+// runOptions is the parsed `agenttunnel run` invocation.
 type runOptions struct {
 	ref    string
 	follow bool
@@ -35,15 +35,15 @@ func parseRunArgs(args []string) (runOptions, error) {
 		case arg == "--no-follow":
 			opts.follow = false
 		case strings.HasPrefix(arg, "-"):
-			return opts, usageError("unknown flag %q (usage: at run <file|name> [--follow] [--no-follow])", arg)
+			return opts, usageError("unknown flag %q (usage: agenttunnel run <file|name> [--follow] [--no-follow])", arg)
 		case opts.ref != "":
-			return opts, usageError("at run takes one template file or name")
+			return opts, usageError("agenttunnel run takes one template file or name")
 		default:
 			opts.ref = arg
 		}
 	}
 	if opts.ref == "" {
-		return opts, usageError("at run requires a template file or name")
+		return opts, usageError("agenttunnel run requires a template file or name")
 	}
 	return opts, nil
 }
@@ -92,7 +92,7 @@ func runJob(ctx context.Context, env *Env, args []string) error {
 	})
 }
 
-// runResult is what `at run` reports about the thread it started.
+// runResult is what `agenttunnel run` reports about the thread it started.
 type runResult struct {
 	ThreadID  string `json:"threadId"`
 	ProjectID string `json:"projectId"`
@@ -266,6 +266,6 @@ func printRunStarted(env *Env, result runResult) {
 	fmt.Fprintf(env.Out, "thread %s  %q  project %s\n", result.ThreadID, result.Title, project)
 	fmt.Fprintln(env.Out, "started in the background")
 	fmt.Fprintln(env.Out)
-	fmt.Fprintf(env.Out, "at attach %s\n", result.ThreadID)
-	fmt.Fprintf(env.Out, "at logs %s --follow\n", result.ThreadID)
+	fmt.Fprintf(env.Out, "agenttunnel attach %s\n", result.ThreadID)
+	fmt.Fprintf(env.Out, "agenttunnel logs %s --follow\n", result.ThreadID)
 }

@@ -1,4 +1,4 @@
-# `at` — AgentTunnel CLI design and effort
+# `agenttunnel` — AgentTunnel CLI design and effort
 
 First-party CLI for AgentTunnel. It is a vertical slice, not a second product:
 the daemon remains the only server and the only writer of state. Symbols below
@@ -6,10 +6,10 @@ are the real surface; prefer them over line numbers.
 
 ## Decisions (locked)
 
-1. `atd` is the single server/state owner. Desktop and `at` are thin clients of
-   the same JSON-RPC WebSocket. `at` never imports `pkg/daemon` or the server
+1. `atd` is the single server/state owner. Desktop and `agenttunnel` are thin clients of
+   the same JSON-RPC WebSocket. `agenttunnel` never imports `pkg/daemon` or the server
    half of `internal/transport`.
-2. A daemon publishes `<state>/daemon.json`; `at` reads it and `at run`
+2. A daemon publishes `<state>/daemon.json`; `agenttunnel` reads it and `agenttunnel run`
    autostarts a detached `atd --port 0` when none answers.
 3. Turns can detach from the client socket and bind to the daemon lifetime
    context; only `thread.turn.stop` or daemon shutdown ends them.
@@ -18,8 +18,9 @@ are the real surface; prefer them over line numbers.
 5. Templates are Markdown + YAML frontmatter (`name`, `project`,
    `modelConfig`). `modelConfig` becomes thread-scoped role-runtime overrides
    (`thread.setRoleRuntime`), never global settings.
-6. The binary is `at`. Desktop app, artifact names, and macOS bundle are
-   unchanged. `at` joins the release tarball, updater, and installer.
+6. The CLI binary is `agenttunnel`, not `at`: `at` collides with the macOS `/usr/bin/at`.
+   The desktop binary is renamed `agenttunnel-desktop` to free the name. App bundle,
+   artifact names, and the release tarball name are unchanged.
 7. v1 is the slice in [Phased plan](#phased-plan-and-exact-steps); everything in
    [Excluded](#excluded-from-v1) is out.
 
@@ -33,7 +34,7 @@ are the real surface; prefer them over line numbers.
 | `desktop/main.go`, `launch.go` | embedded daemon on `127.0.0.1:0`; writes/removes `desktop.json`; `agenttunnel <dir>` forwards `thread.open` + `app.open` | share discovery without losing the one-window lock |
 | `internal/orchestrator/runner.go` | `roleRuntime(role)` = builtin default + global `settings.RoleConfig`; `leadRuntime` adds thread overrides for leads only | non-lead role overrides do not exist |
 | `internal/settings` | daemon-global roles, models, projects, relay | per-job runtime here would leak across concurrent threads |
-| Release | tarball `atd` + `agenttunnel`; updater replaces both; installer loops both; macOS app separate | add `at` additively, rename nothing |
+| Release | tarball `atd` + `agenttunnel`; updater replaces both; installer loops both; macOS app separate | add `at` additively, rename nothing (superseded: the CLI is `agenttunnel`, see decision 6) |
 
 ## Architecture
 
@@ -61,10 +62,10 @@ Desktop keeps `desktop.json` as the "a window is open" lock so
 Both entrypoints write it after `net.Listen`/`SetEndpoint` and remove it on
 exit; the desktop writes it only while it owns the daemon. Readers probe with
 `project.list` (the CLI uses it because `roles.list` panics in transport
-fixtures). A stale file is removed; `at run` then autostarts, other commands
+fixtures). A stale file is removed; `agenttunnel run` then autostarts, other commands
 tell the user to.
 
-Autostart is `at run` only: take `<state>/daemon.start.lock` with `O_EXCL`
+Autostart is `agenttunnel run` only: take `<state>/daemon.start.lock` with `O_EXCL`
 (break locks older than 30 s whose pid is gone), re-read discovery, spawn
 `atd --port 0 --home-dir <state>` detached with stdin `/dev/null`, stdout/stderr
 appended to `<state>/logs/atd.log`, env scrubbed of `AT_AGENT_ID`,
@@ -80,13 +81,13 @@ into `DispatcherDeps.BaseCtx`. `startDetachedTurn` claims the slot with
 `CmdTurnStart`, `RunTurn`), and replies `{ok, detached:true, threadId}` at once;
 `done()` releases the slot on unwind. Failures go to `logstore` as `error`
 entries, not `MessageSent` with author `user` (which would bump
-`ThreadState.Turn`), so `at logs` shows them without corrupting usage.
+`ThreadState.Turn`), so `agenttunnel logs` shows them without corrupting usage.
 
 `thread.turn.status` returns `{"threadIds":[...]}` from the dispatcher's turn
 map for `ps`, `attach`, and `run --follow`. Polling at CLI cadence is the v1
 compromise; a durable `turn.finished` event is the follow-up.
 
-Known gap: the detached goroutine cuts the worktree after the reply, so `at run`
+Known gap: the detached goroutine cuts the worktree after the reply, so `agenttunnel run`
 can print "started" before the checkout exists or a harness is found. Either
 move `ensureWorktree` before the reply or make the CLI say "started, see logs"
 and fail `--follow` when nothing runs.
@@ -95,12 +96,12 @@ and fail `--follow` when nothing runs.
 
 | From → to | Mechanism | v1 |
 | --- | --- | --- |
-| `at run` → desktop watch | desktop attaches its UI to a live `daemon.json`; `app.open` still broadcasts | yes |
-| desktop daemon → `at ps` | desktop writes `daemon.json` while it owns the daemon | yes |
+| `agenttunnel run` → desktop watch | desktop attaches its UI to a live `daemon.json`; `app.open` still broadcasts | yes |
+| desktop daemon → `agenttunnel ps` | desktop writes `daemon.json` while it owns the daemon | yes |
 | desktop → background | keep-running toggle spawns a detached `atd`, waits, attaches; next launch attaches again | yes |
 | desktop → CLI next turn | same thread, same turn slot; a running turn blocks a new one | yes |
-| another terminal → running turn | `at attach` streams events read-only | yes |
-| `at attach` → send steering | `thread.steer` exists; input/echo/detach semantics undesigned | no |
+| another terminal → running turn | `agenttunnel attach` streams events read-only | yes |
+| `agenttunnel attach` → send steering | `thread.steer` exists; input/echo/detach semantics undesigned | no |
 
 Closing the window with keep-running off ends the embedded daemon and its
 turns; the toggle must say so.
@@ -125,22 +126,22 @@ exit 0/1/2 = success/failure/usage; `--json` prints the raw RPC result.
 | `version` | CLI and reachable daemon versions | discovery |
 
 ```text
-$ at run jobs/nightly-audit.md
+$ agenttunnel run jobs/nightly-audit.md
 thread th_9f2a1c7d  project acme
 worktree /code/acme.worktrees/nightly-audit-9f2a1c7d
-detached: at logs th_9f2a1c7d -f
+detached: agenttunnel logs th_9f2a1c7d -f
 
-$ at ps
+$ agenttunnel ps
 THREAD       PROJECT  TITLE            TURN  AGENTS  USAGE   UPDATED
 th_9f2a1c7d  acme     nightly-audit    run   3/3     128.4k  12s ago
 th_41b0de22  acme     fix-worktree     idle  0/2     42.1k   6m ago
 
-$ at logs th_9f2a1c7d
+$ agenttunnel logs th_9f2a1c7d
 20:41:02 orchestrator   text   planning 3 jobs
 20:41:05 executor-1     tool   $ go test ./...
 20:41:19 executor-1     error  exit status 1
 
-$ at usage
+$ agenttunnel usage
 orchestrator   12.1k in   3.4k out   $0.42
 subagents      98.2k in  31.0k out   $2.10
 total         110.3k in  34.4k out   $2.52
@@ -171,7 +172,7 @@ with the directory's base name; `--project` overrides. `modelConfig` keys are
 builtin role ids (`orchestrator`, `planner`, `executor`, `tester`, `reviewer`,
 `facilitator`, `context-manager`); unknown role/harness is an error; an omitted
 field inherits. Parsing adds `gopkg.in/yaml.v3`, the only new dependency.
-`at template path.md` refuses to overwrite.
+`agenttunnel template path.md` refuses to overwrite.
 
 `modelConfig` is applied one `thread.setRoleRuntime` per role before the turn.
 The override is event-sourced (`thread.role-runtime-set`), projected into
@@ -193,15 +194,14 @@ custom roles are a follow-up.
 
 | File | Change |
 | --- | --- |
-| `.github/workflows/agenttunnel-release.yml` | build `go-dist/at` beside `atd`; tarball and macOS asset names unchanged |
-| `internal/update/update.go` | `binaryNames()` → `["atd","agenttunnel","at"]` (+ `.exe`) |
-| `scripts/install.sh` | install `atd`, `agenttunnel`, `at`; unchanged app symlink logic |
-| `desktop/`, `build-app.sh` | no rename, no artifact change |
-| `cmd/at/main.go` | `var version = "dev"`, same `-X main.version` ldflags |
+| `.github/workflows/agenttunnel-release.yml` | build `go-dist/agenttunnel` beside `atd`; tarball and macOS asset names unchanged |
+| `internal/update/update.go` | `binaryNames()` → `["atd","agenttunnel","agenttunnel-desktop"]` (+ `.exe`) |
+| `scripts/install.sh` | install `atd`, `agenttunnel`, `agenttunnel-desktop`; app symlink now targets `agenttunnel-desktop` |
+| `desktop/`, `build-app.sh` | desktop binary renamed to `agenttunnel-desktop`; artifact names unchanged |
+| `cmd/agenttunnel/main.go` | `var version = "dev"`, same `-X main.version` ldflags |
 
-`at` shadows Unix `at(1)` when `~/.local/bin` precedes `/usr/bin`. The name is
-decided; mitigate with an install warning when another `at` is on `PATH` and
-document `command -v -a at`. This is a real compatibility cost.
+The CLI was first drafted as `at`, but `at` shadows Unix `at(1)` when `~/.local/bin`
+precedes `/usr/bin`, so the CLI is `agenttunnel` instead.
 
 ## Phased plan and exact steps
 
@@ -218,7 +218,7 @@ document `command -v -a at`. This is a real compatibility cost.
 4. `internal/transport/rpc.go`: `turnParams.Detach`, `startDetachedTurn`,
    `thread.turn.status`; detached errors to `logstore`. `server.go`:
    `daemon.shutdown` acknowledged before cancel.
-5. `cmd/at/main.go` (calls `cli.Main(os.Args[1:], version)`),
+5. `cmd/agenttunnel/main.go` (calls `cli.Main(os.Args[1:], version)`),
    `internal/cli/cli.go` (command tree, flags, help, exit codes),
    `internal/cli/client.go` (WS client, Bearer auth, reply correlation, events).
 6. `internal/cli/autostart.go`: probe, lock, spawn, scrub, log, 10 s wait.
@@ -239,7 +239,7 @@ document `command -v -a at`. This is a real compatibility cost.
     starter text; `go.mod`/`go.sum`.
 12. `internal/cli/run.go`: project resolve, `thread.create{worktree:true}`,
     per-role `setRoleRuntime`, `turn.start{detach:true}`, `--follow`.
-13. `internal/cli/command_template.go`: `at template [path]`.
+13. `internal/cli/command_template.go`: `agenttunnel template [path]`.
 
 **P4 — jobs and parity (needs P1.5; `run` needs P3).**
 
@@ -299,11 +299,11 @@ release are parallelizable, not free.
   `thread.turn.status` empties; `setRoleRuntime` reaches the runner and stays
   per thread; two threads with different overrides run concurrently;
   `daemon.shutdown` stops the server.
-- CLI integration: build `atd` and `at` into a temp dir, run `atd --port 0` with
+- CLI integration: build `atd` and `agenttunnel` into a temp dir, run `atd --port 0` with
   a scrubbed env, then `projects add`, `run` a template against a scripted
   harness, `ps/logs/stop`; follow mode asserts event order, not wall time.
 - Race: `go test -race` on the detach paths and `internal/cli`.
-- Packaging: the release build compiling `./cmd/at` is the check; grepping
+- Packaging: the release build compiling `./cmd/agenttunnel` is the check; grepping
   `install.sh` is not.
 - Hard limits: the executor git guard refuses `git init`, so worktree tests in
   `internal/transport` and `pkg/daemon` fail under subagents; verify with
@@ -313,8 +313,9 @@ release are parallelizable, not free.
 
 ## Risks and open questions
 
-1. **`at` shadows `at(1)`.** Name locked; install warning + docs. Reopening it
-   costs one rename in `cmd/`, release, updater, installer.
+1. **Name collision (resolved).** The CLI is `agenttunnel`; the desktop binary moved to
+   `agenttunnel-desktop` to free that name. Existing installs keep an `agenttunnel`
+   symlink to the app until reinstalled.
 2. **Detach returns before failure is knowable.** Worktree cut, missing harness,
    and a busy slot are asynchronous; either move `ensureWorktree` before the
    reply or accept "started, see logs".
@@ -328,13 +329,13 @@ release are parallelizable, not free.
 7. **Windows:** spawn flags and signals differ; RPC stop works, `SIGTERM` does
    not. If untested, ship Unix autostart with a manual-start error.
 8. **Version skew:** one tarball, but a long-lived daemon can differ; warn on
-   mismatch instead of failing. `at ps` after a crash can show agents but no
+   mismatch instead of failing. `agenttunnel ps` after a crash can show agents but no
    turn — print "turn: unknown".
 
 ## Excluded from v1
 
-No `at update`, TUI, `rm`/`prune`, template inheritance, secrets injection,
-remote/SSH daemon, Windows service, `at exec`, steering input in `attach`,
+No `agenttunnel update`, TUI, `rm`/`prune`, template inheritance, secrets injection,
+remote/SSH daemon, Windows service, `agenttunnel exec`, steering input in `attach`,
 custom-role `modelConfig`, `turn.finished`, usage in `ThreadSummary`, desktop
 role-runtime editing, or multi-job orchestration. The slice ends at one detached
 job, observable from either surface, with per-job runtimes.

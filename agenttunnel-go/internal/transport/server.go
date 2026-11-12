@@ -489,7 +489,7 @@ func (c *conn) handleFrame(ctx context.Context, data []byte) {
 		return
 	}
 	if req.Method == "daemon.shutdown" {
-		// Acknowledge before tearing the server down: the client's `at daemon
+		// Acknowledge before tearing the server down: the client's `agenttunnel daemon
 		// stop` waits for this reply, then for daemon.json to disappear.
 		c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
 		go c.disp.Shutdown()

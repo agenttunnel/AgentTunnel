@@ -23,7 +23,7 @@ func TestTemplateCommandWritesScaffold(t *testing.T) {
 	if !strings.Contains(out.String(), "wrote "+path) {
 		t.Fatalf("output = %q, want the written path", out.String())
 	}
-	if !strings.Contains(out.String(), "edit it, then at run "+path) {
+	if !strings.Contains(out.String(), "edit it, then agenttunnel run "+path) {
 		t.Fatalf("output = %q, want the next step", out.String())
 	}
 

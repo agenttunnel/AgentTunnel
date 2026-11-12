@@ -15,7 +15,7 @@ func init() {
 	Register(Command{
 		Name:    "template",
 		Summary: "Write a commented starter job template",
-		Usage:   "at template [path] [--force]",
+		Usage:   "agenttunnel template [path] [--force]",
 		Run:     runTemplate,
 	})
 }
@@ -28,9 +28,9 @@ func runTemplate(_ context.Context, env *Env, args []string) error {
 		case arg == "--force":
 			force = true
 		case strings.HasPrefix(arg, "-"):
-			return usageError("unknown flag %q for at template", arg)
+			return usageError("unknown flag %q for agenttunnel template", arg)
 		case path != "":
-			return usageError("at template takes at most one path")
+			return usageError("agenttunnel template takes at most one path")
 		default:
 			path = arg
 		}
@@ -59,6 +59,6 @@ func runTemplate(_ context.Context, env *Env, args []string) error {
 		return env.PrintJSON(map[string]string{"path": abs})
 	}
 	fmt.Fprintf(env.Out, "wrote %s\n", abs)
-	fmt.Fprintf(env.Out, "edit it, then at run %s\n", abs)
+	fmt.Fprintf(env.Out, "edit it, then agenttunnel run %s\n", abs)
 	return nil
 }

@@ -13,8 +13,8 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
-// shortThreadIDLen matches docker's 12-character short ids, so `at ps` rows can
-// be pasted back into `at logs`/`at attach` by prefix.
+// shortThreadIDLen matches docker's 12-character short ids, so `agenttunnel ps` rows can
+// be pasted back into `agenttunnel logs`/`agenttunnel attach` by prefix.
 const shortThreadIDLen = 12
 
 // threadListRow mirrors transport.ThreadSummary: the list projection ps reads.
@@ -131,7 +131,7 @@ func resolveThreadRow(ctx context.Context, c cliCaller, ref string) (threadListR
 
 // matchThreadRow is the job commands' ref resolution: an exact id, then an
 // exact title, then a unique id prefix or title substring. A user copying
-// `at ps`'s 12-character id sees that id truncated at the front, so a prefix of
+// `agenttunnel ps`'s 12-character id sees that id truncated at the front, so a prefix of
 // the id and a prefix of its non-"th_" body both count.
 func matchThreadRow(rows []threadListRow, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
@@ -181,7 +181,7 @@ func matchThreadRow(rows []threadListRow, ref string) (string, error) {
 }
 
 // threadIDMatches accepts a prefix of the id, a prefix of the id without its
-// "th_" prefix, or a prefix of the hex body, so both `at ps`'s short id and a
+// "th_" prefix, or a prefix of the hex body, so both `agenttunnel ps`'s short id and a
 // bare hash fragment resolve.
 func threadIDMatches(id, ref string) bool {
 	if strings.HasPrefix(id, ref) {
@@ -348,7 +348,7 @@ func (t *turnTracker) ended() bool {
 		return false
 	}
 	// An empty roster means the turn has not been recorded yet, not that it is
-	// over: `at logs -f` right after `at run` races the detached lead's first
+	// over: `agenttunnel logs -f` right after `agenttunnel run` races the detached lead's first
 	// status write. followOutput bounds this wait.
 	if !t.started() {
 		return false
