@@ -137,6 +137,8 @@ export type ThreadState = {
   title: string;
   autoMode: boolean;
   peerMailbox: boolean;
+  /** Seconds between workflow status reports while a turn runs; 0 is off. */
+  statusPeriodSeconds?: number;
   /** Orchestrator team size; zero or absent means one lead. */
   leads?: number;
   /** Per-lead runtime overrides by lead index; an empty harness inherits the Orchestrator role. */
@@ -2132,6 +2134,18 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
+  /** Sets how often a running turn reports workflow status; 0 turns it off. */
+  const setStatusPeriod = async (seconds: number) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setStatusPeriod", { threadId: activeId, seconds });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    refresh(activeId).catch(() => undefined);
+  };
+
   const [addingLead, setAddingLead] = useState(false);
 
   /** Grows the lead team by one from the next turn on. */
@@ -3377,6 +3391,7 @@ export default function App() {
                     modelOptions={modelOptions}
                     harnessOptionsFor={harnessOptionsFor}
                     toggleRoleEnabled={toggleRoleEnabled}
+                    setStatusPeriod={setStatusPeriod}
                   />
                   {composerHidden && (
                     <button
@@ -3403,7 +3418,7 @@ export default function App() {
                   {turn.map((m) => (
                   <div
                     key={m.id}
-                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
+                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
                   >
                     <div className="who">
                       <span className="role">
@@ -3419,7 +3434,9 @@ export default function App() {
                                 ? "Shell"
                                 : m.author === "subthread"
                                   ? "Subthread"
-                                  : "Orchestrator"}
+                                  : m.author === "status"
+                                    ? "Status"
+                                    : "Orchestrator"}
                       </span>
                     </div>
                     <div className="msg-actions">
@@ -3781,6 +3798,7 @@ export default function App() {
                 modelOptions={modelOptions}
                 harnessOptionsFor={harnessOptionsFor}
                 toggleRoleEnabled={toggleRoleEnabled}
+                setStatusPeriod={setStatusPeriod}
               />
             </div>
           ) : asideActive === "agents" ? (

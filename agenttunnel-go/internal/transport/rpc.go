@@ -88,7 +88,15 @@ type DispatcherDeps struct {
 	// Remote drives WhatsApp connectivity for the Remote section. Nil reports it
 	// unavailable.
 	Remote RemoteControl
+	// Clock and StatusTick drive the per-turn workflow status report. Nil uses
+	// real time; tests inject a controllable ticker and clock.
+	Clock      domain.Clock
+	StatusTick StatusTicker
 }
+
+// StatusTicker returns a tick channel and a stop function for a period. It is
+// the seam tests use to fire status reports without sleeping.
+type StatusTicker func(time.Duration) (<-chan time.Time, func())
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
 // internal/relay implements it, so the transport never imports the relay.
@@ -174,6 +182,9 @@ type Dispatcher struct {
 	// remoteNotifier broadcasts Remote section changes. Set after the server
 	// exists, since the dispatcher is built first.
 	remoteNotifier func(RemoteStatus)
+	// clock and statusTick drive the per-turn workflow status report.
+	clock      domain.Clock
+	statusTick StatusTicker
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
@@ -198,6 +209,12 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 	if base == nil {
 		base = context.Background()
 	}
+	if d.Clock == nil {
+		d.Clock = time.Now
+	}
+	if d.StatusTick == nil {
+		d.StatusTick = realStatusTick
+	}
 	disp := &Dispatcher{
 		questions:      newQuestionBroker(),
 		baseCtx:        base,
@@ -219,6 +236,8 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		limits:         d.Limits,
 		relay:          d.Relay,
 		remote:         d.Remote,
+		clock:          d.Clock,
+		statusTick:     d.StatusTick,
 		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
 		dirtyBoard:     scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
 	}
@@ -409,6 +428,12 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
+	// Status reports run beside the orchestrator, not inside its pass loop, so a
+	// long pass still shows progress. The stop func joins the goroutine before
+	// the turn slot is released.
+	stopReports := d.startStatusReports(turnCtx, threadID)
+	defer stopReports()
+
 	if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
 		if turnCtx.Err() != nil {
 			return map[string]any{"ok": true, "stopped": true}, nil
@@ -505,6 +530,136 @@ func (d *Dispatcher) startMasterThread(ctx context.Context, action *orchestrator
 		_, _ = d.runTurn(context.WithoutCancel(ctx), id, action.Prompt, cmd)
 	}()
 	return nil
+}
+
+// realStatusTick is the production status ticker.
+func realStatusTick(period time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(period)
+	return t.C, t.Stop
+}
+
+// startStatusReports starts a thread's per-turn status ticker. A thread with no
+// configured period starts nothing. The returned stop function ends the loop and
+// waits for it to exit, so no report can land after the turn is done.
+func (d *Dispatcher) startStatusReports(ctx context.Context, threadID contracts.ThreadID) func() {
+	if d.engine == nil || d.clock == nil || d.statusTick == nil {
+		return func() {}
+	}
+	period := d.statusPeriod(ctx, threadID)
+	if period <= 0 {
+		return func() {}
+	}
+	tick, stopTick := d.statusTick(time.Duration(period) * time.Second)
+	reportCtx, cancel := context.WithCancel(ctx)
+	start := d.clock()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case <-reportCtx.Done():
+				return
+			case _, ok := <-tick:
+				if !ok {
+					return
+				}
+				d.postStatusReport(reportCtx, threadID, start)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			stopTick()
+			<-finished
+		})
+	}
+}
+
+// statusPeriod reads the thread's configured report period.
+func (d *Dispatcher) statusPeriod(ctx context.Context, threadID contracts.ThreadID) int {
+	st, err := d.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return 0
+	}
+	return st.StatusPeriodSeconds
+}
+
+// postStatusReport records one workflow status message. It is authored by
+// AuthorStatus, never "user", so it does not open a turn or move the spend
+// window; the message joins the running turn in the transcript.
+func (d *Dispatcher) postStatusReport(ctx context.Context, threadID contracts.ThreadID, start time.Time) {
+	st, err := d.engine.State(ctx, threadID)
+	if err != nil || st == nil || !st.Exists || st.Deleted {
+		return
+	}
+	text := statusReportText(st, d.clock().Sub(start))
+	_ = d.engine.Dispatch(ctx, contracts.Command{
+		ID:       d.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: contracts.AuthorStatus, Text: text},
+	})
+}
+
+// statusReportText renders a concise workflow status: agents with their
+// statuses, task progress, and how long the turn has been running.
+func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
+
+	// Live agents are the useful part of a heartbeat; finished ones collapse to
+	// a count so a long thread does not repost its whole roster every period.
+	var active strings.Builder
+	activeCount := 0
+	settled := map[contracts.AgentStatus]int{}
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
+		if a.Status.Terminal() {
+			settled[a.Status]++
+			continue
+		}
+		activeCount++
+		name := strings.TrimSpace(a.Name)
+		if name == "" {
+			name = string(id)
+		}
+		role := string(a.Role)
+		if role == "" {
+			role = "agent"
+		}
+		fmt.Fprintf(&active, "- %s (%s): %s\n", name, role, a.Status)
+	}
+	if activeCount == 0 {
+		b.WriteString("Agents: none active\n")
+	} else {
+		b.WriteString("Agents:\n")
+		b.WriteString(active.String())
+	}
+	if len(settled) > 0 {
+		total := 0
+		var parts []string
+		for _, status := range []contracts.AgentStatus{contracts.AgentSucceeded, contracts.AgentFailed, contracts.AgentCancelled} {
+			if n := settled[status]; n > 0 {
+				total += n
+				parts = append(parts, fmt.Sprintf("%d %s", n, status))
+			}
+		}
+		fmt.Fprintf(&b, "Settled: %d (%s)\n", total, strings.Join(parts, ", "))
+	}
+
+	done := 0
+	for _, t := range st.Tasks {
+		if t.Status == contracts.TaskDone {
+			done++
+		}
+	}
+	fmt.Fprintf(&b, "Tasks: %d/%d done", done, len(st.Tasks))
+	return b.String()
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -954,6 +1109,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		defer done()
+		stopReports := d.startStatusReports(turnCtx, p.ThreadID)
+		defer stopReports()
 		spec := orchestrator.CouncilSpec{Topic: p.Topic, Rounds: p.Rounds, Members: p.Members}
 		consensus, err := d.orch.RunCouncil(turnCtx, p.ThreadID, spec)
 		if err != nil {
@@ -1153,6 +1310,24 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setStatusPeriod":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Seconds  *int               `json:"seconds"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Seconds == nil {
+			return nil, errors.New("seconds is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdStatusPeriodSet, ThreadID: p.ThreadID, StatusPeriod: p.Seconds,
 		}); err != nil {
 			return nil, err
 		}

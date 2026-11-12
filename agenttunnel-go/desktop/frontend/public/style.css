@@ -727,6 +727,16 @@ body.is-resizing * {
   color: var(--dim);
 }
 
+/* Daemon workflow heartbeat: present but quieter than an agent's reply. */
+.msg.status .who .role {
+  color: var(--faint);
+  font-weight: 500;
+}
+.msg.status .body {
+  color: var(--dim);
+  font-size: 12.5px;
+}
+
 .stream-empty {
   display: flex;
   flex-direction: column;

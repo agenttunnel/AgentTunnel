@@ -154,6 +154,7 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 		state.Exists = true
 		state.Provisional = true
 		state.PeerMailbox = true
+		state.StatusPeriodSeconds = contracts.DefaultStatusPeriodSeconds
 		state.Title = strings.TrimSpace(cmd.Title)
 		if state.Title == "" {
 			state.Title = contracts.DefaultThreadTitle
@@ -230,6 +231,7 @@ func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *
 	payloads := []contracts.EventPayload{
 		contracts.ThreadCreated{Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID, Worktree: state.Worktree},
 		contracts.PeerMailboxSet{Enabled: true},
+		contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
 	}
 	events, err := e.store.Append(ctx, id, payloads, e.clock)
 	if err != nil {

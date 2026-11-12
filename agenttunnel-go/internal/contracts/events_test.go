@@ -19,6 +19,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		SteeringConsumed{MessageIDs: []string{"m2", "m3"}},
 		ModelSet{Selection: ModelSelection{InstanceID: "i", Model: "gpt-5"}},
 		AutoModeSet{Enabled: true},
+		StatusPeriodSet{PeriodSeconds: 60},
 		PeerMailboxSet{Enabled: true},
 		TaskDispatched{AgentID: "a1", ParentAgentID: "orch", Name: "explore", Role: RolePlanner, Task: "map it", Model: "m", PipelineID: "p1"},
 		AgentStatusChanged{AgentID: "a1", Status: AgentRunning, Reason: "go"},
