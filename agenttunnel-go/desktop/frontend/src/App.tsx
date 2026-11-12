@@ -3088,29 +3088,6 @@ export default function App() {
               {selectedProject?.path && <p className="screen-sub">{selectedProject.path}</p>}
             </div>
             <div className="screen-actions">
-              <button
-                className={`board-link${threadView === "board" ? " primary" : ""}`}
-                aria-pressed={threadView === "board"}
-                title="Open the project board"
-                onClick={() => setThreadView("board")}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="15"
-                  height="15"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <rect x="3" y="4" width="5" height="16" rx="1.5" />
-                  <rect x="10" y="4" width="5" height="11" rx="1.5" />
-                  <rect x="17" y="4" width="4" height="7" rx="1.5" />
-                </svg>
-                Board
-              </button>
               <input
                 className="thread-filter"
                 placeholder="Search threads…"
