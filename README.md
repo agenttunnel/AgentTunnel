@@ -7,7 +7,7 @@
 AgentTunnel is a minimal GUI for coding agents: a multi-agent coding workflow
 where a planning **orchestrator** breaks a task into jobs and dispatches them to
 **planner / executor / tester / reviewer** subagents, each of which can run on
-any provider CLI (Codex, Claude, Cursor, Grok, OpenCode, Pi, Command Code).
+any provider CLI (Codex, Claude, Cursor, OpenCode, Pi, Command Code).
 
 The app is written in Go: the `atd` daemon supervises concurrent provider
 subprocesses and fans their streams out over WebSocket, and a Wails v3 desktop
@@ -32,7 +32,7 @@ curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/i
 ```
 
 **Linux / Windows** — the installer (or the release tarball) provides `atd`,
-the daemon, and `agenttunnel`, the desktop client. Linux needs GTK 4 and
+the daemon, `agenttunnel`, the CLI, and `agenttunnel-desktop`, the desktop client. Linux needs GTK 4 and
 WebKitGTK 6.0 at runtime.
 
 To build a DMG locally instead:

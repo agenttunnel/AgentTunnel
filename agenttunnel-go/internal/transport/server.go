@@ -90,6 +90,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindReviewComment, toolbox.KindReviewReply, toolbox.KindReviewResolve:
 		s.handleReviewCall(w, r, req)
 		return
+	case toolbox.KindSteer:
+		s.handleSteerCall(w, r, req)
+		return
 	}
 
 	// Peer messages are delivered immediately rather than queued in the tool
@@ -267,6 +270,42 @@ func (s *Server) handleTaskCall(w http.ResponseWriter, r *http.Request, req tool
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleSteerCall queues the lead's steer for one subagent and answers with the
+// outcome, so the lead learns at once whether it was queued. It bypasses the
+// tool inbox: the steer must not wait for the pass to end.
+func (s *Server) handleSteerCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if s.runner == nil {
+		http.Error(w, "steering is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if strings.TrimSpace(req.To) == "" || strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "to and text are required for a steer", http.StatusBadRequest)
+		return
+	}
+	reply, err := s.runner.Steer(r.Context(), req.ThreadID, req.AgentID, req.To, req.Text)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, orchestrator.ErrSteerNotLead):
+			status = http.StatusForbidden
+		case errors.Is(err, orchestrator.ErrUnknownRecipient),
+			errors.Is(err, orchestrator.ErrSteerTargetLead),
+			errors.Is(err, orchestrator.ErrSteerFinished),
+			errors.Is(err, orchestrator.ErrEmptyMessage),
+			errors.Is(err, domain.ErrThreadNotFound):
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	s.disp.auditLog("tool", map[string]any{
+		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
+		"to": req.To,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "outcome": "queued", "message": reply})
 }
 
 // handleSubthreadCall starts a subthread for the caller's thread. Only a team
@@ -447,6 +486,13 @@ func (c *conn) handleFrame(ctx context.Context, data []byte) {
 	}
 	if req.Method == "app.open" {
 		c.srv.handleAppOpen(c, req)
+		return
+	}
+	if req.Method == "daemon.shutdown" {
+		// Acknowledge before tearing the server down: the client's `agenttunnel daemon
+		// stop` waits for this reply, then for daemon.json to disappear.
+		c.send(Response{ID: req.ID, Result: map[string]any{"ok": true}})
+		go c.disp.Shutdown()
 		return
 	}
 	go func() {

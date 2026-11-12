@@ -18,11 +18,14 @@ const (
 	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
 	EvtMessageSent        EventType = "thread.message-sent"
 	EvtSteeringInjected   EventType = "thread.steering-injected"
+	EvtSteeringConsumed   EventType = "thread.steering-consumed"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
+	EvtArchiveSet         EventType = "thread.archive-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
+	EvtRoleRuntimeSet     EventType = "thread.role-runtime-set"
 	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
 	EvtTaskAdded          EventType = "thread.task-added"
 	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
@@ -116,16 +119,22 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[MessageSent](data)
 	case EvtSteeringInjected:
 		return decodePayload[SteeringInjected](data)
+	case EvtSteeringConsumed:
+		return decodePayload[SteeringConsumed](data)
 	case EvtModelSet:
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
 		return decodePayload[AutoModeSet](data)
+	case EvtArchiveSet:
+		return decodePayload[ArchiveSet](data)
 	case EvtPeerMailboxSet:
 		return decodePayload[PeerMailboxSet](data)
 	case EvtLeadsSet:
 		return decodePayload[LeadsSet](data)
 	case EvtLeadRuntimeSet:
 		return decodePayload[LeadRuntimeSet](data)
+	case EvtRoleRuntimeSet:
+		return decodePayload[RoleRuntimeSet](data)
 	case EvtSubthreadSpawned:
 		return decodePayload[SubthreadSpawned](data)
 	case EvtTaskAdded:
@@ -242,6 +251,14 @@ type SteeringInjected struct {
 
 func (SteeringInjected) eventType() EventType { return EvtSteeringInjected }
 
+// SteeringConsumed marks the steering messages a lead has picked up in a pass.
+// Until it lands, a steering message is still waiting in the queue.
+type SteeringConsumed struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+func (SteeringConsumed) eventType() EventType { return EvtSteeringConsumed }
+
 type ModelSet struct{ Selection ModelSelection }
 
 func (ModelSet) eventType() EventType { return EvtModelSet }
@@ -249,6 +266,12 @@ func (ModelSet) eventType() EventType { return EvtModelSet }
 type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
+
+// ArchiveSet files a thread under Archived or brings it back. An archived
+// thread is hidden from the board's working columns but keeps its history.
+type ArchiveSet struct{ Archived bool }
+
+func (ArchiveSet) eventType() EventType { return EvtArchiveSet }
 
 // PeerMailboxSet toggles peer-to-peer agent messaging for a thread. On by
 // default: thread creation records it enabled.
@@ -279,6 +302,18 @@ type LeadRuntimeSet struct {
 }
 
 func (LeadRuntimeSet) eventType() EventType { return EvtLeadRuntimeSet }
+
+// RoleRuntimeSet sets a role's runtime override on one thread, so a job
+// template can pin executor=tester harness/model for a single thread without
+// changing the daemon-wide settings every other thread reads. An empty field
+// inherits the lower layer (settings, then the role's default).
+type RoleRuntimeSet struct {
+	ThreadID ThreadID    `json:"threadId,omitempty"`
+	Role     RoleID      `json:"role"`
+	Runtime  LeadRuntime `json:"runtime"`
+}
+
+func (RoleRuntimeSet) eventType() EventType { return EvtRoleRuntimeSet }
 
 // MaxSubthreads bounds how many subthreads one thread may start. A subthread
 // cannot start its own, so this is also the whole tree below a thread.

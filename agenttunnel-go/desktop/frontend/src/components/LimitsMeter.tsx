@@ -10,11 +10,13 @@ const CLOCK_MS = 60_000;
 /**
  * LimitsMeter shows subscription usage left for harnesses that report it. It
  * renders nothing when no harness is available, which is the common case for
- * users without a Claude subscription.
+ * users without a subscription.
  */
 export function LimitsMeter({ rpc }: { rpc: Rpc | null }) {
   const [limits, setLimits] = useState<HarnessLimits[]>([]);
   const [now, setNow] = useState(() => Date.now());
+  // Default expanded; only harnesses the user collapsed are recorded.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const load = useCallback(
     (refresh: boolean) => {
@@ -46,27 +48,44 @@ export function LimitsMeter({ rpc }: { rpc: Rpc | null }) {
 
   return (
     <div className="limits">
-      {shown.map((h) => (
-        <div key={h.harness} className="limits-harness" title={`Checked ${new Date(h.fetchedAt).toLocaleTimeString()}`}>
-          <div className="limits-head">
-            <span>{harnessName(h.harness)} usage</span>
-            <button type="button" className="limits-refresh" onClick={() => load(true)} title="Refresh usage">
-              ↻
-            </button>
-          </div>
-          {h.windows?.map((w) => (
-            <div key={w.id} className={`limit-row ${levelOf(w.usedPercent)}`}>
-              <span className="limit-label">{w.label}</span>
-              <span className="limit-bar" aria-hidden="true">
-                <i style={{ transform: `scaleX(${w.usedPercent / 100})` }} />
-              </span>
-              <span className="limit-value">
-                {Math.round(w.usedPercent)}%{formatReset(w.resetsAt, now) ? ` · ${formatReset(w.resetsAt, now)}` : ""}
-              </span>
+      {shown.map((h) => {
+        const open = !collapsed[h.harness];
+        const rowsId = `limits-${h.harness}`;
+        return (
+          <div key={h.harness} className="limits-harness" title={`Checked ${new Date(h.fetchedAt).toLocaleTimeString()}`}>
+            <div className="limits-head">
+              <button
+                type="button"
+                className="limits-toggle"
+                aria-expanded={open}
+                aria-controls={rowsId}
+                onClick={() => setCollapsed((c) => ({ ...c, [h.harness]: open }))}
+              >
+                <span className="limits-caret" aria-hidden="true">
+                  {open ? "▾" : "▸"}
+                </span>
+                <span>{harnessName(h.harness)} usage</span>
+              </button>
+              <button type="button" className="limits-refresh" onClick={() => load(true)} title="Refresh usage">
+                ↻
+              </button>
             </div>
-          ))}
-        </div>
-      ))}
+            <div id={rowsId} hidden={!open}>
+              {h.windows?.map((w) => (
+                <div key={w.id} className={`limit-row ${levelOf(w.usedPercent)}`}>
+                  <span className="limit-label">{w.label}</span>
+                  <span className="limit-bar" aria-hidden="true">
+                    <i style={{ transform: `scaleX(${w.usedPercent / 100})` }} />
+                  </span>
+                  <span className="limit-value">
+                    {Math.round(w.usedPercent)}%{formatReset(w.resetsAt, now) ? ` · ${formatReset(w.resetsAt, now)}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

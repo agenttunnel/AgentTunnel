@@ -17,6 +17,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ThreadRenamed{Title: "renamed thread"},
 		MessageSent{MessageID: "m1", Author: "user", Text: "hello"},
 		SteeringInjected{Count: 2},
+		SteeringConsumed{MessageIDs: []string{"m2", "m3"}},
 		ModelSet{Selection: ModelSelection{InstanceID: "i", Model: "gpt-5"}},
 		AutoModeSet{Enabled: true},
 		PeerMailboxSet{Enabled: true},
@@ -33,6 +34,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ReviewThreadReplied{ThreadID: "rt1", AuthorID: "exe", Body: "done", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusResolved, Body: "looks good", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusOpen, CreatedAt: at},
+		RoleRuntimeSet{ThreadID: "t1", Role: RoleExecutor, Runtime: LeadRuntime{Harness: HarnessCodex, Model: "gpt-x", Variant: "high"}},
 	}
 
 	for _, payload := range payloads {
