@@ -18,6 +18,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
+	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
 )
 
@@ -47,11 +48,13 @@ func newMasterRPCFixture(t *testing.T, script string) (*domain.Engine, *Dispatch
 		Mailbox:   contextstore.NewMailbox(),
 		Inherited: contextstore.NewInheritedContext(t.TempDir()),
 		Settings:  store,
+		Steering:  steering.New(),
 	})
 	disp := NewDispatcher(DispatcherDeps{
 		Engine:       eng,
 		Runner:       runner,
 		Orchestrator: orchestrator.New(runner),
+		Steering:     steering.New(),
 		Ledger:       runner.Ledger(),
 		Logs:         logs,
 		Roles:        roles,
