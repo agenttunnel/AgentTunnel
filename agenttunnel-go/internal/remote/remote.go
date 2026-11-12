@@ -481,10 +481,10 @@ func (b *Bridge) deliver(ctx context.Context) {
 }
 
 // updateFor is the bridge's whole notification policy: a turn's final summary,
-// an agent failure, and a question for the human. It runs for every engine
-// event, including each streamed agent line, so it stays cheap: no thread state
-// is read unless the event is one of the three updates, and none at all while
-// the device is unlinked.
+// a periodic workflow status report, an agent failure, and a question for the
+// human. It runs for every engine event, including each streamed agent line, so
+// it stays cheap: no thread state is read unless the event is one of the four
+// updates, and none at all while the device is unlinked.
 func (b *Bridge) updateFor(ev contracts.Event) string {
 	b.mu.Lock()
 	connected := b.state == StateConnected
@@ -494,12 +494,20 @@ func (b *Bridge) updateFor(ev contracts.Event) string {
 	}
 	switch p := ev.Payload.(type) {
 	case contracts.MessageSent:
-		// The orchestrator's final summary is the only message an agent writes
-		// on its own behalf at the end of a turn.
-		if p.Author != "orchestrator" || strings.TrimSpace(p.Text) == "" {
+		if strings.TrimSpace(p.Text) == "" {
 			return ""
 		}
-		return fmt.Sprintf("%s — turn complete\n\n%s", b.threadTitle(ev.ThreadID), clip(p.Text, updateMax))
+		switch p.Author {
+		case "orchestrator":
+			// The orchestrator's final summary is the only message an agent writes
+			// on its own behalf at the end of a turn.
+			return fmt.Sprintf("%s — turn complete\n\n%s", b.threadTitle(ev.ThreadID), clip(p.Text, updateMax))
+		case contracts.AuthorStatus:
+			// The report already opens with its own header, so only the thread
+			// title is added, to say which thread it came from. It is sent as text, never parsed as a command.
+			return fmt.Sprintf("%s — status update\n\n%s", b.threadTitle(ev.ThreadID), clip(p.Text, updateMax))
+		}
+		return ""
 	case contracts.AgentStatusChanged:
 		if p.Status != contracts.AgentFailed {
 			return ""

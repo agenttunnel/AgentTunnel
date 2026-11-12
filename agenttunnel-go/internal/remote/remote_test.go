@@ -308,6 +308,8 @@ func TestBridgeUpdatePolicy(t *testing.T) {
 		{"agent done", contracts.AgentStatusChanged{AgentID: "a", Status: contracts.AgentSucceeded}, false},
 		{"agent failed", contracts.AgentStatusChanged{AgentID: "a", Status: contracts.AgentFailed}, true},
 		{"question", contracts.QuestionAsked{Question: "go?"}, true},
+		{"status report", contracts.MessageSent{Author: contracts.AuthorStatus, Text: "Workflow status · 1m0s elapsed"}, true},
+		{"empty status report", contracts.MessageSent{Author: contracts.AuthorStatus, Text: " "}, false},
 	}
 	for _, tc := range cases {
 		got := b.updateFor(contracts.Event{ThreadID: "th_x", Payload: tc.payload}) != ""
@@ -814,5 +816,68 @@ func TestBridgeInboundRequiresALinkedDevice(t *testing.T) {
 	}
 	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "hi", FromSelf: true}); ok {
 		t.Fatal("an unlinked bridge must not route inbound messages")
+	}
+}
+
+// A periodic status report reaches the linked chat as a turn update, titled by
+// its thread, and is not treated as an inbound command when WhatsApp echoes it.
+func TestBridgeForwardsStatusReports(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
+	eng.Start(ctx)
+	t.Cleanup(eng.Close)
+
+	threadID := contracts.ThreadID("th_status")
+	if err := eng.Dispatch(ctx, contracts.Command{
+		ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: threadID, Title: "Ship the report",
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	routed := make(chan string, 4)
+	adapter := &fakeAdapter{sentCh: make(chan string, 8)}
+	b, err := New(Options{
+		StateDir: t.TempDir(), Engine: eng, Adapter: adapter,
+		Control: func(_ context.Context, text string) string {
+			routed <- text
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(b.Close)
+	b.Start(ctx)
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := b.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+
+	const report = "Workflow status · 1m0s elapsed\n\nDone\n- plan"
+	if err := eng.Dispatch(ctx, contracts.Command{
+		ID: "c2", Type: contracts.CmdMessageAppend, ThreadID: threadID,
+		Message: &contracts.MessageSent{MessageID: "s1", Author: contracts.AuthorStatus, Text: report},
+	}); err != nil {
+		t.Fatalf("status report: %v", err)
+	}
+	got := await(t, adapter.sentCh, "the status report")
+	if !strings.HasPrefix(got, "Ship the report — status update\n\n") || !strings.Contains(got, report) {
+		t.Fatalf("status update = %q, want the title then the report", got)
+	}
+
+	// WhatsApp echoes the bridge's own update back. It must not reach the router:
+	// the next real command is routed first, which proves the echo was dropped.
+	if !adapter.deliver(InboundMessage{ID: "echo", Text: got, FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	if !adapter.deliver(InboundMessage{ID: "cmd", Text: "/threads", FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	if first := await(t, routed, "the next command to reach the router"); first != "/threads" {
+		t.Fatalf("routed %q first, want the status echo to be dropped", first)
 	}
 }
