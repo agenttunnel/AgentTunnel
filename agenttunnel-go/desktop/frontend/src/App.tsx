@@ -1,7 +1,10 @@
 import {
+  createContext,
   lazy,
+  memo,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -425,6 +428,85 @@ function groupTurns(messages: Message[]): Message[][] {
   }
   return turns;
 }
+
+/** Per-message actions App supplies through a context, so a memoized message
+ * row never re-renders because a handler's identity changed. `copyText` writes
+ * to the clipboard; `forkFromMessage` branches the thread off one message. */
+type MessageActions = {
+  copyText: (text: string) => void;
+  forkFromMessage: (messageId: string) => void;
+};
+const MessageActionsContext = createContext<MessageActions | null>(null);
+
+/** The git-branch glyph the fork button carries; inherits currentColor. */
+function BranchIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="11"
+      height="11"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="6" y1="3" x2="6" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
+    </svg>
+  );
+}
+
+/** One chat message. Memoized on its message: refreshing a busy thread
+ * re-renders only the blocks whose own message changed, and the action
+ * handlers arrive via MessageActionsContext so their identity is free. */
+const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
+  const actions = useContext(MessageActionsContext);
+  return (
+    <div
+      className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
+    >
+      <div className="who">
+        <span className="role">
+          {m.author === "user"
+            ? "You"
+            : m.author === "steering"
+              ? m.consumed
+                ? "Steering"
+                : "Steering · queued"
+              : m.author === "system"
+                ? "System"
+                : m.author === "shell"
+                  ? "Shell"
+                  : m.author === "subthread"
+                    ? "Subthread"
+                    : m.author === "status"
+                      ? "Status"
+                      : "Orchestrator"}
+        </span>
+      </div>
+      <div className="msg-actions">
+        <button onClick={() => actions?.copyText(m.text)} title="Copy this block">
+          Copy
+        </button>
+        <button
+          className="msg-fork"
+          onClick={() => actions?.forkFromMessage(m.id)}
+          title="Branch from here — new thread with the transcript up to this message"
+          aria-label="Branch from here"
+        >
+          <BranchIcon />
+        </button>
+      </div>
+      <div className="body">
+        <Markdown text={m.text} />
+      </div>
+    </div>
+  );
+});
 
 /** Composer drafts keyed by project and thread, remembered across restarts. */
 function draftKeyOf(projectId: string | null, threadId: string | null): string {
@@ -1054,6 +1136,37 @@ export default function App() {
       await refresh(activeId);
     },
     [activeId, refresh],
+  );
+
+  /** Branches the open thread at one message: thread.fork starts a new thread
+   * carrying the transcript up to and including that message, which is then
+   * selected like any other thread in the project (selecting it also reloads
+   * the thread list). The source thread is only read. */
+  const forkFromMessage = useCallback(
+    async (messageId: string) => {
+      const rpc = rpcRef.current;
+      const id = activeIdRef.current;
+      if (!rpc || !id) return;
+      let forked: { threadId: string };
+      try {
+        forked = await rpc.call<{ threadId: string }>("thread.fork", { threadId: id, messageId });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e), id);
+        return;
+      }
+      if (projectId) lastThreadByProject.current[projectId] = forked.threadId;
+      setActiveId(forked.threadId);
+    },
+    [projectId, setError],
+  );
+  const messageActions = useMemo<MessageActions>(
+    () => ({
+      copyText: (text) => {
+        navigator.clipboard.writeText(text).catch(() => setError("Could not copy"));
+      },
+      forkFromMessage,
+    }),
+    [forkFromMessage, setError],
   );
 
   const installUpdate = useCallback(async () => {
@@ -3839,49 +3952,15 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {groupTurns(thread?.messages ?? []).map((turn) => (
-                <section className="turn" key={turn[0].id}>
-                  {turn.map((m) => (
-                  <div
-                    key={m.id}
-                    className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
-                  >
-                    <div className="who">
-                      <span className="role">
-                        {m.author === "user"
-                          ? "You"
-                          : m.author === "steering"
-                            ? m.consumed
-                              ? "Steering"
-                              : "Steering · queued"
-                            : m.author === "system"
-                              ? "System"
-                              : m.author === "shell"
-                                ? "Shell"
-                                : m.author === "subthread"
-                                  ? "Subthread"
-                                  : m.author === "status"
-                                    ? "Status"
-                                    : "Orchestrator"}
-                      </span>
-                    </div>
-                    <div className="msg-actions">
-                      <button
-                        onClick={() =>
-                          navigator.clipboard.writeText(m.text).catch(() => setError("Could not copy"))
-                        }
-                        title="Copy this block"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <div className="body">
-                      <Markdown text={m.text} />
-                    </div>
-                  </div>
-                  ))}
-                </section>
-              ))}
+              <MessageActionsContext.Provider value={messageActions}>
+                {groupTurns(thread?.messages ?? []).map((turn) => (
+                  <section className="turn" key={turn[0].id}>
+                    {turn.map((m) => (
+                      <MessageBlock key={m.id} m={m} />
+                    ))}
+                  </section>
+                ))}
+              </MessageActionsContext.Provider>
               {(thread?.questions ?? []).map((q) => (
                 <QuestionCard
                   key={q.questionId}

@@ -369,6 +369,10 @@ type (
 		Description string              `json:"description,omitempty"`
 		Issue       *contracts.IssueRef `json:"issue,omitempty"`
 	}
+	forkThreadParams struct {
+		ThreadID  contracts.ThreadID `json:"threadId"`
+		MessageID string             `json:"messageId"`
+	}
 	threadParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 	}
@@ -953,6 +957,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"threadId": id}, nil
+
+	case "thread.fork":
+		var p forkThreadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.forkThread(ctx, p)
 
 	case "thread.list":
 		ids, err := d.engine.Threads(ctx)
@@ -2311,6 +2322,50 @@ func (d *Dispatcher) newProjectID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return "proj_" + hex.EncodeToString(b[:])
+}
+
+// forkThread starts a new top-level thread from the source's transcript up to
+// and including messageID. Message ids are the stable key: they are unique per
+// thread and survive the copy. The source is only read. The fork has no
+// worktree yet; its first turn cuts one from the project base like any new
+// thread. Provider sessions are per turn, so the copied messages reach the
+// agent through the transcript prompt section, not a resume id.
+func (d *Dispatcher) forkThread(ctx context.Context, p forkThreadParams) (any, error) {
+	if p.MessageID == "" {
+		return nil, errors.New("messageId is required")
+	}
+	src, err := d.engine.State(ctx, p.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	if !src.Exists {
+		return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+	}
+	end := -1
+	for i, m := range src.Messages {
+		if m.ID == p.MessageID {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return nil, fmt.Errorf("message %q is not in thread %q", p.MessageID, p.ThreadID)
+	}
+	transcript := make([]contracts.MessageSent, 0, end+1)
+	for _, m := range src.Messages[:end+1] {
+		transcript = append(transcript, contracts.MessageSent{MessageID: m.ID, Author: m.Author, Text: m.Text})
+	}
+	id := d.newThreadID()
+	if err := d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadFork, ThreadID: id,
+		Title: src.Title + " (branch)", ProjectID: src.ProjectID, Transcript: transcript,
+	}); err != nil {
+		return nil, err
+	}
+	d.auditLog("thread.forked", map[string]any{
+		"threadId": string(id), "from": string(p.ThreadID), "messages": len(transcript),
+	})
+	return map[string]any{"threadId": id}, nil
 }
 
 func (d *Dispatcher) newThreadID() contracts.ThreadID {
