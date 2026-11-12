@@ -3506,6 +3506,27 @@ button.danger-text {
   width: min(980px, 94vw);
   max-height: 88vh;
 }
+/* Release notes after an update: close button leads the header, top left. */
+.notes-sheet {
+  width: min(620px, 92vw);
+}
+.notes-head {
+  justify-content: flex-start;
+}
+.notes-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.notes-close:hover {
+  color: var(--text);
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+}
 .sheet-head {
   display: flex;
   align-items: center;

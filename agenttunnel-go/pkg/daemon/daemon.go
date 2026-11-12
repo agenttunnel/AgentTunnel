@@ -73,6 +73,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	updater.NotesPath = filepath.Join(opts.StateDir, "update-notes.json")
 	if opts.Registry == nil {
 		opts.Registry = providers.BuiltinRegistry()
 	}

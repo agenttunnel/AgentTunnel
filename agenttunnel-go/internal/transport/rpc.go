@@ -1542,6 +1542,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.updater.Apply(ctx)
 
+	case "update.takeReleaseNotes":
+		// Read-and-clear: null when nothing is pending for the running build.
+		if d.updater == nil {
+			return nil, nil
+		}
+		n, ok, err := d.updater.TakeReleaseNotes()
+		if err != nil || !ok {
+			return nil, err
+		}
+		return n, nil
+
 	case "deps.check":
 		// Probes the forge CLIs on PATH with `--version`; local and read-only,
 		// so the headless daemon reports the same answer as the desktop app.
