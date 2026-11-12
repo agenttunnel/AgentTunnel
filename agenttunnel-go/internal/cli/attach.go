@@ -103,18 +103,20 @@ func runAttach(ctx context.Context, env *Env, args []string) error {
 }
 
 // attachSession is the interactive loop: header, backlog, then live events and
-// typed input side by side.
+// typed input side by side. It returns when the user detaches, when the turn
+// it watches ends, or when the daemon goes away.
 func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, in io.Reader) error {
 	if err := printAttachHeader(ctx, env, c, row); err != nil {
-		return err
+		return detachOnCancel(ctx, env, err)
 	}
 	if err := subscribeThread(ctx, c, row.ID); err != nil {
-		return err
+		return detachOnCancel(ctx, env, err)
 	}
 	backlog, err := fetchEntries(ctx, c, row.ID, "")
 	if err != nil {
-		return err
+		return detachOnCancel(ctx, env, err)
 	}
+	early := bufferedFrames(c, row.ID, backlog)
 	if len(backlog) > logsDefaultLines {
 		backlog = backlog[len(backlog)-logsDefaultLines:]
 	}
@@ -123,20 +125,38 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 	}
 	fmt.Fprintln(env.Out, "\n-- attached; /help for commands, /detach or Ctrl-C to leave --")
 
-	lines := readStdinLines(ctx, in)
-	dedupe := newLogDeduper(backlog)
-	var tracker *turnTracker
-	if statuses, err := fetchAgentStatuses(ctx, c, row.ID); err == nil {
-		tracker = newTurnTracker(statuses, false)
-	} else {
-		tracker = newTurnTracker(map[string]contracts.AgentStatus{}, false)
+	// requireActivity: an attach to a thread whose turn already finished waits
+	// for the next turn instead of leaving at once.
+	statuses, err := fetchAgentStatuses(ctx, c, row.ID)
+	if err != nil {
+		statuses = map[string]contracts.AgentStatus{}
 	}
+	tracker := newTurnTracker(statuses, true)
 	var pending []questionPromptEntry
+	handle := func(ev Event) bool {
+		asked, answeredID := handleAttachEvent(env, ev, row.ID, tracker)
+		if asked != nil {
+			pending = append(pending, *asked)
+			printQuestion(env, *asked)
+		}
+		if answeredID != "" {
+			pending = dropQuestion(pending, answeredID)
+		}
+		return tracker.ended()
+	}
+	for _, ev := range early {
+		if handle(ev) {
+			return turnFinished(env)
+		}
+	}
 
+	lines := readStdinLines(ctx, in)
+	poll := time.NewTicker(followPollInterval)
+	defer poll.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return detachOnCancel(ctx, env, nil)
 
 		case line, ok := <-lines:
 			if !ok {
@@ -147,7 +167,10 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 			}
 			done, next, err := handleAttachLine(ctx, env, c, row, line, pending)
 			if err != nil {
-				fmt.Fprintln(env.Err, "agenttunnel:", err)
+				// A line cut short by Ctrl-C is a detach, not an error.
+				if ctx.Err() == nil {
+					fmt.Fprintln(env.Err, "agenttunnel:", err)
+				}
 				continue
 			}
 			pending = next
@@ -155,20 +178,44 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 				return nil
 			}
 
+		case <-poll.C:
+			// Status events are the fast path; a poll catches a turn that ended
+			// without an event this session saw.
+			if fresh, err := fetchAgentStatuses(ctx, c, row.ID); err == nil {
+				tracker.update(fresh)
+			}
+			if tracker.ended() {
+				return turnFinished(env)
+			}
+
 		case ev, ok := <-c.Events():
 			if !ok {
+				if err := c.Err(); err != nil && ctx.Err() == nil {
+					return fmt.Errorf("lost the connection to the daemon: %w", err)
+				}
 				return nil
 			}
-			asked, answeredID := handleAttachEvent(env, ev, row.ID, dedupe, tracker)
-			if asked != nil {
-				pending = append(pending, *asked)
-				printQuestion(env, *asked)
-			}
-			if answeredID != "" {
-				pending = dropQuestion(pending, answeredID)
+			if handle(ev) {
+				return turnFinished(env)
 			}
 		}
 	}
+}
+
+// detachOnCancel turns a setup failure caused by Ctrl-C into the same clean
+// detach the live loop gives.
+func detachOnCancel(ctx context.Context, env *Env, err error) error {
+	if ctx.Err() != nil {
+		fmt.Fprintln(env.Out, "\ndetached (the turn keeps running)")
+		return nil
+	}
+	return err
+}
+
+// turnFinished is the normal end of an attach: the turn it watched is over.
+func turnFinished(env *Env) error {
+	fmt.Fprintln(env.Out, "-- turn finished --")
+	return nil
 }
 
 // handleAttachLine executes one typed line. done means the user asked to leave.
@@ -258,7 +305,7 @@ func selectOptions(q questionPromptEntry, line string) ([]string, bool) {
 
 // handleAttachEvent prints one live frame and returns a question that just
 // opened plus the id of one that closed.
-func handleAttachEvent(env *Env, ev Event, threadID string, dedupe *logDeduper, tracker *turnTracker) (*questionPromptEntry, string) {
+func handleAttachEvent(env *Env, ev Event, threadID string, tracker *turnTracker) (*questionPromptEntry, string) {
 	frame, ok := decodeEventFrame(ev)
 	if !ok || frame.ThreadID != threadID {
 		return nil, ""
@@ -269,9 +316,7 @@ func handleAttachEvent(env *Env, ev Event, threadID string, dedupe *logDeduper, 
 		if json.Unmarshal(frame.Payload, &out) != nil {
 			return nil, ""
 		}
-		if dedupe.duplicate(string(out.AgentID), out.Kind, out.Text) {
-			return nil, ""
-		}
+		tracker.activity = true
 		writeLogEntry(env.Out, contracts.LogEntry{AgentID: out.AgentID, Kind: out.Kind, Text: out.Text, At: time.Now()})
 	case contracts.EvtAgentStatusChanged:
 		var status contracts.AgentStatusChanged
@@ -355,6 +400,9 @@ func printAttachHeader(ctx context.Context, env *Env, c cliCaller, row threadLis
 		title = "(untitled)"
 	}
 	fmt.Fprintf(env.Out, "thread  %s  %q\n", row.ID, title)
+	if row.ParentThreadID != "" {
+		fmt.Fprintf(env.Out, "parent  %s\n", shortThreadID(row.ParentThreadID))
+	}
 	fmt.Fprintf(env.Out, "project %s\n", project)
 	fmt.Fprintf(env.Out, "status  %s  (%d/%d agents)\n", threadRowStatus(row), row.RunningAgents, row.Agents)
 	return nil

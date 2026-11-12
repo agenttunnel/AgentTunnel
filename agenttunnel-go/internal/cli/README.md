@@ -67,6 +67,52 @@ Rules:
 - Never put the token in a URL. `Env.Connect` sends it as
   `Authorization: Bearer`.
 
+## Thread and agent references
+
+Every thread and subthread has a stable id (`th_` plus 16 hex). Listings show
+its 12-character short form, the docker-style id prefix. Any command that takes
+a thread accepts, in order:
+
+1. the exact id;
+2. the exact title;
+3. a unique id prefix (the short form, or a prefix of the hex body);
+4. a unique title substring.
+
+Ambiguity is an error that lists the candidates. Agents resolve the same way
+within one thread: the exact id (or the id without its `agent-` prefix), then the
+exact name, then a unique id prefix. Resolution lives in `refs.go`.
+
+Subthreads are threads with a parent. `ps` nests them under the parent and
+shows a PARENT column; `attach` names the parent in its header.
+
+## Thread and agent commands
+
+- `ps [-a]`: threads with their status and agent count. Stale threads are
+  hidden; `-a` includes them. Subthreads nest under their parent.
+- `agents <thread> [--json]`: a thread's agents with ID, NAME, ROLE, STATUS, HARNESS.
+- `logs <thread> [agent] [-f] [--tail N]`: a thread's output, or one agent's
+  when given. `--agent <ref>` and `-n` work too.
+- `describe thread <thread> [-o json|yaml]`: a kubectl-style definition: name,
+  id, parent, project, worktree and branch, harness and model, status, turns,
+  spend, roles, the agents table (with parent and pipeline), tasks, peer mailbox,
+  subthreads, and the newest events. `--json` is the same as `-o json`.
+- `describe agent <thread> <agent> [-o json|yaml]`: one agent's definition
+  (parent, pipeline, task, dependencies, status and reason, spend).
+- `inspect` is a docker-style alias of `describe`, with the same subcommands.
+- `attach <thread>`: replays recent output, streams live output, and takes
+  steering text (`/stop`, `/detach`, `/help`). It leaves when the turn it
+  watches ends, or on Ctrl-C (which detaches and leaves the turn running).
+
+## Desktop
+
+- `--desktop [dir]`: start the desktop app. With a directory, it opens that
+  project: a registered project (matched by its symlink-resolved path) is reused,
+  and an unknown directory is registered first. A running app is focused over the
+  daemon; a closed one boots onto the project. Relative paths resolve, and a
+  non-directory is an error. Like `open`, it needs `agenttunnel-desktop` on PATH
+  and reports how to install it if missing.
+- `open <thread>`: show a thread in the desktop app, the same way.
+
 ## Client
 
 `Env.Connect` resolves the daemon in this order:

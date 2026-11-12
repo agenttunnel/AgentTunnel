@@ -281,12 +281,85 @@ func TestParseLogsArgs(t *testing.T) {
 	if opts, err := parseLogsArgs([]string{"th_1"}); err != nil || opts.lines != logsDefaultLines || opts.follow {
 		t.Fatalf("defaults = %+v, %v", opts, err)
 	}
-	for _, bad := range [][]string{{}, {"a", "b"}, {"--lines", "x", "t"}, {"--lines", "-1", "t"}, {"--bogus", "t"}} {
+	// A second positional names the agent; a third is an error.
+	if opts, err := parseLogsArgs([]string{"th_1", "executor-1", "-f"}); err != nil || opts.agent != "executor-1" || !opts.follow {
+		t.Fatalf("positional agent = %+v, %v", opts, err)
+	}
+	if opts, err := parseLogsArgs([]string{"--tail=7", "th_1"}); err != nil || opts.lines != 7 {
+		t.Fatalf("--tail = %+v, %v", opts, err)
+	}
+	if _, err := parseLogsArgs([]string{"th_1", "a1", "--agent", "a2"}); err == nil {
+		t.Fatal("naming the agent twice should fail")
+	}
+	for _, bad := range [][]string{{}, {"a", "b", "c"}, {"--lines", "x", "t"}, {"--tail", "-1", "t"}, {"--bogus", "t"}} {
 		if _, err := parseLogsArgs(bad); err == nil {
 			t.Fatalf("parseLogsArgs(%v) should fail", bad)
 		}
 	}
 	if _, err := parseLogsArgs([]string{"--lines", "999999", "t"}); err == nil {
 		t.Fatal("--lines above the cap should fail")
+	}
+}
+
+func TestNestPsRowsFollowsParents(t *testing.T) {
+	rows := []psRow{
+		{thread: threadListRow{ID: "th_root"}},
+		{thread: threadListRow{ID: "th_child", ParentThreadID: "th_root"}},
+		{thread: threadListRow{ID: "th_grand", ParentThreadID: "th_child"}},
+		{thread: threadListRow{ID: "th_other"}},
+		// A parent that is not listed (stale and hidden) leaves the child at the root.
+		{thread: threadListRow{ID: "th_orphan", ParentThreadID: "th_hidden"}},
+	}
+	got := nestPsRows(rows)
+	want := []struct {
+		id    string
+		depth int
+	}{{"th_root", 0}, {"th_child", 1}, {"th_grand", 2}, {"th_other", 0}, {"th_orphan", 0}}
+	if len(got) != len(want) {
+		t.Fatalf("nested %d rows, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].thread.ID != w.id || got[i].depth != w.depth {
+			t.Fatalf("row %d = %s depth %d, want %s depth %d", i, got[i].thread.ID, got[i].depth, w.id, w.depth)
+		}
+	}
+}
+
+func TestNestPsRowsKeepsParentCyclesVisible(t *testing.T) {
+	rows := []psRow{
+		{thread: threadListRow{ID: "th_a", ParentThreadID: "th_b"}},
+		{thread: threadListRow{ID: "th_b", ParentThreadID: "th_a"}},
+		{thread: threadListRow{ID: "th_self", ParentThreadID: "th_self"}},
+	}
+	got := nestPsRows(rows)
+	if len(got) != 3 {
+		t.Fatalf("a malformed parent cycle must not drop rows: got %d", len(got))
+	}
+}
+
+func TestPsShowsSubthreadsWithParentColumn(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	fake := &fakeCLICaller{results: map[string]string{
+		"thread.list": `[
+			{"id":"th_child0000000001","title":"write tests","parentThreadId":"th_parent000000001","runningAgents":1,"agents":1,"updatedAt":"2026-11-11T11:59:00Z"},
+			{"id":"th_parent000000001","title":"ship feature","agents":2,"runningAgents":1,"updatedAt":"2026-11-11T11:58:00Z"}
+		]`,
+		"project.list": `[]`,
+	}}
+	env, out := newUsageTestEnv()
+	if err := renderPs(context.Background(), env, fake, psOptions{}, now); err != nil {
+		t.Fatalf("renderPs: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 || !strings.Contains(lines[0], "PARENT") {
+		t.Fatalf("want header plus two rows with a PARENT column:\n%s", out.String())
+	}
+	// The subthread prints its own short id, its parent's short id, and sits
+	// directly under the parent.
+	if !strings.HasPrefix(lines[1], "th_parent000") || !strings.Contains(lines[2], "└ write tests") {
+		t.Fatalf("subthread should nest under its parent:\n%s", out.String())
+	}
+	if !strings.Contains(lines[2], "th_child0000") || !strings.Contains(lines[2], "th_parent000") {
+		t.Fatalf("subthread row should carry its own id and the parent id:\n%s", out.String())
 	}
 }

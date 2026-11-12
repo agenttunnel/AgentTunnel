@@ -7,6 +7,9 @@ export type Conn = {
   /** A project directory passed on the command line (agenttunnel <dir>): open
    * a thread in it once connected. Empty for a plain launch. */
   launchDir?: string;
+  /** A thread id passed on the command line (agenttunnel open): select that
+   * thread once connected. Empty for a plain launch. */
+  launchThread?: string;
   /** Host:port of the daemon, for the "local" vs "attached" header badge. */
   host?: string;
   /** True when the window attached to a daemon it did not start. */

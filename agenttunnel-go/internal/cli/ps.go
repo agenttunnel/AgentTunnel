@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,6 +53,8 @@ type psRow struct {
 	thread  threadListRow
 	project string
 	status  string
+	// depth is how many subthread levels below a listed root this row sits.
+	depth int
 }
 
 // collectPs reads the thread list and the project registry and joins them. A
@@ -81,11 +84,58 @@ func collectPs(ctx context.Context, c cliCaller, opts psOptions) ([]psRow, error
 	return rows, nil
 }
 
+// nestPsRows orders rows so every subthread follows its parent, indented one
+// level deeper. A subthread whose parent is not listed (hidden as stale, or
+// deleted) stays at the root. Siblings keep the recency order they arrived in,
+// and a seen-set keeps a malformed parent cycle from looping or dropping rows.
+func nestPsRows(rows []psRow) []psRow {
+	listed := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		listed[row.thread.ID] = true
+	}
+	children := make(map[string][]int)
+	var roots []int
+	for i, row := range rows {
+		parent := row.thread.ParentThreadID
+		if parent != "" && listed[parent] && parent != row.thread.ID {
+			children[parent] = append(children[parent], i)
+		} else {
+			roots = append(roots, i)
+		}
+	}
+
+	out := make([]psRow, 0, len(rows))
+	seen := make([]bool, len(rows))
+	var walk func(i, depth int)
+	walk = func(i, depth int) {
+		if seen[i] {
+			return
+		}
+		seen[i] = true
+		row := rows[i]
+		row.depth = depth
+		out = append(out, row)
+		for _, child := range children[row.thread.ID] {
+			walk(child, depth+1)
+		}
+	}
+	for _, i := range roots {
+		walk(i, 0)
+	}
+	// Rows only reachable through a cycle never became roots; list them flat
+	// rather than lose them.
+	for i := range rows {
+		walk(i, 0)
+	}
+	return out
+}
+
 func renderPs(ctx context.Context, env *Env, c cliCaller, opts psOptions, now time.Time) error {
 	rows, err := collectPs(ctx, c, opts)
 	if err != nil {
 		return err
 	}
+	rows = nestPsRows(rows)
 	if env.JSON {
 		threads := make([]threadListRow, 0, len(rows))
 		for _, row := range rows {
@@ -108,16 +158,24 @@ func renderPs(ctx context.Context, env *Env, c cliCaller, opts psOptions, now ti
 		if title == "" {
 			title = "(untitled)"
 		}
+		parent := "-"
+		if row.thread.ParentThreadID != "" {
+			parent = shortThreadID(string(row.thread.ParentThreadID))
+		}
+		if row.depth > 0 {
+			title = strings.Repeat("  ", row.depth-1) + "└ " + title
+		}
 		tableRows = append(tableRows, []string{
 			shortThreadID(row.thread.ID),
 			title,
+			parent,
 			row.project,
 			row.status,
 			psAgentCount(row.thread.RunningAgents, row.thread.Agents),
 			relativeAgo(row.thread.UpdatedAt, now),
 		})
 	}
-	renderDockerTable(env.Out, []string{"ID", "TITLE", "PROJECT", "STATUS", "AGENTS", "UPDATED"}, tableRows)
+	renderDockerTable(env.Out, []string{"ID", "TITLE", "PARENT", "PROJECT", "STATUS", "AGENTS", "UPDATED"}, tableRows)
 	return nil
 }
 

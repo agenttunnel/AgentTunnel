@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -46,7 +47,7 @@ func main() {
 	// agent-callable subcommand; a single directory argument opens a thread in
 	// that project (forwarded to the running app when there is one); anything
 	// else is a usage error — never boot a second window.
-	dir := ""
+	dir, thread := "", ""
 	if args := os.Args[1:]; len(args) > 0 {
 		switch {
 		case args[0] == "tool":
@@ -64,6 +65,8 @@ func main() {
 				os.Exit(2)
 			}
 			dir = d
+		case args[0] == "--thread" && len(args) == 2 && strings.TrimSpace(args[1]) != "":
+			thread = strings.TrimSpace(args[1])
 		default:
 			usage()
 			os.Exit(2)
@@ -84,7 +87,7 @@ func main() {
 	state := stateDir()
 	// An instance is already running: hand the request to it and stay out of
 	// the way — two daemons must never share one state directory.
-	if forwardToRunning(state, dir) {
+	if forwardToRunning(state, dir, thread) {
 		return
 	}
 
@@ -94,24 +97,25 @@ func main() {
 	// background) answers discovery. Attach to it: never start a second daemon
 	// and never touch its state files.
 	if target, ok := findDaemon(state); ok {
-		runAttached(state, target, dir)
+		runAttached(state, target, dir, thread)
 		return
 	}
 
-	runOwned(ctx, cancel, state, dir)
+	runOwned(ctx, cancel, state, dir, thread)
 }
 
 // runAttached shows a window against a daemon this process does not own. The
 // daemon (and its discovery files) belongs to whoever started it, so this path
 // writes nothing and removes nothing on the way out.
-func runAttached(state string, target daemonTarget, dir string) {
+func runAttached(state string, target daemonTarget, dir, thread string) {
 	conn := shellConn{
-		wsURL:     target.wsURL,
-		httpURL:   target.httpURL,
-		token:     target.token,
-		launchDir: dir,
-		host:      target.host,
-		attached:  true,
+		wsURL:        target.wsURL,
+		httpURL:      target.httpURL,
+		token:        target.token,
+		launchDir:    dir,
+		launchThread: thread,
+		host:         target.host,
+		attached:     true,
 	}
 	// Closing the window ends this shell; the external daemon keeps running.
 	app := newApp(conn, state, true, nil)
@@ -121,7 +125,7 @@ func runAttached(state string, target daemonTarget, dir string) {
 }
 
 // runOwned starts the embedded daemon and shows a window onto it.
-func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string) {
+func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir, thread string) {
 	cwd, _ := os.Getwd()
 	var appRef atomic.Pointer[application.App]
 	var windowClosed atomic.Bool
@@ -170,11 +174,12 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string)
 	defer removeLock(state)
 
 	conn := shellConn{
-		wsURL:     wsURL,
-		httpURL:   fmt.Sprintf("http://%s", ln.Addr().String()),
-		token:     d.Token,
-		launchDir: dir,
-		host:      ln.Addr().String(),
+		wsURL:        wsURL,
+		httpURL:      fmt.Sprintf("http://%s", ln.Addr().String()),
+		token:        d.Token,
+		launchDir:    dir,
+		launchThread: thread,
+		host:         ln.Addr().String(),
 	}
 	app := newApp(conn, state, false, func(a *application.App) {
 		windowClosed.Store(true)
@@ -220,23 +225,25 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir string)
 // only shell capability data (where the daemon lives and how it is hosted);
 // everything else rides the same daemon WebSocket as any other client.
 type shellConn struct {
-	wsURL     string
-	httpURL   string
-	token     string
-	launchDir string
-	host      string
-	attached  bool
+	wsURL        string
+	httpURL      string
+	token        string
+	launchDir    string
+	launchThread string
+	host         string
+	attached     bool
 }
 
 func (c shellConn) payload() map[string]any {
 	return map[string]any{
-		"wsUrl":       c.wsURL,
-		"httpUrl":     c.httpURL,
-		"token":       c.token,
-		"launchDir":   c.launchDir,
-		"host":        c.host,
-		"attached":    c.attached,
-		"keepRunning": keepRunning.Load(),
+		"wsUrl":        c.wsURL,
+		"httpUrl":      c.httpURL,
+		"token":        c.token,
+		"launchDir":    c.launchDir,
+		"launchThread": c.launchThread,
+		"host":         c.host,
+		"attached":     c.attached,
+		"keepRunning":  keepRunning.Load(),
 	}
 }
 
@@ -335,6 +342,7 @@ func installShellEvents(app *application.App, conn shellConn, state string) {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: agenttunnel-desktop            start the app")
 	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop <dir>      open a thread in that project (creates the project if unknown)")
+	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop --thread <id>  show an existing thread")
 	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop tool ...   agent-callable tool")
 	fmt.Fprintln(os.Stderr, "       agenttunnel-desktop --version  print the release version")
 }

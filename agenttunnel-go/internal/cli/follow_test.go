@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -297,5 +298,138 @@ func TestLogsFollowStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled follow did not return")
+	}
+}
+
+// eventSourceCaller is a fake caller that also exposes buffered pushed frames,
+// as the real Client does.
+type eventSourceCaller struct {
+	fakeCLICaller
+	events chan Event
+}
+
+func (e *eventSourceCaller) Events() <-chan Event { return e.events }
+
+func outputFrame(t *testing.T, threadID string, out contracts.AgentOutput) Event {
+	t.Helper()
+	payload, _ := json.Marshal(out)
+	raw, _ := json.Marshal(map[string]any{
+		"threadId": threadID, "type": string(contracts.EvtAgentOutput), "payload": json.RawMessage(payload),
+	})
+	return Event{Method: "thread.event", Params: raw}
+}
+
+// A repeated line from history is dropped only when it was already buffered at
+// backlog time; the same text arriving later is new output and must print.
+func TestBufferedFramesDropsOnlyBacklogRepeats(t *testing.T) {
+	backlog := []contracts.LogEntry{{AgentID: "agent-exec", Kind: contracts.LogTool, Text: "$ go test ./..."}}
+	source := &eventSourceCaller{events: make(chan Event, 8)}
+	source.events <- outputFrame(t, "th_1", contracts.AgentOutput{AgentID: "agent-exec", Kind: contracts.LogTool, Text: "$ go test ./..."})
+	source.events <- outputFrame(t, "th_1", contracts.AgentOutput{AgentID: "agent-exec", Kind: contracts.LogText, Text: "planning"})
+	source.events <- outputFrame(t, "th_other", contracts.AgentOutput{AgentID: "agent-exec", Kind: contracts.LogTool, Text: "$ go test ./..."})
+
+	early := bufferedFrames(source, "th_1", backlog)
+	if len(early) != 2 {
+		t.Fatalf("buffered frames kept = %d, want 2 (the repeat dropped, the others kept)", len(early))
+	}
+
+	// The same line arriving after the backlog is new output, not a repeat.
+	env, out := newUsageTestEnv()
+	tracker := newTurnTracker(map[string]contracts.AgentStatus{}, false)
+	printFollowEvent(env, outputFrame(t, "th_1", contracts.AgentOutput{
+		AgentID: "agent-exec", Kind: contracts.LogTool, Text: "$ go test ./...",
+	}), "th_1", followOptions{}, tracker)
+	if !strings.Contains(out.String(), "$ go test ./...") {
+		t.Fatalf("a later repeat must print:\n%s", out.String())
+	}
+}
+
+// attachTestServer is a scripted daemon with one running lead, so attach runs
+// its full loop over a real Client.
+func attachTestServer() *scriptedServer {
+	s := newScriptedServer()
+	s.results["agents.list"] = []map[string]any{
+		{"agent": map[string]any{"id": "agent-orchestrator", "status": "running"}},
+	}
+	s.results["thread.subscribe"] = map[string]any{"subscribed": "th_1"}
+	s.results["thread.logs"] = []contracts.LogEntry{}
+	return s
+}
+
+func TestAttachEndsWhenTheTurnItWatchesEnds(t *testing.T) {
+	s := attachTestServer()
+	s.queue(threadFrame{threadID: "th_1", typ: contracts.EvtAgentOutput, payload: contracts.AgentOutput{
+		AgentID: "agent-orchestrator", Kind: contracts.LogText, Text: "reviewing the diff",
+	}})
+	s.queue(threadFrame{threadID: "th_1", typ: contracts.EvtAgentStatusChanged, payload: contracts.AgentStatusChanged{
+		AgentID: "agent-orchestrator", Status: contracts.AgentSucceeded,
+	}})
+	c := dialScripted(t, s)
+	env, out := newUsageTestEnv()
+
+	in, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	done := make(chan error, 1)
+	go func() {
+		done <- attachSession(context.Background(), env, c, threadListRow{ID: "th_1", Title: "job"}, in)
+	}()
+	select {
+	case <-s.subscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach never subscribed")
+	}
+	s.pushNow(t)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("attachSession: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("attach did not leave when the turn ended")
+	}
+	got := out.String()
+	for _, want := range []string{"reviewing the diff", "status succeeded", "-- turn finished --"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("attach output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestAttachCtrlCDetachesCleanly(t *testing.T) {
+	s := attachTestServer()
+	s.results["agents.list"] = []map[string]any{
+		{"agent": map[string]any{"id": "agent-orchestrator", "status": "running"}},
+	}
+	c := dialScripted(t, s)
+	env, out := newUsageTestEnv()
+
+	// The input never closes: only the cancelled context ends the session.
+	in, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- attachSession(ctx, env, c, threadListRow{ID: "th_1"}, in)
+	}()
+	select {
+	case <-s.subscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach never subscribed")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		// Ctrl-C is a detach: the shell gets a clean exit and a note that the
+		// turn is still running, never an error.
+		if err != nil {
+			t.Fatalf("Ctrl-C detach returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl-C did not detach")
+	}
+	if !strings.Contains(out.String(), "detached (the turn keeps running)") {
+		t.Fatalf("detach note missing:\n%s", out.String())
 	}
 }

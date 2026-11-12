@@ -100,9 +100,10 @@ func launchDirArg(arg string) (string, error) {
 }
 
 // forwardToRunning hands the open-request to an already-running app over its
-// daemon WebSocket, then reports true. A missing or stale lock, or any
-// connection failure, reports false so the caller boots a fresh app instead.
-func forwardToRunning(stateDir, dir string) bool {
+// daemon WebSocket, then reports true. A directory opens a fresh thread in it;
+// a thread id focuses that thread. A missing or stale lock, or any connection
+// failure, reports false so the caller boots a fresh app instead.
+func forwardToRunning(stateDir, dir, thread string) bool {
 	lock, ok := readLock(stateDir)
 	if !ok {
 		return false
@@ -118,7 +119,7 @@ func forwardToRunning(stateDir, dir string) bool {
 	}
 	defer ws.CloseNow()
 
-	var threadID string
+	threadID := thread
 	if dir != "" {
 		res, err := rpcCall(ctx, ws, "thread.open", map[string]string{"dir": dir})
 		if err != nil {
@@ -130,7 +131,7 @@ func forwardToRunning(stateDir, dir string) bool {
 	if _, err := rpcCall(ctx, ws, "app.open", map[string]string{"threadId": threadID}); err != nil {
 		return false
 	}
-	if dir == "" {
+	if dir == "" && thread == "" {
 		fmt.Println("AgentTunnel is already running — focused it.")
 	}
 	return true

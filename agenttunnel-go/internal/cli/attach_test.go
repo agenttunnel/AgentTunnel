@@ -168,7 +168,7 @@ func TestAttachEventSurfacesQuestions(t *testing.T) {
 	asked, closed := handleAttachEvent(env, frame(contracts.QuestionAsked{
 		QuestionID: "q1", Kind: contracts.QuestionChoice,
 		Question: "which database?", Options: []string{"postgres", "sqlite"},
-	}), "th_1", newLogDeduper(nil), newTurnTracker(map[string]contracts.AgentStatus{}, false))
+	}), "th_1", newTurnTracker(map[string]contracts.AgentStatus{}, false))
 	if asked == nil || asked.id != "q1" || len(asked.options) != 2 {
 		t.Fatalf("asked = %+v", asked)
 	}
@@ -189,8 +189,7 @@ func TestAttachEventSurfacesQuestions(t *testing.T) {
 		"threadId": "th_1", "type": "thread.question-closed",
 		"payload": map[string]any{"questionId": "q1", "answered": true},
 	})
-	_, closedID := handleAttachEvent(env, Event{Method: "thread.event", Params: closedRaw}, "th_1",
-		newLogDeduper(nil), newTurnTracker(map[string]contracts.AgentStatus{}, false))
+	_, closedID := handleAttachEvent(env, Event{Method: "thread.event", Params: closedRaw}, "th_1", newTurnTracker(map[string]contracts.AgentStatus{}, false))
 	if closedID != "q1" {
 		t.Fatalf("closed = %q, want q1", closedID)
 	}
@@ -202,8 +201,7 @@ func TestAttachIgnoresOtherThreadsEvents(t *testing.T) {
 		"threadId": "th_other", "type": "agent.output",
 		"payload": map[string]any{"agentId": "a1", "kind": "text", "text": "not mine"},
 	})
-	if _, _ = handleAttachEvent(env, Event{Method: "thread.event", Params: raw}, "th_1",
-		newLogDeduper(nil), newTurnTracker(map[string]contracts.AgentStatus{}, false)); len(out.String()) != 0 {
+	if _, _ = handleAttachEvent(env, Event{Method: "thread.event", Params: raw}, "th_1", newTurnTracker(map[string]contracts.AgentStatus{}, false)); len(out.String()) != 0 {
 		t.Fatalf("another thread's output must not print:\n%s", out.String())
 	}
 }
