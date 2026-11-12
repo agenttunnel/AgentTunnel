@@ -1604,6 +1604,7 @@ export default function App() {
           latestId: latest?.id ?? null,
           latestStatus: latest?.status ?? "pending",
           current: running[running.length - 1] ?? null,
+          off: r.experimental && !settings?.experimentalRoles,
         };
       }),
     [settings, agents, thread],
@@ -3355,7 +3356,7 @@ export default function App() {
                       {...(r.latestId ? clickable(() => setDetailId(r.latestId)) : {})}
                     >
                       <div className="role-head">
-                        <span className={`dot ${r.running.length > 0 ? "running" : r.latestStatus}`} />
+                        <span className={`dot ${r.running.length > 0 ? "running" : r.off ? "off" : r.latestStatus}`} />
                         <span className="role-name">{r.name}</span>
                         <span className="harness" title={`${r.harness} · ${r.model}`}>
                           {r.harness}
@@ -3363,7 +3364,13 @@ export default function App() {
                         </span>
                       </div>
                       <div className="role-meta">
-                        {r.running.length > 0 ? `${r.running.length} running` : "idle"}
+                        {r.running.length > 0
+                          ? `${r.running.length} running`
+                          : r.off
+                            ? "off · enable Experimental roles in Settings"
+                            : r.latestId
+                              ? `last: ${r.latestStatus}`
+                              : "idle"}
                         {r.mine.length > 0 &&
                           ` · ${r.done}/${r.mine.length} done · ${fmtTokens(r.tokens)} tok`}
                       </div>
