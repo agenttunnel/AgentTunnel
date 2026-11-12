@@ -678,6 +678,10 @@ export default function App() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadState | null>(null);
+  // Last loaded state per thread, so switching back paints the thread at once
+  // instead of an empty screen until thread.get returns. Keyed by id, so a
+  // thread never shows another thread's messages.
+  const threadCacheRef = useRef<Record<string, ThreadState>>({});
   const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -987,6 +991,7 @@ export default function App() {
       rpc.call<ThreadSummary[]>("thread.list"),
       rpc.call<ThreadUsage>("usage.get"),
     ]);
+    threadCacheRef.current[id] = state;
     // A reply for a thread the user has since left must not replace the one on screen.
     if (activeIdRef.current === id) setThread(state);
     setThreads(list);
@@ -1571,10 +1576,11 @@ export default function App() {
   // Subscribe to the active thread and keep the local view fresh. The activity
   // log box restores this thread's persisted output on switch, then appends
   // "agent.output" frames for this thread as they stream.
-  // Switching threads drops what was on screen. Each thread's own data is
-  // reloaded for it, and late replies for the old thread are ignored by the loaders.
+  // Switching threads drops the other thread's data. The new thread paints from
+  // its cached state (or nothing if never loaded) while refresh reloads it, and
+  // late replies for the old thread are ignored by the loaders.
   useEffect(() => {
-    setThread(null);
+    setThread(activeId ? (threadCacheRef.current[activeId] ?? null) : null);
     setLogs([]);
     setDiff(null);
     setDiffError(null);
@@ -3383,7 +3389,7 @@ export default function App() {
                   )}
                 </div>
               )}
-              {!setupMode && (!thread || (thread.messages?.length ?? 0) === 0) && running.length === 0 && (
+              {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
                 <div className="stream-empty">
                   <img src="/brand-mark.svg" alt="" />
                   <div className="stream-empty-title">Start a thread</div>
