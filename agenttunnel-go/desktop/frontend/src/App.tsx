@@ -3341,6 +3341,28 @@ export default function App() {
         error={harnessUpdateError}
         onUpdate={updateHarnesses}
       />
+      <button
+        type="button"
+        className="title-gear"
+        onClick={openSettings}
+        aria-label="Settings"
+        title="Settings"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="16"
+          height="16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
     </div>
   );
 
@@ -3676,6 +3698,284 @@ export default function App() {
     />
   );
 
+  // Rendered on every screen: settings are app-global, so the titlebar gear
+  // must open the sheet wherever the user is.
+  const settingsSheet = settingsOpen && settings && (
+    <div className="overlay" onClick={() => setSettingsOpen(false)}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <strong>Settings</strong>
+          <div className="sheet-head-right">
+            {saved && <span className="saved">Saved</span>}
+            <button onClick={() => setSettingsOpen(false)}>Close</button>
+          </div>
+        </div>
+        <div className="sheet-body">
+          <section className="set-section">
+            <h4>New thread defaults</h4>
+            <p className="hint">
+              New threads open with the tab, panels, layout, and council setup saved here. A
+              thread you change keeps its own view.
+            </p>
+            <div className="sheet-actions">
+              <button onClick={saveThreadDefaults}>Save this view as default</button>
+            </div>
+          </section>
+          {!conn?.attached && (
+            <section className="set-section">
+              <h4>Desktop</h4>
+              <p className="hint">
+                When this is on, closing the window leaves the daemon (and any running
+                turns) alive in the background so <code>at</code> can still reach it.
+                Turn it off to stop the daemon with the window.
+              </p>
+              <div
+                className={`toggle ${keepRunning ? "on" : ""}`}
+                {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
+              >
+                <span className="sw" /> Keep daemon running after the window closes
+              </div>
+            </section>
+          )}
+          <section className="set-section">
+            <h4>Environment</h4>
+            <label className="field">
+              <span>Fallback working directory (used when a thread has no project)</span>
+              <input
+                value={workdirInput}
+                onChange={(e) => setWorkdirInput(e.target.value)}
+                placeholder="/path/to/your/repo"
+              />
+            </label>
+            <div
+              className={`toggle ${settings.autoMode ? "on" : ""}`}
+              {...switchProps(settings.autoMode, () =>
+                setSettings({ ...settings, autoMode: !settings.autoMode }),
+              )}
+              style={{ marginTop: 10 }}
+            >
+              <span className="sw" /> Auto mode — orchestrator picks each task's model
+            </div>
+            <div className="field" style={{ marginTop: 12 }}>
+              <span>Approved models for auto mode</span>
+              <ApprovedModelsPicker
+                value={approvedModels}
+                onChange={setApprovedModels}
+                models={harnesses.models}
+                harnessOrder={harnesses.all}
+              />
+            </div>
+            <label className="field" style={{ marginTop: 12 }}>
+              <span>Mark threads stale after this many minutes of inactivity</span>
+              <input
+                value={staleAfterInput}
+                onChange={(e) => setStaleAfterInput(e.target.value)}
+                inputMode="numeric"
+                placeholder="30"
+                style={{ maxWidth: 120 }}
+              />
+            </label>
+            {settings.configPath && (
+              <p className="hint">
+                Config file: <code>{settings.configPath}</code>
+              </p>
+            )}
+            <div className="sheet-actions">
+              <button className="primary" onClick={saveEnv}>
+                Save environment
+              </button>
+            </div>
+          </section>
+
+          <section className="set-section">
+            <h4>Harnesses</h4>
+            <p className="hint">Disable a harness to remove it from every role.</p>
+            {harnesses.all.map((h) => (
+              <div className="harness-row" key={h}>
+                <span className="hn">{h}</span>
+                <span className={`avail ${harnesses.available.includes(h) ? "detected" : ""}`}>
+                  {harnesses.available.includes(h) ? "detected" : "not on PATH"}
+                </span>
+                <div
+                  className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
+                  {...switchProps(isHarnessEnabled(h), () =>
+                    toggleHarness(h, !isHarnessEnabled(h)),
+                  )}
+                  aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
+                >
+                  <span className="sw" />
+                </div>
+              </div>
+            ))}
+          </section>
+
+          <section className="set-section">
+            <h4>Master orchestrator</h4>
+            <p className="hint">
+              The team lead runs on this harness and model. Leave it on the Orchestrator role
+              to inherit that role's default; each thread can still override its own leads.
+            </p>
+            <div className="role-edit">
+              <span className="rn">Lead agent</span>
+              <Dropdown
+                value={leadSettings.harness ?? ""}
+                options={[
+                  {
+                    value: "",
+                    label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
+                  },
+                  ...harnessOptionsFor(leadSettings.harness ?? ""),
+                ]}
+                onChange={(v) => {
+                  persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
+                    () => undefined,
+                  );
+                  if (v) refreshModels(v).catch(() => undefined);
+                }}
+              />
+              <Dropdown
+                value={leadSettings.model ?? ""}
+                options={modelOptions(leadHarness, leadSettings.model ?? "")}
+                searchable
+                align="end"
+                placeholder="model (default)"
+                footNote="Discovered from the harness CLI"
+                onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
+                addLabel="Add model"
+                onAdd={(m) => {
+                  addModel(leadHarness, m)
+                    .then(() =>
+                      persistLeadRuntime({
+                        harness: leadSettings.harness ?? "",
+                        model: m,
+                        variant: leadSettings.variant ?? "",
+                      }),
+                    )
+                    .catch(() => undefined);
+                }}
+                onChange={(v) =>
+                  persistLeadRuntime({
+                    harness: leadSettings.harness ?? "",
+                    model: v,
+                    variant: leadSettings.variant ?? "",
+                  }).catch(() => undefined)
+                }
+              />
+            </div>
+          </section>
+
+          <section className="set-section">
+            <h4>Dependencies</h4>
+            <p className="hint">
+              The forge CLIs the Pull request tab shells out to. Versions are read from the
+              tools on PATH.
+            </p>
+            {depsError && <p className="hint warn">{depsError}</p>}
+            {deps === null && !depsError && <p className="hint">Checking…</p>}
+            {(deps ?? []).map((d) => (
+              <div className="dep-row" key={d.name}>
+                <span className="dn">{d.name}</span>
+                <span className={`dv ${d.status}`}>
+                  {d.status === "missing"
+                    ? "not installed"
+                    : `${d.version || "unknown version"}${
+                        d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
+                      }`}
+                </span>
+                <span
+                  className={`dot ${
+                    d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
+                  }`}
+                  title={d.status}
+                />
+              </div>
+            ))}
+            <div className="sheet-actions">
+              <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
+                {depsBusy ? "Checking…" : "Recheck"}
+              </button>
+            </div>
+          </section>
+
+          <section className="set-section">
+            <h4>Roles</h4>
+            <p className="hint">
+              Each subagent role runs on its own harness and model; the Orchestrator role is the
+              master orchestrator above. Changes apply to the next turn.
+            </p>
+            <div
+              className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
+              {...switchProps(settings.experimentalRoles, () =>
+                toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
+              )}
+              style={{ marginBottom: 10 }}
+            >
+              <span className="sw" /> Experimental roles
+            </div>
+            <p className="hint">
+              Experimental roles are off by default. Turn this on to dispatch them.
+            </p>
+            {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
+            {settings.roles
+              .filter((r) => r.id !== "orchestrator")
+              .map((r) => (
+                <div className="role-edit" key={r.id}>
+                  <span className="rn">
+                    {r.name}
+                    {r.experimental && <span className="badge experimental">Experimental</span>}
+                  </span>
+                  <Dropdown
+                    value={r.harness}
+                    options={harnessOptionsFor(r.harness)}
+                    onChange={(v) => {
+                      const row = { ...r, harness: v };
+                      updateRole(r.id, { harness: v });
+                      persistRole(row).catch(() => undefined);
+                      refreshModels(v).catch(() => undefined);
+                    }}
+                  />
+                  <Dropdown
+                    value={r.model}
+                    options={modelOptions(r.harness, r.model)}
+                    searchable
+                    align="end"
+                    placeholder="model (default)"
+                    footNote="Discovered from the harness CLI"
+                    onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
+                    addLabel="Add model"
+                    onAdd={(m) => {
+                      addModel(r.harness, m)
+                        .then(() => {
+                          const row = { ...r, model: m };
+                          updateRole(r.id, { model: m });
+                          persistRole(row).catch(() => undefined);
+                        })
+                        .catch(() => undefined);
+                    }}
+                    onChange={(v) => {
+                      const row = { ...r, model: v };
+                      updateRole(r.id, { model: v });
+                      persistRole(row).catch(() => undefined);
+                    }}
+                  />
+                </div>
+              ))}
+          </section>
+
+          <section className="set-section about-section">
+            <h4>About</h4>
+            <p className="hint">
+              AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
+            </p>
+            <p className="hint">
+              <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
+            </p>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+
   // Stats are their own page, not part of the projects grid.
   if (!projectId && homePage === "stats") {
     return (
@@ -3692,6 +3992,7 @@ export default function App() {
           <StatsPage rpc={rpcRef.current} />
         </div>
         {paletteDialog}
+        {settingsSheet}
       </div>
     );
   }
@@ -3714,6 +4015,7 @@ export default function App() {
           />
         </div>
         {paletteDialog}
+        {settingsSheet}
       </div>
     );
   }
@@ -3782,6 +4084,7 @@ export default function App() {
           </div>
         </div>
         {paletteDialog}
+        {settingsSheet}
       </div>
     );
   }
@@ -3914,6 +4217,7 @@ export default function App() {
           )}
           {threadOverlays}
           {paletteDialog}
+          {settingsSheet}
         </div>
       </div>
     );
@@ -3997,23 +4301,6 @@ export default function App() {
         <div className="sidebar-foot">
           <LimitsMeter rpc={rpcRef.current} />
           <RemoteSection rpc={rpcRef.current} />
-          <button className="foot-btn" onClick={openSettings}>
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-            Settings
-          </button>
         </div>
       </div>
 
@@ -5151,281 +5438,7 @@ export default function App() {
         </div>
       )}
 
-      {settingsOpen && settings && (
-        <div className="overlay" onClick={() => setSettingsOpen(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-head">
-              <strong>Settings</strong>
-              <div className="sheet-head-right">
-                {saved && <span className="saved">Saved</span>}
-                <button onClick={() => setSettingsOpen(false)}>Close</button>
-              </div>
-            </div>
-            <div className="sheet-body">
-              <section className="set-section">
-                <h4>New thread defaults</h4>
-                <p className="hint">
-                  New threads open with the tab, panels, layout, and council setup saved here. A
-                  thread you change keeps its own view.
-                </p>
-                <div className="sheet-actions">
-                  <button onClick={saveThreadDefaults}>Save this view as default</button>
-                </div>
-              </section>
-              {!conn?.attached && (
-                <section className="set-section">
-                  <h4>Desktop</h4>
-                  <p className="hint">
-                    When this is on, closing the window leaves the daemon (and any running
-                    turns) alive in the background so <code>at</code> can still reach it.
-                    Turn it off to stop the daemon with the window.
-                  </p>
-                  <div
-                    className={`toggle ${keepRunning ? "on" : ""}`}
-                    {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
-                  >
-                    <span className="sw" /> Keep daemon running after the window closes
-                  </div>
-                </section>
-              )}
-              <section className="set-section">
-                <h4>Environment</h4>
-                <label className="field">
-                  <span>Fallback working directory (used when a thread has no project)</span>
-                  <input
-                    value={workdirInput}
-                    onChange={(e) => setWorkdirInput(e.target.value)}
-                    placeholder="/path/to/your/repo"
-                  />
-                </label>
-                <div
-                  className={`toggle ${settings.autoMode ? "on" : ""}`}
-                  {...switchProps(settings.autoMode, () =>
-                    setSettings({ ...settings, autoMode: !settings.autoMode }),
-                  )}
-                  style={{ marginTop: 10 }}
-                >
-                  <span className="sw" /> Auto mode — orchestrator picks each task's model
-                </div>
-                <div className="field" style={{ marginTop: 12 }}>
-                  <span>Approved models for auto mode</span>
-                  <ApprovedModelsPicker
-                    value={approvedModels}
-                    onChange={setApprovedModels}
-                    models={harnesses.models}
-                    harnessOrder={harnesses.all}
-                  />
-                </div>
-                <label className="field" style={{ marginTop: 12 }}>
-                  <span>Mark threads stale after this many minutes of inactivity</span>
-                  <input
-                    value={staleAfterInput}
-                    onChange={(e) => setStaleAfterInput(e.target.value)}
-                    inputMode="numeric"
-                    placeholder="30"
-                    style={{ maxWidth: 120 }}
-                  />
-                </label>
-                {settings.configPath && (
-                  <p className="hint">
-                    Config file: <code>{settings.configPath}</code>
-                  </p>
-                )}
-                <div className="sheet-actions">
-                  <button className="primary" onClick={saveEnv}>
-                    Save environment
-                  </button>
-                </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Harnesses</h4>
-                <p className="hint">Disable a harness to remove it from every role.</p>
-                {harnesses.all.map((h) => (
-                  <div className="harness-row" key={h}>
-                    <span className="hn">{h}</span>
-                    <span className={`avail ${harnesses.available.includes(h) ? "detected" : ""}`}>
-                      {harnesses.available.includes(h) ? "detected" : "not on PATH"}
-                    </span>
-                    <div
-                      className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
-                      {...switchProps(isHarnessEnabled(h), () =>
-                        toggleHarness(h, !isHarnessEnabled(h)),
-                      )}
-                      aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
-                    >
-                      <span className="sw" />
-                    </div>
-                  </div>
-                ))}
-              </section>
-
-              <section className="set-section">
-                <h4>Master orchestrator</h4>
-                <p className="hint">
-                  The team lead runs on this harness and model. Leave it on the Orchestrator role
-                  to inherit that role's default; each thread can still override its own leads.
-                </p>
-                <div className="role-edit">
-                  <span className="rn">Lead agent</span>
-                  <Dropdown
-                    value={leadSettings.harness ?? ""}
-                    options={[
-                      {
-                        value: "",
-                        label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
-                      },
-                      ...harnessOptionsFor(leadSettings.harness ?? ""),
-                    ]}
-                    onChange={(v) => {
-                      persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
-                        () => undefined,
-                      );
-                      if (v) refreshModels(v).catch(() => undefined);
-                    }}
-                  />
-                  <Dropdown
-                    value={leadSettings.model ?? ""}
-                    options={modelOptions(leadHarness, leadSettings.model ?? "")}
-                    searchable
-                    align="end"
-                    placeholder="model (default)"
-                    footNote="Discovered from the harness CLI"
-                    onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
-                    addLabel="Add model"
-                    onAdd={(m) => {
-                      addModel(leadHarness, m)
-                        .then(() =>
-                          persistLeadRuntime({
-                            harness: leadSettings.harness ?? "",
-                            model: m,
-                            variant: leadSettings.variant ?? "",
-                          }),
-                        )
-                        .catch(() => undefined);
-                    }}
-                    onChange={(v) =>
-                      persistLeadRuntime({
-                        harness: leadSettings.harness ?? "",
-                        model: v,
-                        variant: leadSettings.variant ?? "",
-                      }).catch(() => undefined)
-                    }
-                  />
-                </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Dependencies</h4>
-                <p className="hint">
-                  The forge CLIs the Pull request tab shells out to. Versions are read from the
-                  tools on PATH.
-                </p>
-                {depsError && <p className="hint warn">{depsError}</p>}
-                {deps === null && !depsError && <p className="hint">Checking…</p>}
-                {(deps ?? []).map((d) => (
-                  <div className="dep-row" key={d.name}>
-                    <span className="dn">{d.name}</span>
-                    <span className={`dv ${d.status}`}>
-                      {d.status === "missing"
-                        ? "not installed"
-                        : `${d.version || "unknown version"}${
-                            d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
-                          }`}
-                    </span>
-                    <span
-                      className={`dot ${
-                        d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
-                      }`}
-                      title={d.status}
-                    />
-                  </div>
-                ))}
-                <div className="sheet-actions">
-                  <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
-                    {depsBusy ? "Checking…" : "Recheck"}
-                  </button>
-                </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Roles</h4>
-                <p className="hint">
-                  Each subagent role runs on its own harness and model; the Orchestrator role is the
-                  master orchestrator above. Changes apply to the next turn.
-                </p>
-                <div
-                  className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
-                  {...switchProps(settings.experimentalRoles, () =>
-                    toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
-                  )}
-                  style={{ marginBottom: 10 }}
-                >
-                  <span className="sw" /> Experimental roles
-                </div>
-                <p className="hint">
-                  Experimental roles are off by default. Turn this on to dispatch them.
-                </p>
-                {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
-                {settings.roles
-                  .filter((r) => r.id !== "orchestrator")
-                  .map((r) => (
-                    <div className="role-edit" key={r.id}>
-                      <span className="rn">
-                        {r.name}
-                        {r.experimental && <span className="badge experimental">Experimental</span>}
-                      </span>
-                      <Dropdown
-                        value={r.harness}
-                        options={harnessOptionsFor(r.harness)}
-                        onChange={(v) => {
-                          const row = { ...r, harness: v };
-                          updateRole(r.id, { harness: v });
-                          persistRole(row).catch(() => undefined);
-                          refreshModels(v).catch(() => undefined);
-                        }}
-                      />
-                      <Dropdown
-                        value={r.model}
-                        options={modelOptions(r.harness, r.model)}
-                        searchable
-                        align="end"
-                        placeholder="model (default)"
-                        footNote="Discovered from the harness CLI"
-                        onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                        addLabel="Add model"
-                        onAdd={(m) => {
-                          addModel(r.harness, m)
-                            .then(() => {
-                              const row = { ...r, model: m };
-                              updateRole(r.id, { model: m });
-                              persistRole(row).catch(() => undefined);
-                            })
-                            .catch(() => undefined);
-                        }}
-                        onChange={(v) => {
-                          const row = { ...r, model: v };
-                          updateRole(r.id, { model: v });
-                          persistRole(row).catch(() => undefined);
-                        }}
-                      />
-                    </div>
-                  ))}
-              </section>
-
-              <section className="set-section about-section">
-                <h4>About</h4>
-                <p className="hint">
-                  AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
-                </p>
-                <p className="hint">
-                  <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
-                </p>
-              </section>
-            </div>
-          </div>
-        </div>
-      )}
+      {settingsSheet}
 
       {threadOverlays}
       {paletteDialog}
