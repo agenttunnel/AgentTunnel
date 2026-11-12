@@ -3,7 +3,7 @@
 # Builds the AgentTunnel desktop app.
 #
 # `wails3 build` caches its native link step and does not watch the parent module
-# (../internal, ../pkg), so a server-side Go change can leave bin/agenttunnel
+# (../internal, ../pkg), so a server-side Go change can leave bin/agenttunnel-desktop
 # stale. This builds the frontend, then always relinks the binary from source.
 #
 # Usage: ./build.sh
@@ -17,7 +17,7 @@ export NODE_ENV=development
 echo "› building frontend"
 ( cd frontend && npm run build )
 
-echo "› linking bin/agenttunnel"
-go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/agenttunnel .
+echo "› linking bin/agenttunnel-desktop"
+go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/agenttunnel-desktop .
 
-echo "› done: $(cd bin && pwd)/agenttunnel"
+echo "› done: $(cd bin && pwd)/agenttunnel-desktop"

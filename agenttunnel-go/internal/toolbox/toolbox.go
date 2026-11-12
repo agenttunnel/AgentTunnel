@@ -67,6 +67,10 @@ const (
 	KindReadFile  Kind = "read-file"
 	KindWriteFile Kind = "write-file"
 	KindShell     Kind = "shell"
+	// KindSteer redirects a subagent the lead dispatched. It is answered at
+	// once, not queued: the reply tells the lead whether the steer was queued
+	// for that agent's next run. See Runner.Steer.
+	KindSteer Kind = "steer"
 )
 
 // IsReview reports whether a kind is a review-thread call.

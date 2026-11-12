@@ -16,7 +16,19 @@ type ThreadSetupProps = {
   modelOptions: (harness: string, current: string) => DropdownOption[];
   harnessOptionsFor: (current: string) => DropdownOption[];
   toggleRoleEnabled: (row: RoleConfigView, enabled: boolean) => Promise<void>;
+  /** Seconds between workflow status reports while a turn runs; 0 is off. */
+  setStatusPeriod: (seconds: number) => Promise<void>;
 };
+
+const STATUS_PERIOD_OPTIONS: DropdownOption[] = [
+  { value: "0", label: "Off" },
+  { value: "15", label: "Every 15 seconds" },
+  { value: "30", label: "Every 30 seconds" },
+  { value: "60", label: "Every minute" },
+  { value: "120", label: "Every 2 minutes" },
+  { value: "300", label: "Every 5 minutes" },
+  { value: "600", label: "Every 10 minutes" },
+];
 
 /** Per-thread run settings plus the global role table. Shared by the pre-run
  * setup view and the aside models tab, so both edit the same handlers. */
@@ -34,10 +46,19 @@ export function ThreadSetup({
   modelOptions,
   harnessOptionsFor,
   toggleRoleEnabled,
+  setStatusPeriod,
 }: ThreadSetupProps) {
   const count = thread?.leads && thread.leads > 0 ? thread.leads : 1;
   const multiLead = count > 1;
   const peerOn = !!thread?.peerMailbox || multiLead;
+  const statusPeriod = thread?.statusPeriodSeconds ?? 0;
+  const statusPeriodValue = String(statusPeriod);
+  const statusPeriodOptions = STATUS_PERIOD_OPTIONS.some((o) => o.value === statusPeriodValue)
+    ? STATUS_PERIOD_OPTIONS
+    : [
+        ...STATUS_PERIOD_OPTIONS,
+        { value: statusPeriodValue, label: `Every ${statusPeriod} seconds` },
+      ];
 
   return (
     <>
@@ -201,6 +222,24 @@ export function ThreadSetup({
               {multiLead
                 ? "Required with more than one lead."
                 : "Lets leads message each other. Needed when you run more than one lead."}
+            </p>
+          </div>
+          <div className="lead-block">
+            <div className="lead-head">
+              <span className="rn">Status reports</span>
+            </div>
+            <div className="role-edit">
+              <span className="rn">Period</span>
+              <Dropdown
+                value={statusPeriodValue}
+                options={statusPeriodOptions}
+                disabled={!thread}
+                onChange={(v) => setStatusPeriod(Number(v)).catch(() => undefined)}
+              />
+            </div>
+            <p className="hint">
+              Posts a short workflow status (agents, tasks, elapsed) into the chat while a turn runs, even
+              when the orchestrator is busy. Takes effect on the next turn; zero turns it off.
             </p>
           </div>
         </>
