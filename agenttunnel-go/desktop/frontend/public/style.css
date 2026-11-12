@@ -3786,10 +3786,47 @@ table.grid tr.rowlink:hover td {
 }
 .graph-node:hover {
   border-color: var(--accent-line);
-  background: var(--panel-2);
+  /* Brightness, not a background swap, so a harness tint survives the hover. */
+  filter: brightness(1.25);
 }
 .graph-node:active {
   cursor: grabbing;
+}
+/* Harness tints: light pastel washes keyed by provider CLI. Static classes,
+   no animation cost; text stays --text so it reads on every wash. */
+.graph-node.h-claude {
+  background: rgba(250, 179, 135, 0.1);
+  border-color: rgba(250, 179, 135, 0.45);
+}
+.graph-node.h-opencode {
+  background: rgba(140, 169, 238, 0.1);
+  border-color: rgba(140, 169, 238, 0.45);
+}
+.graph-node.h-codex {
+  background: rgba(166, 209, 137, 0.1);
+  border-color: rgba(166, 209, 137, 0.45);
+}
+.graph-node.h-cursor {
+  background: rgba(237, 135, 150, 0.1);
+  border-color: rgba(237, 135, 150, 0.45);
+}
+/* pi is pale lemon, commandcode a warmer amber, so neighbors stay
+   distinguishable. */
+.graph-node.h-pi {
+  background: rgba(244, 231, 148, 0.1);
+  border-color: rgba(244, 231, 148, 0.45);
+}
+.graph-node.h-commandcode {
+  background: rgba(227, 196, 113, 0.12);
+  border-color: rgba(227, 196, 113, 0.5);
+}
+.graph-node.h-grok {
+  background: rgba(171, 178, 196, 0.1);
+  border-color: rgba(171, 178, 196, 0.45);
+}
+/* A base-panel ring keeps the status dot readable over any tint. */
+.graph-node .dot {
+  box-shadow: 0 0 0 2px var(--panel);
 }
 .graph-reset {
   margin-left: auto;
@@ -3833,6 +3870,15 @@ table.grid tr.rowlink:hover td {
   border-radius: 999px;
   padding: 0 7px;
   align-self: flex-start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.graph-node-model {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
