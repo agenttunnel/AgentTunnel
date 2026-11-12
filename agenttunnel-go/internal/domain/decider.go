@@ -44,6 +44,29 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
 		}, nil
 
+	case contracts.CmdThreadFork:
+		// A fork is born with its copied transcript, in one append: the thread
+		// is whole or absent, and it is never empty, so the boot sweep keeps it.
+		if s.Exists {
+			return nil, ErrThreadExists
+		}
+		if len(cmd.Transcript) == 0 {
+			return nil, fmt.Errorf("%w: a fork needs at least one message", ErrInvalidCommand)
+		}
+		title := strings.TrimSpace(cmd.Title)
+		if title == "" {
+			title = contracts.DefaultThreadTitle
+		}
+		payloads := []contracts.EventPayload{
+			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID},
+			contracts.PeerMailboxSet{Enabled: true},
+			contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
+		}
+		for _, m := range cmd.Transcript {
+			payloads = append(payloads, m)
+		}
+		return payloads, nil
+
 	case contracts.CmdWorktreeAttach:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

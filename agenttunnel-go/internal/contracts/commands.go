@@ -10,6 +10,7 @@ const DefaultThreadTitle = "New thread"
 
 const (
 	CmdThreadCreate       CommandType = "thread.create"
+	CmdThreadFork         CommandType = "thread.fork"
 	CmdThreadRename       CommandType = "thread.rename"
 	CmdThreadDescribe     CommandType = "thread.describe"
 	CmdThreadDelete       CommandType = "thread.delete"
@@ -107,6 +108,7 @@ type Command struct {
 	SharedContext   *SharedContextSet          `json:"sharedContext,omitempty"`
 	Mailbox         *MailboxPosted             `json:"mailbox,omitempty"`
 	Message         *MessageSent               `json:"message,omitempty"`
+	Transcript      []MessageSent              `json:"transcript,omitempty"`
 	Injected        *SteeringInjected          `json:"injected,omitempty"`
 	SteeringConsume *SteeringConsumed          `json:"steeringConsume,omitempty"`
 	ReviewComment   *ReviewCommentAdded        `json:"reviewComment,omitempty"`
