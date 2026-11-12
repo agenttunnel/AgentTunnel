@@ -1212,6 +1212,12 @@ export default function App() {
   };
   const showProjects = () => showHome("projects");
 
+  /** From a thread, leave it for its project's board. */
+  const showProjectBoard = () => {
+    setThreadView("board");
+    setActiveId(null);
+  };
+
   const closeProjectTab = (id: string) => {
     const index = openProjectIds.indexOf(id);
     const next = openProjectIds.filter((x) => x !== id);
@@ -3356,6 +3362,26 @@ export default function App() {
             </div>
           </div>
           <div className="toggles">
+            {projectId && (
+              <button title="Open this project's board" onClick={showProjectBoard}>
+                <svg
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="4" width="5" height="16" rx="1.5" />
+                  <rect x="10" y="4" width="5" height="11" rx="1.5" />
+                  <rect x="17" y="4" width="4" height="7" rx="1.5" />
+                </svg>
+                Project board
+              </button>
+            )}
             <div
               className={`toggle ${thread?.peerMailbox ? "on" : ""}`}
               {...switchProps(!!thread?.peerMailbox, () =>
