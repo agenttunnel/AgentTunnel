@@ -1618,6 +1618,15 @@ export default function App() {
           setActiveId(opened.threadId);
           const updated = await rpc.call<ThreadSummary[]>("thread.list");
           setThreads(updated);
+        } else if (conn.launchThread) {
+          // `agenttunnel open <thread>` booted the app: select that thread in its project.
+          const target = list.find((t) => t.id === conn.launchThread);
+          const pid = target?.projectId;
+          if (!target || !pid) throw new Error(`thread ${conn.launchThread} is not listed`);
+          setOpenProjectIds((prev) => (prev.includes(pid) ? prev : [...prev, pid]));
+          setProjectId(pid);
+          lastThreadByProject.current[pid] = target.id;
+          setActiveId(target.id);
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
