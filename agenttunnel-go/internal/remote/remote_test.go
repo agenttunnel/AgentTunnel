@@ -638,7 +638,8 @@ func TestBridgeInboundPolicy(t *testing.T) {
 	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: sentID, Text: "something else", FromSelf: true}); ok {
 		t.Fatal("the echo of the bridge's own update must be dropped by id")
 	}
-	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m2", Text: "turn complete", FromSelf: true}); ok {
+	echo := f.adapter.sends()[0]
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m2", Text: echo, FromSelf: true}); ok {
 		t.Fatal("the echo of the bridge's own update must be dropped by text")
 	}
 
@@ -668,13 +669,19 @@ func TestBridgeEchoTextExpires(t *testing.T) {
 
 	f.bridge.send(context.Background(), "turn complete")
 	sentID := f.adapter.lastSentID()
+	echo := f.adapter.sends()[0]
 
-	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "turn complete", FromSelf: true}); ok {
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: echo, FromSelf: true}); ok {
 		t.Fatal("the immediate echo of an update must be dropped")
 	}
+	// The marker drops an update whatever the text window says, so an old
+	// update's echo never becomes a command.
 	now = now.Add(echoTextWindow + time.Second)
-	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m2", Text: "turn complete", FromSelf: true}); !ok {
-		t.Fatal("an old text match must not hide a later command")
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m2", Text: echo, FromSelf: true}); ok {
+		t.Fatal("an update's echo must stay dropped after the text window")
+	}
+	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m3", Text: "turn complete", FromSelf: true}); !ok {
+		t.Fatal("an unmarked text match must not hide a later command")
 	}
 	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: sentID, Text: "anything", FromSelf: true}); ok {
 		t.Fatal("the recorded message id must drop the echo regardless of age")
@@ -702,8 +709,8 @@ func TestBridgeRoutesInboundAndReplies(t *testing.T) {
 	if got := await(t, f.routed, "the message to reach the router"); got != "/threads" {
 		t.Fatalf("routed = %q, want the message text", got)
 	}
-	if got := await(t, f.adapter.sentCh, "the router's reply"); got != inboundReply {
-		t.Fatalf("reply = %q, want %q", got, inboundReply)
+	if got := await(t, f.adapter.sentCh, "the router's reply"); got != outboundMarker+" "+inboundReply {
+		t.Fatalf("reply = %q, want the marked reply", got)
 	}
 }
 
@@ -814,5 +821,156 @@ func TestBridgeInboundRequiresALinkedDevice(t *testing.T) {
 	}
 	if _, ok := f.bridge.acceptInbound(InboundMessage{ID: "m1", Text: "hi", FromSelf: true}); ok {
 		t.Fatal("an unlinked bridge must not route inbound messages")
+	}
+}
+
+// newRoutedBridge is a connected, control-enabled bridge whose router reports
+// each command it runs. The name is written to whatsapp.json first, the same way
+// a user would configure it; "" is an unnamed instance.
+func newRoutedBridge(t *testing.T, name string) (*Bridge, *fakeAdapter, chan string) {
+	t.Helper()
+	dir := t.TempDir()
+	data := fmt.Sprintf(`{"enabled":true,"control":true,"name":%q}`, name)
+	if err := os.WriteFile(filepath.Join(dir, "whatsapp.json"), []byte(data), 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	routed := make(chan string, 16)
+	adapter := &fakeAdapter{}
+	b, err := New(Options{
+		StateDir: dir,
+		Adapter:  adapter,
+		Control: func(_ context.Context, text string) string {
+			routed <- text
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(b.Close)
+	if err := b.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	return b, adapter, routed
+}
+
+// Two instances share one account. Each one's update arrives at the other as a
+// self-message it did not send; neither starts a turn, and the other's real
+// command still runs, which proves the updates were dropped rather than queued.
+func TestSharedAccountUpdatesStartNoTurns(t *testing.T) {
+	a, aAdapter, aRouted := newRoutedBridge(t, "")
+	b, bAdapter, bRouted := newRoutedBridge(t, "")
+
+	a.send(context.Background(), "a: turn complete")
+	b.send(context.Background(), "b: turn complete")
+	aUpdate, bUpdate := aAdapter.sends()[0], bAdapter.sends()[0]
+	if !strings.HasPrefix(aUpdate, outboundMarker) || !strings.HasPrefix(bUpdate, outboundMarker) {
+		t.Fatalf("updates must carry the marker: %q, %q", aUpdate, bUpdate)
+	}
+
+	// The updates reach the other instance under fresh ids it never recorded.
+	if !bAdapter.deliver(InboundMessage{ID: "from-a", Text: aUpdate, FromSelf: true}) {
+		t.Fatal("bridge b never installed its inbound handler")
+	}
+	if !aAdapter.deliver(InboundMessage{ID: "from-b", Text: bUpdate, FromSelf: true}) {
+		t.Fatal("bridge a never installed its inbound handler")
+	}
+	// Barrier: a real command on each side is routed after the updates would
+	// have been, so any update that was routed would show up first.
+	bAdapter.deliver(InboundMessage{ID: "cmd-b", Text: "/threads", FromSelf: true})
+	aAdapter.deliver(InboundMessage{ID: "cmd-a", Text: "/threads", FromSelf: true})
+	if got := await(t, bRouted, "bridge b's command"); got != "/threads" {
+		t.Fatalf("bridge b routed %q first, want its command; an update started a turn", got)
+	}
+	if got := await(t, aRouted, "bridge a's command"); got != "/threads" {
+		t.Fatalf("bridge a routed %q first, want its command; an update started a turn", got)
+	}
+}
+
+// A self-message that starts with the marker is never a command, whether it
+// came from another instance or is an echo this one lost the id for.
+func TestMarkedSelfMessagesAreIgnored(t *testing.T) {
+	b, _, _ := newRoutedBridge(t, "")
+	for _, text := range []string{
+		outboundMarker + " turn complete",
+		outboundMarker + " [work] /threads",
+		outboundMarker,
+	} {
+		if got, ok := b.acceptInbound(InboundMessage{ID: "m-" + text, Text: text, FromSelf: true}); ok {
+			t.Fatalf("marked message %q routed as %q", text, got)
+		}
+	}
+	if got, ok := b.acceptInbound(InboundMessage{ID: "m-plain", Text: "/threads", FromSelf: true}); !ok || got != "/threads" {
+		t.Fatalf("plain command = %q, %v; want it routed", got, ok)
+	}
+}
+
+// "@name" routes a command to exactly the named instance. An unnamed instance
+// takes only unaddressed commands, so it ignores anything addressed to a name.
+func TestNamedRoutingHitsOnlyTheAddressedInstance(t *testing.T) {
+	_, workAdapter, workRouted := newRoutedBridge(t, "work")
+	_, homeAdapter, homeRouted := newRoutedBridge(t, "home")
+	_, plainAdapter, plainRouted := newRoutedBridge(t, "")
+
+	deliver := func(adapter *fakeAdapter, id, text string) {
+		t.Helper()
+		if !adapter.deliver(InboundMessage{ID: id, Text: text, FromSelf: true}) {
+			t.Fatal("bridge never installed its inbound handler")
+		}
+	}
+	deliver(workAdapter, "1", "@work /threads")
+	deliver(homeAdapter, "2", "@work /threads")
+	deliver(plainAdapter, "3", "@work /threads")
+	deliver(homeAdapter, "4", "@home run the tests")
+	deliver(workAdapter, "5", "@home run the tests")
+	deliver(plainAdapter, "6", "@home run the tests")
+	deliver(workAdapter, "7", "run the tests")
+	deliver(homeAdapter, "8", "run the tests")
+	deliver(plainAdapter, "9", "run the tests")
+
+	// Barrier per instance: every addressed message was queued before the
+	// barrier, so a wrong route would surface before it.
+	deliver(workAdapter, "w-end", "@work done")
+	deliver(homeAdapter, "h-end", "@home done")
+	deliver(plainAdapter, "p-end", "done")
+
+	if got := await(t, workRouted, "work's command"); got != "/threads" {
+		t.Fatalf("work routed %q, want /threads", got)
+	}
+	if got := await(t, workRouted, "work's barrier"); got != "done" {
+		t.Fatalf("work routed %q after /threads, want only its own commands", got)
+	}
+	if got := await(t, homeRouted, "home's command"); got != "run the tests" {
+		t.Fatalf("home routed %q, want run the tests", got)
+	}
+	if got := await(t, homeRouted, "home's barrier"); got != "done" {
+		t.Fatalf("home routed %q after its command, want only its own commands", got)
+	}
+	if got := await(t, plainRouted, "plain's command"); got != "run the tests" {
+		t.Fatalf("unnamed instance routed %q, want the unaddressed command", got)
+	}
+	if got := await(t, plainRouted, "plain's barrier"); got != "done" {
+		t.Fatalf("unnamed instance routed %q, want only unaddressed commands", got)
+	}
+}
+
+// The name is persisted with the other choices so a restart keeps the address.
+func TestNameSurvivesRestartAndIsTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "whatsapp.json"), []byte(`{"enabled":false,"name":"  work  "}`), 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	b, err := New(Options{StateDir: dir, Adapter: &fakeAdapter{}})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(b.Close)
+	if err := b.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+	var stored storedState
+	data, _ := os.ReadFile(filepath.Join(dir, "whatsapp.json"))
+	if err := json.Unmarshal(data, &stored); err != nil || stored.Name != "work" {
+		t.Fatalf("whatsapp.json = %s, want the trimmed name kept", data)
 	}
 }
