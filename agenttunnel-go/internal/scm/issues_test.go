@@ -15,7 +15,7 @@ const (
 	glOrigin    = "git@gitlab.example.com:group/app.git"
 )
 
-func gitlabRepo(extra map[string]reply) fakeCLI {
+func issuesRepo(extra map[string]reply) fakeCLI {
 	replies := map[string]reply{gitOrigin: {stdout: glOrigin + "\n"}}
 	for k, v := range extra {
 		replies[k] = v
@@ -42,7 +42,7 @@ func TestListIssuesReturnsOpenAssignedIssuesWithCappedDescriptions(t *testing.T)
 	  {"iid":5,"title":"Slow page","description":"","web_url":"https://gitlab.example.com/group/app/-/issues/5","state":"opened","updated_at":"2026-11-11T09:00:00Z"}
 	]`
 	var calls []string
-	c := recordingCLI(gitlabRepo(map[string]reply{glIssueList: {stdout: raw}}), &calls)
+	c := recordingCLI(issuesRepo(map[string]reply{glIssueList: {stdout: raw}}), &calls)
 
 	list := c.ListIssues(context.Background(), "/repo")
 	if list.Status != StatusReady || list.Provider != "gitlab" {
@@ -68,7 +68,7 @@ func TestListIssuesReturnsOpenAssignedIssuesWithCappedDescriptions(t *testing.T)
 
 func TestListIssuesEmptyListingIsReadyNotNone(t *testing.T) {
 	for _, out := range []string{"[]", ""} {
-		c := gitlabRepo(map[string]reply{glIssueList: {stdout: out}}).client()
+		c := issuesRepo(map[string]reply{glIssueList: {stdout: out}}).client()
 		list := c.ListIssues(context.Background(), "/repo")
 		if list.Status != StatusReady || list.Issues == nil || len(list.Issues) != 0 {
 			t.Fatalf("output %q: list = %+v, want ready with an empty, non-nil slice", out, list)
@@ -100,7 +100,7 @@ func TestListIssuesWithoutOriginIsUnsupported(t *testing.T) {
 }
 
 func TestListIssuesWithoutGlabIsUnavailable(t *testing.T) {
-	f := gitlabRepo(nil)
+	f := issuesRepo(nil)
 	f.installed = map[string]bool{}
 	list := f.client().ListIssues(context.Background(), "/repo")
 	if list.Status != StatusUnavailable || list.Message != "glab is not installed" {
@@ -109,7 +109,7 @@ func TestListIssuesWithoutGlabIsUnavailable(t *testing.T) {
 }
 
 func TestListIssuesLoggedOutIsUnauthenticated(t *testing.T) {
-	f := gitlabRepo(map[string]reply{
+	f := issuesRepo(map[string]reply{
 		glIssueList: {stderr: "You are not logged in to any hosts. Run glab auth login to authenticate.", err: errExit},
 	})
 	if list := f.client().ListIssues(context.Background(), "/repo"); list.Status != StatusUnauthenticated {
@@ -118,7 +118,7 @@ func TestListIssuesLoggedOutIsUnauthenticated(t *testing.T) {
 }
 
 func TestListIssuesCLIFailureIsError(t *testing.T) {
-	f := gitlabRepo(map[string]reply{glIssueList: {stderr: "boom\nstack trace", err: errExit}})
+	f := issuesRepo(map[string]reply{glIssueList: {stderr: "boom\nstack trace", err: errExit}})
 	list := f.client().ListIssues(context.Background(), "/repo")
 	if list.Status != StatusError || list.Message != "boom" {
 		t.Fatalf("list = %+v, want an error carrying the first stderr line", list)
@@ -126,7 +126,7 @@ func TestListIssuesCLIFailureIsError(t *testing.T) {
 }
 
 func TestListIssuesMalformedOutputIsError(t *testing.T) {
-	f := gitlabRepo(map[string]reply{glIssueList: {stdout: "not json"}})
+	f := issuesRepo(map[string]reply{glIssueList: {stdout: "not json"}})
 	if list := f.client().ListIssues(context.Background(), "/repo"); list.Status != StatusError {
 		t.Fatalf("status = %s, want error", list.Status)
 	}
@@ -147,7 +147,7 @@ func TestListIssuesKeepsBodyWithinDraftLimitIntact(t *testing.T) {
 	body := strings.Repeat("step ", 1000) + "last line"
 	raw := `[{"iid":7,"title":"Long","description":"` + body + `","web_url":"https://gitlab.example.com/group/app/-/issues/7","state":"opened","updated_at":"2026-11-10T09:00:00Z"}]`
 	var calls []string
-	c := recordingCLI(gitlabRepo(map[string]reply{glIssueList: {stdout: raw}}), &calls)
+	c := recordingCLI(issuesRepo(map[string]reply{glIssueList: {stdout: raw}}), &calls)
 
 	list := c.ListIssues(context.Background(), "/repo")
 	if len(list.Issues) != 1 || list.Issues[0].Description != body {

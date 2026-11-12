@@ -12,6 +12,9 @@ type Message struct {
 	Author string    `json:"author"`
 	Text   string    `json:"text"`
 	At     time.Time `json:"at"`
+	// Consumed is set on a steering message once a pass has picked it up. A
+	// steering message that is not consumed yet is still queued.
+	Consumed bool `json:"consumed,omitempty"`
 }
 
 // UsageStep is one model step's spend for a single agent — a row in an agent's
@@ -28,6 +31,12 @@ type TurnUsage struct {
 	At         time.Time                                  `json:"at,omitempty"`
 	AgentOrder []contracts.AgentID                        `json:"agentOrder"`
 	Agents     map[contracts.AgentID]contracts.TokenUsage `json:"agents"`
+	// EndedAt is when a lead last reached a terminal status in this turn: the
+	// turn's end as the team saw it. Zero while the turn is open, and for turns
+	// recorded before this was tracked.
+	EndedAt time.Time `json:"endedAt,omitempty"`
+	// Failed is set when a lead ended failed or cancelled in this turn.
+	Failed bool `json:"failed,omitempty"`
 }
 
 // MailboxMessage is one peer message in a thread's read model: the durable
@@ -71,7 +80,9 @@ type ThreadState struct {
 	Provisional bool `json:"-"`
 	// Deleted marks a tombstoned thread: the event log is retained, but the
 	// thread is gone from listings and refuses further commands.
-	Deleted   bool   `json:"deleted"`
+	Deleted bool `json:"deleted"`
+	// Archived is set by the user; it moves the thread to the board's Archived column.
+	Archived  bool   `json:"archived"`
 	Title     string `json:"title"`
 	ProjectID string `json:"projectId,omitempty"`
 	// Draft is a thread that has not run yet: it has a title and description,
@@ -82,7 +93,10 @@ type ThreadState struct {
 	UpdatedAt   time.Time                `json:"updatedAt"`
 	Model       contracts.ModelSelection `json:"model"`
 	AutoMode    bool                     `json:"autoMode"`
-	PeerMailbox bool                     `json:"peerMailbox"`
+	// StatusPeriodSeconds is how often a running turn posts a workflow status
+	// report into the thread. Zero means off.
+	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`
+	PeerMailbox         bool `json:"peerMailbox"`
 	// Leads is the stored orchestrator team size; zero means one. Read it
 	// through LeadCount.
 	Leads int `json:"leads"`
@@ -90,6 +104,10 @@ type ThreadState struct {
 	// entry means the lead inherits the orchestrator role. Read through
 	// LeadRuntimeFor.
 	LeadRuntimes []contracts.LeadRuntime `json:"leadRuntimes,omitempty"`
+	// RoleRuntimes holds thread-scoped runtime overrides keyed by role id. They
+	// win over the daemon-wide settings.RoleConfig for this thread only, so two
+	// concurrent turns can run different runtimes. Read through RoleRuntimeFor.
+	RoleRuntimes map[string]contracts.LeadRuntime `json:"roleRuntimes,omitempty"`
 	// ParentThreadID is set on a subthread: the thread that started it. Its
 	// presence is also the depth check — a subthread starts no subthreads.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
@@ -187,6 +205,13 @@ func (s *ThreadState) LeadRuntimeFor(i int) contracts.LeadRuntime {
 	return s.LeadRuntimes[i]
 }
 
+// RoleRuntimeFor is the thread's override for role, if one was set. An empty
+// result means the role inherits settings and its built-in default.
+func (s *ThreadState) RoleRuntimeFor(role contracts.RoleID) (contracts.LeadRuntime, bool) {
+	rt, ok := s.RoleRuntimes[string(role)]
+	return rt, ok
+}
+
 // LeadCount is the number of orchestrators leading the thread's turns.
 func (s *ThreadState) LeadCount() int {
 	if s.Leads < 1 {
@@ -198,11 +223,12 @@ func (s *ThreadState) LeadCount() int {
 // NewThreadState returns an empty read model for a thread.
 func NewThreadState(id contracts.ThreadID) *ThreadState {
 	return &ThreadState{
-		ID:     id,
-		Agents: make(map[contracts.AgentID]contracts.Agent),
-		Usage:  make(map[contracts.AgentID]contracts.AgentUsage),
-		Steps:  make(map[contracts.AgentID][]UsageStep),
-		Shared: make(map[string]string),
+		ID:           id,
+		Agents:       make(map[contracts.AgentID]contracts.Agent),
+		Usage:        make(map[contracts.AgentID]contracts.AgentUsage),
+		Steps:        make(map[contracts.AgentID][]UsageStep),
+		Shared:       make(map[string]string),
+		RoleRuntimes: make(map[string]contracts.LeadRuntime),
 	}
 }
 
@@ -263,6 +289,10 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
 	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
+	c.RoleRuntimes = make(map[string]contracts.LeadRuntime, len(s.RoleRuntimes))
+	for k, v := range s.RoleRuntimes {
+		c.RoleRuntimes[k] = v
+	}
 	c.Tasks = append([]TaskItem(nil), s.Tasks...)
 	c.Turns = make([]TurnUsage, len(s.Turns))
 	for i, t := range s.Turns {
@@ -271,6 +301,8 @@ func (s *ThreadState) Clone() *ThreadState {
 			At:         t.At,
 			AgentOrder: append([]contracts.AgentID(nil), t.AgentOrder...),
 			Agents:     make(map[contracts.AgentID]contracts.TokenUsage, len(t.Agents)),
+			EndedAt:    t.EndedAt,
+			Failed:     t.Failed,
 		}
 		for k, v := range t.Agents {
 			c.Turns[i].Agents[k] = v

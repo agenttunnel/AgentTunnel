@@ -7,14 +7,17 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,7 +54,15 @@ func Locate(goos, exe string) Install {
 type Release struct {
 	Tag    string  `json:"tag_name"`
 	Draft  bool    `json:"draft"`
+	Body   string  `json:"body"`
 	Assets []Asset `json:"assets"`
+}
+
+// ReleaseNotes describe the build an Apply installed. They are kept on disk
+// until a build of Version starts, then handed out once by TakeReleaseNotes.
+type ReleaseNotes struct {
+	Version string `json:"version"`
+	Body    string `json:"body"`
 }
 
 // Asset is a downloadable release file. Digest is "sha256:<hex>".
@@ -84,6 +95,11 @@ type Updater struct {
 	Install Install
 	GOOS    string
 	GOARCH  string
+	// NotesPath is the file Apply writes release notes to. Empty disables
+	// the notes feature.
+	NotesPath string
+
+	notesMu sync.Mutex
 }
 
 // New describes the running executable as an update target. version is the
@@ -117,40 +133,95 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 // the installed files untouched, except a failure partway through replacing
 // several binaries, which is reported as an error.
 func (u *Updater) Apply(ctx context.Context) (Status, error) {
-	st, asset, err := u.plan(ctx)
+	st, rel, err := u.plan(ctx)
 	if err != nil || !st.Available {
 		return st, err
 	}
+	// plan reports Available only when this asset exists.
+	asset, _ := findAsset(rel, u.assetName())
 	if err := u.install(ctx, asset); err != nil {
 		return st, err
 	}
 	st.Installed = st.Latest
+	if err := u.saveNotes(ReleaseNotes{Version: st.Latest, Body: rel.Body}); err != nil {
+		return st, fmt.Errorf("update installed, but saving release notes failed: %w", err)
+	}
 	return st, nil
 }
 
-func (u *Updater) plan(ctx context.Context) (Status, Asset, error) {
+func (u *Updater) plan(ctx context.Context) (Status, Release, error) {
 	st := Status{Current: u.Version, Enabled: enabled(u.Version)}
 	if !st.Enabled {
-		return st, Asset{}, nil
+		return st, Release{}, nil
 	}
 	rels, err := u.releases(ctx)
 	if err != nil {
-		return st, Asset{}, err
+		return st, Release{}, err
 	}
 	// Only the newest release in this build's channel is considered. If it
 	// has no build for this platform we offer nothing, rather than falling
 	// back to an older release and offering a downgrade.
 	rel, ok := newest(rels, isMainVersion(u.Version))
 	if !ok {
-		return st, Asset{}, nil
+		return st, Release{}, nil
 	}
-	asset, ok := findAsset(rel, u.assetName())
-	if !ok {
-		return st, Asset{}, nil
+	if _, ok := findAsset(rel, u.assetName()); !ok {
+		return st, Release{}, nil
 	}
 	st.Latest = versionOf(rel.Tag)
 	st.Available = st.Latest != u.Version
-	return st, asset, nil
+	return st, rel, nil
+}
+
+// TakeReleaseNotes returns the notes saved by Apply if they describe the
+// running build, and clears them so they are handed out once. Notes for any
+// other version stay on disk until the matching build starts.
+func (u *Updater) TakeReleaseNotes() (ReleaseNotes, bool, error) {
+	u.notesMu.Lock()
+	defer u.notesMu.Unlock()
+	if u.NotesPath == "" {
+		return ReleaseNotes{}, false, nil
+	}
+	b, err := os.ReadFile(u.NotesPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ReleaseNotes{}, false, nil
+	}
+	if err != nil {
+		return ReleaseNotes{}, false, fmt.Errorf("read release notes: %w", err)
+	}
+	var n ReleaseNotes
+	if err := json.Unmarshal(b, &n); err != nil {
+		return ReleaseNotes{}, false, fmt.Errorf("decode release notes: %w", err)
+	}
+	if n.Version != u.Version {
+		return ReleaseNotes{}, false, nil
+	}
+	if err := os.Remove(u.NotesPath); err != nil {
+		return ReleaseNotes{}, false, fmt.Errorf("clear release notes: %w", err)
+	}
+	return n, true, nil
+}
+
+// saveNotes writes the notes via a temp file and rename, so a crash never
+// leaves a half-written file for TakeReleaseNotes to choke on.
+func (u *Updater) saveNotes(n ReleaseNotes) error {
+	if u.NotesPath == "" {
+		return nil
+	}
+	u.notesMu.Lock()
+	defer u.notesMu.Unlock()
+	b, err := json.Marshal(n)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(u.NotesPath), 0o755); err != nil {
+		return err
+	}
+	tmp := u.NotesPath + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, u.NotesPath)
 }
 
 func (u *Updater) releases(ctx context.Context) ([]Release, error) {
@@ -192,7 +263,7 @@ func (u *Updater) binaryNames() []string {
 	if u.GOOS == "windows" {
 		ext = ".exe"
 	}
-	return []string{"atd" + ext, "agenttunnel" + ext}
+	return []string{"atd" + ext, "agenttunnel" + ext, "agenttunnel-desktop" + ext}
 }
 
 // enabled reports whether version identifies a release build.

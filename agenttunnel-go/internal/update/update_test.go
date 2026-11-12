@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -322,6 +324,52 @@ func TestApplyReplacesAppBundle(t *testing.T) {
 	}
 	if names := dirNames(t, root); !reflect.DeepEqual(names, []string{"AgentTunnel.app"}) {
 		t.Fatalf("root = %v, want only the bundle", names)
+	}
+}
+
+func TestApplyRecordsReleaseNotesUntilNewBuildRuns(t *testing.T) {
+	archive := makeArchive(t, entry{name: "./atd", body: "atd-new", mode: 0o755})
+	name := "agenttunnel-go-linux-amd64.tar.gz"
+	g := newFakeGitHub(t, map[string][]byte{"/dl/" + name: archive})
+	g.releases = []Release{release("main-fff0000", false, g.asset(name, digestOf(archive), archive))}
+	g.releases[0].Body = "## Changes\n- faster startup"
+
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "atd"), "atd-old")
+	notes := filepath.Join(t.TempDir(), "update-notes.json")
+
+	old := g.updater("abc1234", Install{Kind: KindBin, Path: dir}, "linux", "amd64")
+	old.NotesPath = notes
+	if _, err := old.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(notes); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Check wrote notes: %v", err)
+	}
+	if _, err := old.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The running process is still the old build, so the notes stay hidden.
+	if _, ok, err := old.TakeReleaseNotes(); err != nil || ok {
+		t.Fatalf("old build took notes: ok=%v err=%v", ok, err)
+	}
+	if _, err := os.Stat(notes); err != nil {
+		t.Fatalf("notes gone before the new build ran: %v", err)
+	}
+
+	// The restarted build reads them once.
+	next := g.updater("fff0000", Install{Kind: KindBin, Path: dir}, "linux", "amd64")
+	next.NotesPath = notes
+	got, ok, err := next.TakeReleaseNotes()
+	if err != nil || !ok {
+		t.Fatalf("TakeReleaseNotes = ok %v, err %v; want notes", ok, err)
+	}
+	if got.Version != "fff0000" || got.Body != "## Changes\n- faster startup" {
+		t.Fatalf("notes = %+v", got)
+	}
+	if _, ok, err := next.TakeReleaseNotes(); err != nil || ok {
+		t.Fatalf("second take returned notes again: ok=%v err=%v", ok, err)
 	}
 }
 

@@ -53,11 +53,31 @@ func Project(s *ThreadState, e contracts.Event) error {
 			s.turnFor(s.Turn).At = e.At
 		}
 
+	case contracts.SteeringInjected:
+		// Steering is transcript and graph history; the read model keeps the
+		// queued message, not its delivery.
+	case contracts.SteeringConsumed:
+		consumed := make(map[string]bool, len(p.MessageIDs))
+		for _, id := range p.MessageIDs {
+			consumed[id] = true
+		}
+		for i := range s.Messages {
+			if consumed[s.Messages[i].ID] {
+				s.Messages[i].Consumed = true
+			}
+		}
+
 	case contracts.ModelSet:
 		s.Model = p.Selection
 
 	case contracts.AutoModeSet:
 		s.AutoMode = p.Enabled
+
+	case contracts.ArchiveSet:
+		s.Archived = p.Archived
+
+	case contracts.StatusPeriodSet:
+		s.StatusPeriodSeconds = p.PeriodSeconds
 
 	case contracts.PeerMailboxSet:
 		s.PeerMailbox = p.Enabled
@@ -75,6 +95,12 @@ func Project(s *ThreadState, e contracts.Event) error {
 			s.LeadRuntimes = append(s.LeadRuntimes, contracts.LeadRuntime{})
 		}
 		s.LeadRuntimes[p.Index] = p.Runtime
+
+	case contracts.RoleRuntimeSet:
+		if s.RoleRuntimes == nil {
+			s.RoleRuntimes = make(map[string]contracts.LeadRuntime)
+		}
+		s.RoleRuntimes[string(p.Role)] = p.Runtime
 
 	case contracts.SubthreadSpawned:
 		s.Subthreads = append(s.Subthreads, p.ThreadID)
@@ -112,9 +138,18 @@ func Project(s *ThreadState, e contracts.Event) error {
 			return fmt.Errorf("project: status for unknown agent %q", p.AgentID)
 		}
 		a.Status = p.Status
+		a.Reason = p.Reason
 		if p.Status.Terminal() {
 			t := e.At
 			a.EndedAt = &t
+			// A lead finishing is the team finishing the turn; keep the latest one.
+			if a.IsOrchestrator() && s.Turn > 0 {
+				turn := s.turnFor(s.Turn)
+				turn.EndedAt = e.At
+				if p.Status != contracts.AgentSucceeded {
+					turn.Failed = true
+				}
+			}
 		}
 		s.Agents[p.AgentID] = a
 
