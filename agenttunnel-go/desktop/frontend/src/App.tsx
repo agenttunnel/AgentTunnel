@@ -42,7 +42,7 @@ import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
-import { FilesPanel, type FileContentLike, type FileEntryLike } from "./components/FilesPanel";
+import { FileEditor } from "./components/FileEditor";
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRListing } from "./components/PRPanel";
@@ -496,12 +496,6 @@ function loadLayout(): PanelLayout {
   }
 }
 
-type FileTreeState = {
-  root: string;
-  entries: FileEntryLike[];
-  status: Record<string, string>;
-};
-
 /** Elapsed shows how long the running work has been going; it ticks on its own so
  * only this tiny node re-renders. */
 function Elapsed({ since }: { since?: string }) {
@@ -820,10 +814,6 @@ export default function App() {
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
 
-  // File browser state for the aside Files panel.
-  const [fileTree, setFileTree] = useState<FileTreeState | null>(null);
-  const [fileTreeLoading, setFileTreeLoading] = useState(false);
-
   // Inherited context panel state: the environment's shared memory.
   const [inherited, setInherited] = useState<InheritedView | null>(null);
   const [inheritedGuide, setInheritedGuide] = useState("");
@@ -831,7 +821,6 @@ export default function App() {
   const [inheritedDirty, setInheritedDirty] = useState(false);
   const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
   const [newRuleName, setNewRuleName] = useState("");
-  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
   // Pull requests the active thread opened; tagged with its thread so a late reply never shows elsewhere.
   const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
@@ -843,10 +832,6 @@ export default function App() {
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
   const [showWorktrees, setShowWorktrees] = useState(false);
-  const [selectedFile, setSelectedFile] = useThreadScoped<string | null>(activeId, null);
-  const [fileContent, setFileContent] = useState<FileContentLike | null>(null);
-  const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [fileContentError, setFileContentError] = useState<string | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
@@ -1086,42 +1071,6 @@ export default function App() {
     }
   }, []);
 
-
-  const loadFileTree = useCallback(async (id: string | null) => {
-    const rpc = rpcRef.current;
-    if (!rpc || !id) return;
-    setFileTreeLoading(true);
-    setFileTreeError(null);
-    try {
-      const tree = await rpc.call<FileTreeState>("files.tree", { threadId: id });
-      if (activeIdRef.current !== id) return;
-      setFileTree(tree);
-      setSelectedFile(null);
-      setFileContent(null);
-      setFileContentError(null);
-    } catch (e) {
-      if (activeIdRef.current === id) setFileTreeError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (activeIdRef.current === id) setFileTreeLoading(false);
-    }
-  }, []);
-
-  const loadFileContent = useCallback(async (id: string | null, path: string) => {
-    const rpc = rpcRef.current;
-    if (!rpc || !id) return;
-    setSelectedFile(path);
-    setFileContent(null);
-    setFileContentError(null);
-    setFileContentLoading(true);
-    try {
-      const content = await rpc.call<FileContentLike>("files.read", { threadId: id, path });
-      if (activeIdRef.current === id) setFileContent(content);
-    } catch (e) {
-      if (activeIdRef.current === id) setFileContentError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (activeIdRef.current === id) setFileContentLoading(false);
-    }
-  }, []);
 
   const openPanel = useCallback((id: AsideTabId) => {
     if (id === "council" && draftRef.current) setCouncilTopic(draftRef.current);
@@ -1595,12 +1544,6 @@ export default function App() {
     setPRState(null);
     setPRError(null);
     setPRLoading(false);
-    setFileTree(null);
-    setFileTreeError(null);
-    setFileTreeLoading(false);
-    setFileContent(null);
-    setFileContentError(null);
-    setFileContentLoading(false);
   }, [activeId]);
   useEffect(() => {
     const rpc = rpcRef.current;
@@ -1682,10 +1625,6 @@ export default function App() {
     if (!(asideActive in ASIDE_META)) setAsideActive("agents");
   }, [asideActive, setAsideActive]);
 
-  // The file tree loads when its panel is shown.
-  useEffect(() => {
-    if (asideActive === "files") loadFileTree(activeId);
-  }, [asideActive, activeId, loadFileTree]);
 
   // Inherited context loads when its panel is opened, and stays fresh on
   // thread changes since agents can record learnings mid-turn.
@@ -3808,6 +3747,17 @@ export default function App() {
         )}
 
         <div className="aside-body">
+          {/* Kept mounted while hidden so unsaved edits survive a tab switch. */}
+          {activeId && (
+            <div className="section files-section" hidden={asideActive !== "files"}>
+              <FileEditor
+                key={activeId}
+                rpc={rpcRef.current}
+                threadId={activeId}
+                active={asideActive === "files"}
+              />
+            </div>
+          )}
           {asideActive === "models" ? (
             <div className="aside-models">
               <ThreadSetup
@@ -4201,24 +4151,7 @@ export default function App() {
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
             />
           </div>
-        ) : asideActive === "files" ? (
-          <div className="section files-section">
-            <FilesPanel
-              key={activeId ?? "none"}
-              root={fileTree?.root ?? null}
-              entries={fileTree?.entries ?? []}
-              status={fileTree?.status ?? {}}
-              loading={fileTreeLoading}
-              error={fileTreeError}
-              selectedPath={selectedFile}
-              content={fileContent}
-              contentLoading={fileContentLoading}
-              contentError={fileContentError}
-              onSelectFile={(p) => loadFileContent(activeId, p)}
-              onRefresh={() => loadFileTree(activeId)}
-            />
-          </div>
-        ) : asideActive === "council" ? (
+        ) : asideActive === "files" ? null : asideActive === "council" ? (
           <div className="section council-section">
             {!activeId && <p className="hint">Open a thread to convene a council.</p>}
             <div className="council-pane">
