@@ -31,6 +31,11 @@ type Engine struct {
 	done chan struct{}
 	once sync.Once
 
+	// startOnce lets Start spawn a single worker; loopDone closes when that
+	// worker exits, so Close can join it before returning.
+	startOnce sync.Once
+	loopDone  chan struct{}
+
 	audit actionlog.Func
 }
 
@@ -52,6 +57,10 @@ type envelope struct {
 	cmd contracts.Command
 	res chan error
 }
+
+// ErrEngineClosed is returned to dispatchers that call a closed engine: their
+// command was not, and will never be, processed.
+var ErrEngineClosed = errors.New("engine closed")
 
 // NewEngine wires a store and role registry into an engine.
 func NewEngine(store EventStore, roles *contracts.RoleRegistry) *Engine {
@@ -79,16 +88,23 @@ func (e *Engine) Now() time.Time { return e.clock() }
 // Roles exposes the engine's role registry.
 func (e *Engine) Roles() *contracts.RoleRegistry { return e.roles }
 
-// Start begins processing commands. It returns immediately; cancel ctx or call
-// Close to stop.
+// Start begins processing commands. It returns immediately; cancel ctx or
+// call Close to stop. Calling Start more than once spawns no second worker.
 func (e *Engine) Start(ctx context.Context) {
-	go e.loop(ctx)
+	e.startOnce.Do(func() {
+		done := make(chan struct{})
+		e.loopDone = done
+		go func() {
+			defer close(done)
+			e.loop(ctx)
+		}()
+	})
 }
 
 func (e *Engine) loop(ctx context.Context) {
 	// However the loop ends, the engine is done: waiting callers must not block
 	// on a loop that no longer runs.
-	defer e.Close()
+	defer e.once.Do(func() { close(e.done) })
 	for {
 		select {
 		case <-ctx.Done():
@@ -101,8 +117,18 @@ func (e *Engine) loop(ctx context.Context) {
 	}
 }
 
-// Close stops the engine.
-func (e *Engine) Close() { e.once.Do(func() { close(e.done) }) }
+// Close stops the engine and joins its worker. Once it returns, no further
+// command is processed and no event can be appended, so a state directory is
+// safe to remove even while background writers — subthread reports, title
+// generation — are still running: their dispatches fail without writing.
+func (e *Engine) Close() {
+	e.once.Do(func() {
+		close(e.done)
+	})
+	if d := e.loopDone; d != nil {
+		<-d
+	}
+}
 
 // Dispatch enqueues a command and blocks until it is processed, returning any
 // decision/append error. Ordering across concurrent callers is total.
@@ -113,7 +139,7 @@ func (e *Engine) Dispatch(ctx context.Context, cmd contracts.Command) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-e.done:
-		return errors.New("engine closed")
+		return ErrEngineClosed
 	}
 	select {
 	case err := <-res:
@@ -127,7 +153,7 @@ func (e *Engine) Dispatch(ctx context.Context, cmd contracts.Command) error {
 		case err := <-res:
 			return err
 		default:
-			return errors.New("engine closed")
+			return ErrEngineClosed
 		}
 	}
 }
