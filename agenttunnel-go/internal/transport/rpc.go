@@ -1165,6 +1165,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return files.Read(wd, p.Path)
 
+	case "markdown.read":
+		// Takes only a threadId, never a workdir: the viewer reads the thread's
+		// own worktree or project and nothing a client names.
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Path     string             `json:"path"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return files.ReadMarkdown(d.threadWorkdir(ctx, p.ThreadID), p.Path)
+
 	case "review.comment":
 		var p struct {
 			ThreadID contracts.ThreadID `json:"threadId"`
