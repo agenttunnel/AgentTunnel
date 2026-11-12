@@ -73,6 +73,7 @@ type Command struct {
 	Leads          *int                       `json:"leads,omitempty"`
 	LeadRuntime    *LeadRuntimeSet            `json:"leadRuntime,omitempty"`
 	ParentThreadID ThreadID                   `json:"parentThreadId,omitempty"`
+	Owner          ThreadOwner                `json:"owner,omitempty"`
 	Worktree       *WorktreeRef               `json:"worktree,omitempty"`
 	Subthread      *SubthreadSpawned          `json:"subthread,omitempty"`
 	TaskAdd        *TaskAdded                 `json:"taskAdd,omitempty"`

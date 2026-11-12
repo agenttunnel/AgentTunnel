@@ -13,6 +13,8 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 	payloads := []EventPayload{
 		ThreadCreated{Title: "my thread", ProjectID: "proj_1"},
 		ThreadCreated{Title: "sub", ProjectID: "proj_1", ParentThreadID: "t1"},
+		ThreadCreated{Title: "user-owned", ProjectID: "proj_1", Owner: ThreadOwnerUser},
+		ThreadCreated{Title: "spawned", ProjectID: "proj_1", ParentThreadID: "t0", Owner: ThreadOwnerOrchestrator},
 		SubthreadSpawned{ThreadID: "t2"},
 		ThreadRenamed{Title: "renamed thread"},
 		MessageSent{MessageID: "m1", Author: "user", Text: "hello"},

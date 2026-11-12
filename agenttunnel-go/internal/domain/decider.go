@@ -30,8 +30,11 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		// Peer messaging ships on for new threads: agent coordination and the
 		// graph view both rely on the traffic it records. Existing threads stay
 		// as they were, and `thread.setPeerMailbox` remains the override.
+		//
+		// The owner is normalized so the durable event always carries an
+		// explicit value; an empty owner reads as the user.
 		return []contracts.EventPayload{
-			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree},
+			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Owner: cmd.Owner.Normalized(), Worktree: cmd.Worktree},
 			contracts.PeerMailboxSet{Enabled: true},
 		}, nil
 

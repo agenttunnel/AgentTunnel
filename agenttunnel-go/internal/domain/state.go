@@ -88,6 +88,10 @@ type ThreadState struct {
 	// ParentThreadID is set on a subthread: the thread that started it. Its
 	// presence is also the depth check — a subthread starts no subthreads.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
+	// Owner records who started the thread: the user or an orchestrator. It
+	// is fixed at creation. Empty means the user — logs recorded before
+	// owners existed carry no value.
+	Owner contracts.ThreadOwner `json:"owner,omitempty"`
 	// Worktree is the checkout the thread's agents run in, when the project is
 	// a git repository. Nil means the project's own path.
 	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
