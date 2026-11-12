@@ -3,8 +3,28 @@
 // list by recency; this keeps that order among siblings and only moves the
 // subthreads.
 
-/** A thread row with its depth in the subthread tree (0 at the top level). */
-export type ThreadRow<T> = T & { depth: number };
+/** A thread row with its depth in the subthread tree (0 at the top level) and
+ * how many subthreads it started directly. */
+export type ThreadRow<T> = T & { depth: number; subthreads: number };
+
+/**
+ * The rows the sidebar shows: a collapsed thread's subthreads, at any depth,
+ * are left out. Rows arrive depth-first, so a collapsed row hides everything
+ * after it that is deeper, up to the next row at its own level.
+ */
+export function visibleThreadRows<T>(rows: ThreadRow<T>[], collapsed: ReadonlySet<string>, idOf: (t: T) => string): ThreadRow<T>[] {
+  const out: ThreadRow<T>[] = [];
+  let hideBelow: number | null = null;
+  for (const row of rows) {
+    if (hideBelow !== null) {
+      if (row.depth > hideBelow) continue;
+      hideBelow = null;
+    }
+    out.push(row);
+    if (row.subthreads > 0 && collapsed.has(idOf(row))) hideBelow = row.depth;
+  }
+  return out;
+}
 
 /**
  * Orders threads so each subthread follows its parent, indented. A subthread
@@ -33,7 +53,7 @@ export function arrangeThreads<T extends { id: string; parentThreadId?: string }
   const place = (t: T, depth: number) => {
     if (placed.has(t.id)) return;
     placed.add(t.id);
-    out.push({ ...t, depth });
+    out.push({ ...t, depth, subthreads: children.get(t.id)?.length ?? 0 });
     for (const child of children.get(t.id) ?? []) place(child, depth + 1);
   };
   for (const t of roots) place(t, 0);

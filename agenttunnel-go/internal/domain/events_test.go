@@ -21,16 +21,16 @@ func TestEngineEventsReturnsLogInSeqOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("got %d events, want 4", len(events))
+	if len(events) != 5 {
+		t.Fatalf("got %d events, want 5", len(events))
 	}
 	for i, ev := range events {
 		if ev.Seq != int64(i+1) {
 			t.Fatalf("event %d has seq %d, want %d", i, ev.Seq, i+1)
 		}
 	}
-	if events[3].Type() != contracts.EvtTaskDispatched {
-		t.Fatalf("last event = %s, want agent.task-dispatched", events[3].Type())
+	if events[len(events)-1].Type() != contracts.EvtTaskDispatched {
+		t.Fatalf("last event = %s, want agent.task-dispatched", events[len(events)-1].Type())
 	}
 
 	state, err := e.State(ctx, "t1")

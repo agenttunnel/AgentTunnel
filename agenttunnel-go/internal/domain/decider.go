@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -13,6 +14,10 @@ var (
 	ErrThreadNotFound = errors.New("thread not found")
 	ErrInvalidCommand = errors.New("invalid command")
 )
+
+// maxDescriptionRunes bounds a draft's description: it becomes the first
+// prompt, and thread.get ships it whole.
+const maxDescriptionRunes = 20000
 
 // Decide is a pure function: given a command and the current state, it returns
 // the events that command should produce, or an error if the command is invalid
@@ -31,8 +36,12 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		// graph view both rely on the traffic it records. Existing threads stay
 		// as they were, and `thread.setPeerMailbox` remains the override.
 		return []contracts.EventPayload{
-			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree},
+			contracts.ThreadCreated{
+				Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree,
+				Draft: cmd.Draft, Description: cmd.Description, Issue: cmd.Issue,
+			},
 			contracts.PeerMailboxSet{Enabled: true},
+			contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
 		}, nil
 
 	case contracts.CmdWorktreeAttach:
@@ -95,6 +104,18 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.ThreadRenamed{Title: title}}, nil
 
+	case contracts.CmdThreadDescribe:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if !s.Draft {
+			return nil, fmt.Errorf("%w: only a draft takes a description", ErrInvalidCommand)
+		}
+		if utf8.RuneCountInString(cmd.Description) > maxDescriptionRunes {
+			return nil, fmt.Errorf("%w: description is longer than %d characters", ErrInvalidCommand, maxDescriptionRunes)
+		}
+		return []contracts.EventPayload{contracts.ThreadDescribed{Description: cmd.Description}}, nil
+
 	case contracts.CmdThreadDelete:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
@@ -115,9 +136,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if strings.TrimSpace(cmd.Text) == "" {
 			return nil, fmt.Errorf("%w: turn text is required", ErrInvalidCommand)
 		}
-		return []contracts.EventPayload{
+		payloads := []contracts.EventPayload{
 			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text},
-		}, nil
+		}
+		if s.Draft {
+			payloads = append(payloads, contracts.DraftStarted{})
+		}
+		return payloads, nil
 
 	case contracts.CmdModelSet:
 		if !s.Exists {
@@ -127,6 +152,23 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			return nil, fmt.Errorf("%w: model selection is required", ErrInvalidCommand)
 		}
 		return []contracts.EventPayload{contracts.ModelSet{Selection: *cmd.ModelSelection}}, nil
+
+	case contracts.CmdArchiveSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Archived == nil {
+			return nil, fmt.Errorf("%w: archived value is required", ErrInvalidCommand)
+		}
+		// Archiving hides a thread from the working columns; stop its agents first.
+		if *cmd.Archived {
+			for id, a := range s.Agents {
+				if !a.Status.Terminal() {
+					return nil, fmt.Errorf("%w: agent %q is still %s", ErrInvalidCommand, id, a.Status)
+				}
+			}
+		}
+		return []contracts.EventPayload{contracts.ArchiveSet{Archived: *cmd.Archived}}, nil
 
 	case contracts.CmdAutoModeSet:
 		if !s.Exists {
@@ -149,6 +191,19 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			return nil, nil // already tracked: nothing to record
 		}
 		return []contracts.EventPayload{contracts.PRTracked{PullRequest: *ref}}, nil
+
+	case contracts.CmdStatusPeriodSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.StatusPeriod == nil {
+			return nil, fmt.Errorf("%w: status period value is required", ErrInvalidCommand)
+		}
+		period := *cmd.StatusPeriod
+		if period < 0 || period > contracts.MaxStatusPeriodSeconds {
+			return nil, fmt.Errorf("%w: status period must be between 0 and %d seconds", ErrInvalidCommand, contracts.MaxStatusPeriodSeconds)
+		}
+		return []contracts.EventPayload{contracts.StatusPeriodSet{PeriodSeconds: period}}, nil
 
 	case contracts.CmdPeerMailboxSet:
 		if !s.Exists {
@@ -175,6 +230,26 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if set.Runtime.Harness != "" && !set.Runtime.Harness.Valid() {
 			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, set.Runtime.Harness)
 		}
+		return []contracts.EventPayload{set}, nil
+
+	case contracts.CmdRoleRuntimeSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.RoleRuntime == nil {
+			return nil, fmt.Errorf("%w: role runtime is required", ErrInvalidCommand)
+		}
+		set := *cmd.RoleRuntime
+		if set.Role == "" {
+			return nil, fmt.Errorf("%w: role is required", ErrInvalidCommand)
+		}
+		if !contracts.IsBuiltinRole(set.Role) {
+			return nil, fmt.Errorf("%w: unknown role %q", ErrInvalidCommand, set.Role)
+		}
+		if set.Runtime.Harness != "" && !set.Runtime.Harness.Valid() {
+			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, set.Runtime.Harness)
+		}
+		set.ThreadID = s.ID
 		return []contracts.EventPayload{set}, nil
 
 	case contracts.CmdLeadsSet:
@@ -330,6 +405,36 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			return nil, fmt.Errorf("%w: message payload is required", ErrInvalidCommand)
 		}
 		return []contracts.EventPayload{*cmd.Message}, nil
+
+	case contracts.CmdSteeringInjected:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Injected == nil || cmd.Injected.Count < 1 {
+			return nil, fmt.Errorf("%w: injected steering count must be at least 1", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{*cmd.Injected}, nil
+	case contracts.CmdSteeringConsume:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		p := cmd.SteeringConsume
+		if p == nil || len(p.MessageIDs) == 0 {
+			return nil, fmt.Errorf("%w: steering message ids are required", ErrInvalidCommand)
+		}
+		for _, id := range p.MessageIDs {
+			found := false
+			for _, m := range s.Messages {
+				if m.ID == id && m.Author == "steering" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("%w: steering message %q is not in the transcript", ErrInvalidCommand, id)
+			}
+		}
+		return []contracts.EventPayload{*p}, nil
 
 	case contracts.CmdReviewCommentAdd:
 		if !s.Exists {

@@ -8,16 +8,20 @@ func TestPostDrainAndHas(t *testing.T) {
 		t.Fatal("empty queue should report no steering")
 	}
 
-	b.Post("t1", "  focus on the parser  ")
-	b.Post("t1", "also add a test")
-	b.Post("t1", "   ") // blank is ignored
+	b.Post("t1", "m1", "  focus on the parser  ")
+	b.Post("t1", "m2", "also add a test")
+	b.Post("t1", "m3", "   ") // blank is ignored
 
 	if !b.Has("t1") {
 		t.Fatal("Has should see the queued messages")
 	}
 
 	got := b.Drain("t1")
-	if len(got) != 2 || got[0] != "focus on the parser" || got[1] != "also add a test" {
+	want := []Entry{
+		{MessageID: "m1", Text: "focus on the parser"},
+		{MessageID: "m2", Text: "also add a test"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("drained = %+v", got)
 	}
 	if b.Has("t1") {
@@ -27,7 +31,7 @@ func TestPostDrainAndHas(t *testing.T) {
 
 func TestPostIgnoresEmptyThread(t *testing.T) {
 	b := New()
-	b.Post("", "hello")
+	b.Post("", "m1", "hello")
 	if b.Has("") {
 		t.Fatal("a message with no thread should be dropped")
 	}

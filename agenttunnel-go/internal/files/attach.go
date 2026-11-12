@@ -31,7 +31,7 @@ func AttachmentBlock(workdir string, rels []string) (string, error) {
 	seen := map[string]bool{}
 	inlined := 0
 	for _, rel := range rels {
-		full, err := resolve(workdir, rel)
+		full, err := Resolve(workdir, rel)
 		if err != nil {
 			return "", fmt.Errorf("attachment %q: %w", rel, err)
 		}

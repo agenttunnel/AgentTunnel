@@ -12,16 +12,23 @@ type EventType string
 const (
 	EvtThreadCreated      EventType = "thread.created"
 	EvtThreadRenamed      EventType = "thread.renamed"
+	EvtThreadDescribed    EventType = "thread.described"
+	EvtDraftStarted       EventType = "thread.draft-started"
 	EvtThreadDeleted      EventType = "thread.deleted"
 	EvtWorktreeAttached   EventType = "thread.worktree-attached"
 	EvtWorktreeDetached   EventType = "thread.worktree-detached"
 	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
 	EvtMessageSent        EventType = "thread.message-sent"
+	EvtSteeringInjected   EventType = "thread.steering-injected"
+	EvtSteeringConsumed   EventType = "thread.steering-consumed"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
+	EvtArchiveSet         EventType = "thread.archive-set"
+	EvtStatusPeriodSet    EventType = "thread.status-period-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
+	EvtRoleRuntimeSet     EventType = "thread.role-runtime-set"
 	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
 	EvtTaskAdded          EventType = "thread.task-added"
 	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
@@ -103,6 +110,10 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ThreadCreated](data)
 	case EvtThreadRenamed:
 		return decodePayload[ThreadRenamed](data)
+	case EvtThreadDescribed:
+		return decodePayload[ThreadDescribed](data)
+	case EvtDraftStarted:
+		return decodePayload[DraftStarted](data)
 	case EvtThreadDeleted:
 		return decodePayload[ThreadDeleted](data)
 	case EvtWorktreeAttached:
@@ -113,16 +124,26 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[WorktreeReplaced](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
+	case EvtSteeringInjected:
+		return decodePayload[SteeringInjected](data)
+	case EvtSteeringConsumed:
+		return decodePayload[SteeringConsumed](data)
 	case EvtModelSet:
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
 		return decodePayload[AutoModeSet](data)
+	case EvtArchiveSet:
+		return decodePayload[ArchiveSet](data)
+	case EvtStatusPeriodSet:
+		return decodePayload[StatusPeriodSet](data)
 	case EvtPeerMailboxSet:
 		return decodePayload[PeerMailboxSet](data)
 	case EvtLeadsSet:
 		return decodePayload[LeadsSet](data)
 	case EvtLeadRuntimeSet:
 		return decodePayload[LeadRuntimeSet](data)
+	case EvtRoleRuntimeSet:
+		return decodePayload[RoleRuntimeSet](data)
 	case EvtSubthreadSpawned:
 		return decodePayload[SubthreadSpawned](data)
 	case EvtTaskAdded:
@@ -178,9 +199,36 @@ type ThreadCreated struct {
 	// Worktree is set when the thread was created with its worktree already
 	// cut, or inherits a parent's.
 	Worktree *WorktreeRef `json:"worktree,omitempty"`
+	// Draft threads hold a title and description and run nothing until a turn
+	// starts. They get their worktree on that first turn, like any thread.
+	Draft       bool      `json:"draft,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Issue       *IssueRef `json:"issue,omitempty"`
 }
 
 func (ThreadCreated) eventType() EventType { return EvtThreadCreated }
+
+// IssueRef links a thread to the forge issue it was started from. URL is the
+// issue's web address and is the identity: one issue starts at most one thread.
+type IssueRef struct {
+	Provider string `json:"provider"`
+	IID      int    `json:"iid"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+}
+
+// ThreadDescribed replaces a draft's description.
+type ThreadDescribed struct {
+	Description string `json:"description"`
+}
+
+func (ThreadDescribed) eventType() EventType { return EvtThreadDescribed }
+
+// DraftStarted turns a draft into a normal thread. It is written with the
+// first turn's MessageSent, after the turn's worktree gate has passed.
+type DraftStarted struct{}
+
+func (DraftStarted) eventType() EventType { return EvtDraftStarted }
 
 // WorktreeAttached gives a thread its worktree after creation, the first time a
 // turn runs in a git project. A thread has at most one worktree.
@@ -229,6 +277,28 @@ type MessageSent struct {
 
 func (MessageSent) eventType() EventType { return EvtMessageSent }
 
+// SteeringInjected records that the orchestrator drained queued steering into a
+// pass. Queuing is already durable as a MessageSent by the "steering" author, so
+// this event is the second step: the pair shows when steering waited and when
+// the agents saw it.
+type SteeringInjected struct {
+	Count int `json:"count"`
+}
+
+func (SteeringInjected) eventType() EventType { return EvtSteeringInjected }
+
+// SteeringConsumed marks the steering messages a lead has picked up in a pass.
+// Until it lands, a steering message is still waiting in the queue.
+type SteeringConsumed struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
+func (SteeringConsumed) eventType() EventType { return EvtSteeringConsumed }
+
+// AuthorStatus marks a daemon-written workflow status report. It is not a user
+// message, so recording one never opens a turn.
+const AuthorStatus = "status"
+
 type ModelSet struct{ Selection ModelSelection }
 
 func (ModelSet) eventType() EventType { return EvtModelSet }
@@ -236,6 +306,25 @@ func (ModelSet) eventType() EventType { return EvtModelSet }
 type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
+
+// ArchiveSet files a thread under Archived or brings it back. An archived
+// thread is hidden from the board's working columns but keeps its history.
+type ArchiveSet struct{ Archived bool }
+
+func (ArchiveSet) eventType() EventType { return EvtArchiveSet }
+
+// Status report period limits, in seconds. Zero turns the report off; new
+// threads start at the default.
+const (
+	DefaultStatusPeriodSeconds = 60
+	MaxStatusPeriodSeconds     = 24 * 60 * 60
+)
+
+// StatusPeriodSet sets how often a running turn posts a workflow status
+// report into the thread. Zero disables it.
+type StatusPeriodSet struct{ PeriodSeconds int }
+
+func (StatusPeriodSet) eventType() EventType { return EvtStatusPeriodSet }
 
 // PeerMailboxSet toggles peer-to-peer agent messaging for a thread. On by
 // default: thread creation records it enabled.
@@ -266,6 +355,18 @@ type LeadRuntimeSet struct {
 }
 
 func (LeadRuntimeSet) eventType() EventType { return EvtLeadRuntimeSet }
+
+// RoleRuntimeSet sets a role's runtime override on one thread, so a job
+// template can pin executor=tester harness/model for a single thread without
+// changing the daemon-wide settings every other thread reads. An empty field
+// inherits the lower layer (settings, then the role's default).
+type RoleRuntimeSet struct {
+	ThreadID ThreadID    `json:"threadId,omitempty"`
+	Role     RoleID      `json:"role"`
+	Runtime  LeadRuntime `json:"runtime"`
+}
+
+func (RoleRuntimeSet) eventType() EventType { return EvtRoleRuntimeSet }
 
 // MaxSubthreads bounds how many subthreads one thread may start. A subthread
 // cannot start its own, so this is also the whole tree below a thread.
