@@ -675,6 +675,14 @@ body.is-resizing * {
   font-size: 11px;
   background: var(--surface-2);
 }
+/* Branch (fork) button is icon-only: keeps the one-row cluster compact.
+   The cluster is absolutely positioned, so revealing it on hover shifts nothing. */
+.msg-actions .msg-fork {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 7px;
+}
 /* Touch screens have no hover; keep the action reachable. */
 @media (hover: none) {
   .msg-actions {
