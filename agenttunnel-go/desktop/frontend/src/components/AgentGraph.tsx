@@ -422,7 +422,9 @@ export function AgentGraph({
     setCursor(r.start);
   };
 
-  if (members.length === 0) {
+  // Replaying before the first spawn folds to zero agents. That is a valid
+  // point in history, so the playback bar must stay mounted to scrub forward.
+  if (members.length === 0 && !replay) {
     return (
       <div className="graph-scroll">
         <div className="empty">
