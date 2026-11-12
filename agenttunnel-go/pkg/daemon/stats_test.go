@@ -61,3 +61,33 @@ func TestStatsHarnessesRPCRollsUpDispatchedAgents(t *testing.T) {
 		t.Fatalf("codex row = %+v", got[1])
 	}
 }
+
+func TestStatsModelsRPCSplitsByModel(t *testing.T) {
+	d := newTestDaemon(t)
+	c, _ := dialWS(t, d)
+	ctx := context.Background()
+	if err := d.Engine.Dispatch(ctx, contracts.Command{
+		ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Engine.Dispatch(ctx, contracts.Command{
+		ID: "d1", Type: contracts.CmdTaskDispatch, ThreadID: "t1",
+		Dispatch: &contracts.DispatchTask{
+			AgentID: "agent-orchestrator", Role: contracts.RoleOrchestrator, Task: "lead",
+			Harness: contracts.HarnessClaude, Model: "opus",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []struct {
+		Harness string `json:"harness"`
+		Model   string `json:"model"`
+		Agents  int    `json:"agents"`
+	}
+	json.Unmarshal(call(t, c, "2", "stats.models", nil), &got)
+	if len(got) != 1 || got[0].Harness != "claude" || got[0].Model != "opus" || got[0].Agents != 1 {
+		t.Fatalf("stats.models = %+v, want one claude/opus row", got)
+	}
+}

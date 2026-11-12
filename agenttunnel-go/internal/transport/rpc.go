@@ -17,6 +17,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deps"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
@@ -68,11 +69,34 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// Version is the release version embedded at link time, reported by app.info.
+	Version string
+	// HarnessUpdates checks and upgrades the provider CLIs themselves. Nil
+	// reports none; this is distinct from Updater, which updates AgentTunnel.
+	HarnessUpdates *providers.HarnessUpdater
 	// Limits reports subscription usage left per harness. Nil reports none.
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
+	// BaseCtx is the daemon's lifetime context. Detached turns run against it,
+	// so a client socket closing cannot cancel them; only the daemon going
+	// away or thread.turn.stop can. Nil falls back to context.Background.
+	BaseCtx context.Context
+	// Shutdown triggers a graceful daemon shutdown for the daemon.shutdown RPC.
+	// The assembly sets it; nil makes the RPC a no-op acknowledgement.
+	Shutdown func()
+	// Remote drives WhatsApp connectivity for the Remote section. Nil reports it
+	// unavailable.
+	Remote RemoteControl
+	// Clock and StatusTick drive the per-turn workflow status report. Nil uses
+	// real time; tests inject a controllable ticker and clock.
+	Clock      domain.Clock
+	StatusTick StatusTicker
 }
+
+// StatusTicker returns a tick channel and a stop function for a period. It is
+// the seam tests use to fire status reports without sleeping.
+type StatusTicker func(time.Duration) (<-chan time.Time, func())
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
 // internal/relay implements it, so the transport never imports the relay.
@@ -131,23 +155,36 @@ type RelayDevice struct {
 
 // Dispatcher routes RPC methods to the daemon's services.
 type Dispatcher struct {
-	engine     *domain.Engine
-	runner     *orchestrator.Runner
-	orch       *orchestrator.Orchestrator
-	ledger     *usage.Ledger
-	logs       *logstore.Store
-	roles      *contracts.RoleRegistry
-	registry   *providers.Registry
-	settings   *settings.Store
-	models     *models.Service
-	steering   *steering.Box
-	audit      actionlog.Func
-	updater    *update.Updater
-	limits     *providers.LimitsProvider
-	relay      RelayControl
-	prBoard    *scm.Board
-	dirtyBoard *scm.DirtyBoard
-	seq        atomic.Int64
+	engine         *domain.Engine
+	runner         *orchestrator.Runner
+	orch           *orchestrator.Orchestrator
+	ledger         *usage.Ledger
+	logs           *logstore.Store
+	roles          *contracts.RoleRegistry
+	registry       *providers.Registry
+	settings       *settings.Store
+	models         *models.Service
+	steering       *steering.Box
+	audit          actionlog.Func
+	updater        *update.Updater
+	version        string
+	harnessUpdates *providers.HarnessUpdater
+	limits         *providers.LimitsProvider
+	relay          RelayControl
+	remote         RemoteControl
+	master         *orchestrator.Master
+	prBoard        *scm.Board
+	dirtyBoard     *scm.DirtyBoard
+	baseCtx        context.Context
+	shutdown       func()
+	seq            atomic.Int64
+
+	// remoteNotifier broadcasts Remote section changes. Set after the server
+	// exists, since the dispatcher is built first.
+	remoteNotifier func(RemoteStatus)
+	// clock and statusTick drive the per-turn workflow status report.
+	clock      domain.Clock
+	statusTick StatusTicker
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
@@ -168,25 +205,46 @@ type Dispatcher struct {
 
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
-	return &Dispatcher{
-		questions:  newQuestionBroker(),
-		engine:     d.Engine,
-		runner:     d.Runner,
-		orch:       d.Orchestrator,
-		ledger:     d.Ledger,
-		logs:       d.Logs,
-		roles:      d.Roles,
-		registry:   d.Registry,
-		settings:   d.Settings,
-		models:     d.Models,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		updater:    d.Updater,
-		limits:     d.Limits,
-		relay:      d.Relay,
-		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
-		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
+	base := d.BaseCtx
+	if base == nil {
+		base = context.Background()
 	}
+	if d.Clock == nil {
+		d.Clock = time.Now
+	}
+	if d.StatusTick == nil {
+		d.StatusTick = realStatusTick
+	}
+	disp := &Dispatcher{
+		questions:      newQuestionBroker(),
+		baseCtx:        base,
+		shutdown:       d.Shutdown,
+		engine:         d.Engine,
+		runner:         d.Runner,
+		orch:           d.Orchestrator,
+		ledger:         d.Ledger,
+		logs:           d.Logs,
+		roles:          d.Roles,
+		registry:       d.Registry,
+		settings:       d.Settings,
+		models:         d.Models,
+		steering:       d.Steering,
+		audit:          d.Audit,
+		updater:        d.Updater,
+		version:        d.Version,
+		harnessUpdates: d.HarnessUpdates,
+		limits:         d.Limits,
+		relay:          d.Relay,
+		remote:         d.Remote,
+		clock:          d.Clock,
+		statusTick:     d.StatusTick,
+		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
+		dirtyBoard:     scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
+	}
+	disp.master = orchestrator.NewMaster(orchestrator.MasterDeps{
+		Runner: d.Runner, Engine: d.Engine, Settings: d.Settings, Models: d.Models,
+	})
+	return disp
 }
 
 // prBoardTTL bounds how stale a thread board's PR state may be. Each refresh
@@ -243,15 +301,43 @@ func threadStates(
 	return out
 }
 
+// maxSummaryPromptRunes bounds the searchable prompt in the thread list: the
+// openers are short, and the list is shipped whole on every recency change.
+const maxSummaryPromptRunes = 200
+
+// firstUserPrompt returns the thread's first human message, truncated to the
+// list-search budget. Threads started only by agents have none.
+func firstUserPrompt(st *domain.ThreadState) string {
+	for _, m := range st.Messages {
+		if m.Author != "user" {
+			continue
+		}
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		r := []rune(text)
+		if len(r) > maxSummaryPromptRunes {
+			return string(r[:maxSummaryPromptRunes])
+		}
+		return text
+	}
+	return ""
+}
+
 // ThreadSummary is the list-row projection of a thread.
 type ThreadSummary struct {
 	ID        contracts.ThreadID `json:"id"`
 	Title     string             `json:"title"`
 	ProjectID string             `json:"projectId,omitempty"`
-	UpdatedAt time.Time          `json:"updatedAt"`
-	Messages  int                `json:"messages"`
-	Agents    int                `json:"agents"`
-	AutoMode  bool               `json:"autoMode"`
+	// FirstPrompt is the first human message, truncated so list search can
+	// match against what the thread was actually asked to do.
+	FirstPrompt string    `json:"firstPrompt,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Messages    int       `json:"messages"`
+	Agents      int       `json:"agents"`
+	AutoMode    bool      `json:"autoMode"`
+	Archived    bool      `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
 	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
@@ -284,6 +370,9 @@ type (
 		// Attachments are workdir-relative files or folders the composer attached.
 		// They reach the agent's prompt, not the transcript.
 		Attachments []string `json:"attachments,omitempty"`
+		// Detach runs the turn against the daemon's lifetime context and replies
+		// at once, so a client (agenttunnel run) can exit while the work continues.
+		Detach bool `json:"detach,omitempty"`
 	}
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -296,6 +385,13 @@ type (
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
+	setRoleRuntimeParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Role     string             `json:"role"`
 		Harness  contracts.Harness  `json:"harness,omitempty"`
 		Model    string             `json:"model,omitempty"`
 		Variant  string             `json:"variant,omitempty"`
@@ -332,6 +428,12 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
+	// Status reports run beside the orchestrator, not inside its pass loop, so a
+	// long pass still shows progress. The stop func joins the goroutine before
+	// the turn slot is released.
+	stopReports := d.startStatusReports(turnCtx, threadID)
+	defer stopReports()
+
 	if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
 		if turnCtx.Err() != nil {
 			return map[string]any{"ok": true, "stopped": true}, nil
@@ -339,6 +441,225 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// startDetachedTurn claims the thread's turn slot against the daemon's lifetime
+// context and runs the turn in the background, replying at once. The caller's
+// socket closing cannot cancel it — only thread.turn.stop or daemon shutdown
+// can. The slot is released when the goroutine finishes, so a stopped turn
+// keeps it until it unwinds, exactly like a foreground turn.
+func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
+	if d.orch == nil || d.engine == nil {
+		return nil, errors.New("detached turns are unavailable")
+	}
+	// A caller with no daemon context (a bare dispatcher in a test) still gets
+	// a turn that outlives its socket. A daemon context that is already
+	// cancelled is respected: shutdown must not start new work.
+	base := d.baseCtx
+	if base == nil {
+		base = context.WithoutCancel(ctx)
+	}
+	turnCtx, done, err := d.beginTurn(base, threadID)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		defer done()
+		if err := d.ensureWorktree(base, threadID); err != nil {
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+			return
+		}
+		if err := d.engine.Dispatch(base, cmd); err != nil {
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+			return
+		}
+		if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
+			if turnCtx.Err() != nil {
+				d.auditLog("turn.detached.stopped", map[string]any{"threadId": string(threadID)})
+				return
+			}
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+		}
+	}()
+	return map[string]any{"ok": true, "detached": true, "threadId": string(threadID)}, nil
+}
+
+// Shutdown asks the daemon assembly to shut down gracefully. It is called by
+// the server after the daemon.shutdown reply is written.
+func (d *Dispatcher) Shutdown() {
+	if d.shutdown != nil {
+		d.shutdown()
+	}
+}
+
+// startMasterThread creates the thread a home-screen proposal asked for,
+// applies its lead-0 runtime, and starts the first turn in the background. The
+// RPC returns as soon as the goroutine is dispatched: thread.turn.start blocks
+// for the whole turn, so awaiting it here would hold the home chat open.
+func (d *Dispatcher) startMasterThread(ctx context.Context, action *orchestrator.MasterAction, result *orchestrator.MasterResult) error {
+	if d.engine == nil || d.orch == nil {
+		return errors.New("orchestrator is unavailable")
+	}
+	id := d.newThreadID()
+	if err := d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
+		Title: action.Title, ProjectID: action.ProjectID,
+	}); err != nil {
+		return err
+	}
+	if action.Harness != "" || action.Model != "" || action.Variant != "" {
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: id,
+			LeadRuntime: &contracts.LeadRuntimeSet{
+				Index: 0,
+				Runtime: contracts.LeadRuntime{
+					Harness: action.Harness, Model: action.Model, Variant: action.Variant,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	result.ThreadID = id
+	result.ProjectID = action.ProjectID
+
+	cmd := contracts.Command{ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: id, Text: action.Prompt}
+	// Detach from the request: the client may disconnect or time out, but the
+	// turn it started keeps going.
+	go func() {
+		_, _ = d.runTurn(context.WithoutCancel(ctx), id, action.Prompt, cmd)
+	}()
+	return nil
+}
+
+// realStatusTick is the production status ticker.
+func realStatusTick(period time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(period)
+	return t.C, t.Stop
+}
+
+// startStatusReports starts a thread's per-turn status ticker. A thread with no
+// configured period starts nothing. The returned stop function ends the loop and
+// waits for it to exit, so no report can land after the turn is done.
+func (d *Dispatcher) startStatusReports(ctx context.Context, threadID contracts.ThreadID) func() {
+	if d.engine == nil || d.clock == nil || d.statusTick == nil {
+		return func() {}
+	}
+	period := d.statusPeriod(ctx, threadID)
+	if period <= 0 {
+		return func() {}
+	}
+	tick, stopTick := d.statusTick(time.Duration(period) * time.Second)
+	reportCtx, cancel := context.WithCancel(ctx)
+	start := d.clock()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case <-reportCtx.Done():
+				return
+			case _, ok := <-tick:
+				if !ok {
+					return
+				}
+				d.postStatusReport(reportCtx, threadID, start)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			stopTick()
+			<-finished
+		})
+	}
+}
+
+// statusPeriod reads the thread's configured report period.
+func (d *Dispatcher) statusPeriod(ctx context.Context, threadID contracts.ThreadID) int {
+	st, err := d.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return 0
+	}
+	return st.StatusPeriodSeconds
+}
+
+// postStatusReport records one workflow status message. It is authored by
+// AuthorStatus, never "user", so it does not open a turn or move the spend
+// window; the message joins the running turn in the transcript.
+func (d *Dispatcher) postStatusReport(ctx context.Context, threadID contracts.ThreadID, start time.Time) {
+	st, err := d.engine.State(ctx, threadID)
+	if err != nil || st == nil || !st.Exists || st.Deleted {
+		return
+	}
+	text := statusReportText(st, d.clock().Sub(start))
+	_ = d.engine.Dispatch(ctx, contracts.Command{
+		ID:       d.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: contracts.AuthorStatus, Text: text},
+	})
+}
+
+// statusReportText renders a concise workflow status: agents with their
+// statuses, task progress, and how long the turn has been running.
+func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
+
+	// Live agents are the useful part of a heartbeat; finished ones collapse to
+	// a count so a long thread does not repost its whole roster every period.
+	var active strings.Builder
+	activeCount := 0
+	settled := map[contracts.AgentStatus]int{}
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
+		if a.Status.Terminal() {
+			settled[a.Status]++
+			continue
+		}
+		activeCount++
+		name := strings.TrimSpace(a.Name)
+		if name == "" {
+			name = string(id)
+		}
+		role := string(a.Role)
+		if role == "" {
+			role = "agent"
+		}
+		fmt.Fprintf(&active, "- %s (%s): %s\n", name, role, a.Status)
+	}
+	if activeCount == 0 {
+		b.WriteString("Agents: none active\n")
+	} else {
+		b.WriteString("Agents:\n")
+		b.WriteString(active.String())
+	}
+	if len(settled) > 0 {
+		total := 0
+		var parts []string
+		for _, status := range []contracts.AgentStatus{contracts.AgentSucceeded, contracts.AgentFailed, contracts.AgentCancelled} {
+			if n := settled[status]; n > 0 {
+				total += n
+				parts = append(parts, fmt.Sprintf("%d %s", n, status))
+			}
+		}
+		fmt.Fprintf(&b, "Settled: %d (%s)\n", total, strings.Join(parts, ", "))
+	}
+
+	done := 0
+	for _, t := range st.Tasks {
+		if t.Status == contracts.TaskDone {
+			done++
+		}
+	}
+	fmt.Fprintf(&b, "Tasks: %d/%d done", done, len(st.Tasks))
+	return b.String()
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
@@ -446,6 +767,38 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			"models":    modelsByHarness,
 		}, nil
 
+	case "harness.updates":
+		var p struct {
+			Refresh bool `json:"refresh"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return providers.UpdateReport{CheckedAt: time.Now(), Harnesses: []providers.HarnessUpdate{}}, nil
+		}
+		return d.harnessUpdates.Check(ctx, p.Refresh), nil
+
+	case "harness.update":
+		var p struct {
+			Harnesses []string `json:"harnesses"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return nil, errors.New("harness updates are unavailable")
+		}
+		only := make([]contracts.Harness, 0, len(p.Harnesses))
+		for _, name := range p.Harnesses {
+			h := contracts.Harness(name)
+			if !h.Valid() {
+				return nil, fmt.Errorf("unknown harness %q", name)
+			}
+			only = append(only, h)
+		}
+		return d.harnessUpdates.Update(ctx, only)
+
 	case "models.refresh":
 		var p struct {
 			Harness string `json:"harness"`
@@ -488,7 +841,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"harness": string(h), "models": d.models.List(h)}, nil
 
 	case "thread.open":
-		// The desktop CLI's `agenttunnel <dir>` flow: resolve the directory to
+		// The desktop's `agenttunnel-desktop <dir>` flow: resolve the directory to
 		// a project (creating one when the dir is unknown) and open a fresh
 		// thread in it. Creation is provisional — closing the window without
 		// typing leaves nothing behind.
@@ -581,7 +934,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
-				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
+				FirstPrompt: firstUserPrompt(st),
+				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
 				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
@@ -633,9 +987,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
+		cmd := contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
-		})
+		}
+		if p.Detach {
+			return d.startDetachedTurn(ctx, p.ThreadID, prompt, cmd)
+		}
+		return d.runTurn(ctx, p.ThreadID, prompt, cmd)
 
 	case "review.submit":
 		var p struct {
@@ -751,6 +1109,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		defer done()
+		stopReports := d.startStatusReports(turnCtx, p.ThreadID)
+		defer stopReports()
 		spec := orchestrator.CouncilSpec{Topic: p.Topic, Rounds: p.Rounds, Members: p.Members}
 		consensus, err := d.orch.RunCouncil(turnCtx, p.ThreadID, spec)
 		if err != nil {
@@ -866,16 +1226,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		// Record it in the transcript, marked as steering, then queue it for the
-		// next orchestrator pass to weigh.
+		// next orchestrator pass to weigh. The message id lets that pass report
+		// back that it was consumed.
+		messageID := d.nextID()
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID:       d.nextID(),
 			Type:     contracts.CmdMessageAppend,
 			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "steering", Text: p.Text},
+			Message:  &contracts.MessageSent{MessageID: messageID, Author: "steering", Text: p.Text},
 		}); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, prompt)
+		d.steering.Post(p.ThreadID, messageID, prompt)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.btw":
@@ -900,6 +1262,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"answer": answer}, nil
 
+	case "master.send":
+		// The home-screen orchestrator answers from a snapshot and may propose a
+		// thread. Dispatch is fire-and-forget: the first turn runs for as long
+		// as the work takes, so the reply cannot wait for it.
+		var p struct {
+			Text    string                       `json:"text"`
+			History []orchestrator.MasterMessage `json:"history"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Text) == "" {
+			return nil, errors.New("text is required")
+		}
+		if d.master == nil {
+			return nil, errors.New("master chat is unavailable")
+		}
+		result, err := d.master.Send(ctx, p.Text, p.History)
+		if err != nil {
+			return nil, err
+		}
+		if result.Action == nil {
+			return result, nil
+		}
+		if err := d.startMasterThread(ctx, result.Action, &result); err != nil {
+			return nil, err
+		}
+		return result, nil
+
 	case "thread.setAutoMode":
 		var p setBoolParams
 		if err := decode(req.Params, &p); err != nil {
@@ -907,6 +1298,36 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdAutoModeSet, ThreadID: p.ThreadID, AutoMode: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setArchived":
+		var p setBoolParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setStatusPeriod":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Seconds  *int               `json:"seconds"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Seconds == nil {
+			return nil, errors.New("seconds is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdStatusPeriodSet, ThreadID: p.ThreadID, StatusPeriod: p.Seconds,
 		}); err != nil {
 			return nil, err
 		}
@@ -933,6 +1354,25 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
 			LeadRuntime: &contracts.LeadRuntimeSet{
 				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setRoleRuntime":
+		var p setRoleRuntimeParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Role == "" {
+			return nil, errors.New("role is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdRoleRuntimeSet, ThreadID: p.ThreadID,
+			RoleRuntime: &contracts.RoleRuntimeSet{
+				Role:    contracts.RoleID(p.Role),
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
 		}); err != nil {
@@ -1044,6 +1484,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.engine.HarnessStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
 
+	case "app.info":
+		version := d.version
+		if version == "" {
+			version = "dev"
+		}
+		return map[string]any{"version": version}, nil
+
+	case "stats.teams":
+		// Same scope as stats.harnesses: no params is the environment.
+		var p struct {
+			ThreadID  contracts.ThreadID `json:"threadId"`
+			ProjectID string             `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.engine.TeamStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
+	case "stats.models":
+		// Same scope as stats.harnesses: no params is the environment.
+		var p struct {
+			ThreadID  contracts.ThreadID `json:"threadId"`
+			ProjectID string             `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.engine.ModelStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
 	case "update.check":
 		if d.updater == nil {
 			return nil, errors.New("updates are unavailable")
@@ -1055,6 +1524,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, errors.New("updates are unavailable")
 		}
 		return d.updater.Apply(ctx)
+
+	case "deps.check":
+		// Probes the forge CLIs on PATH with `--version`; local and read-only,
+		// so the headless daemon reports the same answer as the desktop app.
+		return deps.Probe(ctx), nil
 
 	case "review.diff":
 		var p struct {
@@ -1214,6 +1688,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				return nil, fmt.Errorf("required role %q cannot be disabled", role.ID)
 			}
 		}
+		if p.Role != nil && p.Role.Harness != "" && !contracts.Harness(p.Role.Harness).Valid() {
+			return nil, fmt.Errorf("unknown harness %q", p.Role.Harness)
+		}
+		if p.Lead != nil && p.Lead.Harness != "" && !contracts.Harness(p.Lead.Harness).Valid() {
+			return nil, fmt.Errorf("unknown harness %q", p.Lead.Harness)
+		}
 		if p.Workdir != nil {
 			d.settings.SetWorkdir(*p.Workdir)
 		}
@@ -1231,6 +1711,15 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				Harness: contracts.Harness(p.Role.Harness),
 				Model:   p.Role.Model,
 				Variant: p.Role.Variant,
+			})
+		}
+		if p.Lead != nil {
+			// The lead runs on the Orchestrator role's runtime, so pinning it
+			// is the same persisted setting, not a second source of truth.
+			d.settings.SetRoleConfig(contracts.RoleOrchestrator, settings.RoleConfig{
+				Harness: contracts.Harness(p.Lead.Harness),
+				Model:   strings.TrimSpace(p.Lead.Model),
+				Variant: strings.TrimSpace(p.Lead.Variant),
 			})
 		}
 		if p.Harness != nil {
@@ -1401,6 +1890,62 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		d.settings.RemoveProject(p.ID)
 		return d.projectList(ctx), nil
 
+	case "remote.status":
+		st := d.RemoteStatus()
+		if isRelayedSession(ctx) {
+			// A pairing QR is a secret: the phone that reaches this daemon
+			// through the relay must never be handed another surface's link.
+			for i := range st.Items {
+				st.Items[i].QR = ""
+			}
+		}
+		return st, nil
+
+	case "remote.whatsapp.connect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Connect(ctx)
+		// The bridge may finish connecting later, but a failure is already a
+		// state change every client should see.
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
+	case "remote.whatsapp.disconnect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Disconnect()
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
+	case "remote.whatsapp.control":
+		// Inbound control lets the linked account's own chat drive the
+		// orchestrator, so it is a desktop-only setting: a relayed phone cannot
+		// reach remote.whatsapp.* at all.
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		var p struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Enabled != nil {
+			if err := d.remote.SetControl(*p.Enabled); err != nil {
+				return nil, err
+			}
+			d.BroadcastRemoteStatus()
+		}
+		return ControlState{Enabled: d.remote.Control()}, nil
+
 	case "relay.status":
 		return d.relayControl().Status(), nil
 
@@ -1415,6 +1960,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Enable(p.URL); err != nil {
 			return nil, err
 		}
+		// The phone row is derived from the relay, so its state changed too.
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.disable":
@@ -1422,6 +1969,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Disable(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.pair.start":
@@ -1431,13 +1979,19 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"devices": d.relayControl().Devices()}, nil
 
 	case "relay.tunnel.start":
-		return d.relayControl().StartTunnel(ctx)
+		st, err := d.relayControl().StartTunnel(ctx)
+		if err != nil {
+			return nil, err
+		}
+		d.BroadcastRemoteStatus()
+		return st, nil
 
 	case "relay.tunnel.stop":
 		rc := d.relayControl()
 		if err := rc.StopTunnel(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.TunnelStatus(), nil
 
 	case "relay.tunnel.status":
@@ -1628,12 +2182,22 @@ type RoleConfigView struct {
 	Experimental bool `json:"experimental"`
 }
 
+// LeadRuntimeView is the master orchestrator's configured runtime override.
+// Empty fields inherit the Orchestrator role's defaults, and a thread's
+// per-lead override still wins over it.
+type LeadRuntimeView struct {
+	Harness string `json:"harness"`
+	Model   string `json:"model"`
+	Variant string `json:"variant"`
+}
+
 // SettingsView is the settings screen's payload.
 type SettingsView struct {
 	Workdir           string           `json:"workdir"`
 	AutoMode          bool             `json:"autoMode"`
 	ApprovedModels    []string         `json:"approvedModels"`
 	Roles             []RoleConfigView `json:"roles"`
+	Lead              LeadRuntimeView  `json:"lead"`
 	ConfigPath        string           `json:"configPath"`
 	StaleAfterMinutes int              `json:"staleAfterMinutes"`
 	ExperimentalRoles bool             `json:"experimentalRoles"`
@@ -1650,6 +2214,9 @@ type settingsPatch struct {
 		Model   string `json:"model"`
 		Variant string `json:"variant"`
 	} `json:"role"`
+	// Lead pins the master orchestrator's runtime; it is stored as the
+	// Orchestrator role's runtime, so unset fields keep inheriting it.
+	Lead    *LeadRuntimeView `json:"lead"`
 	Harness *struct {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
@@ -1673,6 +2240,13 @@ func (d *Dispatcher) settingsView() SettingsView {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}
 		sort.Strings(view.ApprovedModels)
+		if cfg, ok := d.settings.RoleConfig(contracts.RoleOrchestrator); ok {
+			view.Lead.Model = cfg.Model
+			view.Lead.Variant = cfg.Variant
+			if cfg.Harness.Valid() {
+				view.Lead.Harness = string(cfg.Harness)
+			}
+		}
 	}
 	for _, role := range d.roles.List() {
 		harness, model, variant := role.DefaultHarness, role.DefaultModel, role.DefaultVariant
@@ -1729,6 +2303,7 @@ var graphEventTypes = map[contracts.EventType]bool{
 	contracts.EvtUsageRecorded:      true,
 	contracts.EvtMailboxPosted:      true,
 	contracts.EvtMessageSent:        true,
+	contracts.EvtSteeringInjected:   true,
 }
 
 // graphBodyMax bounds the mailbox body echoed into replay frames. Full bodies

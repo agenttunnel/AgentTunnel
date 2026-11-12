@@ -23,8 +23,14 @@ printf '{"type":"text","text":"done"}\n'`
 
 func newSlowDaemon(t *testing.T) *Daemon {
 	t.Helper()
+	return newScriptedDaemon(t, slowScript)
+}
+
+// newScriptedDaemon boots a daemon whose every agent runs script under sh.
+func newScriptedDaemon(t *testing.T, script string) *Daemon {
+	t.Helper()
 	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", func(providers.SessionSpec) (providers.CommandSpec, error) {
-		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", slowScript}, PromptVia: "stdin"}, nil
+		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", script}, PromptVia: "stdin"}, nil
 	}, providers.JSONLineTranslator{})
 	d, err := New(context.Background(), Options{
 		StateDir: t.TempDir(),

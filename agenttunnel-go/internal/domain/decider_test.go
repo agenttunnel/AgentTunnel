@@ -13,8 +13,8 @@ func TestDecideThreadCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(evs) != 2 {
-		t.Fatalf("want 2 events, got %d", len(evs))
+	if len(evs) != 3 {
+		t.Fatalf("want 3 events, got %d", len(evs))
 	}
 	if _, ok := evs[0].(contracts.ThreadCreated); !ok {
 		t.Fatalf("want ThreadCreated, got %T", evs[0])
@@ -23,6 +23,50 @@ func TestDecideThreadCreate(t *testing.T) {
 	// traffic (and graph arrows) without a separate opt-in.
 	if on, ok := evs[1].(contracts.PeerMailboxSet); !ok || !on.Enabled {
 		t.Fatalf("want PeerMailboxSet{true}, got %#v", evs[1])
+	}
+	// New threads report workflow status on a default period until changed.
+	if p, ok := evs[2].(contracts.StatusPeriodSet); !ok || p.PeriodSeconds != contracts.DefaultStatusPeriodSeconds {
+		t.Fatalf("want StatusPeriodSet{%d}, got %#v", contracts.DefaultStatusPeriodSeconds, evs[2])
+	}
+}
+
+func TestDecideStatusPeriod(t *testing.T) {
+	s := NewThreadState("t1")
+	s.Exists = true
+
+	if _, err := Decide(contracts.Command{Type: contracts.CmdStatusPeriodSet}, s); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("missing value: want ErrInvalidCommand, got %v", err)
+	}
+	neg := -1
+	if _, err := Decide(contracts.Command{Type: contracts.CmdStatusPeriodSet, StatusPeriod: &neg}, s); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("negative period: want ErrInvalidCommand, got %v", err)
+	}
+	tooBig := contracts.MaxStatusPeriodSeconds + 1
+	if _, err := Decide(contracts.Command{Type: contracts.CmdStatusPeriodSet, StatusPeriod: &tooBig}, s); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("oversized period: want ErrInvalidCommand, got %v", err)
+	}
+
+	zero := 0
+	evs, err := Decide(contracts.Command{Type: contracts.CmdStatusPeriodSet, StatusPeriod: &zero}, s)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("zero period: err=%v events=%d", err, len(evs))
+	}
+	if p := evs[0].(contracts.StatusPeriodSet); p.PeriodSeconds != 0 {
+		t.Fatalf("zero period projected %d", p.PeriodSeconds)
+	}
+
+	if _, err := Decide(contracts.Command{Type: contracts.CmdStatusPeriodSet, StatusPeriod: &zero}, NewThreadState("t1")); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("unknown thread: want ErrThreadNotFound, got %v", err)
+	}
+}
+
+func TestProjectStatusPeriod(t *testing.T) {
+	s := NewThreadState("t1")
+	if err := Project(s, contracts.Event{Payload: contracts.StatusPeriodSet{PeriodSeconds: 30}}); err != nil {
+		t.Fatal(err)
+	}
+	if s.StatusPeriodSeconds != 30 {
+		t.Fatalf("status period = %d, want 30", s.StatusPeriodSeconds)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
+	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
 )
@@ -47,6 +48,7 @@ func newHarness(t *testing.T, script string) (*Runner, *domain.Engine, context.C
 		Inherited: inherited,
 		Settings:  settings.New(t.TempDir()),
 		Tools:     toolbox.New(),
+		Steering:  steering.New(),
 		Clock:     fixedClock,
 		Cfg:       Config{MaxPasses: 2, MaxConcurrency: 2},
 	})
