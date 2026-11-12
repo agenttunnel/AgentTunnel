@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -33,6 +34,16 @@ var startDesktop = func(path string, args ...string) error {
 	return cmd.Process.Release()
 }
 
+// lookDesktop finds the desktop client on PATH. It runs before any daemon
+// contact: a missing desktop must not autostart a daemon.
+func lookDesktop() (string, error) {
+	path, err := exec.LookPath(desktopBinary)
+	if err != nil {
+		return "", errors.New(desktopInstallHint)
+	}
+	return path, nil
+}
+
 func runOpen(ctx context.Context, env *Env, args []string) error {
 	var ref string
 	for _, arg := range args {
@@ -48,11 +59,9 @@ func runOpen(ctx context.Context, env *Env, args []string) error {
 	if ref == "" {
 		return usageError("usage: agenttunnel open <thread>")
 	}
-	// Check the binary before connecting: a missing desktop must not autostart
-	// a daemon.
-	path, err := exec.LookPath(desktopBinary)
+	path, err := lookDesktop()
 	if err != nil {
-		return fmt.Errorf("%s", desktopInstallHint)
+		return err
 	}
 	c, _, err := env.Connect(ctx)
 	if err != nil {

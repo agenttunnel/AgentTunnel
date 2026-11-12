@@ -103,6 +103,16 @@ shows a PARENT column; `attach` names the parent in its header.
   steering text (`/stop`, `/detach`, `/help`). It leaves when the turn it
   watches ends, or on Ctrl-C (which detaches and leaves the turn running).
 
+## Desktop
+
+- `--desktop [dir]`: start the desktop app. With a directory, it opens that
+  project: a registered project (matched by its symlink-resolved path) is reused,
+  and an unknown directory is registered first. A running app is focused over the
+  daemon; a closed one boots onto the project. Relative paths resolve, and a
+  non-directory is an error. Like `open`, it needs `agenttunnel-desktop` on PATH
+  and reports how to install it if missing.
+- `open <thread>`: show a thread in the desktop app, the same way.
+
 ## Client
 
 `Env.Connect` resolves the daemon in this order:
