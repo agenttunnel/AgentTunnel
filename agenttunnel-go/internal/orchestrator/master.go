@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -17,17 +16,29 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 )
 
-// The home-screen orchestrator is a one-shot model call over a snapshot of the
-// environment. It answers questions and may propose a thread to start, but it
-// starts nothing itself: the caller validates the proposal and dispatches.
+// The home-screen orchestrator is a model call over a snapshot of the
+// environment. It answers questions and proposes up to masterMaxActions
+// validated actions. It executes nothing itself: the transport dispatcher runs
+// the validated actions through the same paths the RPC surface uses.
 const (
-	masterTimeout           = 2 * time.Minute
-	masterMaxText           = 8000
-	masterHistoryMessages   = 12
-	masterHistoryBudget     = 12 << 10
-	masterThreadsPerProject = 15
-	masterTitleClip         = 60
-	masterThreadTitleClip   = 60
+	masterTimeout         = 2 * time.Minute
+	masterMaxText         = 8000
+	masterMaxActions      = 5
+	masterReadRounds      = 2
+	masterHistoryMessages = 12
+	masterHistoryBudget   = 12 << 10
+	masterTitleClip       = 60
+)
+
+// Action types the home-screen orchestrator may propose.
+const (
+	masterStartThread    = "start_thread"
+	masterSendMessage    = "send_message"
+	masterStopThread     = "stop_thread"
+	masterRenameThread   = "rename_thread"
+	masterSetPeerMailbox = "set_peer_mailbox"
+	masterDeleteThread   = "delete_thread"
+	masterReadThread     = "read_thread"
 )
 
 // MasterMessage is one prior home-screen exchange, oldest first. Only "user"
@@ -37,28 +48,51 @@ type MasterMessage struct {
 	Text string `json:"text"`
 }
 
-// MasterAction is a proposed new thread. Harness, model, and variant are
-// optional: empty means the orchestrator role's default runtime.
+// MasterAction is one proposed operation. Fields other than Type apply to some
+// types only; see the prompt for the whitelist. Harness, model, and variant on a
+// start_thread are optional: empty means the orchestrator role's default runtime.
 type MasterAction struct {
-	Type      string            `json:"type"`
-	ProjectID string            `json:"projectId"`
-	Title     string            `json:"title"`
-	Prompt    string            `json:"prompt"`
-	Harness   contracts.Harness `json:"harness,omitempty"`
-	Model     string            `json:"model,omitempty"`
-	Variant   string            `json:"variant,omitempty"`
+	Type      string             `json:"type"`
+	ProjectID string             `json:"projectId"`
+	ThreadID  contracts.ThreadID `json:"threadId,omitempty"`
+	Title     string             `json:"title"`
+	Prompt    string             `json:"prompt"`
+	Harness   contracts.Harness  `json:"harness,omitempty"`
+	Model     string             `json:"model,omitempty"`
+	Variant   string             `json:"variant,omitempty"`
+	// Enabled is set_peer_mailbox's value. A pointer so a missing value is
+	// rejected rather than read as false.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Confirm is the user's explicit yes for a destructive action.
+	Confirm bool `json:"confirm,omitempty"`
 }
 
-// MasterResult is the home-screen reply. Action is nil when the model only
-// answered a question or proposed something the environment cannot honor; in
-// that case Error says why. ThreadID and ProjectID are filled by the caller
-// only after the thread was actually created.
-type MasterResult struct {
-	Reply     string             `json:"reply"`
-	Action    *MasterAction      `json:"action"`
+// MasterActionResult reports what happened to one action of a reply. Rejected
+// proposals carry Error from validation; executed ones carry the transport's
+// outcome. ThreadID and ProjectID are set when the action created or touched a
+// thread.
+type MasterActionResult struct {
+	Type      string             `json:"type"`
 	ThreadID  contracts.ThreadID `json:"threadId,omitempty"`
 	ProjectID string             `json:"projectId,omitempty"`
+	OK        bool               `json:"ok"`
 	Error     string             `json:"error,omitempty"`
+}
+
+// MasterResult is the home-screen reply. Actions holds the validated proposals
+// in the order the model gave them; Results holds one entry per rejected
+// proposal first, then one per executed action. Action is the first validated
+// action, kept for clients that read a single action. ThreadID and ProjectID
+// are the first thread a start_thread created, filled by the transport only
+// after it was actually created.
+type MasterResult struct {
+	Reply     string               `json:"reply"`
+	Action    *MasterAction        `json:"action"`
+	Actions   []MasterAction       `json:"actions,omitempty"`
+	Results   []MasterActionResult `json:"results,omitempty"`
+	ThreadID  contracts.ThreadID   `json:"threadId,omitempty"`
+	ProjectID string               `json:"projectId,omitempty"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // MasterDeps are the services the home-screen orchestrator reads.
@@ -82,9 +116,10 @@ func NewMaster(d MasterDeps) *Master {
 	return &Master{runner: d.Runner, engine: d.Engine, settings: d.Settings, models: d.Models}
 }
 
-// Send answers one home-screen turn. It builds the snapshot prompt, runs the
-// orchestrator model once, and validates any thread the model proposed. It never
-// starts the thread: the caller dispatches after Send returns.
+// Send answers one home-screen turn. The model may first ask to read a thread's
+// recent messages; each such round resolves the request and asks again, at most
+// masterReadRounds times. Then it validates every proposed action. It never
+// executes one: the caller runs Actions after Send returns.
 func (m *Master) Send(ctx context.Context, text string, history []MasterMessage) (MasterResult, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -93,17 +128,86 @@ func (m *Master) Send(ctx context.Context, text string, history []MasterMessage)
 	if len(text) > masterMaxText {
 		text = clipHead(text, masterMaxText)
 	}
-	raw, err := m.ask(ctx, m.prompt(ctx, text, history))
-	if err != nil {
-		return MasterResult{}, err
+
+	var (
+		reads     []string
+		reply     string
+		proposals []MasterAction
+		rejected  []MasterActionResult
+	)
+	for round := 0; ; round++ {
+		raw, err := m.ask(ctx, m.prompt(ctx, text, history, reads))
+		if err != nil {
+			return MasterResult{}, err
+		}
+		reply, proposals = parseMasterOutput(raw)
+		var wanted []MasterAction
+		proposals, wanted = splitReads(proposals)
+		if len(wanted) == 0 {
+			break
+		}
+		if round >= masterReadRounds {
+			for _, w := range wanted {
+				rejected = append(rejected, MasterActionResult{
+					Type: masterReadThread, ThreadID: w.ThreadID,
+					Error: fmt.Sprintf("read limit reached: at most %d reads per message", masterReadRounds),
+				})
+			}
+			break
+		}
+		// A reply that asks to read runs none of its other actions: the model
+		// proposes again once it has the content in view.
+		proposals = nil
+		reads = append(reads, m.readThreads(ctx, wanted))
 	}
 
-	reply, action := parseMasterOutput(raw)
-	if action == nil {
-		return MasterResult{Reply: reply}, nil
+	var errs []string
+	if len(proposals) > masterMaxActions {
+		for _, extra := range proposals[masterMaxActions:] {
+			rejected = append(rejected, rejectedAction(extra, fmt.Sprintf("at most %d actions per reply", masterMaxActions)))
+			errs = append(errs, fmt.Sprintf("at most %d actions per reply", masterMaxActions))
+		}
+		proposals = proposals[:masterMaxActions]
 	}
-	action, reply, invalid := m.validate(action, text, reply)
-	return MasterResult{Reply: reply, Action: action, Error: invalid}, nil
+
+	var actions []MasterAction
+	override := ""
+	for _, p := range proposals {
+		action, reason, replace := m.validate(ctx, p, text)
+		if reason != "" {
+			rejected = append(rejected, rejectedAction(p, reason))
+			errs = append(errs, reason)
+			if replace != "" && override == "" {
+				override = replace
+			}
+			continue
+		}
+		actions = append(actions, action)
+	}
+	if len(actions) == 0 && override != "" {
+		reply = override
+	}
+	res := MasterResult{Reply: reply, Actions: actions, Results: rejected, Error: strings.Join(errs, "; ")}
+	if len(actions) > 0 {
+		res.Action = &actions[0]
+	}
+	return res, nil
+}
+
+func rejectedAction(a MasterAction, reason string) MasterActionResult {
+	return MasterActionResult{Type: a.Type, ThreadID: a.ThreadID, ProjectID: a.ProjectID, Error: reason}
+}
+
+// splitReads separates read_thread requests from the actions that run.
+func splitReads(actions []MasterAction) (rest, reads []MasterAction) {
+	for _, a := range actions {
+		if a.Type == masterReadThread {
+			reads = append(reads, a)
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return rest, reads
 }
 
 // ask runs the master model once with no tool environment and no thread, so its
@@ -171,39 +275,88 @@ func (m *Master) ask(ctx context.Context, prompt string) (string, error) {
 	return answer, nil
 }
 
-// validate checks a proposal against the configured environment and fills its
-// defaults. An invalid proposal is returned as nil with a reason, and the reply
-// still goes back so the user sees what the model said.
-func (m *Master) validate(action *MasterAction, text, reply string) (*MasterAction, string, string) {
-	if action.Type != "" && action.Type != "start_thread" {
-		return nil, reply, fmt.Sprintf("unsupported action %q", action.Type)
+// validate checks one proposal against real state and fills its defaults. It
+// returns the reason it is rejected, or "" when it may run. replace, when set,
+// is a reply that stands in for the model's prose because the proposal named a
+// project that does not exist.
+func (m *Master) validate(ctx context.Context, a MasterAction, text string) (action MasterAction, reason, replace string) {
+	switch a.Type {
+	case masterStartThread:
+		return m.validateStart(a, text)
+	case masterSendMessage, masterStopThread, masterRenameThread, masterSetPeerMailbox, masterDeleteThread:
+		return m.validateThread(ctx, a)
 	}
-	action.Type = "start_thread"
+	return a, fmt.Sprintf("unsupported action %q", a.Type), ""
+}
 
+func (m *Master) validateStart(a MasterAction, text string) (MasterAction, string, string) {
 	projects := m.projects()
-	project, ok := findProject(projects, action.ProjectID)
+	project, ok := findProject(projects, a.ProjectID)
 	if !ok {
 		if len(projects) == 0 {
-			return nil, "There are no projects yet. Add a project first, then tell me what to start.", "no projects are configured"
+			return a, "no projects are configured", "There are no projects yet. Add a project first, then tell me what to start."
 		}
-		return nil, askForProject(projects), fmt.Sprintf("project %q is not configured", action.ProjectID)
+		return a, fmt.Sprintf("project %q is not configured", a.ProjectID), askForProject(projects)
 	}
-	action.ProjectID = project.ID
+	a.ProjectID = project.ID
 
-	if action.Harness != "" && (!action.Harness.Valid() || !m.harnessEnabled(action.Harness)) {
-		return nil, reply, fmt.Sprintf("harness %q is not enabled", action.Harness)
+	if a.Harness != "" && (!a.Harness.Valid() || !m.harnessEnabled(a.Harness)) {
+		return a, fmt.Sprintf("harness %q is not enabled", a.Harness), ""
 	}
-	if action.Model != "" {
-		if reason := m.modelProblem(action.Harness, action.Model); reason != "" {
-			return nil, reply, reason
+	if a.Model != "" {
+		if reason := m.modelProblem(a.Harness, a.Model); reason != "" {
+			return a, reason, ""
 		}
 	}
 
-	action.Title = masterTitle(action.Title, text)
-	if action.Prompt == "" {
-		action.Prompt = text
+	a.Title = masterTitle(a.Title, text)
+	if a.Prompt == "" {
+		a.Prompt = text
 	}
-	return action, reply, ""
+	return a, "", ""
+}
+
+// validateThread checks an action on an existing thread. The thread must exist
+// in the engine; its project is filled from it, never trusted from the model.
+func (m *Master) validateThread(ctx context.Context, a MasterAction) (MasterAction, string, string) {
+	st, ok := m.thread(ctx, a.ThreadID)
+	if !ok {
+		return a, fmt.Sprintf("thread %q does not exist", a.ThreadID), ""
+	}
+	a.ProjectID = st.ProjectID
+
+	switch a.Type {
+	case masterSendMessage:
+		if a.Prompt == "" {
+			return a, "send_message needs a prompt", ""
+		}
+	case masterRenameThread:
+		a.Title = clipTitle(strings.Join(strings.Fields(a.Title), " "), masterTitleClip)
+		if a.Title == "" {
+			return a, "rename_thread needs a title", ""
+		}
+	case masterSetPeerMailbox:
+		if a.Enabled == nil {
+			return a, "set_peer_mailbox needs enabled true or false", ""
+		}
+	case masterDeleteThread:
+		if !a.Confirm {
+			return a, "delete_thread needs the user's explicit confirmation: ask them first", ""
+		}
+	}
+	return a, "", ""
+}
+
+// thread returns the named thread's state when it exists and is not deleted.
+func (m *Master) thread(ctx context.Context, id contracts.ThreadID) (*domain.ThreadState, bool) {
+	if m.engine == nil || id == "" {
+		return nil, false
+	}
+	st, err := m.engine.State(ctx, id)
+	if err != nil || st == nil || !st.Exists || st.Deleted {
+		return nil, false
+	}
+	return st, true
 }
 
 // modelProblem reports why a requested model cannot run on the harness, or "".
@@ -250,177 +403,6 @@ func (m *Master) harnessEnabled(h contracts.Harness) bool {
 	return m.settings == nil || m.settings.HarnessEnabled(h)
 }
 
-// prompt snapshots the projects, the threads in each, and the enabled runtimes,
-// so the master can answer from what actually exists and pick a valid model.
-func (m *Master) prompt(ctx context.Context, text string, history []MasterMessage) string {
-	var b strings.Builder
-	b.WriteString("You are the AgentTunnel orchestrator on the home screen. You talk with the user about their projects and threads, and when they ask for work to start you propose a new thread. Answer from the snapshot below; do not invent projects, threads, harnesses, or models.\n\n")
-
-	b.WriteString("## Projects\n")
-	projects := m.projects()
-	if len(projects) == 0 {
-		b.WriteString("(none configured)\n")
-	} else {
-		for _, p := range projects {
-			fmt.Fprintf(&b, "- %s | %s | %s\n", p.ID, p.Name, p.Path)
-		}
-	}
-
-	b.WriteString("\n## Threads\n")
-	byProject := m.threads(ctx)
-	if len(byProject) == 0 {
-		b.WriteString("(none)\n")
-	}
-	for _, p := range projects {
-		threads := byProject[p.ID]
-		if len(threads) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "### %s (%s)\n", p.Name, p.ID)
-		for _, t := range threads {
-			fmt.Fprintf(&b, "- %s | %s | %s", t.ID, clipTitle(t.Title, masterThreadTitleClip), t.Status)
-			if t.Harness != "" || t.Model != "" {
-				fmt.Fprintf(&b, " | %s/%s", t.Harness, t.Model)
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	b.WriteString("\n## Harnesses and models\n")
-	for _, line := range m.harnessLines() {
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n## Conversation so far\n")
-	b.WriteString(masterHistory(history))
-
-	b.WriteString("\n## User message\n")
-	b.WriteString(text)
-	b.WriteString("\n\n## Reply\n")
-	b.WriteString("Answer in plain text when the user is asking about their projects or threads. To start a thread, say what you are starting in one short sentence and then include exactly one fenced JSON block:\n")
-	b.WriteString("```json\n")
-	b.WriteString(`{"type":"start_thread","projectId":"<id from the project list>","title":"<short title>","prompt":"<first message for the thread>","harness":"<optional harness>","model":"<optional model>","variant":"<optional variant>"}`)
-	b.WriteString("\n```\n")
-	b.WriteString("Use only a projectId, harness, and model from the lists above. Omit harness and model to use the default. If the user has not said which project, ask instead of guessing.\n")
-	return b.String()
-}
-
-// masterThread is one compact thread row in the snapshot.
-type masterThread struct {
-	ID        contracts.ThreadID
-	Title     string
-	Status    string
-	Harness   string
-	Model     string
-	UpdatedAt time.Time
-}
-
-// threads groups every thread under its project, newest first and capped per
-// project, so a long-lived environment still produces a bounded prompt.
-func (m *Master) threads(ctx context.Context) map[string][]masterThread {
-	out := map[string][]masterThread{}
-	if m.engine == nil {
-		return out
-	}
-	ids, err := m.engine.Threads(ctx)
-	if err != nil {
-		return out
-	}
-	for _, id := range ids {
-		st, err := m.engine.State(ctx, id)
-		if err != nil || st == nil || !st.Exists || st.ProjectID == "" {
-			continue
-		}
-		harness, model := masterThreadRuntime(st)
-		out[st.ProjectID] = append(out[st.ProjectID], masterThread{
-			ID: id, Title: st.Title, Status: masterThreadStatus(st),
-			Harness: harness, Model: model, UpdatedAt: st.UpdatedAt,
-		})
-	}
-	for pid, list := range out {
-		sort.Slice(list, func(i, j int) bool {
-			if list[i].UpdatedAt.Equal(list[j].UpdatedAt) {
-				return list[i].ID > list[j].ID
-			}
-			return list[i].UpdatedAt.After(list[j].UpdatedAt)
-		})
-		if len(list) > masterThreadsPerProject {
-			list = list[:masterThreadsPerProject]
-		}
-		out[pid] = list
-	}
-	return out
-}
-
-// masterThreadStatus reduces the thread's agents to one word a model can read.
-func masterThreadStatus(st *domain.ThreadState) string {
-	running := false
-	var latest contracts.AgentStatus
-	var latestAt time.Time
-	for _, id := range st.AgentOrder {
-		a := st.Agents[id]
-		if a.Status == contracts.AgentRunning || a.Status == contracts.AgentPending {
-			running = true
-		}
-		at := a.StartedAt
-		if a.EndedAt != nil {
-			at = *a.EndedAt
-		}
-		if latestAt.IsZero() || at.After(latestAt) {
-			latestAt, latest = at, a.Status
-		}
-	}
-	if running {
-		return "running"
-	}
-	switch latest {
-	case contracts.AgentFailed:
-		return "failed"
-	case contracts.AgentCancelled:
-		return "stopped"
-	case contracts.AgentSucceeded:
-		return "done"
-	}
-	if len(st.Messages) > 0 {
-		return "idle"
-	}
-	return "new"
-}
-
-// masterThreadRuntime is the thread's lead runtime when it is already recorded,
-// falling back to whatever the thread itself carries.
-func masterThreadRuntime(st *domain.ThreadState) (string, string) {
-	if a, ok := st.Agents[leadAgentID(0)]; ok {
-		return string(a.Harness), a.Model
-	}
-	if rt := st.LeadRuntimeFor(0); rt.Harness != "" || rt.Model != "" {
-		return string(rt.Harness), rt.Model
-	}
-	return "", st.Model.Model
-}
-
-// harnessLines lists every enabled harness with the models it reports.
-func (m *Master) harnessLines() []string {
-	var lines []string
-	for _, h := range contracts.AllHarnesses() {
-		if !m.harnessEnabled(h) {
-			continue
-		}
-		line := "- " + string(h)
-		if m.models != nil {
-			if list := m.models.List(h); len(list) > 0 {
-				line += ": " + strings.Join(list, ", ")
-			}
-		}
-		lines = append(lines, line)
-	}
-	if len(lines) == 0 {
-		return []string{"(none)"}
-	}
-	return lines
-}
-
 // masterHistory renders the last messages within a byte budget.
 func masterHistory(history []MasterMessage) string {
 	if len(history) > masterHistoryMessages {
@@ -444,21 +426,53 @@ func masterHistory(history []MasterMessage) string {
 	return clipTail(b.String(), masterHistoryBudget)
 }
 
-// masterProposal is the permissive shape the model's JSON block is decoded into.
+// masterProposal is the permissive shape one JSON action is decoded into. A
+// reply may carry {"actions":[...]} or a single bare action object.
 type masterProposal struct {
-	Type      string `json:"type"`
-	Action    string `json:"action"`
-	ProjectID string `json:"projectId"`
-	Title     string `json:"title"`
-	Prompt    string `json:"prompt"`
-	Harness   string `json:"harness"`
-	Model     string `json:"model"`
-	Variant   string `json:"variant"`
+	Type      string           `json:"type"`
+	Action    string           `json:"action"`
+	ThreadID  string           `json:"threadId"`
+	ProjectID string           `json:"projectId"`
+	Title     string           `json:"title"`
+	Prompt    string           `json:"prompt"`
+	Harness   string           `json:"harness"`
+	Model     string           `json:"model"`
+	Variant   string           `json:"variant"`
+	Enabled   *bool            `json:"enabled"`
+	Confirm   bool             `json:"confirm"`
+	Actions   []masterProposal `json:"actions"`
+}
+
+// action converts one decoded object, or reports that it is not an action at all.
+func (p masterProposal) action() (MasterAction, bool) {
+	kind := strings.TrimSpace(p.Type)
+	if kind == "" {
+		kind = strings.TrimSpace(p.Action)
+	}
+	if kind == "" && p.ThreadID == "" && p.ProjectID == "" && p.Prompt == "" && p.Title == "" {
+		return MasterAction{}, false
+	}
+	if kind == "" {
+		kind = masterStartThread
+	}
+	return MasterAction{
+		Type:      kind,
+		ProjectID: strings.TrimSpace(p.ProjectID),
+		ThreadID:  contracts.ThreadID(strings.TrimSpace(p.ThreadID)),
+		Title:     strings.TrimSpace(p.Title),
+		Prompt:    strings.TrimSpace(p.Prompt),
+		Harness:   contracts.Harness(strings.TrimSpace(p.Harness)),
+		Model:     strings.TrimSpace(p.Model),
+		Variant:   strings.TrimSpace(p.Variant),
+		Enabled:   p.Enabled,
+		Confirm:   p.Confirm,
+	}, true
 }
 
 // parseMasterOutput pulls the first balanced JSON object out of the model's
-// text. Nothing that parses as a proposal leaves the raw text as the reply.
-func parseMasterOutput(raw string) (string, *MasterAction) {
+// text. Its "actions" array, or the object itself when there is none, becomes
+// the proposals. Nothing that parses as an action leaves the raw text as reply.
+func parseMasterOutput(raw string) (string, []MasterAction) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", nil
@@ -471,26 +485,21 @@ func parseMasterOutput(raw string) (string, *MasterAction) {
 	if err := json.Unmarshal([]byte(raw[start:end]), &p); err != nil {
 		return raw, nil
 	}
-	kind := strings.TrimSpace(p.Type)
-	if kind == "" {
-		kind = strings.TrimSpace(p.Action)
+	items := p.Actions
+	if items == nil {
+		items = []masterProposal{p}
 	}
-	if kind == "" && p.ProjectID == "" && p.Prompt == "" && p.Title == "" {
+	var out []MasterAction
+	for _, it := range items {
+		if a, ok := it.action(); ok {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
 		return raw, nil
 	}
 	reply := strings.TrimSpace(stripFences(raw[:start] + "\n" + raw[end:]))
-	if kind == "" {
-		kind = "start_thread"
-	}
-	return reply, &MasterAction{
-		Type:      kind,
-		ProjectID: strings.TrimSpace(p.ProjectID),
-		Title:     strings.TrimSpace(p.Title),
-		Prompt:    strings.TrimSpace(p.Prompt),
-		Harness:   contracts.Harness(strings.TrimSpace(p.Harness)),
-		Model:     strings.TrimSpace(p.Model),
-		Variant:   strings.TrimSpace(p.Variant),
-	}
+	return reply, out
 }
 
 // findJSONObject returns the span of the first balanced {...}, honoring braces

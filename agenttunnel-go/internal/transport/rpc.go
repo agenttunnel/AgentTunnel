@@ -500,46 +500,6 @@ func (d *Dispatcher) Shutdown() {
 	}
 }
 
-// startMasterThread creates the thread a home-screen proposal asked for,
-// applies its lead-0 runtime, and starts the first turn in the background. The
-// RPC returns as soon as the goroutine is dispatched: thread.turn.start blocks
-// for the whole turn, so awaiting it here would hold the home chat open.
-func (d *Dispatcher) startMasterThread(ctx context.Context, action *orchestrator.MasterAction, result *orchestrator.MasterResult) error {
-	if d.engine == nil || d.orch == nil {
-		return errors.New("orchestrator is unavailable")
-	}
-	id := d.newThreadID()
-	if err := d.engine.Dispatch(ctx, contracts.Command{
-		ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
-		Title: action.Title, ProjectID: action.ProjectID,
-	}); err != nil {
-		return err
-	}
-	if action.Harness != "" || action.Model != "" || action.Variant != "" {
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: id,
-			LeadRuntime: &contracts.LeadRuntimeSet{
-				Index: 0,
-				Runtime: contracts.LeadRuntime{
-					Harness: action.Harness, Model: action.Model, Variant: action.Variant,
-				},
-			},
-		}); err != nil {
-			return err
-		}
-	}
-	result.ThreadID = id
-	result.ProjectID = action.ProjectID
-
-	cmd := contracts.Command{ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: id, Text: action.Prompt}
-	// Detach from the request: the client may disconnect or time out, but the
-	// turn it started keeps going.
-	go func() {
-		_, _ = d.runTurn(context.WithoutCancel(ctx), id, action.Prompt, cmd)
-	}()
-	return nil
-}
-
 // realStatusTick is the production status ticker.
 func realStatusTick(period time.Duration) (<-chan time.Time, func()) {
 	t := time.NewTicker(period)
@@ -1329,19 +1289,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Record it in the transcript, marked as steering, then queue it for the
-		// next orchestrator pass to weigh. The message id lets that pass report
-		// back that it was consumed.
-		messageID := d.nextID()
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID:       d.nextID(),
-			Type:     contracts.CmdMessageAppend,
-			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: messageID, Author: "steering", Text: p.Text},
-		}); err != nil {
+		if err := d.steerThread(ctx, p.ThreadID, p.Text, prompt); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, messageID, prompt)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.btw":
@@ -1387,12 +1337,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if result.Action == nil {
-			return result, nil
-		}
-		if err := d.startMasterThread(ctx, result.Action, &result); err != nil {
-			return nil, err
-		}
+		d.runMaster(ctx, &result)
 		return result, nil
 
 	case "thread.setAutoMode":

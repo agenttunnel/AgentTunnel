@@ -577,10 +577,6 @@ func (d *Dispatcher) ControlMaster(ctx context.Context, text string, history []o
 	if err != nil {
 		return orchestrator.MasterResult{}, err
 	}
-	if result.Action != nil {
-		if err := d.startMasterThread(ctx, result.Action, &result); err != nil {
-			return orchestrator.MasterResult{}, err
-		}
-	}
+	d.runMaster(ctx, &result)
 	return result, nil
 }

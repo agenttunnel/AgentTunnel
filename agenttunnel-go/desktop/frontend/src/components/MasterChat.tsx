@@ -6,7 +6,11 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import type { Rpc } from "../lib/rpc";
-import { sendMaster, type MasterMessage } from "../lib/master";
+import {
+  sendMaster,
+  type MasterActionType,
+  type MasterMessage,
+} from "../lib/master";
 import type { Project } from "../App";
 import { Markdown } from "./Markdown";
 
@@ -16,6 +20,16 @@ type Entry = MasterMessage & { error?: string };
 const STORAGE_KEY = "at.masterChat.v1";
 /** Oldest lines are dropped once the transcript grows past this. */
 const MAX_ENTRIES = 40;
+/** Past-tense label for each action that ran; start_thread opens its thread instead. */
+const MASTER_DONE: Record<MasterActionType, string> = {
+  start_thread: "started thread",
+  send_message: "sent message",
+  stop_thread: "stopped run",
+  rename_thread: "renamed thread",
+  set_peer_mailbox: "updated peer mailbox",
+  delete_thread: "deleted thread",
+  read_thread: "read thread",
+};
 
 function isEntry(value: unknown): value is Entry {
   if (!value || typeof value !== "object") return false;
@@ -114,12 +128,23 @@ export function MasterChat({
           ...(result.error ? { error: result.error } : {}),
         },
       ]);
+      // Each action that ran without a thread to open gets one confirmation line.
+      const done = (result.results ?? [])
+        .filter((r) => r.ok && r.type !== "start_thread")
+        .map((r) => MASTER_DONE[r.type]);
+      if (done.length > 0) {
+        update((prev) => [
+          ...prev,
+          { role: "assistant", text: `Done: ${done.join("; ")}.` },
+        ]);
+      }
       // The daemon created the thread and started its first turn in the
       // background; say which one and open it.
       if (result.threadId && result.projectId) {
         const projectName =
           projects.find((p) => p.id === result.projectId)?.name ?? result.projectId;
-        const title = result.action?.title ?? "New thread";
+        const title =
+          result.actions?.find((a) => a.type === "start_thread")?.title ?? "New thread";
         update((prev) => [
           ...prev,
           { role: "assistant", text: `Started “${title}” in ${projectName}.` },
