@@ -45,7 +45,13 @@ import { FilesPanel, type FileContentLike, type FileEntryLike } from "./componen
 import { MentionMenu } from "./components/MentionMenu";
 import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRListing } from "./components/PRPanel";
-import { ThreadBoard, type ThreadState as BoardThreadState } from "./components/ThreadBoard";
+import {
+  ThreadBoard,
+  type BoardIssue,
+  type BoardIssues,
+  type ThreadState as BoardThreadState,
+} from "./components/ThreadBoard";
+import { DraftEditor } from "./components/DraftEditor";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RelayPairing } from "./components/RelayPairing";
@@ -164,6 +170,10 @@ type ThreadSummary = {
   stale?: boolean;
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
+  /** A draft has not had its first turn yet. */
+  draft?: boolean;
+  /** The GitLab issue the thread was started from, if any. */
+  issue?: { provider: string; iid: number; title: string; url: string } | null;
 };
 type Project = { id: string; name: string; path: string; threads: number };
 
@@ -1083,6 +1093,37 @@ export default function App() {
     if (!rpc) return;
     setThreads(await rpc.call<ThreadSummary[]>("thread.list"));
   };
+  // The board's copy of the thread list. Stable, so it can sit in the event
+  // effect's deps. A failed read is retried by the next event.
+  const reloadBoardThreads = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    try {
+      setThreads(await rpc.call<ThreadSummary[]>("thread.list"));
+    } catch {
+      /* the next thread event or refresh reads again */
+    }
+  }, []);
+  // The board also shows threads other than the open one, so any non-output
+  // event from any thread re-reads the list. Throttled, not debounced: a busy
+  // turn emits events faster than a quiet-period debounce would ever fire. The
+  // first event reads at once; later ones wait for the interval, and one
+  // trailing read picks up whatever arrived in between.
+  const BOARD_RELOAD_INTERVAL_MS = 1000;
+  const threadViewRef = useRef<ThreadView>("list");
+  const boardReloadTimer = useRef<number | undefined>(undefined);
+  const boardReloadLast = useRef(0);
+  const scheduleBoardReload = useCallback(() => {
+    if (boardReloadTimer.current !== undefined) return;
+    const wait = BOARD_RELOAD_INTERVAL_MS - (Date.now() - boardReloadLast.current);
+    const read = () => {
+      boardReloadTimer.current = undefined;
+      boardReloadLast.current = Date.now();
+      reloadBoardThreads();
+    };
+    if (wait <= 0) read();
+    else boardReloadTimer.current = window.setTimeout(read, wait);
+  }, [reloadBoardThreads]);
 
   const beginRename = (t: ThreadSummary) => {
     setRenameTarget(t);
@@ -1390,6 +1431,7 @@ export default function App() {
         else setLive((prev) => pushLiveLine(prev, line));
         return;
       }
+      if (threadViewRef.current === "board") scheduleBoardReload();
       scheduleRefresh(activeId);
     });
     refresh(activeId).catch(() => undefined);
@@ -1397,7 +1439,7 @@ export default function App() {
       stale = true;
       off();
     };
-  }, [activeId, refresh, scheduleRefresh]);
+  }, [activeId, refresh, scheduleRefresh, scheduleBoardReload]);
 
   // The diff backs both the center Review tab and the aside Diff panel.
   useEffect(() => {
@@ -1654,13 +1696,145 @@ export default function App() {
     }
   };
   const [threadStates, setThreadStates] = useState<Record<string, BoardThreadState>>({});
+  useEffect(() => {
+    threadViewRef.current = threadView;
+  }, [threadView]);
+  // The draft being edited, with the description read when its editor opened.
+  const [draftEdit, setDraftEdit] = useState<{ id: string; description: string } | null>(null);
+  // Description saves still in flight, by thread: a start waits for them so the
+  // first prompt is built from the saved text.
+  const describePending = useRef(new Map<string, Promise<unknown>>());
+  const openDraftEditor = useCallback(
+    async (id: string) => {
+      const rpc = rpcRef.current;
+      if (!rpc) return;
+      try {
+        const st = await rpc.call<{ description?: string }>("thread.get", { threadId: id });
+        setDraftEdit({ id, description: st.description ?? "" });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e), null);
+      }
+    },
+    [setError],
+  );
   const openBoardThread = useCallback(
-    (id: string) => {
+    (id: string, draft: boolean) => {
+      if (draft) {
+        openDraftEditor(id).catch(() => undefined);
+        return;
+      }
       setActiveId(id);
       if (projectId) lastThreadByProject.current[projectId] = id;
     },
-    [projectId],
+    [projectId, openDraftEditor],
   );
+
+  // Starting a draft: its first turn runs its title and description. The card
+  // moves to Running at once and falls back if the start is refused.
+  const startDraft = async (id: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    setThreads((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, draft: false, runningAgents: 1 } : t)),
+    );
+    setDraftEdit((prev) => (prev?.id === id ? null : prev));
+    try {
+      await describePending.current.get(id);
+      await rpc.call("thread.turn.start", { threadId: id });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e), null);
+    } finally {
+      reloadBoardThreads().catch(() => undefined);
+    }
+  };
+  const saveDraftDescription = (id: string, description: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    const saved = rpc
+      .call("thread.describe", { threadId: id, description })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e), null));
+    describePending.current.set(id, saved);
+    saved.finally(() => {
+      if (describePending.current.get(id) === saved) describePending.current.delete(id);
+    });
+  };
+  const renameDraft = (id: string, title: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc) return;
+    rpc
+      .call("thread.rename", { threadId: id, title })
+      .then(() => reloadBoardThreads())
+      .catch((e) => setError(e instanceof Error ? e.message : String(e), null));
+  };
+  const newDraft = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !projectId) return;
+    try {
+      const created = await rpc.call<{ threadId: string }>("thread.create", {
+        projectId,
+        draft: true,
+      });
+      await reloadBoardThreads();
+      setDraftEdit({ id: created.threadId, description: "" });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e), null);
+    }
+  };
+
+  // GitLab issues assigned to the user, read when the board opens or the project
+  // changes. Tagged with their project so a late reply cannot show on another.
+  const [boardIssues, setBoardIssues] = useState<(BoardIssues & { projectId: string }) | null>(null);
+  const [issuesLoading, setIssuesLoading] = useState(false);
+  // Issue web URLs being turned into drafts: hidden from the column until done.
+  const [issuesPending, setIssuesPending] = useState<string[]>([]);
+  const loadIssues = useCallback(() => {
+    const rpc = rpcRef.current;
+    if (!rpc || !projectId) return;
+    const pid = projectId;
+    setIssuesLoading(true);
+    rpc
+      .call<BoardIssues>("issues.list", { projectId: pid })
+      .then((r) => setBoardIssues({ ...r, projectId: pid }))
+      .catch((e) =>
+        setBoardIssues({
+          projectId: pid,
+          status: "error",
+          message: e instanceof Error ? e.message : String(e),
+          issues: [],
+        }),
+      )
+      .finally(() => setIssuesLoading(false));
+  }, [projectId]);
+  useEffect(() => {
+    if (threadView === "board") loadIssues();
+  }, [threadView, loadIssues]);
+  // An issue already linked to a thread in this project is not offered again.
+  const boardIssueList = useMemo<BoardIssues | null>(() => {
+    if (!boardIssues || boardIssues.projectId !== projectId) return null;
+    const taken = new Set<string>(issuesPending);
+    for (const t of threads) if (t.projectId === projectId && t.issue) taken.add(t.issue.url);
+    return { ...boardIssues, issues: boardIssues.issues.filter((i) => !taken.has(i.webUrl)) };
+  }, [boardIssues, issuesPending, threads, projectId]);
+  const dropIssue = (issue: BoardIssue) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !projectId) return;
+    const url = issue.webUrl;
+    if (issuesPending.includes(url)) return;
+    setIssuesPending((prev) => [...prev, url]);
+    rpc
+      .call<{ threadId: string }>("thread.create", {
+        projectId,
+        draft: true,
+        title: issue.title,
+        description: issue.description,
+        issue: { provider: "gitlab", iid: issue.iid, title: issue.title, url },
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e), null))
+      .finally(() => {
+        reloadBoardThreads().catch(() => undefined);
+        setIssuesPending((prev) => prev.filter((u) => u !== url));
+      });
+  };
   // Only threads with a worktree can have a branch PR. The joined id string keeps
   // the poll from restarting when unrelated thread fields change.
   const boardPRIds = useMemo(
@@ -2480,6 +2654,17 @@ export default function App() {
           onClose={() => setThreadMenu(null)}
         />
       )}
+      {draftEdit && threads.some((t) => t.id === draftEdit.id) && (
+        <DraftEditor
+          key={draftEdit.id}
+          title={threads.find((t) => t.id === draftEdit.id)?.title ?? ""}
+          description={draftEdit.description}
+          onRename={(title) => renameDraft(draftEdit.id, title)}
+          onDescribe={(description) => saveDraftDescription(draftEdit.id, description)}
+          onStart={() => startDraft(draftEdit.id).catch(() => undefined)}
+          onClose={() => setDraftEdit(null)}
+        />
+      )}
       {renameTarget && (
         <div className="overlay" onClick={() => setRenameTarget(null)}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>
@@ -2686,6 +2871,7 @@ export default function App() {
                   Board
                 </button>
               </div>
+              {threadView === "board" && <button onClick={newDraft}>New draft</button>}
               {threadView === "board" && <button onClick={newThread}>New thread</button>}
               <button
                 className={showWorktrees ? "primary" : undefined}
@@ -2721,7 +2907,12 @@ export default function App() {
               threads={projectThreads}
               states={threadStates}
               formatUpdated={fmtUpdated}
+              issues={boardIssueList}
+              issuesLoading={issuesLoading}
               onOpen={openBoardThread}
+              onStartDraft={(id) => startDraft(id).catch(() => undefined)}
+              onDropIssue={dropIssue}
+              onRefreshIssues={loadIssues}
             />
           ) : (
           <div className="thread-cards">

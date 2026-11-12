@@ -2919,7 +2919,7 @@ table.grid tr.rowlink:hover td {
 /* Five columns: each keeps a readable floor width and the board scrolls sideways. */
 .thread-board {
   display: grid;
-  grid-template-columns: repeat(6, minmax(200px, 1fr));
+  grid-template-columns: repeat(8, minmax(180px, 1fr));
   gap: 14px;
   align-items: start;
   overflow-x: auto;
@@ -2955,6 +2955,48 @@ table.grid tr.rowlink:hover td {
 }
 .tb-col-archived .tb-col-head {
   border-bottom-color: var(--faint);
+}
+.tb-col-draft .tb-col-head {
+  border-bottom-color: var(--accent-2);
+}
+.tb-col-issues .tb-col-head {
+  border-bottom-color: var(--faint);
+}
+/* A column that accepts the card being dragged over it. */
+.tb-col-over .tb-col-head {
+  color: var(--text);
+}
+.tb-col-over .tb-cards {
+  outline: 1px dashed var(--accent-2);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+.tb-card[draggable="true"] {
+  cursor: grab;
+}
+.tb-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+.tb-issue-iid {
+  flex: none;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.tb-issue-link {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.tb-refresh {
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.draft-description {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  margin-top: 10px;
 }
 .tb-count {
   color: var(--faint);
