@@ -22,7 +22,6 @@ func BuiltinDrivers() []Driver {
 		NewGenericDriver(contracts.HarnessClaude, "claude", claudeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCursor, "cursor-agent", cursorInvocation, JSONLineTranslator{}).WithImageSupport(ImagesUnsupported),
-		NewGenericDriver(contracts.HarnessGrok, "grok", grokInvocation, JSONLineTranslator{}),
 		NewGenericDriver(contracts.HarnessPi, "pi", piInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCommandCode, "commandcode", commandCodeInvocation, CommandCodeTranslator{}).WithImageSupport(ImagesUnsupported),
 	}
@@ -37,10 +36,11 @@ func BuiltinDrivers() []Driver {
 //   - commandcode / cmd:   `--list-models` (provider/model slugs)
 //   - cursor-agent:        `--list-models` ("<slug> - <description>" rows)
 //
-// The rest fall back to the seed catalog: claude rejects `--list-models`, and
-// codex's list is behind its app-server handshake while grok reports over ACP.
-// Probing must never write to stdin: an unknown subcommand can be treated as a
-// prompt (opencode prints its usage for an unrecognized flag).
+// Claude and codex have no usable listing command (claude rejects
+// `--list-models`; codex's list is behind its app-server handshake), so their
+// models come only from the user. Probing must never write to stdin: an unknown
+// subcommand can be treated as a prompt (opencode prints its usage for an
+// unrecognized flag).
 func BuiltinRegistry() *Registry {
 	r := NewRegistry(BuiltinDrivers()...)
 	// `opencode models` prints one provider/model slug per line.
@@ -181,15 +181,6 @@ func cursorInvocation(spec SessionSpec) (CommandSpec, error) {
 	}
 	args = append(args, spec.Prompt)
 	return CommandSpec{Binary: "cursor-agent", Args: args, PromptVia: "arg"}, nil
-}
-
-func grokInvocation(spec SessionSpec) (CommandSpec, error) {
-	args := []string{"-p"}
-	if spec.Model != "" {
-		args = append(args, "--model", spec.Model)
-	}
-	args = append(args, spec.Prompt)
-	return CommandSpec{Binary: "grok", Args: args, PromptVia: "arg"}, nil
 }
 
 func commandCodeInvocation(spec SessionSpec) (CommandSpec, error) {

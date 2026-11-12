@@ -28,6 +28,8 @@ export type GraphEvent =
         parentAgentId?: string;
         name?: string;
         role: string;
+        harness?: string;
+        model?: string;
         task: string;
         pipelineId?: string;
         dependsOn?: string[];
@@ -35,7 +37,8 @@ export type GraphEvent =
     })
   | (Base & { type: "agent.status-changed"; payload: { agentId: string; status: string } })
   | (Base & { type: "agent.usage-recorded"; payload: { agentId: string; role: string; usage: TokenUsage } })
-  | (Base & { type: "mailbox.posted"; payload: { from: string; to: string; kind: string; body: string } });
+  | (Base & { type: "mailbox.posted"; payload: { from: string; to: string; kind: string; body: string } })
+  | (Base & { type: "thread.steering-injected"; payload: { count: number } });
 
 type GraphInput = Parameters<typeof computeGraph>[0];
 export type GraphAgentInput = GraphInput["agents"][number];
@@ -46,6 +49,8 @@ type AgentRecord = {
   name: string;
   role: string;
   status: string;
+  harness: string;
+  model: string;
   task: string;
   pipelineId: string;
   dependsOn: string[];
@@ -64,10 +69,20 @@ export type GraphState = {
   messages: GraphMessage[];
   /** The newest message, so the view can pulse its edge once. */
   lastMessage: { from: string; to: string; seq: number } | null;
+  /** Steering as of this point: queued and not yet injected, plus the total
+   * injected so far. Replaced on every change, never mutated. */
+  steering: { pending: number; injected: number };
 };
 
 export function emptyGraph(): GraphState {
-  return { seq: 0, agents: new Map(), usage: new Map(), messages: [], lastMessage: null };
+  return {
+    seq: 0,
+    agents: new Map(),
+    usage: new Map(),
+    messages: [],
+    lastMessage: null,
+    steering: { pending: 0, injected: 0 },
+  };
 }
 
 const clip = (s: string) => {
@@ -81,6 +96,7 @@ const GRAPH_TYPES = new Set<string>([
   "agent.status-changed",
   "agent.usage-recorded",
   "mailbox.posted",
+  "thread.steering-injected",
 ]);
 
 /** Narrows a raw `thread.event` frame (or a thread.events row) to a graph
@@ -110,6 +126,8 @@ export function toGraphEvent(raw: unknown, threadId?: string): GraphEvent | null
           parentAgentId: p.parentAgentId || undefined,
           name: p.name || undefined,
           role: String(p.role ?? ""),
+          harness: p.harness ? String(p.harness) : undefined,
+          model: p.model ? String(p.model) : undefined,
           task: String(p.task ?? ""),
           pipelineId: p.pipelineId || undefined,
           dependsOn: Array.isArray(p.dependsOn) ? p.dependsOn.map(String) : undefined,
@@ -129,6 +147,8 @@ export function toGraphEvent(raw: unknown, threadId?: string): GraphEvent | null
         type: ev.type,
         payload: { from: String(p.from ?? ""), to: String(p.to ?? ""), kind: String(p.kind ?? ""), body: clip(String(p.body ?? "")) },
       };
+    case "thread.steering-injected":
+      return { ...base, type: ev.type, payload: { count: Number(p.count ?? 0) } };
   }
   return null;
 }
@@ -140,7 +160,19 @@ function applyEvent(s: GraphState, ev: GraphEvent) {
   s.seq = ev.seq;
   switch (ev.type) {
     case "thread.message-sent":
+      // A steering message is queued until a round drains it.
+      if (ev.payload.author === "steering") {
+        s.steering = { pending: s.steering.pending + 1, injected: s.steering.injected };
+      }
       return;
+    case "thread.steering-injected": {
+      const { pending, injected } = s.steering;
+      s.steering = {
+        pending: Math.max(0, pending - ev.payload.count),
+        injected: injected + ev.payload.count,
+      };
+      return;
+    }
     case "agent.task-dispatched": {
       const p = ev.payload;
       // Re-dispatch keeps the agent's place in the order (Map.set on an
@@ -151,6 +183,8 @@ function applyEvent(s: GraphState, ev: GraphEvent) {
         name: p.name ?? "",
         role: p.role,
         status: "pending",
+        harness: p.harness ?? "",
+        model: p.model ?? "",
         task: p.task,
         pipelineId: p.pipelineId ?? "",
         dependsOn: p.dependsOn ?? [],
@@ -167,6 +201,8 @@ function applyEvent(s: GraphState, ev: GraphEvent) {
         name: cur?.name ?? "",
         role: cur?.role ?? "",
         status: ev.payload.status,
+        harness: cur?.harness ?? "",
+        model: cur?.model ?? "",
         task: cur?.task ?? "",
         pipelineId: cur?.pipelineId ?? "",
         dependsOn: cur?.dependsOn ?? [],
@@ -197,6 +233,7 @@ function cloneGraph(s: GraphState): GraphState {
     usage: new Map(s.usage),
     messages: s.messages.slice(),
     lastMessage: s.lastMessage,
+    steering: s.steering,
   };
 }
 
@@ -258,7 +295,7 @@ export function turnRanges(events: readonly GraphEvent[]): TurnRange[] {
   }));
 }
 
-export type MarkerKind = "turn" | "spawn" | "message" | "done";
+export type MarkerKind = "turn" | "spawn" | "message" | "done" | "steer-queued" | "steer-injected";
 
 /** A meaningful event on the scrubber. `index` is the event's position in the
  * log; applying it means a cursor of index + 1. */
@@ -272,6 +309,10 @@ export function markersOf(events: readonly GraphEvent[]): Marker[] {
     switch (ev.type) {
       case "thread.message-sent":
         if (ev.payload.author === "user") out.push({ index, kind: "turn", label: "Turn start" });
+        else if (ev.payload.author === "steering") out.push({ index, kind: "steer-queued", label: "Steering queued" });
+        return;
+      case "thread.steering-injected":
+        out.push({ index, kind: "steer-injected", label: `Steering injected (${ev.payload.count})` });
         return;
       case "agent.task-dispatched": {
         const p = ev.payload;
@@ -324,6 +365,8 @@ export function toLayoutInput(s: GraphState): Pick<GraphInput, "agents" | "usage
     name: a.name || undefined,
     role: a.role,
     status: a.status,
+    harness: a.harness || undefined,
+    model: a.model || undefined,
     task: a.task,
     dependsOn: a.dependsOn,
   }));

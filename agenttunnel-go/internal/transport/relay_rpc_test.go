@@ -16,6 +16,7 @@ import (
 type fakeRelay struct {
 	mu        sync.Mutex
 	enabled   bool
+	connected bool
 	url       string
 	unpairAll bool
 	unpairID  string
@@ -25,7 +26,7 @@ type fakeRelay struct {
 func (f *fakeRelay) Status() RelayStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return RelayStatus{Enabled: f.enabled, URL: f.url}
+	return RelayStatus{Enabled: f.enabled, URL: f.url, Connected: f.connected}
 }
 
 func (f *fakeRelay) Enable(url string) error {

@@ -388,7 +388,8 @@ type turn struct {
 // pass each round, in order: a lead's dispatches run before the next lead
 // speaks, so its peer message reaches the next lead in the same round. The
 // round loop repeats while work is dispatched, steering or a spawn decision is
-// pending, or a lead has mail; it ends after the pass budget regardless. With
+// pending, or a lead has mail; it ends after the pass budget unless a steer is
+// still pending, which earns one more round. With
 // one lead this is the classic single-orchestrator loop.
 func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string, images ...providers.ImageInput) (err error) {
 	// An auto context-manager run started by this turn must finish before the
@@ -402,6 +403,20 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	state, err := o.runner.engine.State(ctx, threadID)
 	if err != nil {
 		return err
+	}
+
+	// A thread that still carries its placeholder name is titled right away,
+	// from the first prompt alone, off the turn so it cannot delay the reply.
+	// The cycle's summary refines it once the turn lands. titleDone orders the
+	// two generations so the summary-informed title is the one that stays.
+	var titleDone chan struct{}
+	if isDefaultTitle(state.Title) {
+		titleDone = make(chan struct{})
+		done := titleDone
+		go func() {
+			defer close(done)
+			o.runner.generateTitle(context.Background(), threadID, role, userMessage, "")
+		}()
 	}
 
 	t := turn{threadID: threadID, role: role, message: userMessage, images: images, leads: make([]contracts.AgentID, state.LeadCount())}
@@ -449,21 +464,49 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 
 	var finalText string
 	var dispatched []contracts.DispatchTask
-	for pass := 0; pass < o.runner.maxPasses(); pass++ {
+	// Steering that arrives during the last budgeted pass earns one more round:
+	// the user typed it into this turn, and a queued steer would otherwise
+	// surface in an unrelated later turn. Each extra round needs a new steer.
+	for pass := 0; pass < o.runner.maxPasses() || o.runner.HasSteering(threadID); pass++ {
 		// Steering is drained once per round so every lead weighs it, not just
-		// the first one to speak. Images steering carries join the turn's on
-		// the pass that weighs them.
-		var steerTexts []string
+		// the first one to speak. Draining is the moment the pass takes it:
+		// record that in the transcript so the client can retire its pending
+		// style. Images steering carries join the turn's on the pass that
+		// weighs them.
+		entries := o.runner.DrainSteering(threadID)
+		steering := make([]string, len(entries))
+		consumed := make([]string, 0, len(entries))
 		var steerImages []providers.ImageInput
-		for _, it := range o.runner.DrainSteering(threadID) {
-			if it.Text != "" {
-				steerTexts = append(steerTexts, it.Text)
+		for i, entry := range entries {
+			steering[i] = entry.Text
+			steerImages = append(steerImages, entry.Images...)
+			if entry.MessageID != "" {
+				consumed = append(consumed, entry.MessageID)
 			}
-			steerImages = append(steerImages, it.Images...)
+		}
+		if len(steering) > 0 {
+			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
+				ID:       o.runner.nextID(),
+				Type:     contracts.CmdSteeringInjected,
+				ThreadID: threadID,
+				Injected: &contracts.SteeringInjected{Count: len(steering)},
+			}); err != nil {
+				return err
+			}
+		}
+		if len(consumed) > 0 {
+			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
+				ID:              o.runner.nextID(),
+				Type:            contracts.CmdSteeringConsume,
+				ThreadID:        threadID,
+				SteeringConsume: &contracts.SteeringConsumed{MessageIDs: consumed},
+			}); err != nil {
+				return err
+			}
 		}
 		dispatchedThisRound := false
 		for i := range t.leads {
-			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steerTexts, steerImages)
+			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering, steerImages)
 			if err != nil {
 				return err
 			}
@@ -534,12 +577,31 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
-	// Name the thread once, from the first exchange, using the orchestrator's
-	// model. It runs off the turn so it cannot delay the reply.
-	if state, err := o.runner.engine.State(ctx, threadID); err == nil && isDefaultTitle(state.Title) {
-		go o.runner.generateTitle(context.Background(), threadID, role, userMessage, finalText)
+	// The first cycle names the thread twice: once from the prompt at the start
+	// of the turn, and now again from the prompt plus what the team actually
+	// did. The second pass waits for the first and overwrites it.
+	if titleDone != nil {
+		go func() {
+			<-titleDone
+			o.runner.generateTitle(context.Background(), threadID, role, userMessage, finalText)
+		}()
 	}
 	return nil
+}
+
+// priorMessages returns the thread's conversation before the current turn. The
+// engine appends the turn's user message before RunTurn, so the last user
+// message with the current text marks where this turn starts; everything after
+// it is this run's own output, carried by other prompt sections. A subthread
+// appends no user message, so nothing matches and the whole history is prior.
+func priorMessages(state *domain.ThreadState, current string) []domain.Message {
+	for i := len(state.Messages) - 1; i >= 0; i-- {
+		m := state.Messages[i]
+		if m.Author == "user" && m.Text == current {
+			return state.Messages[:i]
+		}
+	}
+	return state.Messages
 }
 
 // runLeadPass runs one pass of lead i and executes whatever that pass
@@ -568,6 +630,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
 		Role:           t.role,
 		UserMessage:    t.message,
+		History:        renderHistory(priorMessages(state, t.message)),
 		Inherited:      inherited,
 		Shared:         o.runner.notebookFor(t.threadID).Render(),
 		Roster:         o.runner.Roster(state),
@@ -578,6 +641,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Team:           teamBrief(t.leads, i, peerMailbox),
 		Pass:           pass,
 		Steering:       steering,
+		Steer:          hasSubagents(state),
 		RuntimeChoices: runtimeChoices,
 	})
 

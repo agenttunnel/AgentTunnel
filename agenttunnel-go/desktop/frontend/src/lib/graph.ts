@@ -43,6 +43,11 @@ export type GraphNode = {
   name: string;
   role: string;
   status: string;
+  /** Harness the agent runs on; "" when the state never recorded one. Drives
+   * the node's pastel tint via harnessTint. */
+  harness: string;
+  /** Model the agent runs on; "" when unset, and the node shows no model. */
+  model: string;
   /** Total tokens for the node's token chip; 0 when no usage is recorded. */
   tokens: number;
 };
@@ -80,6 +85,8 @@ type GraphAgentInput = {
   name?: string;
   role: string;
   status: string;
+  harness?: string;
+  model?: string;
   task?: string;
   dependsOn?: string[];
 };
@@ -87,12 +94,31 @@ type GraphAgentInput = {
 // Fixed coordinate space; the constants only change with a deliberate
 // redesign of the node chrome.
 const NODE_W = 200;
-const NODE_H = 56;
+// Head, role pill, and model line stacked with gaps inside the padding.
+const NODE_H = 70;
 const ROW_GAP = 130;
 const COL_GAP = 64;
 const PAD = 32;
 // Headroom above row 0 for self-loop arcs, which rise above their node.
 const PAD_TOP = 48;
+
+/** Harnesses with a dedicated node tint in style.css (.graph-node.h-*).
+ * The set is closed so a stray event value can never leak an odd class. */
+const HARNESS_TINTS = new Set([
+  "claude",
+  "opencode",
+  "codex",
+  "cursor",
+  "pi",
+  "commandcode",
+  "grok",
+]);
+
+/** CSS class for a node's harness tint, or "" for the default chrome. */
+export function harnessTint(harness: string): string {
+  const h = harness.trim().toLowerCase();
+  return HARNESS_TINTS.has(h) ? `h-${h}` : "";
+}
 
 type Rect = { x: number; y: number; w: number; h: number; cx: number; cy: number };
 
@@ -232,6 +258,8 @@ export function computeGraph(input: {
         name: a.name || roleNames[a.role] || a.role,
         role: roleNames[a.role] || a.role,
         status: a.status,
+        harness: a.harness ?? "",
+        model: a.model ?? "",
         tokens: u ? totalTokens(u) : 0,
       });
     });

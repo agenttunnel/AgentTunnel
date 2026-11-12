@@ -17,8 +17,8 @@ license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/agenttunnel"
-    dst: "/usr/local/bin/agenttunnel"
+  - src: "./bin/agenttunnel-desktop"
+    dst: "/usr/local/bin/agenttunnel-desktop"
   - src: "./build/appicon.png"
     dst: "/usr/share/icons/hicolor/128x128/apps/agenttunnel.png"
   - src: "./build/linux/agenttunnel.desktop"

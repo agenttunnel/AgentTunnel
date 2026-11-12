@@ -94,6 +94,10 @@ func TestSubthreadRunsItsOwnTurnAndReportsToParentLead(t *testing.T) {
 	if !strings.Contains(report.Body, "finished") || !strings.Contains(report.Body, "report-") {
 		t.Fatalf("report body = %q, want the subthread's own summary", report.Body)
 	}
+	// The subthread goroutine writes the transcript report after the mailbox one.
+	// Wait for that last committed write, or the test ends while the goroutine still
+	// writes into StateDir and cleanup removes it.
+	waitForTranscriptReport(t, events)
 
 	ctx := context.Background()
 	sub, err := d.Engine.State(ctx, child)

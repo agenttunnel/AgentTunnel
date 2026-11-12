@@ -11,42 +11,44 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
-// Item is one steering message: the text, plus any images the user attached
-// mid-run. The images ride the next pass the same way a turn's do.
-type Item struct {
-	Text   string
-	Images []providers.ImageInput
+// Entry is one queued steering message: the prompt text handed to the next
+// pass, the transcript message it was recorded as, plus any images the user
+// attached mid-run. The images ride the next pass the same way a turn's do.
+type Entry struct {
+	MessageID string
+	Text      string
+	Images    []providers.ImageInput
 }
 
 // Box holds pending steering messages, partitioned by thread.
 type Box struct {
 	mu      sync.Mutex
-	pending map[contracts.ThreadID][]Item
+	pending map[contracts.ThreadID][]Entry
 }
 
 // New returns an empty queue.
 func New() *Box {
-	return &Box{pending: map[contracts.ThreadID][]Item{}}
+	return &Box{pending: map[contracts.ThreadID][]Entry{}}
 }
 
 // Post records a steering message for a thread.
-func (b *Box) Post(threadID contracts.ThreadID, text string, images ...providers.ImageInput) {
+func (b *Box) Post(threadID contracts.ThreadID, messageID, text string, images ...providers.ImageInput) {
 	text = strings.TrimSpace(text)
 	if threadID == "" || (text == "" && len(images) == 0) {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.pending[threadID] = append(b.pending[threadID], Item{Text: text, Images: images})
+	b.pending[threadID] = append(b.pending[threadID], Entry{MessageID: messageID, Text: text, Images: images})
 }
 
 // Drain returns and clears a thread's pending steering messages.
-func (b *Box) Drain(threadID contracts.ThreadID) []Item {
+func (b *Box) Drain(threadID contracts.ThreadID) []Entry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	msgs := b.pending[threadID]
+	entries := b.pending[threadID]
 	delete(b.pending, threadID)
-	return msgs
+	return entries
 }
 
 // Has reports whether a thread has pending steering without consuming it.

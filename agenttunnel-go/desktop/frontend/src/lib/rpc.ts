@@ -7,11 +7,21 @@ export type Conn = {
   /** A project directory passed on the command line (agenttunnel <dir>): open
    * a thread in it once connected. Empty for a plain launch. */
   launchDir?: string;
+  /** A thread id passed on the command line (agenttunnel open): select that
+   * thread once connected. Empty for a plain launch. */
+  launchThread?: string;
+  /** Host:port of the daemon, for the "local" vs "attached" header badge. */
+  host?: string;
+  /** True when the window attached to a daemon it did not start. */
+  attached?: boolean;
+  /** The shell's saved keep-running preference. */
+  keepRunning?: boolean;
 };
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 type ThreadEventHandler = (event: unknown) => void;
 type AppOpenHandler = (params: { threadId?: string; projectId?: string }) => void;
+type NotificationHandler = (notification: { method: string; params: unknown }) => void;
 
 /**
  * Rpc is a tiny JSON-RPC-over-WebSocket client. It is the same surface any
@@ -24,6 +34,7 @@ export class Rpc {
   private pending = new Map<string, Pending>();
   private handlers = new Set<ThreadEventHandler>();
   private appOpenHandlers = new Set<AppOpenHandler>();
+  private notificationHandlers = new Set<NotificationHandler>();
 
   constructor(private readonly conn: Conn) {}
 
@@ -56,6 +67,10 @@ export class Rpc {
     }
     if (msg.method === "app.open") {
       this.appOpenHandlers.forEach((h) => h((msg.params ?? {}) as { threadId?: string; projectId?: string }));
+      return;
+    }
+    if (msg.method) {
+      this.notificationHandlers.forEach((h) => h({ method: msg.method as string, params: msg.params }));
       return;
     }
     if (!msg.id) return;
@@ -94,6 +109,15 @@ export class Rpc {
     this.appOpenHandlers.add(handler);
     return () => {
       this.appOpenHandlers.delete(handler);
+    };
+  }
+
+  /** onNotification subscribes to server pushes that are not thread events.
+   * Handlers see the method and params, so a client refreshes only what changed. */
+  onNotification(handler: NotificationHandler): () => void {
+    this.notificationHandlers.add(handler);
+    return () => {
+      this.notificationHandlers.delete(handler);
     };
   }
 
@@ -215,6 +239,19 @@ export function installExternalLinks(): void {
     },
     true,
   );
+}
+
+/**
+ * setKeepRunning asks the desktop shell to persist whether its daemon should
+ * outlive the window. A capability event, not daemon data: outside the shell it
+ * is a no-op.
+ */
+export function setKeepRunning(enabled: boolean): void {
+  try {
+    Events.Emit("at:keep-running", { enabled });
+  } catch {
+    /* not running under the desktop shell */
+  }
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   type GraphNode,
   conversationBetween,
   conversationKey,
+  harnessTint,
   type MailboxMessage,
 } from "../lib/graph";
 import {
@@ -40,6 +41,8 @@ type GraphAgent = {
   name?: string;
   role: string;
   status: string;
+  harness?: string;
+  model?: string;
   task?: string;
   dependsOn?: string[];
 };
@@ -140,8 +143,18 @@ export function AgentGraph({
   // in range do not re-render. The ref is what the drop reads.
   const [prox, setProx] = useState<Proximity | null>(null);
   const proxRef = useRef<Proximity | null>(null);
-  // Nodes that just joined a group, for the one-shot merge settle.
-  const [settle, setSettle] = useState<string[]>([]);
+  // The group that was just created, for its one-shot birth ripple and the
+  // members' settle. `token` remounts the ripple when another group is born at
+  // the same spot, so its animation plays again.
+  const [birth, setBirth] = useState<{
+    token: number;
+    cx: number;
+    cy: number;
+    width: number;
+    height: number;
+    members: string[];
+  } | null>(null);
+  const birthToken = useRef(0);
 
   const ranges = useMemo(() => turnRanges(events), [events]);
   const markers = useMemo(() => markersOf(events), [events]);
@@ -272,8 +285,29 @@ export function AgentGraph({
     // Only a snapped drop merges; a drop in the ring zone just places the node.
     const p = proxRef.current;
     if (p?.snapped) {
-      setGroups(mergeNodes(liveGroups, p.from, p.to));
-      setSettle([p.from, p.to]);
+      const next = mergeNodes(liveGroups, p.from, p.to);
+      setGroups(next);
+      const group = next.find((g) => g.members.includes(p.from));
+      const ns = (group?.members ?? []).flatMap((id) => {
+        const n = layout.nodes.find((x) => x.id === id);
+        return n ? [n] : [];
+      });
+      if (ns.length >= 2) {
+        // Same geometry as the group box: the ripple is centered on it and
+        // starts just inside its edge.
+        const left = Math.max(0, Math.min(...ns.map((n) => n.x)) - GROUP_PAD);
+        const top = Math.max(0, Math.min(...ns.map((n) => n.y)) - GROUP_HEAD);
+        const right = Math.max(...ns.map((n) => n.x + n.width)) + GROUP_PAD;
+        const bottom = Math.max(...ns.map((n) => n.y + n.height)) + GROUP_PAD;
+        setBirth({
+          token: ++birthToken.current,
+          cx: (left + right) / 2,
+          cy: (top + bottom) / 2,
+          width: right - left,
+          height: bottom - top,
+          members: group?.members ?? [],
+        });
+      }
     }
     proxRef.current = null;
     setProx(null);
@@ -335,12 +369,13 @@ export function AgentGraph({
     return () => window.removeEventListener("keydown", onKey);
   }, [conversation]);
 
-  // The merge settle lasts one short animation, then the class is dropped.
+  // The birth ripple runs once; dropping the state afterwards keeps it from
+  // replaying on later renders. Cleaned up on unmount like any timer.
   useEffect(() => {
-    if (settle.length === 0) return;
-    const t = window.setTimeout(() => setSettle([]), 320);
+    if (!birth) return;
+    const t = window.setTimeout(() => setBirth(null), 1200);
     return () => window.clearTimeout(t);
-  }, [settle]);
+  }, [birth]);
 
   const openComposer = (groupId: string) => {
     setComposing(groupId);
@@ -422,7 +457,9 @@ export function AgentGraph({
     setCursor(r.start);
   };
 
-  if (members.length === 0) {
+  // Replaying before the first spawn folds to zero agents. That is a valid
+  // point in history, so the playback bar must stay mounted to scrub forward.
+  if (members.length === 0 && !replay) {
     return (
       <div className="graph-scroll">
         <div className="empty">
@@ -535,6 +572,11 @@ export function AgentGraph({
               "live"
             )}
           </span>
+          {view.steering.pending > 0 && (
+            <span className="graph-steer" title="Steering waiting for the next round">
+              {view.steering.pending} steering queued
+            </span>
+          )}
         </div>
       )}
       {messageCount === 0 && (
@@ -661,6 +703,23 @@ export function AgentGraph({
             />
           )}
         </svg>
+        {birth && (
+          <div
+            key={birth.token}
+            className="graph-ripple"
+            style={{
+              left: birth.cx,
+              top: birth.cy,
+              width: birth.width,
+              height: birth.height,
+            }}
+            aria-hidden
+          >
+            <i />
+            <i />
+            <i />
+          </div>
+        )}
         {boxes.map((b) => (
           <div
             key={b.id}
@@ -674,12 +733,16 @@ export function AgentGraph({
             </div>
           </div>
         ))}
-        {layout.nodes.map((n) => (
-          <button
-            key={n.id}
-            className={`graph-node enter${prox?.to === n.id ? " near" : ""}${
-              prox?.from === n.id && prox.snapped ? " snap" : ""
-            }${settle.includes(n.id) ? " merge" : ""}`}
+        {layout.nodes.map((n) => {
+          const tint = harnessTint(n.harness);
+          return (
+            <button
+              key={n.id}
+              className={`graph-node enter${tint ? ` ${tint}` : ""}${
+                prox?.to === n.id ? " near" : ""
+              }${prox?.from === n.id && prox.snapped ? " snap" : ""}${
+                birth?.members.includes(n.id) ? " born" : ""
+              }`}
             style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
             onPointerDown={(e) => startDrag(e, n)}
             onPointerMove={moveDrag}
@@ -692,7 +755,7 @@ export function AgentGraph({
               }
               onOpenAgent(n.id);
             }}
-            aria-label={`${n.name} (${n.role}) — open details`}
+            aria-label={`${n.name} (${n.role})${n.model ? ` · ${n.model}` : ""} — open details`}
           >
             {prox?.to === n.id && (
               <span className="graph-rings" aria-hidden>
@@ -707,8 +770,10 @@ export function AgentGraph({
               {n.tokens > 0 && <span className="graph-node-tokens">{fmtTokens(n.tokens)}</span>}
             </div>
             <div className="graph-node-role">{n.role}</div>
-          </button>
-        ))}
+            {n.model && <div className="graph-node-model">{n.model}</div>}
+            </button>
+          );
+        })}
         {unlinks.map((u) => (
           <button
             key={`unlink-${u.id}`}

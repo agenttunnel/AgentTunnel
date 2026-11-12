@@ -18,7 +18,9 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deps"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/fileedit"
 	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitdiff"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
@@ -69,13 +71,36 @@ type DispatcherDeps struct {
 	Steering     *steering.Box
 	Audit        actionlog.Func
 	Updater      *update.Updater
+	// Version is the release version embedded at link time, reported by app.info.
+	Version string
+	// HarnessUpdates checks and upgrades the provider CLIs themselves. Nil
+	// reports none; this is distinct from Updater, which updates AgentTunnel.
+	HarnessUpdates *providers.HarnessUpdater
 	// Limits reports subscription usage left per harness. Nil reports none.
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
 	// Attachments stores image uploads. Nil refuses image-bearing turns.
 	Attachments *attachments.Store
+	// BaseCtx is the daemon's lifetime context. Detached turns run against it,
+	// so a client socket closing cannot cancel them; only the daemon going
+	// away or thread.turn.stop can. Nil falls back to context.Background.
+	BaseCtx context.Context
+	// Shutdown triggers a graceful daemon shutdown for the daemon.shutdown RPC.
+	// The assembly sets it; nil makes the RPC a no-op acknowledgement.
+	Shutdown func()
+	// Remote drives WhatsApp connectivity for the Remote section. Nil reports it
+	// unavailable.
+	Remote RemoteControl
+	// Clock and StatusTick drive the per-turn workflow status report. Nil uses
+	// real time; tests inject a controllable ticker and clock.
+	Clock      domain.Clock
+	StatusTick StatusTicker
 }
+
+// StatusTicker returns a tick channel and a stop function for a period. It is
+// the seam tests use to fire status reports without sleeping.
+type StatusTicker func(time.Duration) (<-chan time.Time, func())
 
 // RelayControl is the outbound relay client as the RPC surface drives it.
 // internal/relay implements it, so the transport never imports the relay.
@@ -134,28 +159,41 @@ type RelayDevice struct {
 
 // Dispatcher routes RPC methods to the daemon's services.
 type Dispatcher struct {
-	engine     *domain.Engine
-	runner     *orchestrator.Runner
-	orch       *orchestrator.Orchestrator
-	ledger     *usage.Ledger
-	logs       *logstore.Store
-	roles      *contracts.RoleRegistry
-	registry   *providers.Registry
-	settings   *settings.Store
-	models     *models.Service
-	steering   *steering.Box
-	audit      actionlog.Func
-	updater    *update.Updater
-	limits     *providers.LimitsProvider
-	relay      RelayControl
-	attach     *attachments.Store
-	prBoard    *scm.Board
-	dirtyBoard *scm.DirtyBoard
-	seq        atomic.Int64
+	engine         *domain.Engine
+	runner         *orchestrator.Runner
+	orch           *orchestrator.Orchestrator
+	ledger         *usage.Ledger
+	logs           *logstore.Store
+	roles          *contracts.RoleRegistry
+	registry       *providers.Registry
+	settings       *settings.Store
+	models         *models.Service
+	steering       *steering.Box
+	audit          actionlog.Func
+	updater        *update.Updater
+	version        string
+	harnessUpdates *providers.HarnessUpdater
+	limits         *providers.LimitsProvider
+	relay          RelayControl
+	remote         RemoteControl
+	master         *orchestrator.Master
+	attach         *attachments.Store
+	prBoard        *scm.Board
+	dirtyBoard     *scm.DirtyBoard
+	baseCtx        context.Context
+	shutdown       func()
+	seq            atomic.Int64
+
+	// remoteNotifier broadcasts Remote section changes. Set after the server
+	// exists, since the dispatcher is built first.
+	remoteNotifier func(RemoteStatus)
+	// clock and statusTick drive the per-turn workflow status report.
+	clock      domain.Clock
+	statusTick StatusTicker
 
 	// turns gates one running turn per thread and lets clients stop it.
 	turnsMu sync.Mutex
-	turns   map[contracts.ThreadID]context.CancelFunc
+	turns   map[contracts.ThreadID]turnRun
 
 	// worktreeFailures holds, per thread, the reason its last first-worktree cut
 	// failed. It only dedupes the audit line: every turn still retries the cut.
@@ -172,26 +210,47 @@ type Dispatcher struct {
 
 // NewDispatcher constructs a dispatcher.
 func NewDispatcher(d DispatcherDeps) *Dispatcher {
-	return &Dispatcher{
-		questions:  newQuestionBroker(),
-		engine:     d.Engine,
-		runner:     d.Runner,
-		orch:       d.Orchestrator,
-		ledger:     d.Ledger,
-		logs:       d.Logs,
-		roles:      d.Roles,
-		registry:   d.Registry,
-		settings:   d.Settings,
-		models:     d.Models,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		updater:    d.Updater,
-		limits:     d.Limits,
-		relay:      d.Relay,
-		attach:     d.Attachments,
-		prBoard:    scm.NewBoard(scm.Fetch, prBoardTTL),
-		dirtyBoard: scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
+	base := d.BaseCtx
+	if base == nil {
+		base = context.Background()
 	}
+	if d.Clock == nil {
+		d.Clock = time.Now
+	}
+	if d.StatusTick == nil {
+		d.StatusTick = realStatusTick
+	}
+	disp := &Dispatcher{
+		questions:      newQuestionBroker(),
+		baseCtx:        base,
+		shutdown:       d.Shutdown,
+		engine:         d.Engine,
+		runner:         d.Runner,
+		orch:           d.Orchestrator,
+		ledger:         d.Ledger,
+		logs:           d.Logs,
+		roles:          d.Roles,
+		registry:       d.Registry,
+		settings:       d.Settings,
+		models:         d.Models,
+		steering:       d.Steering,
+		audit:          d.Audit,
+		updater:        d.Updater,
+		version:        d.Version,
+		harnessUpdates: d.HarnessUpdates,
+		limits:         d.Limits,
+		relay:          d.Relay,
+		remote:         d.Remote,
+		attach:         d.Attachments,
+		clock:          d.Clock,
+		statusTick:     d.StatusTick,
+		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
+		dirtyBoard:     scm.NewDirtyBoard(scm.Dirty, dirtyBoardTTL),
+	}
+	disp.master = orchestrator.NewMaster(orchestrator.MasterDeps{
+		Runner: d.Runner, Engine: d.Engine, Settings: d.Settings, Models: d.Models,
+	})
+	return disp
 }
 
 // prBoardTTL bounds how stale a thread board's PR state may be. Each refresh
@@ -248,18 +307,48 @@ func threadStates(
 	return out
 }
 
+// maxSummaryPromptRunes bounds the searchable prompt in the thread list: the
+// openers are short, and the list is shipped whole on every recency change.
+const maxSummaryPromptRunes = 200
+
+// firstUserPrompt returns the thread's first human message, truncated to the
+// list-search budget. Threads started only by agents have none.
+func firstUserPrompt(st *domain.ThreadState) string {
+	for _, m := range st.Messages {
+		if m.Author != "user" {
+			continue
+		}
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		r := []rune(text)
+		if len(r) > maxSummaryPromptRunes {
+			return string(r[:maxSummaryPromptRunes])
+		}
+		return text
+	}
+	return ""
+}
+
 // ThreadSummary is the list-row projection of a thread.
 type ThreadSummary struct {
 	ID        contracts.ThreadID `json:"id"`
 	Title     string             `json:"title"`
 	ProjectID string             `json:"projectId,omitempty"`
-	UpdatedAt time.Time          `json:"updatedAt"`
-	Messages  int                `json:"messages"`
-	Agents    int                `json:"agents"`
-	AutoMode  bool               `json:"autoMode"`
+	// FirstPrompt is the first human message, truncated so list search can
+	// match against what the thread was actually asked to do.
+	FirstPrompt string    `json:"firstPrompt,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Messages    int       `json:"messages"`
+	Agents      int       `json:"agents"`
+	AutoMode    bool      `json:"autoMode"`
+	Archived    bool      `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
 	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
+	Draft          bool                   `json:"draft,omitempty"`
+	Issue          *contracts.IssueRef    `json:"issue,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -279,6 +368,15 @@ type (
 		ProjectID string `json:"projectId"`
 		// Worktree cuts the thread's worktree up front instead of on its first turn.
 		Worktree bool `json:"worktree"`
+		// Draft creates a thread that waits for its first turn. Worktree is
+		// ignored: the first turn cuts it.
+		Draft       bool                `json:"draft,omitempty"`
+		Description string              `json:"description,omitempty"`
+		Issue       *contracts.IssueRef `json:"issue,omitempty"`
+	}
+	forkThreadParams struct {
+		ThreadID  contracts.ThreadID `json:"threadId"`
+		MessageID string             `json:"messageId"`
 	}
 	threadParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -293,6 +391,9 @@ type (
 		// upload. They render in the transcript and reach harnesses that
 		// accept image input.
 		Images []string `json:"images,omitempty"`
+		// Detach runs the turn against the daemon's lifetime context and replies
+		// at once, so a client (agenttunnel run) can exit while the work continues.
+		Detach bool `json:"detach,omitempty"`
 	}
 	setBoolParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -305,6 +406,13 @@ type (
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
+	setRoleRuntimeParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Role     string             `json:"role"`
 		Harness  contracts.Harness  `json:"harness,omitempty"`
 		Model    string             `json:"model,omitempty"`
 		Variant  string             `json:"variant,omitempty"`
@@ -350,6 +458,12 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
+	// Status reports run beside the orchestrator, not inside its pass loop, so a
+	// long pass still shows progress. The stop func joins the goroutine before
+	// the turn slot is released.
+	stopReports := d.startStatusReports(turnCtx, threadID)
+	defer stopReports()
+
 	if err := d.orch.RunTurn(turnCtx, threadID, text, inputs...); err != nil {
 		if turnCtx.Err() != nil {
 			return map[string]any{"ok": true, "stopped": true}, nil
@@ -405,6 +519,225 @@ func (d *Dispatcher) imageInputs(threadID contracts.ThreadID, refs []contracts.I
 	return inputs, nil
 }
 
+// startDetachedTurn claims the thread's turn slot against the daemon's lifetime
+// context and runs the turn in the background, replying at once. The caller's
+// socket closing cannot cancel it — only thread.turn.stop or daemon shutdown
+// can. The slot is released when the goroutine finishes, so a stopped turn
+// keeps it until it unwinds, exactly like a foreground turn.
+func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
+	if d.orch == nil || d.engine == nil {
+		return nil, errors.New("detached turns are unavailable")
+	}
+	// A caller with no daemon context (a bare dispatcher in a test) still gets
+	// a turn that outlives its socket. A daemon context that is already
+	// cancelled is respected: shutdown must not start new work.
+	base := d.baseCtx
+	if base == nil {
+		base = context.WithoutCancel(ctx)
+	}
+	turnCtx, done, err := d.beginTurn(base, threadID)
+	if err != nil {
+		return nil, err
+	}
+	// Image attachments must resolve before cmd is recorded: a detached
+	// turn that cannot deliver them leaves no transcript entry either.
+	inputs, err := d.imageInputs(threadID, cmd.Images)
+	if err != nil {
+		done()
+		return nil, err
+	}
+	go func() {
+		defer done()
+		if err := d.ensureWorktree(base, threadID); err != nil {
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+			return
+		}
+		if err := d.engine.Dispatch(base, cmd); err != nil {
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+			return
+		}
+		if err := d.orch.RunTurn(turnCtx, threadID, text, inputs...); err != nil {
+			if turnCtx.Err() != nil {
+				d.auditLog("turn.detached.stopped", map[string]any{"threadId": string(threadID)})
+				return
+			}
+			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
+		}
+	}()
+	return map[string]any{"ok": true, "detached": true, "threadId": string(threadID)}, nil
+}
+
+// Shutdown asks the daemon assembly to shut down gracefully. It is called by
+// the server after the daemon.shutdown reply is written.
+func (d *Dispatcher) Shutdown() {
+	if d.shutdown != nil {
+		d.shutdown()
+	}
+}
+
+// realStatusTick is the production status ticker.
+func realStatusTick(period time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(period)
+	return t.C, t.Stop
+}
+
+// startStatusReports starts a thread's per-turn status ticker. A thread with no
+// configured period starts nothing. The returned stop function ends the loop and
+// waits for it to exit, so no report can land after the turn is done.
+func (d *Dispatcher) startStatusReports(ctx context.Context, threadID contracts.ThreadID) func() {
+	if d.engine == nil || d.clock == nil || d.statusTick == nil {
+		return func() {}
+	}
+	period := d.statusPeriod(ctx, threadID)
+	if period <= 0 {
+		return func() {}
+	}
+	tick, stopTick := d.statusTick(time.Duration(period) * time.Second)
+	reportCtx, cancel := context.WithCancel(ctx)
+	start := d.clock()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case <-reportCtx.Done():
+				return
+			case _, ok := <-tick:
+				if !ok {
+					return
+				}
+				d.postStatusReport(reportCtx, threadID, start)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			stopTick()
+			<-finished
+		})
+	}
+}
+
+// statusPeriod reads the thread's configured report period.
+func (d *Dispatcher) statusPeriod(ctx context.Context, threadID contracts.ThreadID) int {
+	st, err := d.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return 0
+	}
+	return st.StatusPeriodSeconds
+}
+
+// postStatusReport records one workflow status message. It is authored by
+// AuthorStatus, never "user", so it does not open a turn or move the spend
+// window; the message joins the running turn in the transcript.
+func (d *Dispatcher) postStatusReport(ctx context.Context, threadID contracts.ThreadID, start time.Time) {
+	st, err := d.engine.State(ctx, threadID)
+	if err != nil || st == nil || !st.Exists || st.Deleted {
+		return
+	}
+	text := statusReportText(st, d.clock().Sub(start))
+	_ = d.engine.Dispatch(ctx, contracts.Command{
+		ID:       d.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: contracts.AuthorStatus, Text: text},
+	})
+}
+
+// statusReportText renders a workflow status: what is done, what is still open,
+// and what needs the human's attention. Tasks and agents are read in one pass
+// each; the report is built in a single builder.
+func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	var (
+		doneLines, todoLines, worthLines []string
+		doneTasks                        int
+		settled                          = map[contracts.AgentStatus]int{}
+	)
+	for _, t := range st.Tasks {
+		label := strings.TrimSpace(t.Title)
+		if label == "" {
+			label = t.Name
+		}
+		if t.Status == contracts.TaskDone {
+			doneTasks++
+			doneLines = append(doneLines, "- task "+label)
+			continue
+		}
+		todoLines = append(todoLines, fmt.Sprintf("- task %s (%s)", label, t.Status))
+	}
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
+		name := strings.TrimSpace(a.Name)
+		if name == "" {
+			name = string(id)
+		}
+		switch a.Status {
+		case contracts.AgentSucceeded:
+			settled[a.Status]++
+			doneLines = append(doneLines, "- agent "+name+" succeeded")
+		case contracts.AgentFailed, contracts.AgentCancelled:
+			settled[a.Status]++
+			line := "- agent " + name + " " + string(a.Status)
+			if reason := oneLine(a.Reason); reason != "" {
+				line += ": " + reason
+			}
+			worthLines = append(worthLines, line)
+		default:
+			role := string(a.Role)
+			if role == "" {
+				role = "agent"
+			}
+			todoLines = append(todoLines, fmt.Sprintf("- agent %s (%s): %s", name, role, a.Status))
+		}
+	}
+	for _, q := range st.Questions {
+		if q.Status == domain.QuestionPending {
+			worthLines = append(worthLines, "- question waiting: "+oneLine(q.Question))
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
+	writeReportSection(&b, "Done so far", doneLines)
+	writeReportSection(&b, "Still to do", todoLines)
+	writeReportSection(&b, "Worth knowing", worthLines)
+	if len(settled) > 0 {
+		total := 0
+		var parts []string
+		for _, status := range []contracts.AgentStatus{contracts.AgentSucceeded, contracts.AgentFailed, contracts.AgentCancelled} {
+			if n := settled[status]; n > 0 {
+				total += n
+				parts = append(parts, fmt.Sprintf("%d %s", n, status))
+			}
+		}
+		fmt.Fprintf(&b, "Settled: %d (%s)\n", total, strings.Join(parts, ", "))
+	}
+	fmt.Fprintf(&b, "Tasks: %d/%d done", doneTasks, len(st.Tasks))
+	return b.String()
+}
+
+// writeReportSection writes a titled list, skipping the section when empty.
+func writeReportSection(b *strings.Builder, title string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString(title + ":\n")
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+}
+
+// oneLine collapses whitespace so a multi-line reason or question stays on one
+// report line.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // promptWithAttachments appends the composer's attached files and folders to
 // a prompt. The transcript keeps the typed text; only the agent sees the
 // context block. Paths resolve inside the thread's workdir.
@@ -430,13 +763,13 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 	d.turnsMu.Lock()
 	defer d.turnsMu.Unlock()
 	if d.turns == nil {
-		d.turns = map[contracts.ThreadID]context.CancelFunc{}
+		d.turns = map[contracts.ThreadID]turnRun{}
 	}
 	if _, running := d.turns[threadID]; running {
 		return nil, nil, fmt.Errorf("a turn is already running on thread %s", threadID)
 	}
 	turnCtx, cancel := context.WithCancel(ctx)
-	d.turns[threadID] = cancel
+	d.turns[threadID] = turnRun{ctx: turnCtx, cancel: cancel}
 	return turnCtx, func() {
 		cancel()
 		// Nothing is left to hear an answer once the turn is over.
@@ -454,12 +787,48 @@ func (d *Dispatcher) beginTurn(ctx context.Context, threadID contracts.ThreadID)
 // thread's turn slot stays taken until the turn finishes unwinding.
 func (d *Dispatcher) stopTurn(threadID contracts.ThreadID) bool {
 	d.turnsMu.Lock()
-	cancel, running := d.turns[threadID]
+	run, running := d.turns[threadID]
 	d.turnsMu.Unlock()
 	if running {
-		cancel()
+		run.cancel()
 	}
 	return running
+}
+
+// turnRun is a thread's claimed turn slot: its context ends when the turn is
+// stopped or finishes, and cancel ends it.
+type turnRun struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// recordShell writes a finished command into the thread log, so the command and
+// its output show in the chat. Author "shell" keeps it from counting as a turn.
+func (d *Dispatcher) recordShell(ctx context.Context, threadID contracts.ThreadID, command string, res shellResult) error {
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID:       d.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
+	})
+}
+
+// toolContext returns a context for a tool call's shell: it ends when the
+// thread's running turn is stopped, or when the calling process goes away. With
+// no turn running on the thread, only the caller's disconnect ends it.
+func (d *Dispatcher) toolContext(reqCtx context.Context, threadID contracts.ThreadID) (context.Context, context.CancelFunc) {
+	base := reqCtx
+	d.turnsMu.Lock()
+	if run, running := d.turns[threadID]; running {
+		base = run.ctx
+	}
+	d.turnsMu.Unlock()
+	ctx, cancel := context.WithCancel(base)
+	stop := context.AfterFunc(reqCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // Handle executes one RPC method, recording it in the action log.
@@ -513,6 +882,38 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			"imageSupport": imageSupport,
 		}, nil
 
+	case "harness.updates":
+		var p struct {
+			Refresh bool `json:"refresh"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return providers.UpdateReport{CheckedAt: time.Now(), Harnesses: []providers.HarnessUpdate{}}, nil
+		}
+		return d.harnessUpdates.Check(ctx, p.Refresh), nil
+
+	case "harness.update":
+		var p struct {
+			Harnesses []string `json:"harnesses"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.harnessUpdates == nil {
+			return nil, errors.New("harness updates are unavailable")
+		}
+		only := make([]contracts.Harness, 0, len(p.Harnesses))
+		for _, name := range p.Harnesses {
+			h := contracts.Harness(name)
+			if !h.Valid() {
+				return nil, fmt.Errorf("unknown harness %q", name)
+			}
+			only = append(only, h)
+		}
+		return d.harnessUpdates.Update(ctx, only)
+
 	case "models.refresh":
 		var p struct {
 			Harness string `json:"harness"`
@@ -555,7 +956,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"harness": string(h), "models": d.models.List(h)}, nil
 
 	case "thread.open":
-		// The desktop CLI's `agenttunnel <dir>` flow: resolve the directory to
+		// The desktop's `agenttunnel-desktop <dir>` flow: resolve the directory to
 		// a project (creating one when the dir is unknown) and open a fresh
 		// thread in it. Creation is provisional — closing the window without
 		// typing leaves nothing behind.
@@ -607,18 +1008,36 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
+		if p.Issue != nil {
+			if strings.TrimSpace(p.Issue.URL) == "" {
+				return nil, errors.New("issue url is required")
+			}
+			if existing, found, err := d.issueThread(ctx, p.ProjectID, p.Issue.URL); err != nil {
+				return nil, err
+			} else if found {
+				return nil, fmt.Errorf("issue already has thread %s", existing)
+			}
+		}
 		id := d.newThreadID()
 		var wt *contracts.WorktreeRef
-		if p.Worktree && p.ProjectID != "" {
+		if p.Worktree && p.ProjectID != "" && !p.Draft {
 			wt = d.createWorktreeRef(ctx, p.ProjectID, p.Title, id)
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
 			Title: p.Title, ProjectID: p.ProjectID, Worktree: wt,
+			Draft: p.Draft, Description: p.Description, Issue: p.Issue,
 		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"threadId": id}, nil
+
+	case "thread.fork":
+		var p forkThreadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.forkThread(ctx, p)
 
 	case "thread.list":
 		ids, err := d.engine.Threads(ctx)
@@ -648,8 +1067,10 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
-				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
+				FirstPrompt: firstUserPrompt(st),
+				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
 				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
+				Draft: st.Draft, Issue: st.Issue,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
 		}
@@ -686,9 +1107,6 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(p.Text) == "" {
-			return nil, errors.New("turn text is required")
-		}
 		st, err := d.engine.State(ctx, p.ThreadID)
 		if err != nil {
 			return nil, err
@@ -696,7 +1114,16 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
-		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, p.Text, p.Attachments)
+		// A draft's first turn may omit the text: its title and description are
+		// the prompt, so every client starts a draft the same way.
+		text := p.Text
+		if strings.TrimSpace(text) == "" && st.Draft {
+			text = draftPrompt(st)
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil, errors.New("turn text is required")
+		}
+		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, text, p.Attachments)
 		if err != nil {
 			return nil, err
 		}
@@ -704,9 +1131,42 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text, Images: refs,
-		})
+		cmd := contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: text, Images: refs,
+		}
+		if p.Detach {
+			return d.startDetachedTurn(ctx, p.ThreadID, prompt, cmd)
+		}
+		return d.runTurn(ctx, p.ThreadID, prompt, cmd)
+
+	case "thread.describe":
+		var p struct {
+			ThreadID    contracts.ThreadID `json:"threadId"`
+			Description string             `json:"description"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadDescribe, ThreadID: p.ThreadID,
+			Description: p.Description,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "issues.list":
+		var p struct {
+			ProjectID string `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		path, err := d.projectPath(p.ProjectID)
+		if err != nil {
+			return scm.IssueList{Status: scm.StatusNone, Message: err.Error()}, nil
+		}
+		return scm.ListIssues(ctx, path), nil
 
 	case "review.submit":
 		var p struct {
@@ -774,12 +1234,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID:       d.nextID(),
-			Type:     contracts.CmdMessageAppend,
-			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "shell", Text: shellMessage(command, res)},
-		}); err != nil {
+		if err := d.recordShell(ctx, p.ThreadID, command, res); err != nil {
 			return nil, err
 		}
 		return map[string]any{
@@ -822,6 +1277,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		defer done()
+		stopReports := d.startStatusReports(turnCtx, p.ThreadID)
+		defer stopReports()
 		spec := orchestrator.CouncilSpec{Topic: p.Topic, Rounds: p.Rounds, Members: p.Members}
 		consensus, err := d.orch.RunCouncil(turnCtx, p.ThreadID, spec)
 		if err != nil {
@@ -894,22 +1351,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		st, err := d.engine.State(ctx, p.ThreadID)
-		if err != nil {
-			return nil, err
-		}
-		if !st.Exists {
-			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
-		}
-		// A refused removal (dirty worktree, running turn) aborts the delete.
-		if p.RemoveWorktree && st.Worktree != nil && !st.Worktree.Inherited {
-			if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
-				return nil, err
-			}
-		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: p.ThreadID,
-		}); err != nil {
+		if err := d.deleteThread(ctx, p.ThreadID, p.RemoveWorktree); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -936,6 +1378,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Images must resolve before the steering message is recorded: a
+		// refused ref leaves no transcript entry.
 		refs, err := d.resolveImages(p.ThreadID, p.Images)
 		if err != nil {
 			return nil, err
@@ -944,17 +1388,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Record it in the transcript, marked as steering, then queue it for the
-		// next orchestrator pass to weigh.
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID:       d.nextID(),
-			Type:     contracts.CmdMessageAppend,
-			ThreadID: p.ThreadID,
-			Message:  &contracts.MessageSent{MessageID: d.nextID(), Author: "steering", Text: p.Text, Images: refs},
-		}); err != nil {
+		if err := d.steerThread(ctx, p.ThreadID, p.Text, prompt, refs, inputs); err != nil {
 			return nil, err
 		}
-		d.steering.Post(p.ThreadID, prompt, inputs...)
 		return map[string]any{"ok": true}, nil
 
 	case "thread.btw":
@@ -979,6 +1415,30 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"answer": answer}, nil
 
+	case "master.send":
+		// The home-screen orchestrator answers from a snapshot and may propose a
+		// thread. Dispatch is fire-and-forget: the first turn runs for as long
+		// as the work takes, so the reply cannot wait for it.
+		var p struct {
+			Text    string                       `json:"text"`
+			History []orchestrator.MasterMessage `json:"history"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Text) == "" {
+			return nil, errors.New("text is required")
+		}
+		if d.master == nil {
+			return nil, errors.New("master chat is unavailable")
+		}
+		result, err := d.master.Send(ctx, p.Text, p.History)
+		if err != nil {
+			return nil, err
+		}
+		d.runMaster(ctx, &result)
+		return result, nil
+
 	case "thread.setAutoMode":
 		var p setBoolParams
 		if err := decode(req.Params, &p); err != nil {
@@ -986,6 +1446,36 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdAutoModeSet, ThreadID: p.ThreadID, AutoMode: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setArchived":
+		var p setBoolParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setStatusPeriod":
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Seconds  *int               `json:"seconds"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Seconds == nil {
+			return nil, errors.New("seconds is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdStatusPeriodSet, ThreadID: p.ThreadID, StatusPeriod: p.Seconds,
 		}); err != nil {
 			return nil, err
 		}
@@ -1012,6 +1502,25 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
 			LeadRuntime: &contracts.LeadRuntimeSet{
 				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setRoleRuntime":
+		var p setRoleRuntimeParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Role == "" {
+			return nil, errors.New("role is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdRoleRuntimeSet, ThreadID: p.ThreadID,
+			RoleRuntime: &contracts.RoleRuntimeSet{
+				Role:    contracts.RoleID(p.Role),
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
 		}); err != nil {
@@ -1123,6 +1632,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.engine.HarnessStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
 
+	case "app.info":
+		version := d.version
+		if version == "" {
+			version = "dev"
+		}
+		return map[string]any{"version": version}, nil
+
+	case "stats.teams":
+		// Same scope as stats.harnesses: no params is the environment.
+		var p struct {
+			ThreadID  contracts.ThreadID `json:"threadId"`
+			ProjectID string             `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.engine.TeamStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
+	case "stats.models":
+		// Same scope as stats.harnesses: no params is the environment.
+		var p struct {
+			ThreadID  contracts.ThreadID `json:"threadId"`
+			ProjectID string             `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.engine.ModelStats(ctx, domain.HarnessScope{ThreadID: p.ThreadID, ProjectID: p.ProjectID})
+
 	case "update.check":
 		if d.updater == nil {
 			return nil, errors.New("updates are unavailable")
@@ -1134,6 +1672,22 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, errors.New("updates are unavailable")
 		}
 		return d.updater.Apply(ctx)
+
+	case "update.takeReleaseNotes":
+		// Read-and-clear: null when nothing is pending for the running build.
+		if d.updater == nil {
+			return nil, nil
+		}
+		n, ok, err := d.updater.TakeReleaseNotes()
+		if err != nil || !ok {
+			return nil, err
+		}
+		return n, nil
+
+	case "deps.check":
+		// Probes the forge CLIs on PATH with `--version`; local and read-only,
+		// so the headless daemon reports the same answer as the desktop app.
+		return deps.Probe(ctx), nil
 
 	case "review.diff":
 		var p struct {
@@ -1244,6 +1798,21 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return files.Read(wd, p.Path)
 
+	case "markdown.read":
+		// Takes only a threadId, never a workdir: the viewer reads the thread's
+		// own worktree or project and nothing a client names.
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Path     string             `json:"path"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return files.ReadMarkdown(d.threadWorkdir(ctx, p.ThreadID), p.Path)
+
+	case "fs.list", "fs.read", "fs.write":
+		return d.fileEdit(ctx, req)
+
 	case "review.comment":
 		var p struct {
 			ThreadID contracts.ThreadID `json:"threadId"`
@@ -1293,6 +1862,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				return nil, fmt.Errorf("required role %q cannot be disabled", role.ID)
 			}
 		}
+		if p.Role != nil && p.Role.Harness != "" && !contracts.Harness(p.Role.Harness).Valid() {
+			return nil, fmt.Errorf("unknown harness %q", p.Role.Harness)
+		}
+		if p.Lead != nil && p.Lead.Harness != "" && !contracts.Harness(p.Lead.Harness).Valid() {
+			return nil, fmt.Errorf("unknown harness %q", p.Lead.Harness)
+		}
 		if p.Workdir != nil {
 			d.settings.SetWorkdir(*p.Workdir)
 		}
@@ -1310,6 +1885,15 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				Harness: contracts.Harness(p.Role.Harness),
 				Model:   p.Role.Model,
 				Variant: p.Role.Variant,
+			})
+		}
+		if p.Lead != nil {
+			// The lead runs on the Orchestrator role's runtime, so pinning it
+			// is the same persisted setting, not a second source of truth.
+			d.settings.SetRoleConfig(contracts.RoleOrchestrator, settings.RoleConfig{
+				Harness: contracts.Harness(p.Lead.Harness),
+				Model:   strings.TrimSpace(p.Lead.Model),
+				Variant: strings.TrimSpace(p.Lead.Variant),
 			})
 		}
 		if p.Harness != nil {
@@ -1480,6 +2064,62 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		d.settings.RemoveProject(p.ID)
 		return d.projectList(ctx), nil
 
+	case "remote.status":
+		st := d.RemoteStatus()
+		if isRelayedSession(ctx) {
+			// A pairing QR is a secret: the phone that reaches this daemon
+			// through the relay must never be handed another surface's link.
+			for i := range st.Items {
+				st.Items[i].QR = ""
+			}
+		}
+		return st, nil
+
+	case "remote.whatsapp.connect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Connect(ctx)
+		// The bridge may finish connecting later, but a failure is already a
+		// state change every client should see.
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
+	case "remote.whatsapp.disconnect":
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		err := d.remote.Disconnect()
+		d.BroadcastRemoteStatus()
+		if err != nil {
+			return nil, err
+		}
+		return d.RemoteStatus(), nil
+
+	case "remote.whatsapp.control":
+		// Inbound control lets the linked account's own chat drive the
+		// orchestrator, so it is a desktop-only setting: a relayed phone cannot
+		// reach remote.whatsapp.* at all.
+		if d.remote == nil {
+			return nil, errors.New("WhatsApp is unavailable")
+		}
+		var p struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Enabled != nil {
+			if err := d.remote.SetControl(*p.Enabled); err != nil {
+				return nil, err
+			}
+			d.BroadcastRemoteStatus()
+		}
+		return ControlState{Enabled: d.remote.Control()}, nil
+
 	case "relay.status":
 		return d.relayControl().Status(), nil
 
@@ -1494,6 +2134,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Enable(p.URL); err != nil {
 			return nil, err
 		}
+		// The phone row is derived from the relay, so its state changed too.
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.disable":
@@ -1501,6 +2143,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := rc.Disable(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.Status(), nil
 
 	case "relay.pair.start":
@@ -1510,13 +2153,19 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"devices": d.relayControl().Devices()}, nil
 
 	case "relay.tunnel.start":
-		return d.relayControl().StartTunnel(ctx)
+		st, err := d.relayControl().StartTunnel(ctx)
+		if err != nil {
+			return nil, err
+		}
+		d.BroadcastRemoteStatus()
+		return st, nil
 
 	case "relay.tunnel.stop":
 		rc := d.relayControl()
 		if err := rc.StopTunnel(); err != nil {
 			return nil, err
 		}
+		d.BroadcastRemoteStatus()
 		return rc.TunnelStatus(), nil
 
 	case "relay.tunnel.status":
@@ -1585,17 +2234,67 @@ func (d *Dispatcher) threadWorkdir(ctx context.Context, id contracts.ThreadID) s
 	if d.settings == nil {
 		return ""
 	}
-	base := d.settings.Workdir()
 	st, err := d.engine.State(ctx, id)
 	if err != nil {
-		return base
+		return d.settings.Workdir()
 	}
+	return d.stateWorkdir(st)
+}
+
+// threadRoot is threadWorkdir for callers that must not guess: an unknown
+// thread is an error, never the daemon default. engine.State returns an empty
+// state rather than failing for an id it has never seen, so Exists is the test.
+func (d *Dispatcher) threadRoot(ctx context.Context, id contracts.ThreadID) (string, error) {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if !st.Exists {
+		return "", fmt.Errorf("thread %q does not exist", id)
+	}
+	return d.stateWorkdir(st), nil
+}
+
+// stateWorkdir picks the checkout for a thread's state: its worktree when it
+// declares one, otherwise its project's path, otherwise the daemon default.
+func (d *Dispatcher) stateWorkdir(st *domain.ThreadState) string {
+	if d.settings == nil {
+		return ""
+	}
+	base := d.settings.Workdir()
 	if st.ProjectID != "" {
 		if project, ok := d.settings.Project(st.ProjectID); ok && project.Path != "" {
 			base = project.Path
 		}
 	}
 	return worktree.Resolve(st.Worktree, base)
+}
+
+// fileEdit serves the desktop file editor. The root is always the thread's own
+// working directory: clients name a path inside it, never a directory. An
+// unknown thread fails instead of falling back to the daemon default.
+func (d *Dispatcher) fileEdit(ctx context.Context, req Request) (any, error) {
+	var p struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+		Path     string             `json:"path"`
+		Text     string             `json:"text"`
+		Hash     string             `json:"hash"`
+	}
+	if err := decode(req.Params, &p); err != nil {
+		return nil, err
+	}
+	root, err := d.threadRoot(ctx, p.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	switch req.Method {
+	case "fs.list":
+		return fileedit.List(root, p.Path)
+	case "fs.read":
+		return fileedit.Read(root, p.Path)
+	default:
+		return fileedit.Write(root, p.Path, p.Text, p.Hash)
+	}
 }
 
 // prAction runs one git or forge write from the PR tab in the thread's worktree.
@@ -1643,6 +2342,49 @@ func (d *Dispatcher) prAction(ctx context.Context, req Request) (any, error) {
 	return map[string]any{"message": msg}, nil
 }
 
+// threadBusy reports whether a thread has a turn in flight or an agent that
+// has not finished. Both thread.delete and the lead's thread-delete refuse it.
+func (d *Dispatcher) threadBusy(id contracts.ThreadID, st *domain.ThreadState) bool {
+	if d.threadRunning(id) {
+		return true
+	}
+	for _, a := range st.Agents {
+		if !a.Status.Terminal() {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteThread tombstones a thread, and with removeWorktree also removes the
+// thread's own worktree before the tombstone. The running check and the dirty
+// check (worktreeRemove refuses a dirty tree) both run before anything is
+// removed, so those refusals keep the worktree. The decider is the last gate and
+// runs after the removal, so a turn or agent that starts between the running
+// check and the dispatch can still get the delete refused, leaving the thread
+// with its worktree already gone. The window is one engine round-trip. Closing it
+// would need worktree removal inside the decider, which the engine does not do.
+func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, removeWorktree bool) error {
+	st, err := d.engine.State(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !st.Exists {
+		return fmt.Errorf("thread %q does not exist: %w", id, domain.ErrThreadNotFound)
+	}
+	if d.threadBusy(id, st) {
+		return fmt.Errorf("%w: thread %q is running; stop it first", domain.ErrInvalidCommand, id)
+	}
+	if removeWorktree && st.Worktree != nil && !st.Worktree.Inherited {
+		if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
+			return err
+		}
+	}
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
+	})
+}
+
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {
 	counts := map[string]int{}
 	if ids, err := d.engine.Threads(ctx); err == nil {
@@ -1668,6 +2410,50 @@ func (d *Dispatcher) newProjectID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return "proj_" + hex.EncodeToString(b[:])
+}
+
+// forkThread starts a new top-level thread from the source's transcript up to
+// and including messageID. Message ids are the stable key: they are unique per
+// thread and survive the copy. The source is only read. The fork has no
+// worktree yet; its first turn cuts one from the project base like any new
+// thread. Provider sessions are per turn, so the copied messages reach the
+// agent through the transcript prompt section, not a resume id.
+func (d *Dispatcher) forkThread(ctx context.Context, p forkThreadParams) (any, error) {
+	if p.MessageID == "" {
+		return nil, errors.New("messageId is required")
+	}
+	src, err := d.engine.State(ctx, p.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	if !src.Exists {
+		return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+	}
+	end := -1
+	for i, m := range src.Messages {
+		if m.ID == p.MessageID {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return nil, fmt.Errorf("message %q is not in thread %q", p.MessageID, p.ThreadID)
+	}
+	transcript := make([]contracts.MessageSent, 0, end+1)
+	for _, m := range src.Messages[:end+1] {
+		transcript = append(transcript, contracts.MessageSent{MessageID: m.ID, Author: m.Author, Text: m.Text})
+	}
+	id := d.newThreadID()
+	if err := d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdThreadFork, ThreadID: id,
+		Title: src.Title + " (branch)", ProjectID: src.ProjectID, Transcript: transcript,
+	}); err != nil {
+		return nil, err
+	}
+	d.auditLog("thread.forked", map[string]any{
+		"threadId": string(id), "from": string(p.ThreadID), "messages": len(transcript),
+	})
+	return map[string]any{"threadId": id}, nil
 }
 
 func (d *Dispatcher) newThreadID() contracts.ThreadID {
@@ -1707,12 +2493,22 @@ type RoleConfigView struct {
 	Experimental bool `json:"experimental"`
 }
 
+// LeadRuntimeView is the master orchestrator's configured runtime override.
+// Empty fields inherit the Orchestrator role's defaults, and a thread's
+// per-lead override still wins over it.
+type LeadRuntimeView struct {
+	Harness string `json:"harness"`
+	Model   string `json:"model"`
+	Variant string `json:"variant"`
+}
+
 // SettingsView is the settings screen's payload.
 type SettingsView struct {
 	Workdir           string           `json:"workdir"`
 	AutoMode          bool             `json:"autoMode"`
 	ApprovedModels    []string         `json:"approvedModels"`
 	Roles             []RoleConfigView `json:"roles"`
+	Lead              LeadRuntimeView  `json:"lead"`
 	ConfigPath        string           `json:"configPath"`
 	StaleAfterMinutes int              `json:"staleAfterMinutes"`
 	ExperimentalRoles bool             `json:"experimentalRoles"`
@@ -1729,6 +2525,9 @@ type settingsPatch struct {
 		Model   string `json:"model"`
 		Variant string `json:"variant"`
 	} `json:"role"`
+	// Lead pins the master orchestrator's runtime; it is stored as the
+	// Orchestrator role's runtime, so unset fields keep inheriting it.
+	Lead    *LeadRuntimeView `json:"lead"`
 	Harness *struct {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
@@ -1752,6 +2551,13 @@ func (d *Dispatcher) settingsView() SettingsView {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}
 		sort.Strings(view.ApprovedModels)
+		if cfg, ok := d.settings.RoleConfig(contracts.RoleOrchestrator); ok {
+			view.Lead.Model = cfg.Model
+			view.Lead.Variant = cfg.Variant
+			if cfg.Harness.Valid() {
+				view.Lead.Harness = string(cfg.Harness)
+			}
+		}
 	}
 	for _, role := range d.roles.List() {
 		harness, model, variant := role.DefaultHarness, role.DefaultModel, role.DefaultVariant
@@ -1808,6 +2614,7 @@ var graphEventTypes = map[contracts.EventType]bool{
 	contracts.EvtUsageRecorded:      true,
 	contracts.EvtMailboxPosted:      true,
 	contracts.EvtMessageSent:        true,
+	contracts.EvtSteeringInjected:   true,
 }
 
 // graphBodyMax bounds the mailbox body echoed into replay frames. Full bodies

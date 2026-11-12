@@ -7,7 +7,15 @@ import (
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
+)
+
+// Bounds on the earlier conversation the lead sees. A single long message is
+// clipped; when the whole history exceeds the budget the oldest lines drop.
+const (
+	historyMessageClip = 2000
+	historyBudget      = 24000
 )
 
 // askHelp documents the ask tool for every agent. Asking is not gated on the peer
@@ -21,8 +29,9 @@ const askHelp = "Ask the human only when you are blocked on a decision only they
 // so every subagent starts informed by what the others have done. The peer message
 // tool is documented only when the thread has the peer mailbox enabled, and
 // messages teammates sent while this agent was waiting are carried in their own
-// section.
-func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted) string {
+// section. Steers the team lead sent while the agent was not running come in a
+// steering section.
+func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted, steering []string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	b.WriteString("\n\n## Task\n")
@@ -44,6 +53,15 @@ func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews s
 		b.WriteString("These arrived while you were waiting. Weigh them alongside your task:\n\n")
 		for _, m := range teammates {
 			fmt.Fprintf(&b, "- from %s: %s\n", m.From, m.Body)
+		}
+	}
+	if len(steering) > 0 {
+		b.WriteString("\n\n## Steering from the team lead\n")
+		b.WriteString("These arrived while your previous run was in progress, so they did not change it. Weigh them now and adjust your work:\n\n")
+		for _, s := range steering {
+			b.WriteString("- ")
+			b.WriteString(s)
+			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n\nGit is the team lead's. Do not run state-changing git (add, commit, push, branch, checkout, switch, reset, restore, rebase, merge, stash, worktree, tag, fetch, pull, clean); the lead commits your work. Read-only git (status, diff, log, show) is fine, and a guard refuses the rest.\n")
@@ -87,8 +105,11 @@ func imagesNote(images []providers.ImageInput) string {
 // so BuildOrchestratorPrompt's signature stays readable as sections are added;
 // zero values render no section.
 type OrchestratorPrompt struct {
-	Role          contracts.Role
-	UserMessage   string
+	Role        contracts.Role
+	UserMessage string
+	// History is the thread's earlier conversation, oldest first, rendered by
+	// renderHistory. Empty renders no section.
+	History       string
 	Inherited     string
 	Shared        string
 	Roster        string
@@ -96,10 +117,12 @@ type OrchestratorPrompt struct {
 	PeerMessages  string
 	PeerMailbox   bool
 	// Subthreads offers the subthread tool: the thread may start one.
-	Subthreads     bool
-	Team           string
-	Pass           int
-	Steering       []string
+	Subthreads bool
+	Team       string
+	Pass       int
+	Steering   []string
+	// Steer offers the steer tool: the thread has subagents to steer.
+	Steer          bool
 	RuntimeChoices string
 }
 
@@ -128,6 +151,11 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	if strings.TrimSpace(pending) != "" {
 		b.WriteString("\n\n")
 		b.WriteString(pending)
+	}
+	if strings.TrimSpace(in.History) != "" {
+		b.WriteString("\n\n## Conversation so far\n")
+		b.WriteString(in.History)
+		b.WriteString("\nThis is the thread's earlier conversation, oldest first. Use it to resolve references like 'that', 'the steering', or 'the last result'. Act on the request below.")
 	}
 	b.WriteString("\n\n## User request\n")
 	b.WriteString(userMessage)
@@ -163,11 +191,28 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
 		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
 	}
+	if in.Steer {
+		b.WriteString("\n\n## Steering a subagent\n")
+		b.WriteString("Send a course correction to an agent you dispatched. A steer does not interrupt a run in progress: the agent reads it when its next run starts, so use it for work still waiting on its dependencies or for a later run. To change running work, dispatch a follow-up with --depends-on instead:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool steer --to <agent name> --text \"<adjustment>\"\n\n")
+		b.WriteString("The reply says whether the steer was queued for that agent's next run.")
+	}
 	b.WriteString("\n\n## Tracking the plan\n")
 	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-create --name <short-name> --task \"<task title>\"\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-update --name <short-name> --status todo|doing|done\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-list\n")
+	b.WriteString("\n\n## Other threads\n")
+	b.WriteString("You can see the other threads in this environment and delete one. Delete only when the user asks you to clean up:\n\n")
+	b.WriteString("  \"$AT_TOOL\" tool thread-list\n")
+	b.WriteString("  \"$AT_TOOL\" tool thread-delete --id <thread id> [--remove-worktree]\n\n")
+	b.WriteString("You cannot delete this thread, and a thread with work still running cannot be deleted. --remove-worktree also removes that thread's worktree, and is refused if it has uncommitted changes.")
+	b.WriteString("\n\n## Files and shell\n")
+	b.WriteString("You can read and write files in this thread's worktree, and run a shell command there. Relative paths resolve against the worktree, and a file path cannot leave it:\n\n")
+	b.WriteString("  \"$AT_TOOL\" tool read-file --path <path>\n")
+	b.WriteString("  \"$AT_TOOL\" tool write-file --path <path> --text \"<content>\"   (or --stdin to pipe the content in)\n")
+	b.WriteString("  \"$AT_TOOL\" tool shell --command \"<command>\" [--cwd <dir>] [--timeout <seconds>]\n\n")
+	b.WriteString("A file read returns up to about 256 KB. A command runs for 120 seconds unless you pass --timeout (at most 600), and its output is capped at about 64 KB. Its last line is the exit code. Use these for quick inspection and checks; dispatch an executor for changes that need their own review.")
 	b.WriteString("\n\n## Asking the human\n")
 	b.WriteString(askHelp)
 	if in.Subthreads {
@@ -204,6 +249,33 @@ func BuildTitlePrompt(userMessage, summary string) string {
 		b.WriteString(clip(summary, 800))
 	}
 	b.WriteString("\n\nReply with only the title: 3 to 6 words, no quotes, no trailing punctuation, no label such as \"Title:\".")
+	return b.String()
+}
+
+// renderHistory writes messages as "- author: text" lines, oldest first. It keeps
+// the newest messages that fit historyBudget and drops the rest.
+func renderHistory(messages []domain.Message) string {
+	var lines []string
+	total := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		line := "- " + m.Author + ": " + clip(m.Text, historyMessageClip)
+		if total+len(line)+1 > historyBudget {
+			break
+		}
+		total += len(line) + 1
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i := len(lines) - 1; i >= 0; i-- {
+		b.WriteString(lines[i])
+		if i > 0 {
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

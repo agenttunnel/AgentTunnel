@@ -8,7 +8,7 @@
         <key>CFBundleDisplayName</key>
             <string>AgentTunnel</string>
         <key>CFBundleExecutable</key>
-            <string>agenttunnel</string>
+            <string>agenttunnel-desktop</string>
         <key>CFBundleIdentifier</key>
             <string>com.agenttunnel.desktop</string>
         <key>CFBundleVersion</key>

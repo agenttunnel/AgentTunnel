@@ -13,6 +13,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
+	"github.com/agenttunnel/agenttunnel-go/internal/steering"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 	"github.com/agenttunnel/agenttunnel-go/internal/usage"
 )
@@ -23,15 +24,22 @@ func fixedClock() time.Time { return time.Unix(0, 0).UTC() }
 // CLI, so the full dispatch path can be exercised without a real provider.
 func newHarness(t *testing.T, script string) (*Runner, *domain.Engine, context.Context) {
 	t.Helper()
+	return newHarnessInvoking(t, func(providers.SessionSpec) (providers.CommandSpec, error) {
+		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", script}, PromptVia: "stdin"}, nil
+	})
+}
+
+// newHarnessInvoking is newHarness with the spawn hook exposed: the hook runs in
+// Go at every harness spawn, so a test can observe or act on a specific pass.
+func newHarnessInvoking(t *testing.T, invoke providers.InvocationFunc) (*Runner, *domain.Engine, context.Context) {
+	t.Helper()
 	ctx := context.Background()
 	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
 	eng.SetClock(fixedClock)
 	eng.Start(ctx)
 	t.Cleanup(eng.Close)
 
-	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", func(providers.SessionSpec) (providers.CommandSpec, error) {
-		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", script}, PromptVia: "stdin"}, nil
-	}, providers.JSONLineTranslator{})
+	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", invoke, providers.JSONLineTranslator{})
 	inherited := contextstore.NewInheritedContext(t.TempDir())
 	if err := inherited.Ensure(); err != nil {
 		t.Fatal(err)
@@ -47,6 +55,7 @@ func newHarness(t *testing.T, script string) (*Runner, *domain.Engine, context.C
 		Inherited: inherited,
 		Settings:  settings.New(t.TempDir()),
 		Tools:     toolbox.New(),
+		Steering:  steering.New(),
 		Clock:     fixedClock,
 		Cfg:       Config{MaxPasses: 2, MaxConcurrency: 2},
 	})

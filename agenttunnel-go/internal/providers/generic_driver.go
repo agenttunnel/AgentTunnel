@@ -2,6 +2,7 @@ package providers
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -161,24 +162,22 @@ func (JSONLineTranslator) Translate(line string) []Event {
 
 // toolEvents turns a tool frame into a readable summary plus its output. The
 // summary mirrors what the harness shows in its own TUI: `$ <command>` for a
-// shell call, `→ Read <path>` for a file read, and so on.
+// shell call, `→ Read <path>` for a file read, followed by every argument the
+// harness sent that the summary does not already show.
 func toolEvents(scope map[string]any) []Event {
 	name := firstString(scope, "tool", "name", "toolName")
 	state, _ := scope["state"].(map[string]any)
 	input, _ := state["input"].(map[string]any)
-
-	summary := ""
-	switch {
-	case firstString(input, "command", "cmd") != "":
-		summary = "$ " + firstString(input, "command", "cmd")
-	case firstString(input, "filePath", "path", "file", "pattern", "query", "url") != "":
-		summary = "→ " + titleFirst(name) + " " + firstString(input, "filePath", "path", "file", "pattern", "query", "url")
-	case firstString(state, "title") != "":
-		summary = "→ " + titleFirst(name) + " " + firstString(state, "title")
-	case name != "":
-		summary = "→ " + titleFirst(name)
+	// As with the rest of this translator, tolerate harnesses that put the
+	// call's arguments at the frame's top level instead of under state.
+	if len(input) == 0 {
+		input, _ = scope["args"].(map[string]any)
+	}
+	if len(input) == 0 {
+		input, _ = scope["input"].(map[string]any)
 	}
 
+	summary := toolText(name, input, firstString(state, "title"))
 	var out []Event
 	if summary != "" {
 		out = append(out, Event{Kind: contracts.LogTool, Text: summary, ToolName: name})
@@ -189,20 +188,95 @@ func toolEvents(scope map[string]any) []Event {
 	return out
 }
 
+// toolText renders a tool call for the log: the harness-style summary, then the
+// remaining arguments as one "key: value" line each. Shell commands stay on the
+// summary line verbatim, so a multi-line command keeps its shape in the
+// monospace log.
+func toolText(name string, args map[string]any, title string) string {
+	summary, shown := toolSummary(name, args, title)
+	if summary == "" {
+		return ""
+	}
+	return summary + toolDetail(args, shown)
+}
+
+// toolSummary names a call the way the harness TUI does and reports the
+// argument keys already visible on that line.
+func toolSummary(name string, args map[string]any, title string) (string, []string) {
+	if command, key := pickString(args, "command", "cmd"); command != "" {
+		return "$ " + command, []string{key}
+	}
+	if target, key := pickString(args, "file_path", "filePath", "path", "file", "pattern", "query", "url"); target != "" {
+		return "→ " + titleFirst(name) + " " + target, []string{key}
+	}
+	if title != "" {
+		return "→ " + titleFirst(name) + " " + title, nil
+	}
+	if name != "" {
+		return "→ " + titleFirst(name), nil
+	}
+	return "", nil
+}
+
+// toolDetail lists the arguments a summary does not show, sorted by key so the
+// same call always renders the same way. Values stay verbatim (multi-line
+// commands and prompts keep their shape); long values are truncated so a Write
+// payload cannot flood the log.
+func toolDetail(args map[string]any, shown []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	skip := make(map[string]bool, len(shown))
+	for _, key := range shown {
+		skip[key] = true
+	}
+	keys := make([]string, 0, len(args))
+	for key := range args {
+		if !skip[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		value := toolValue(args[key])
+		if value == "" {
+			continue
+		}
+		b.WriteString("\n  ")
+		b.WriteString(key)
+		b.WriteString(": ")
+		b.WriteString(value)
+	}
+	return truncate(b.String(), 2000)
+}
+
+// toolValue renders one argument value: strings verbatim, everything else as
+// compact JSON.
+func toolValue(v any) string {
+	switch value := v.(type) {
+	case nil:
+		return ""
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return ""
+		}
+		return truncate(strings.TrimRight(value, "\n"), 800)
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		return truncate(string(raw), 800)
+	}
+}
+
 // executionStart summarizes a Pi tool call. Pi reports the call before it runs,
 // with the tool name and its arguments at the top level.
 func executionStart(raw map[string]any) []Event {
 	name := firstString(raw, "toolName", "tool")
 	args, _ := raw["args"].(map[string]any)
-	summary := ""
-	switch {
-	case firstString(args, "command", "cmd") != "":
-		summary = "$ " + firstString(args, "command", "cmd")
-	case firstString(args, "filePath", "path", "file", "pattern", "query", "url") != "":
-		summary = "→ " + titleFirst(name) + " " + firstString(args, "filePath", "path", "file", "pattern", "query", "url")
-	case name != "":
-		summary = "→ " + titleFirst(name)
-	}
+	summary := toolText(name, args, "")
 	if summary == "" {
 		return nil
 	}
@@ -277,20 +351,12 @@ func contentEvents(v any) []Event {
 }
 
 // toolUseEvent summarizes an Anthropic tool_use block the way the harness
-// renders it: `$ <command>` for a shell call, `→ Read <path>` for a file.
+// renders it: `$ <command>` for a shell call, `→ Read <path>` for a file, plus
+// any remaining arguments.
 func toolUseEvent(block map[string]any) []Event {
 	name := firstString(block, "name", "tool")
 	input, _ := block["input"].(map[string]any)
-	summary := ""
-	switch {
-	case firstString(input, "command", "cmd") != "":
-		summary = "$ " + firstString(input, "command", "cmd")
-	case firstString(input, "file_path", "filePath", "path", "file", "pattern", "query", "url") != "":
-		summary = "→ " + titleFirst(name) + " " +
-			firstString(input, "file_path", "filePath", "path", "file", "pattern", "query", "url")
-	case name != "":
-		summary = "→ " + titleFirst(name)
-	}
+	summary := toolText(name, input, "")
 	if summary == "" {
 		return nil
 	}
@@ -419,12 +485,19 @@ func usageFromValue(v any) *contracts.TokenUsage {
 }
 
 func firstString(m map[string]any, keys ...string) string {
+	value, _ := pickString(m, keys...)
+	return value
+}
+
+// pickString returns the first non-empty string among keys, plus the key it
+// came from so callers can skip that argument when listing the rest.
+func pickString(m map[string]any, keys ...string) (string, string) {
 	for _, k := range keys {
 		if v, ok := m[k].(string); ok && v != "" {
-			return v
+			return v, k
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func intField(m map[string]any, keys ...string) int64 {
