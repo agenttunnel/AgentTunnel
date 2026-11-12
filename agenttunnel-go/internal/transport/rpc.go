@@ -2303,6 +2303,7 @@ var graphEventTypes = map[contracts.EventType]bool{
 	contracts.EvtUsageRecorded:      true,
 	contracts.EvtMailboxPosted:      true,
 	contracts.EvtMessageSent:        true,
+	contracts.EvtSteeringInjected:   true,
 }
 
 // graphBodyMax bounds the mailbox body echoed into replay frames. Full bodies

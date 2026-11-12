@@ -44,6 +44,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 			s.turnFor(s.Turn).At = e.At
 		}
 
+	case contracts.SteeringInjected:
+		// Steering is transcript and graph history; the read model keeps the
+		// queued message, not its delivery.
 	case contracts.SteeringConsumed:
 		consumed := make(map[string]bool, len(p.MessageIDs))
 		for _, id := range p.MessageIDs {

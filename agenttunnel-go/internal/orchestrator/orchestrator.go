@@ -460,6 +460,16 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 				consumed = append(consumed, entry.MessageID)
 			}
 		}
+		if len(steering) > 0 {
+			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
+				ID:       o.runner.nextID(),
+				Type:     contracts.CmdSteeringInjected,
+				ThreadID: threadID,
+				Injected: &contracts.SteeringInjected{Count: len(steering)},
+			}); err != nil {
+				return err
+			}
+		}
 		if len(consumed) > 0 {
 			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
 				ID:              o.runner.nextID(),

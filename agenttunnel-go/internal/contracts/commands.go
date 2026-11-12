@@ -42,6 +42,7 @@ const (
 	CmdQuestionAsk        CommandType = "thread.question.ask"
 	CmdQuestionClose      CommandType = "thread.question.close"
 	CmdPRTrack            CommandType = "thread.pr.track"
+	CmdSteeringInjected   CommandType = "thread.steering.injected"
 )
 
 // IsBuiltinRole reports whether id names a role every daemon registers. The
@@ -102,6 +103,7 @@ type Command struct {
 	SharedContext   *SharedContextSet          `json:"sharedContext,omitempty"`
 	Mailbox         *MailboxPosted             `json:"mailbox,omitempty"`
 	Message         *MessageSent               `json:"message,omitempty"`
+	Injected        *SteeringInjected          `json:"injected,omitempty"`
 	SteeringConsume *SteeringConsumed          `json:"steeringConsume,omitempty"`
 	ReviewComment   *ReviewCommentAdded        `json:"reviewComment,omitempty"`
 	ReviewSubmit    *ReviewCommentsSubmitted   `json:"reviewSubmit,omitempty"`

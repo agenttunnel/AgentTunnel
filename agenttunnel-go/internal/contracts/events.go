@@ -17,6 +17,7 @@ const (
 	EvtWorktreeDetached   EventType = "thread.worktree-detached"
 	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
 	EvtMessageSent        EventType = "thread.message-sent"
+	EvtSteeringInjected   EventType = "thread.steering-injected"
 	EvtSteeringConsumed   EventType = "thread.steering-consumed"
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
@@ -117,6 +118,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[WorktreeReplaced](data)
 	case EvtMessageSent:
 		return decodePayload[MessageSent](data)
+	case EvtSteeringInjected:
+		return decodePayload[SteeringInjected](data)
 	case EvtSteeringConsumed:
 		return decodePayload[SteeringConsumed](data)
 	case EvtModelSet:
@@ -240,6 +243,16 @@ type MessageSent struct {
 }
 
 func (MessageSent) eventType() EventType { return EvtMessageSent }
+
+// SteeringInjected records that the orchestrator drained queued steering into a
+// pass. Queuing is already durable as a MessageSent by the "steering" author, so
+// this event is the second step: the pair shows when steering waited and when
+// the agents saw it.
+type SteeringInjected struct {
+	Count int `json:"count"`
+}
+
+func (SteeringInjected) eventType() EventType { return EvtSteeringInjected }
 
 // SteeringConsumed marks the steering messages a lead has picked up in a pass.
 // Until it lands, a steering message is still waiting in the queue.
