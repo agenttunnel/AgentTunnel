@@ -15,6 +15,8 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/transport"
 )
 
 // fakeAdapter records what the bridge asked it to do. Hooks let a test drive
@@ -711,6 +713,105 @@ func TestBridgeRoutesInboundAndReplies(t *testing.T) {
 	}
 	if got := await(t, f.adapter.sentCh, "the router's reply"); got != outboundMarker+" "+inboundReply {
 		t.Fatalf("reply = %q, want the marked reply", got)
+	}
+}
+
+// chatActions is a ControlActions stand-in for the bridge tests: enough of the
+// daemon's surface for the real ControlRouter to run /use and /btw end to end.
+// Only the threads list and the asked side questions are recorded, so tests
+// assert exactly what a chat message reached.
+type chatActions struct {
+	mu        sync.Mutex
+	threads   []transport.ControlThread
+	btws      []chatBtwCall
+	btwAnswer string
+	btwErr    error
+}
+
+type chatBtwCall struct {
+	thread   contracts.ThreadID
+	question string
+}
+
+func (a *chatActions) ControlThreads(context.Context) ([]transport.ControlThread, error) {
+	return a.threads, nil
+}
+
+func (a *chatActions) ControlTurn(context.Context, contracts.ThreadID, string) error { return nil }
+
+func (a *chatActions) ControlSteer(context.Context, contracts.ThreadID, string) error { return nil }
+
+func (a *chatActions) ControlPendingQuestion(context.Context, contracts.ThreadID) (*transport.ControlQuestion, error) {
+	return nil, nil
+}
+
+func (a *chatActions) ControlAnswer(context.Context, contracts.ThreadID, string, []string, string) error {
+	return nil
+}
+
+func (a *chatActions) ControlBtw(_ context.Context, id contracts.ThreadID, question string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.btws = append(a.btws, chatBtwCall{id, question})
+	return a.btwAnswer, a.btwErr
+}
+
+func (a *chatActions) ControlMaster(context.Context, string, []orchestrator.MasterMessage) (orchestrator.MasterResult, error) {
+	return orchestrator.MasterResult{}, nil
+}
+
+// Both messages are delivered before either reply is read, so the side question
+// reaching the thread /use selected proves the worker routed them in order.
+func TestBridgeRoutesBtwAfterUseThroughOneWorker(t *testing.T) {
+	actions := &chatActions{
+		threads: []transport.ControlThread{
+			{ID: "t1", Title: "Fix flaky test"},
+			{ID: "t2", Title: "Write docs", Running: true},
+		},
+		btwAnswer: "It is writing examples.",
+	}
+	router := transport.NewControlRouter(actions)
+	adapter := &fakeAdapter{sentCh: make(chan string, 8)}
+	b, err := New(Options{
+		StateDir: t.TempDir(),
+		Adapter:  adapter,
+		Control:  func(ctx context.Context, text string) string { return router.Handle(ctx, text) },
+	})
+	if err != nil {
+		t.Fatalf("new bridge: %v", err)
+	}
+	t.Cleanup(b.Close)
+	// Start runs the sender that carries router replies out of the bridge.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	b.Start(ctx)
+	if err := b.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := b.SetControl(true); err != nil {
+		t.Fatalf("set control: %v", err)
+	}
+
+	if !adapter.deliver(InboundMessage{ID: "m1", Text: "/use 2", FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	// Delivered while /use is still ahead of it in the worker: the ask must see
+	// the selection that message made, or refuse, never the previous target.
+	if !adapter.deliver(InboundMessage{ID: "m2", Text: "/btw what is it doing?", FromSelf: true}) {
+		t.Fatal("the bridge never installed its inbound handler")
+	}
+	if got := await(t, adapter.sentCh, "the /use reply"); got != outboundMarker+" Selected Write docs." {
+		t.Fatalf("use reply = %q", got)
+	}
+	if got := await(t, adapter.sentCh, "the /btw reply"); got != outboundMarker+" Btw: It is writing examples." {
+		t.Fatalf("btw reply = %q, want the marked side answer", got)
+	}
+
+	actions.mu.Lock()
+	btws := append([]chatBtwCall(nil), actions.btws...)
+	actions.mu.Unlock()
+	if len(btws) != 1 || btws[0].thread != "t2" || btws[0].question != "what is it doing?" {
+		t.Fatalf("btws = %+v, want the ask on the thread /use selected", btws)
 	}
 }
 
