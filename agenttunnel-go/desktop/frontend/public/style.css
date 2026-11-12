@@ -914,6 +914,100 @@ body.is-resizing * {
 .attach-remove:hover {
   color: var(--text);
 }
+/* Image drafts: a local preview chip next to the file chips until the turn is
+ * sent. The thumbnail is an objectURL of the pasted or dropped bytes. */
+.img-row {
+  margin-bottom: 6px;
+}
+.img-chip {
+  padding: 3px;
+  height: auto;
+}
+.img-chip img {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+.img-chip-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 150px;
+}
+.img-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.img-chip-state {
+  font-size: 10px;
+  color: var(--faint);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.img-chip.failed {
+  border-color: var(--err);
+}
+.img-chip.failed .img-chip-state {
+  color: var(--err);
+}
+/* Images in the transcript: thumbnails fetched over HTTP from /attachments. */
+.thread-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.thread-img {
+  width: 160px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: zoom-in;
+  display: block;
+}
+.thread-img-loading,
+.thread-img-error {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 160px;
+  font: 11px/1 var(--mono);
+  color: var(--faint);
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--border);
+  background: var(--surface-2);
+}
+.thread-img-error {
+  color: var(--err);
+  border-color: var(--err);
+}
+/* Full-size view of a transcript image: dimmed sheet, click anywhere to close. */
+.img-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 6, 10, 0.82);
+  cursor: zoom-out;
+}
+.img-overlay img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-float);
+}
 .model-btn {
   background: transparent;
   border-color: transparent;

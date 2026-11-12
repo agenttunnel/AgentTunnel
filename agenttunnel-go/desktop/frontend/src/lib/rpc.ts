@@ -102,6 +102,68 @@ export class Rpc {
   }
 }
 
+/** One image attached to a message: enough to render and refetch the bytes.
+ * Mirrors contracts.ImageRef on the daemon — never the bytes themselves. */
+export type ImageRef = {
+  id: string;
+  name?: string;
+  mime: string;
+  size: number;
+  width?: number;
+  height?: number;
+};
+
+/** Reads a failed /attachments response: the daemon replies with a short
+ * plain-language message (bad mime, too large, unknown thread). */
+async function attachmentsError(res: Response): Promise<Error> {
+  let detail = "";
+  try {
+    detail = (await res.text()).trim();
+  } catch {
+    /* fall through to the status line */
+  }
+  return new Error(detail || `attachment upload failed (${res.status})`);
+}
+
+/**
+ * uploadImage POSTs raw image bytes to the daemon's HTTP /attachments
+ * endpoint and resolves to the stored ImageRef. Images ride HTTP with Bearer
+ * auth — they never go over the WebSocket or into the event log.
+ */
+export async function uploadImage(
+  httpUrl: string,
+  token: string,
+  threadId: string,
+  blob: Blob,
+  name: string,
+): Promise<ImageRef> {
+  const res = await fetch(
+    `${httpUrl}/attachments?threadId=${encodeURIComponent(threadId)}&name=${encodeURIComponent(name)}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: blob,
+    },
+  );
+  if (!res.ok) throw await attachmentsError(res);
+  return (await res.json()) as ImageRef;
+}
+
+/** fetchImageBlob GETs one stored image attachment's bytes for rendering. */
+export async function fetchImageBlob(
+  httpUrl: string,
+  token: string,
+  threadId: string,
+  id: string,
+): Promise<Blob> {
+  const res = await fetch(
+    `${httpUrl}/attachments?threadId=${encodeURIComponent(threadId)}&id=${encodeURIComponent(id)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw await attachmentsError(res);
+  return res.blob();
+}
+
 /** discover asks the desktop shell for the daemon's loopback address + token. */
 export function discover(): Promise<Conn> {
   return new Promise((resolve) => {
