@@ -385,7 +385,8 @@ type turn struct {
 // pass each round, in order: a lead's dispatches run before the next lead
 // speaks, so its peer message reaches the next lead in the same round. The
 // round loop repeats while work is dispatched, steering or a spawn decision is
-// pending, or a lead has mail; it ends after the pass budget regardless. With
+// pending, or a lead has mail; it ends after the pass budget unless a steer is
+// still pending, which earns one more round. With
 // one lead this is the classic single-orchestrator loop.
 func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string) (err error) {
 	// An auto context-manager run started by this turn must finish before the
@@ -446,7 +447,10 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 
 	var finalText string
 	var dispatched []contracts.DispatchTask
-	for pass := 0; pass < o.runner.maxPasses(); pass++ {
+	// Steering that arrives during the last budgeted pass earns one more round:
+	// the user typed it into this turn, and a queued steer would otherwise
+	// surface in an unrelated later turn. Each extra round needs a new steer.
+	for pass := 0; pass < o.runner.maxPasses() || o.runner.HasSteering(threadID); pass++ {
 		// Steering is drained once per round so every lead weighs it, not just
 		// the first one to speak. Draining is the moment the pass takes it:
 		// record that in the transcript so the client can retire its pending
