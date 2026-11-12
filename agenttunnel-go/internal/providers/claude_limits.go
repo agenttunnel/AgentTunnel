@@ -35,6 +35,10 @@ type claudeCreds struct {
 
 var errNoClaudeCreds = errors.New("no claude credentials")
 
+// claudeOAuthBeta is the beta Claude Code sends on OAuth-authenticated
+// requests, including the usage endpoint.
+const claudeOAuthBeta = "oauth-2025-04-20"
+
 // NewClaudeLimits returns the Claude subscription usage fetcher.
 func NewClaudeLimits() LimitsFetcher {
 	return &claudeLimits{
@@ -63,7 +67,7 @@ func (c *claudeLimits) Fetch(ctx context.Context) ([]contracts.LimitWindow, stri
 		return nil, "Claude usage unavailable"
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.accessToken)
-	req.Header.Set("anthropic-beta", "oauth-2025-04-01")
+	req.Header.Set("anthropic-beta", claudeOAuthBeta)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.client.Do(req)
@@ -158,11 +162,20 @@ type claudeUsageBody struct {
 	FiveHour     *claudeUsageWindow `json:"five_hour"`
 	SevenDay     *claudeUsageWindow `json:"seven_day"`
 	SevenDayOpus *claudeUsageWindow `json:"seven_day_opus"`
+	// ExtraUsage is the usage-credits spend. Enterprise seats do not report
+	// the five-hour and weekly plan windows; their allowance is this monthly
+	// credit pool instead.
+	ExtraUsage *claudeExtraUsage `json:"extra_usage"`
 }
 
 type claudeUsageWindow struct {
 	Utilization float64    `json:"utilization"`
 	ResetsAt    *time.Time `json:"resets_at"`
+}
+
+type claudeExtraUsage struct {
+	IsEnabled   bool     `json:"is_enabled"`
+	Utilization *float64 `json:"utilization"`
 }
 
 func (b claudeUsageBody) windows() []contracts.LimitWindow {
@@ -180,5 +193,12 @@ func (b claudeUsageBody) windows() []contracts.LimitWindow {
 	add("five_hour", "5-hour", b.FiveHour)
 	add("weekly", "Weekly", b.SevenDay)
 	add("weekly_opus", "Weekly Opus", b.SevenDayOpus)
+	if x := b.ExtraUsage; x != nil && x.IsEnabled && x.Utilization != nil {
+		out = append(out, contracts.LimitWindow{
+			ID:          "extra_usage",
+			Label:       "Usage credits",
+			UsedPercent: min(max(*x.Utilization, 0), 100),
+		})
+	}
 	return out
 }

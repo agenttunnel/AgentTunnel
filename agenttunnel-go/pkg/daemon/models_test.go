@@ -39,7 +39,9 @@ func TestModelsAddAppearsInHarnessList(t *testing.T) {
 	}
 }
 
-func TestModelsRefreshWithoutDiscoveryFallsBackToCatalog(t *testing.T) {
+// Claude has no listing command, and nothing is hardcoded, so a refresh lists
+// no models and reports no error.
+func TestModelsRefreshWithoutDiscoveryListsNothing(t *testing.T) {
 	d := newTestDaemon(t)
 	c, _ := dialWS(t, d)
 
@@ -49,8 +51,8 @@ func TestModelsRefreshWithoutDiscoveryFallsBackToCatalog(t *testing.T) {
 		Error   string   `json:"error"`
 	}
 	json.Unmarshal(call(t, c, "1", "models.refresh", map[string]any{"harness": "claude"}), &res)
-	if len(res.Models) == 0 {
-		t.Fatalf("expected catalog fallback: %+v", res)
+	if len(res.Models) != 0 {
+		t.Fatalf("expected no models without discovery, got %v", res.Models)
 	}
 	if res.Error != "" {
 		t.Fatalf("unexpected discovery error: %s", res.Error)
