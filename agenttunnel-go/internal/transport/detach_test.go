@@ -208,7 +208,7 @@ func TestDetachedTurnSurvivesClientDisconnect(t *testing.T) {
 }
 
 // daemon.shutdown acknowledges before it triggers the assembly's shutdown, so
-// `at daemon stop` always gets its reply.
+// `agenttunnel daemon stop` always gets its reply.
 func TestDaemonShutdownRepliesThenTriggersCallback(t *testing.T) {
 	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
 	eng.Start(t.Context())

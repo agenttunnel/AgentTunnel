@@ -352,7 +352,7 @@ type (
 		// They reach the agent's prompt, not the transcript.
 		Attachments []string `json:"attachments,omitempty"`
 		// Detach runs the turn against the daemon's lifetime context and replies
-		// at once, so a client (at run) can exit while the work continues.
+		// at once, so a client (agenttunnel run) can exit while the work continues.
 		Detach bool `json:"detach,omitempty"`
 	}
 	setBoolParams struct {
@@ -686,7 +686,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return map[string]any{"harness": string(h), "models": d.models.List(h)}, nil
 
 	case "thread.open":
-		// The desktop CLI's `agenttunnel <dir>` flow: resolve the directory to
+		// The desktop's `agenttunnel-desktop <dir>` flow: resolve the directory to
 		// a project (creating one when the dir is unknown) and open a fresh
 		// thread in it. Creation is provisional — closing the window without
 		// typing leaves nothing behind.

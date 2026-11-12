@@ -1,6 +1,6 @@
-# `at` CLI core
+# `agenttunnel` CLI core
 
-The `at` binary is a thin client over the daemon's JSON-RPC WebSocket. This
+The `agenttunnel` binary is a thin client over the daemon's JSON-RPC WebSocket. This
 package owns the command tree, global flags, the daemon discovery/autostart
 path, and the RPC client. Command implementations live in their own files in
 this package and register from `init()`, so the core never names them.
@@ -14,7 +14,7 @@ func init() {
     Register(Command{
         Name:    "ps",
         Summary: "List running turns",
-        Usage:   "at ps",
+        Usage:   "agenttunnel ps",
         Run:     runPs,
     })
 }
@@ -49,8 +49,8 @@ Groups are the same type with `Subcommands` and no `Run`:
 Register(Command{
     Name: "projects", Summary: "Manage projects",
     Subcommands: []Command{
-        {Name: "add", Summary: "Add a project", Usage: "at projects add <path>", Run: runProjectsAdd},
-        {Name: "ls", Summary: "List projects", Usage: "at projects ls", Run: runProjectsLs},
+        {Name: "add", Summary: "Add a project", Usage: "agenttunnel projects add <path>", Run: runProjectsAdd},
+        {Name: "ls", Summary: "List projects", Usage: "agenttunnel projects ls", Run: runProjectsLs},
     },
 })
 ```

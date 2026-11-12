@@ -1,7 +1,7 @@
 package main
 
 // Attach handling: a window may boot against a daemon someone else owns (an
-// `at` autostart, or a desktop left running in the background) instead of
+// `agenttunnel` autostart, or a desktop left running in the background) instead of
 // starting its own. The discovery file is the handoff point; the window only
 // ever reads it, and only removes it when the recorded daemon does not answer.
 
@@ -36,7 +36,7 @@ type daemonTarget struct {
 // missing or unreachable file means "no daemon to attach to", but it is only
 // removed when the recorded process is provably dead: project.list walks every
 // thread, so a large environment can legitimately outlast the probe, and
-// deleting a live daemon's file would strand `at` and let this window boot a
+// deleting a live daemon's file would strand `agenttunnel` and let this window boot a
 // second daemon on the same state dir.
 func findDaemon(stateDir string) (daemonTarget, bool) {
 	info, err := discovery.Read(stateDir)

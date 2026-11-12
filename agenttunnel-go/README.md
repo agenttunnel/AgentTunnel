@@ -49,15 +49,15 @@ and Windows (amd64), and attaches them to every GitHub release.
 Applications. The builds are unsigned, so Gatekeeper may quarantine the app; the
 installer clears that for you.
 
-The installer puts `AgentTunnel.app` in `~/Applications`, links `agenttunnel`
-into `~/.local/bin`, and copies `atd` there too:
+The installer puts `AgentTunnel.app` in `~/Applications`, links `agenttunnel-desktop`
+into `~/.local/bin`, and copies `atd` and `agenttunnel` there too:
 
 ```bash
 curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
 ```
 
-**Linux / Windows** — the installer writes `atd` (the daemon) and `agenttunnel`
-(the desktop client) to `~/.local/bin`. Add that directory to `PATH` if it is
+**Linux / Windows** — the installer writes `atd` (the daemon), `agenttunnel` (the CLI),
+and `agenttunnel-desktop` (the desktop client) to `~/.local/bin`. Add that directory to `PATH` if it is
 not there already.
 
 Install somewhere else, pin a release, or choose where the macOS app lands:
@@ -90,8 +90,8 @@ Desktop app (embeds the daemon and opens a native window):
 
 ```bash
 cd desktop
-./build.sh                       # builds the UI, then links bin/agenttunnel
-./bin/agenttunnel
+./build.sh                       # builds the UI, then links bin/agenttunnel-desktop
+./bin/agenttunnel-desktop
 ```
 
 `build.sh` builds the frontend and then always relinks the binary. Plain
@@ -103,13 +103,13 @@ macOS app bundle and DMG:
 ```bash
 cd desktop
 ./build-app.sh --dmg             # dist/AgentTunnel-darwin-<arch>.dmg
-./build-app.sh --install         # ~/Applications (or /Applications) + `agenttunnel` on PATH
+./build-app.sh --install         # ~/Applications (or /Applications) + `agenttunnel-desktop` on PATH
 ```
 
-Then `agenttunnel` starts the app from anywhere. Opening a project:
+Then `agenttunnel-desktop` starts the app from anywhere. Opening a project:
 
 ```bash
-agenttunnel ~/code/my-project    # new thread in that project
+agenttunnel-desktop ~/code/my-project    # new thread in that project
 ```
 
 An unknown directory becomes a new project (named after the directory); a known
@@ -118,7 +118,7 @@ already running, the request is forwarded to it and the window focuses instead
 of booting a second instance.
 
 Threads are only saved once something happens in them: creating one — from the
-UI or `agenttunnel <dir>` — is in-memory until the first message, rename, or
+UI or `agenttunnel-desktop <dir>` — is in-memory until the first message, rename, or
 setting change. A thread you create and never use leaves nothing behind.
 
 Tests:
@@ -202,7 +202,7 @@ Context: `context.save`, `context.inherited.get`, `context.inherited.save`,
 
 Desktop handoff: `thread.open` (open a thread for a directory, creating the
 project when unknown), `app.open` (broadcast an open-thread/focus request to
-every connected client — how `agenttunnel <dir>` reaches a running app).
+every connected client — how `agenttunnel-desktop <dir>` reaches a running app).
 
 Files: `files.tree`, `files.read`.
 

@@ -32,7 +32,7 @@ curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/i
 ```
 
 **Linux / Windows** — the installer (or the release tarball) provides `atd`,
-the daemon, and `agenttunnel`, the desktop client. Linux needs GTK 4 and
+the daemon, `agenttunnel`, the CLI, and `agenttunnel-desktop`, the desktop client. Linux needs GTK 4 and
 WebKitGTK 6.0 at runtime.
 
 To build a DMG locally instead:

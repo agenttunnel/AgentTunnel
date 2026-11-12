@@ -13,7 +13,7 @@ func init() {
 		Name:    "models",
 		Summary: "Inspect the models each harness reports",
 		Subcommands: []Command{
-			{Name: "ls", Summary: "List known models, their variants, and role defaults", Usage: "at models ls [--harness <h>]", Run: runModelsLs},
+			{Name: "ls", Summary: "List known models, their variants, and role defaults", Usage: "agenttunnel models ls [--harness <h>]", Run: runModelsLs},
 		},
 	})
 }
@@ -55,7 +55,7 @@ func parseModelsArgs(args []string) (string, error) {
 			}
 			harness, i = strings.TrimSpace(value), next
 		default:
-			return "", usageError("unknown argument %q (usage: at models ls [--harness <h>])", arg)
+			return "", usageError("unknown argument %q (usage: agenttunnel models ls [--harness <h>])", arg)
 		}
 	}
 	return harness, nil

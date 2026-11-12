@@ -7,10 +7,10 @@
 #                       [--version VERSION] [--arch ARCH]
 #
 #   --install   copy the app to /Applications (or ~/Applications when that is
-#               not writable) and link `agenttunnel` into ~/.local/bin.
+#               not writable) and link `agenttunnel-desktop` into ~/.local/bin.
 #   --dmg       also build dist/AgentTunnel-darwin-<arch>.dmg.
 #   --no-build  reuse an existing binary instead of running build.sh.
-#   --binary    binary to bundle (default: bin/agenttunnel).
+#   --binary    binary to bundle (default: bin/agenttunnel-desktop).
 #
 # The app archive the installer downloads is always written to
 # dist/AgentTunnel-darwin-<arch>.app.tar.gz.
@@ -21,7 +21,7 @@ cd "$(dirname "$0")"
 INSTALL=0
 DMG=0
 BUILD=1
-BINARY="bin/agenttunnel"
+BINARY="bin/agenttunnel-desktop"
 VERSION=""
 ARCH=""
 
@@ -103,7 +103,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "› assembling $APP ($VERSION, darwin/$ARCH)"
-cp "$BINARY" "$APP/Contents/MacOS/agenttunnel"
+cp "$BINARY" "$APP/Contents/MacOS/agenttunnel-desktop"
 cp build/darwin/icons.icns "$APP/Contents/Resources/icons.icns"
 
 sed -e "s/<string>0\.1\.0<\/string>/<string>$CF_VERSION<\/string>/g" \
@@ -151,10 +151,10 @@ if [ "$INSTALL" = 1 ]; then
 
   BIN_DIR="${AGENTTUNNEL_INSTALL_DIR:-$HOME/.local/bin}"
   mkdir -p "$BIN_DIR"
-  ln -sf "$APP_DIR/AgentTunnel.app/Contents/MacOS/agenttunnel" "$BIN_DIR/agenttunnel"
+  ln -sf "$APP_DIR/AgentTunnel.app/Contents/MacOS/agenttunnel-desktop" "$BIN_DIR/agenttunnel-desktop"
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
-    *) echo "  note: add $BIN_DIR to PATH to run \`agenttunnel\` from the terminal" ;;
+    *) echo "  note: add $BIN_DIR to PATH to run \`agenttunnel-desktop\` from the terminal" ;;
   esac
 fi
 

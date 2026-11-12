@@ -11,12 +11,12 @@ func init() {
 	Register(Command{
 		Name:    "ps",
 		Summary: "List threads and what their agents are doing",
-		Usage:   "at ps [-a|--all]",
+		Usage:   "agenttunnel ps [-a|--all]",
 		Run:     runPs,
 	})
 }
 
-// psOptions is the parsed `at ps` invocation.
+// psOptions is the parsed `agenttunnel ps` invocation.
 type psOptions struct {
 	all bool
 }
@@ -28,7 +28,7 @@ func parsePsArgs(args []string) (psOptions, error) {
 		case "-a", "--all":
 			opts.all = true
 		default:
-			return opts, usageError("unknown argument %q (usage: at ps [-a|--all])", arg)
+			return opts, usageError("unknown argument %q (usage: agenttunnel ps [-a|--all])", arg)
 		}
 	}
 	return opts, nil
@@ -95,7 +95,7 @@ func renderPs(ctx context.Context, env *Env, c cliCaller, opts psOptions, now ti
 	}
 	if len(rows) == 0 {
 		if opts.all {
-			fmt.Fprintln(env.Out, "no threads yet; start one with `at run <template>`")
+			fmt.Fprintln(env.Out, "no threads yet; start one with `agenttunnel run <template>`")
 			return nil
 		}
 		fmt.Fprintln(env.Out, "no active threads; pass -a to include stale ones")

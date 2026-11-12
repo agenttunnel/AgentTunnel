@@ -2,8 +2,8 @@
 # Installs AgentTunnel from a GitHub release.
 #
 # On macOS this installs AgentTunnel.app into ~/Applications (so it appears in
-# Spotlight/Launchpad with its icon) and links the terminal command into
-# ~/.local/bin. Linux and Windows get the daemon and desktop binaries.
+# Spotlight/Launchpad with its icon) and links agenttunnel-desktop into
+# ~/.local/bin. Every platform gets the atd daemon and the agenttunnel CLI.
 #
 # Usage:
 #   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
@@ -99,12 +99,14 @@ fi
 tar -xzf "$tmpdir/$asset" -C "$tmpdir"
 
 installed=0
-for name in atd agenttunnel at; do
+for name in atd agenttunnel agenttunnel-desktop; do
   for candidate in "$name" "$name.exe"; do
     if [ -f "$tmpdir/$candidate" ]; then
-      if [ "$name" = "agenttunnel" ] && [ -n "$app_binary" ]; then
-        ln -sf "$app_binary" "$install_dir/agenttunnel"
+      if [ "$name" = "agenttunnel-desktop" ] && [ -n "$app_binary" ]; then
+        ln -sf "$app_binary" "$install_dir/agenttunnel-desktop"
       else
+        # Drop any old link first: cp would write through a symlink into the app bundle.
+        rm -f "$install_dir/$candidate"
         cp "$tmpdir/$candidate" "$install_dir/$candidate"
         chmod 0755 "$install_dir/$candidate"
       fi
@@ -114,7 +116,7 @@ for name in atd agenttunnel at; do
 done
 
 if [ "$installed" -eq 0 ]; then
-  echo "install: archive did not contain atd, agenttunnel, or at" >&2
+  echo "install: archive did not contain atd, agenttunnel, or agenttunnel-desktop" >&2
   exit 1
 fi
 

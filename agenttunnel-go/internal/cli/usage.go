@@ -16,7 +16,7 @@ func init() {
 	Register(Command{
 		Name:    "usage",
 		Summary: "Show token usage, cost, and subscription limits",
-		Usage:   "at usage [--thread <ref>] [--project <id>] [--limits]",
+		Usage:   "agenttunnel usage [--thread <ref>] [--project <id>] [--limits]",
 		Run:     runUsage,
 	})
 }
@@ -37,12 +37,12 @@ func connectReadOnly(ctx context.Context, env *Env) (*Client, error) {
 	}
 	c, _, err := env.connectExisting(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("no AgentTunnel daemon is running; start one with `at daemon start`")
+		return nil, fmt.Errorf("no AgentTunnel daemon is running; start one with `agenttunnel daemon start`")
 	}
 	return c, nil
 }
 
-// usageOptions is the parsed `at usage` invocation.
+// usageOptions is the parsed `agenttunnel usage` invocation.
 type usageOptions struct {
 	thread  string
 	project string
@@ -69,7 +69,7 @@ func parseUsageArgs(args []string) (usageOptions, error) {
 			}
 			opts.project, i = value, next
 		default:
-			return opts, usageError("unknown argument %q (usage: at usage [--thread <ref>] [--project <id>] [--limits])", arg)
+			return opts, usageError("unknown argument %q (usage: agenttunnel usage [--thread <ref>] [--project <id>] [--limits])", arg)
 		}
 	}
 	opts.thread = strings.TrimSpace(opts.thread)

@@ -18,7 +18,7 @@ func init() {
 	Register(Command{
 		Name:    "attach",
 		Summary: "Watch a thread live and steer it from the terminal",
-		Usage:   "at attach <thread>",
+		Usage:   "agenttunnel attach <thread>",
 		Run:     runAttach,
 	})
 }
@@ -76,15 +76,15 @@ func runAttach(ctx context.Context, env *Env, args []string) error {
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "-"):
-			return usageError("unknown flag %q (usage: at attach <thread>)", arg)
+			return usageError("unknown flag %q (usage: agenttunnel attach <thread>)", arg)
 		case ref != "":
-			return usageError("at attach takes one thread reference")
+			return usageError("agenttunnel attach takes one thread reference")
 		default:
 			ref = arg
 		}
 	}
 	if ref == "" {
-		return usageError("at attach requires a thread id, id prefix, or title")
+		return usageError("agenttunnel attach requires a thread id, id prefix, or title")
 	}
 	c, err := connectReadOnly(ctx, env)
 	if err != nil {
@@ -147,7 +147,7 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 			}
 			done, next, err := handleAttachLine(ctx, env, c, row, line, pending)
 			if err != nil {
-				fmt.Fprintln(env.Err, "at:", err)
+				fmt.Fprintln(env.Err, "agenttunnel:", err)
 				continue
 			}
 			pending = next

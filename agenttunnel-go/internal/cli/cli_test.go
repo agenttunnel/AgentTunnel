@@ -16,7 +16,7 @@ import (
 func registerTestCommand(t *testing.T, name string) {
 	t.Helper()
 	Register(Command{
-		Name: name, Summary: "test command", Usage: "at " + name,
+		Name: name, Summary: "test command", Usage: "agenttunnel " + name,
 		Run: func(_ context.Context, env *Env, args []string) error {
 			if env.JSON {
 				return env.PrintJSON(map[string]any{"args": args, "json": true})
@@ -60,7 +60,7 @@ func TestUnknownCommandIsUsageError(t *testing.T) {
 func TestGroupDispatchesToSubcommand(t *testing.T) {
 	Register(Command{
 		Name: "test-group", Summary: "group",
-		Subcommands: []Command{{Name: "sub", Summary: "sub", Usage: "at test-group sub",
+		Subcommands: []Command{{Name: "sub", Summary: "sub", Usage: "agenttunnel test-group sub",
 			Run: func(_ context.Context, env *Env, args []string) error {
 				env.Out.Write([]byte("sub:" + strings.Join(args, ",") + "\n"))
 				return nil
@@ -117,7 +117,7 @@ func TestVersionCommand(t *testing.T) {
 	if code := Run([]string{"--version"}, "1.2.3", &out, &errOut); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
-	if strings.TrimSpace(out.String()) != "at 1.2.3" {
+	if strings.TrimSpace(out.String()) != "agenttunnel 1.2.3" {
 		t.Fatalf("out = %q", out.String())
 	}
 }
@@ -127,7 +127,7 @@ func TestNoArgsIsUsageError(t *testing.T) {
 	if code := Run(nil, "dev", &out, &errOut); code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}
-	if !strings.Contains(out.String(), "Usage: at") {
+	if !strings.Contains(out.String(), "Usage: agenttunnel") {
 		t.Fatalf("out = %q", out.String())
 	}
 }

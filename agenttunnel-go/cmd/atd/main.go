@@ -69,7 +69,7 @@ func main() {
 	}
 
 	// Serialize "no daemon here yet, so I may bind" across processes sharing
-	// this state dir. A daemon spawned by `at` is told (AT_AUTOSTART) that its
+	// this state dir. A daemon spawned by `agenttunnel` is told (AT_AUTOSTART) that its
 	// parent already holds the lock across spawn+wait, so it only re-checks for
 	// a live daemon. A directly started atd takes the lock itself, making a
 	// second direct start exit instead of binding a duplicate.
@@ -123,7 +123,7 @@ func main() {
 	d.SetEndpoint("http://" + ln.Addr().String())
 
 	// Publish how to reach this daemon, now that the port is known. A CLI
-	// (`at`) reads it to attach or stop; the file is removed on shutdown so a
+	// (`agenttunnel`) reads it to attach or stop; the file is removed on shutdown so a
 	// stale entry cannot outlive the process.
 	if err := discovery.Write(*homeDir, discovery.Info{
 		WSURL:     "ws://" + ln.Addr().String() + "/ws",

@@ -15,7 +15,7 @@ func init() {
 	Register(Command{
 		Name:    "logs",
 		Summary: "Print a thread's agent output, optionally following it",
-		Usage:   "at logs <thread> [--follow] [--agent <id>] [--lines N]",
+		Usage:   "agenttunnel logs <thread> [--follow] [--agent <id>] [--lines N]",
 		Run:     runLogs,
 	})
 }
@@ -34,7 +34,7 @@ const (
 	followStartGrace = 15 * time.Second
 )
 
-// logsOptions is the parsed `at logs` invocation.
+// logsOptions is the parsed `agenttunnel logs` invocation.
 type logsOptions struct {
 	ref    string
 	follow bool
@@ -73,15 +73,15 @@ func parseLogsArgs(args []string) (logsOptions, error) {
 			}
 			opts.lines, i = n, next
 		case strings.HasPrefix(arg, "-"):
-			return opts, usageError("unknown flag %q (usage: at logs <thread> [--follow] [--agent <id>] [--lines N])", arg)
+			return opts, usageError("unknown flag %q (usage: agenttunnel logs <thread> [--follow] [--agent <id>] [--lines N])", arg)
 		case opts.ref != "":
-			return opts, usageError("at logs takes one thread reference")
+			return opts, usageError("agenttunnel logs takes one thread reference")
 		default:
 			opts.ref = arg
 		}
 	}
 	if opts.ref == "" {
-		return opts, usageError("at logs requires a thread id, id prefix, or title")
+		return opts, usageError("agenttunnel logs requires a thread id, id prefix, or title")
 	}
 	return opts, nil
 }
@@ -244,7 +244,7 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, b
 				tracker.update(fresh)
 			}
 			if !tracker.started() && time.Since(started) >= followStartGrace {
-				fmt.Fprintln(env.Out, "no turn started; see `at logs` for errors")
+				fmt.Fprintln(env.Out, "no turn started; see `agenttunnel logs` for errors")
 				return nil
 			}
 			if tracker.ended() {

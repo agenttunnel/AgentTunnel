@@ -12,14 +12,14 @@ func init() {
 		Name:    "harness",
 		Summary: "Inspect the provider runtimes this daemon can use",
 		Subcommands: []Command{
-			{Name: "ls", Summary: "List harnesses with availability and enabled state", Usage: "at harness ls", Run: runHarnessLs},
+			{Name: "ls", Summary: "List harnesses with availability and enabled state", Usage: "agenttunnel harness ls", Run: runHarnessLs},
 		},
 	})
 }
 
 func runHarnessLs(ctx context.Context, env *Env, args []string) error {
 	if len(args) > 0 {
-		return usageError("unknown argument %q (usage: at harness ls)", args[0])
+		return usageError("unknown argument %q (usage: agenttunnel harness ls)", args[0])
 	}
 	c, err := connectReadOnly(ctx, env)
 	if err != nil {

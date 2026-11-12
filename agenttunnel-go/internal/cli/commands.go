@@ -15,12 +15,12 @@ func init() {
 		Name:    "daemon",
 		Summary: "Manage the background AgentTunnel daemon",
 		Subcommands: []Command{
-			{Name: "start", Summary: "Start a detached daemon if one is not running", Usage: "at daemon start", Run: runDaemonStart},
-			{Name: "status", Summary: "Show whether a daemon is running", Usage: "at daemon status", Run: runDaemonStatus},
-			{Name: "stop", Summary: "Stop the running daemon and wait for it to exit", Usage: "at daemon stop", Run: runDaemonStop},
+			{Name: "start", Summary: "Start a detached daemon if one is not running", Usage: "agenttunnel daemon start", Run: runDaemonStart},
+			{Name: "status", Summary: "Show whether a daemon is running", Usage: "agenttunnel daemon status", Run: runDaemonStatus},
+			{Name: "stop", Summary: "Stop the running daemon and wait for it to exit", Usage: "agenttunnel daemon stop", Run: runDaemonStop},
 		},
 	})
-	Register(Command{Name: "version", Summary: "Print the at version", Usage: "at version", Run: runVersion})
+	Register(Command{Name: "version", Summary: "Print the agenttunnel version", Usage: "agenttunnel version", Run: runVersion})
 }
 
 // daemonView is the machine-readable daemon status.
@@ -37,7 +37,7 @@ func runVersion(_ context.Context, env *Env, _ []string) error {
 	if env.JSON {
 		return env.PrintJSON(map[string]string{"version": env.Version})
 	}
-	fmt.Fprintln(env.Out, "at "+env.Version)
+	fmt.Fprintln(env.Out, "agenttunnel "+env.Version)
 	return nil
 }
 
@@ -97,7 +97,7 @@ func runDaemonStop(ctx context.Context, env *Env, _ []string) error {
 	}
 	c, info, err := env.connectExisting(ctx)
 	if err != nil {
-		fmt.Fprintln(env.Err, "at: daemon.json is stale (the daemon is not answering)")
+		fmt.Fprintln(env.Err, "agenttunnel: daemon.json is stale (the daemon is not answering)")
 		return failure()
 	}
 	if err := shutdownClient(ctx, c); err != nil {

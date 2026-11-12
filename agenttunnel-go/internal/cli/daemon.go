@@ -126,7 +126,7 @@ func (e *Env) Connect(ctx context.Context) (*Client, discovery.Info, error) {
 	}
 
 	// One process at a time decides whether a daemon must start. The winner
-	// starts it and publishes discovery before releasing, so a competing `at`
+	// starts it and publishes discovery before releasing, so a competing `agenttunnel`
 	// that was waiting attaches to that daemon instead of starting a second one
 	// on the same state dir.
 	lock, err := daemonlock.Acquire(ctx, e.StateDir(), 50*time.Millisecond)

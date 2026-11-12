@@ -1,4 +1,4 @@
-// Package template parses and scaffolds `at run` job templates: Markdown files
+// Package template parses and scaffolds `agenttunnel run` job templates: Markdown files
 // whose YAML frontmatter names the job, picks the project, and pins per-role
 // models, and whose body becomes the thread's first turn.
 package template
@@ -229,13 +229,13 @@ func Scaffold(name string) []byte {
 	b.WriteString("# The Markdown below the closing `---` is the task text: it becomes the\n")
 	b.WriteString("# thread's first turn. Edit the body first; the settings are optional.\n")
 	b.WriteString("#\n")
-	b.WriteString("# Run it with:  at run <this file>\n")
+	b.WriteString("# Run it with:  agenttunnel run <this file>\n")
 	b.WriteString("\n")
 	b.WriteString("# name: the thread title. Delete this line to use the file name instead.\n")
 	fmt.Fprintf(&b, "name: %s\n", strconv.Quote(name))
 	b.WriteString("\n")
 	b.WriteString("# project: the repository this job works in. Use a path, or the id/name of\n")
-	b.WriteString("# a registered project (`at projects ls`). Defaults to the current directory.\n")
+	b.WriteString("# a registered project (`agenttunnel projects ls`). Defaults to the current directory.\n")
 	b.WriteString("project: \".\"\n")
 	b.WriteString("\n")
 	b.WriteString("# modelConfig: per-role model overrides for this job only. Roles:\n")
