@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
@@ -21,21 +24,24 @@ import (
 )
 
 // Server exposes the daemon over HTTP: a health probe, an authenticated
-// JSON-RPC WebSocket, and the tool endpoint agents call from their shell.
+// JSON-RPC WebSocket, the tool endpoint agents call from their shell, and the
+// attachment upload/download surface image data rides instead of the socket.
 type Server struct {
-	disp   *Dispatcher
-	engine *domain.Engine
-	runner *orchestrator.Runner
-	token  string
-	box    *toolbox.Box
+	disp        *Dispatcher
+	engine      *domain.Engine
+	runner      *orchestrator.Runner
+	token       string
+	box         *toolbox.Box
+	attachments *attachments.Store
 
 	connMu sync.Mutex
 	conns  map[*conn]struct{}
 }
 
 // NewServer builds the HTTP surface. An empty token disables auth (dev only).
-func NewServer(disp *Dispatcher, engine *domain.Engine, runner *orchestrator.Runner, token string, box *toolbox.Box) *Server {
-	return &Server{disp: disp, engine: engine, runner: runner, token: token, box: box}
+// A nil attachment store keeps /attachments answering, but refuseful.
+func NewServer(disp *Dispatcher, engine *domain.Engine, runner *orchestrator.Runner, token string, box *toolbox.Box, attach *attachments.Store) *Server {
+	return &Server{disp: disp, engine: engine, runner: runner, token: token, box: box, attachments: attach}
 }
 
 // Handler returns the HTTP handler.
@@ -46,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/tool/call", s.handleToolCall)
+	mux.HandleFunc("/attachments", s.handleAttachments)
 	mux.HandleFunc("/ws", s.handleWS)
 	return mux
 }
@@ -165,6 +172,89 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// handleAttachments is the image surface: POST with raw image bytes stores
+// one under the thread and answers with its meta; GET fetches the bytes back
+// by id. Image data never rides the WebSocket.
+func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.attachments == nil {
+		http.Error(w, "image attachments are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	threadID := contracts.ThreadID(r.URL.Query().Get("threadId"))
+	if threadID == "" {
+		http.Error(w, "threadId is required", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		st, err := s.engine.State(r.Context(), threadID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !st.Exists {
+			http.Error(w, "thread does not exist", http.StatusNotFound)
+			return
+		}
+		// One byte of headroom so an over-cap upload reads as too large
+		// rather than a connection error mid-body.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, contracts.MaxImageBytes+1))
+		if err != nil {
+			http.Error(w, "image exceeds the size limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		ref, err := s.attachments.Save(threadID, r.URL.Query().Get("name"), body)
+		if err != nil {
+			http.Error(w, err.Error(), badAttachmentStatus(err))
+			return
+		}
+		s.disp.auditLog("attachment.save", map[string]any{
+			"threadId": string(threadID), "id": ref.ID, "mime": ref.Mime, "size": ref.Size,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ref)
+
+	case http.MethodGet:
+		id := r.URL.Query().Get("id")
+		if !contracts.ValidImageID(id) {
+			http.Error(w, "invalid attachment id", http.StatusBadRequest)
+			return
+		}
+		ref, data, err := s.attachments.Open(threadID, id)
+		if err != nil {
+			http.Error(w, err.Error(), badAttachmentStatus(err))
+			return
+		}
+		w.Header().Set("Content-Type", ref.Mime)
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// badAttachmentStatus maps store errors to the client-facing status code:
+// anything about the bytes' shape or the pair's identity is a 400, a missing
+// pair is a 404, and the rest are the server's fault.
+func badAttachmentStatus(err error) int {
+	switch {
+	case errors.Is(err, attachments.ErrTooLarge):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, attachments.ErrUnsupportedMime), errors.Is(err, attachments.ErrInvalidID):
+		return http.StatusBadRequest
+	case errors.Is(err, attachments.ErrNotFound):
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // toolCallRequest is the body the `atd tool` command posts to /tool/call.

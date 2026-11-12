@@ -36,7 +36,7 @@ func newCLIServer(t *testing.T) (*domain.Engine, *orchestrator.Runner) {
 	runner.Mailbox().SetEnabled(true)
 	// The settings workdir is where a thread's files and shell run.
 	disp := transport.NewDispatcher(transport.DispatcherDeps{Engine: eng, Runner: runner, Settings: settings.New(t.TempDir())})
-	srv := transport.NewServer(disp, eng, runner, "secret", toolbox.New())
+	srv := transport.NewServer(disp, eng, runner, "secret", toolbox.New(), nil)
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 

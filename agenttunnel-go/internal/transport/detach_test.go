@@ -82,7 +82,7 @@ func newDetachFixture(t *testing.T, script string) (*detachFixture, contracts.Th
 	if err := eng.Dispatch(ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: threadID, Title: "detach"}); err != nil {
 		t.Fatal(err)
 	}
-	return &detachFixture{eng: eng, srv: NewServer(disp, eng, runner, "secret", box)}, threadID
+	return &detachFixture{eng: eng, srv: NewServer(disp, eng, runner, "secret", box, nil)}, threadID
 }
 
 func (f *detachFixture) dial(t *testing.T) *websocket.Conn {
@@ -219,7 +219,7 @@ func TestDaemonShutdownRepliesThenTriggersCallback(t *testing.T) {
 		Engine: eng, Runner: runner,
 		Shutdown: func() { close(triggered) },
 	})
-	srv := NewServer(disp, eng, runner, "", toolbox.New())
+	srv := NewServer(disp, eng, runner, "", toolbox.New(), nil)
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

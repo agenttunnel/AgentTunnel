@@ -101,3 +101,17 @@ func (r *Registry) NewAdapter(spec SessionSpec) (Adapter, error) {
 	}
 	return NewProcessAdapter(d), nil
 }
+
+// ImageSupport reports how a harness takes image input. An unregistered
+// harness or a driver without the capability reads as unknown, so callers
+// degrade to a prompt note instead of refusing the turn.
+func (r *Registry) ImageSupport(h contracts.Harness) ImageSupport {
+	d, ok := r.Get(h)
+	if !ok {
+		return ImagesUnknown
+	}
+	if c, ok := d.(ImageCapable); ok {
+		return c.ImageSupport()
+	}
+	return ImagesUnknown
+}

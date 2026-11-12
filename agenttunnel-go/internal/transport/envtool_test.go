@@ -27,7 +27,7 @@ func newEnvFixture(t *testing.T) (*domain.Engine, *Server, string) {
 
 	dir := t.TempDir()
 	disp := NewDispatcher(DispatcherDeps{Engine: eng, Settings: settings.New(dir)})
-	srv := NewServer(disp, eng, nil, "", toolbox.New())
+	srv := NewServer(disp, eng, nil, "", toolbox.New(), nil)
 	createThreadForTool(t, eng, "t1", nil)
 	return eng, srv, dir
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/deps"
@@ -79,6 +80,8 @@ type DispatcherDeps struct {
 	Limits *providers.LimitsProvider
 	// Relay drives the outbound relay client. Nil when the daemon has no relay.
 	Relay RelayControl
+	// Attachments stores image uploads. Nil refuses image-bearing turns.
+	Attachments *attachments.Store
 	// BaseCtx is the daemon's lifetime context. Detached turns run against it,
 	// so a client socket closing cannot cancel them; only the daemon going
 	// away or thread.turn.stop can. Nil falls back to context.Background.
@@ -174,6 +177,7 @@ type Dispatcher struct {
 	relay          RelayControl
 	remote         RemoteControl
 	master         *orchestrator.Master
+	attach         *attachments.Store
 	prBoard        *scm.Board
 	dirtyBoard     *scm.DirtyBoard
 	baseCtx        context.Context
@@ -237,6 +241,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		limits:         d.Limits,
 		relay:          d.Relay,
 		remote:         d.Remote,
+		attach:         d.Attachments,
 		clock:          d.Clock,
 		statusTick:     d.StatusTick,
 		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
@@ -382,6 +387,10 @@ type (
 		// Attachments are workdir-relative files or folders the composer attached.
 		// They reach the agent's prompt, not the transcript.
 		Attachments []string `json:"attachments,omitempty"`
+		// Images are attachment ids minted by a prior POST /attachments
+		// upload. They render in the transcript and reach harnesses that
+		// accept image input.
+		Images []string `json:"images,omitempty"`
 		// Detach runs the turn against the daemon's lifetime context and replies
 		// at once, so a client (agenttunnel run) can exit while the work continues.
 		Detach bool `json:"detach,omitempty"`
@@ -424,8 +433,10 @@ const threadLogTail = 400
 const defaultStaleAfterSeconds = 30 * 60
 
 // runTurn starts a user turn: it claims the thread's turn slot first, so a busy
-// thread is refused before cmd is recorded, then records cmd and runs the lead
-// orchestrators on text. A stop from the client is reported as ok, not an error.
+// thread is refused before cmd is recorded, and the turn's image attachments
+// must resolve to readable files before cmd is recorded too. It then records
+// cmd and runs the lead orchestrators on text. A stop from the client is
+// reported as ok, not an error.
 func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
 	turnCtx, done, err := d.beginTurn(ctx, threadID)
 	if err != nil {
@@ -437,6 +448,13 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	if err := d.ensureWorktree(ctx, threadID); err != nil {
 		return nil, err
 	}
+	// Attachment files resolve before the turn is recorded: a message that
+	// names an image the harness cannot read would otherwise sit in the
+	// transcript as if it had been delivered.
+	inputs, err := d.imageInputs(threadID, cmd.Images)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
 		return nil, err
 	}
@@ -446,13 +464,59 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	stopReports := d.startStatusReports(turnCtx, threadID)
 	defer stopReports()
 
-	if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
+	if err := d.orch.RunTurn(turnCtx, threadID, text, inputs...); err != nil {
 		if turnCtx.Err() != nil {
 			return map[string]any{"ok": true, "stopped": true}, nil
 		}
 		return nil, err
 	}
 	return map[string]any{"ok": true}, nil
+}
+
+// resolveImages decodes uploaded attachment ids into their stored meta, so a
+// turn can record them in the transcript. Raw ids are never forwarded: only
+// pairs the store can vouch for pass through.
+func (d *Dispatcher) resolveImages(threadID contracts.ThreadID, ids []string) ([]contracts.ImageRef, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > contracts.MaxTurnImages {
+		return nil, fmt.Errorf("a turn carries at most %d images", contracts.MaxTurnImages)
+	}
+	if d.attach == nil {
+		return nil, errors.New("image attachments are unavailable")
+	}
+	var refs []contracts.ImageRef
+	for _, id := range ids {
+		if !contracts.ValidImageID(id) {
+			return nil, fmt.Errorf("%q is not an attachment id", id)
+		}
+		ref, err := d.attach.Meta(threadID, id)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+// imageInputs maps recorded refs to the files the harnesses read. The store
+// resolves each path from the thread's own directory. A ref that cannot be
+// resolved is an error, never a silent drop: the transcript records the image
+// the moment the turn starts, so it must be readable by then.
+func (d *Dispatcher) imageInputs(threadID contracts.ThreadID, refs []contracts.ImageRef) ([]providers.ImageInput, error) {
+	if d.attach == nil || len(refs) == 0 {
+		return nil, nil
+	}
+	var inputs []providers.ImageInput
+	for _, r := range refs {
+		path := d.attach.Path(threadID, r.ID)
+		if path == "" {
+			return nil, fmt.Errorf("attachment %s is not readable", r.ID)
+		}
+		inputs = append(inputs, providers.ImageInput{Path: path, Mime: r.Mime, Name: r.Name})
+	}
+	return inputs, nil
 }
 
 // startDetachedTurn claims the thread's turn slot against the daemon's lifetime
@@ -475,6 +539,13 @@ func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.T
 	if err != nil {
 		return nil, err
 	}
+	// Image attachments must resolve before cmd is recorded: a detached
+	// turn that cannot deliver them leaves no transcript entry either.
+	inputs, err := d.imageInputs(threadID, cmd.Images)
+	if err != nil {
+		done()
+		return nil, err
+	}
 	go func() {
 		defer done()
 		if err := d.ensureWorktree(base, threadID); err != nil {
@@ -485,7 +556,7 @@ func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.T
 			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
 			return
 		}
-		if err := d.orch.RunTurn(turnCtx, threadID, text); err != nil {
+		if err := d.orch.RunTurn(turnCtx, threadID, text, inputs...); err != nil {
 			if turnCtx.Err() != nil {
 				d.auditLog("turn.detached.stopped", map[string]any{"threadId": string(threadID)})
 				return
@@ -793,6 +864,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 	case "harness.list":
 		enabled := make([]contracts.Harness, 0, len(contracts.AllHarnesses()))
 		modelsByHarness := make(map[string][]string, len(contracts.AllHarnesses()))
+		imageSupport := make(map[string]string, len(contracts.AllHarnesses()))
 		for _, h := range contracts.AllHarnesses() {
 			if d.settings == nil || d.settings.HarnessEnabled(h) {
 				enabled = append(enabled, h)
@@ -800,12 +872,14 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			if d.models != nil {
 				modelsByHarness[string(h)] = d.models.List(h)
 			}
+			imageSupport[string(h)] = d.registry.ImageSupport(h).String()
 		}
 		return map[string]any{
-			"all":       contracts.AllHarnesses(),
-			"available": d.registry.Available(),
-			"enabled":   enabled,
-			"models":    modelsByHarness,
+			"all":          contracts.AllHarnesses(),
+			"available":    d.registry.Available(),
+			"enabled":      enabled,
+			"models":       modelsByHarness,
+			"imageSupport": imageSupport,
 		}, nil
 
 	case "harness.updates":
@@ -1053,8 +1127,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		refs, err := d.resolveImages(p.ThreadID, p.Images)
+		if err != nil {
+			return nil, err
+		}
 		cmd := contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: text,
+			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: text, Images: refs,
 		}
 		if p.Detach {
 			return d.startDetachedTurn(ctx, p.ThreadID, prompt, cmd)
@@ -1300,7 +1378,17 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := d.steerThread(ctx, p.ThreadID, p.Text, prompt); err != nil {
+		// Images must resolve before the steering message is recorded: a
+		// refused ref leaves no transcript entry.
+		refs, err := d.resolveImages(p.ThreadID, p.Images)
+		if err != nil {
+			return nil, err
+		}
+		inputs, err := d.imageInputs(p.ThreadID, refs)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.steerThread(ctx, p.ThreadID, p.Text, prompt, refs, inputs); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil

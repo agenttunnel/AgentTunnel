@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
+	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -134,6 +135,9 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	var endpoint atomic.Value
 	endpoint.Store("")
 
+	// Image attachments live under the state dir, one directory per thread.
+	attachStore := attachments.New(filepath.Join(opts.StateDir, "attachments"))
+
 	runner := orchestrator.NewRunner(orchestrator.Deps{
 		Engine:    eng,
 		Registry:  opts.Registry,
@@ -221,6 +225,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		HarnessUpdates: harnessUpdates,
 		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
 		Relay:          relay,
+		Attachments:    attachStore,
 		BaseCtx:        ctx,
 		Shutdown:       opts.OnShutdown,
 		Remote:         bridge,
@@ -233,7 +238,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("close stale questions: %w", err)
 	}
 
-	srv := transport.NewServer(disp, eng, runner, opts.Token, box)
+	srv := transport.NewServer(disp, eng, runner, opts.Token, box, attachStore)
 	// Status changes are pushed to every client, so a QR that appears after the
 	// connect reply still reaches the window that asked for it.
 	disp.SetRemoteNotifier(func(st transport.RemoteStatus) {

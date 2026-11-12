@@ -7,6 +7,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
 // runMaster executes the validated actions of a home-screen reply, in order,
@@ -121,7 +122,7 @@ func (d *Dispatcher) sendMasterMessage(ctx context.Context, id contracts.ThreadI
 		return fmt.Errorf("thread %q does not exist", id)
 	}
 	if d.threadRunning(id) {
-		return d.steerThread(ctx, id, text, text)
+		return d.steerThread(ctx, id, text, text, nil, nil)
 	}
 	_, err = d.startDetachedTurn(ctx, id, text, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: id, Text: text,
@@ -131,8 +132,9 @@ func (d *Dispatcher) sendMasterMessage(ctx context.Context, id contracts.ThreadI
 
 // steerThread records a steering message in the transcript, marked as steering,
 // then queues its prompt for the running turn's next orchestrator pass to weigh.
-// The message id lets that pass report back that it was consumed.
-func (d *Dispatcher) steerThread(ctx context.Context, threadID contracts.ThreadID, text, prompt string) error {
+// The message id lets that pass report back that it was consumed. Images ride
+// both: the refs are recorded in the transcript, the inputs reach the pass.
+func (d *Dispatcher) steerThread(ctx context.Context, threadID contracts.ThreadID, text, prompt string, refs []contracts.ImageRef, inputs []providers.ImageInput) error {
 	if d.steering == nil {
 		return errors.New("steering is unavailable")
 	}
@@ -141,10 +143,10 @@ func (d *Dispatcher) steerThread(ctx context.Context, threadID contracts.ThreadI
 		ID:       d.nextID(),
 		Type:     contracts.CmdMessageAppend,
 		ThreadID: threadID,
-		Message:  &contracts.MessageSent{MessageID: messageID, Author: "steering", Text: text},
+		Message:  &contracts.MessageSent{MessageID: messageID, Author: "steering", Text: text, Images: refs},
 	}); err != nil {
 		return err
 	}
-	d.steering.Post(threadID, messageID, prompt)
+	d.steering.Post(threadID, messageID, prompt, inputs...)
 	return nil
 }

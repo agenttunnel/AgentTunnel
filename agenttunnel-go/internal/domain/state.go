@@ -8,10 +8,11 @@ import (
 
 // Message is a rendered conversation message in a thread.
 type Message struct {
-	ID     string    `json:"id"`
-	Author string    `json:"author"`
-	Text   string    `json:"text"`
-	At     time.Time `json:"at"`
+	ID     string               `json:"id"`
+	Author string               `json:"author"`
+	Text   string               `json:"text"`
+	Images []contracts.ImageRef `json:"images,omitempty"`
+	At     time.Time            `json:"at"`
 	// Consumed is set on a steering message once a pass has picked it up. A
 	// steering message that is not consumed yet is still queued.
 	Consumed bool `json:"consumed,omitempty"`
@@ -276,6 +277,11 @@ func (s *ThreadState) HasPullRequest(url string) bool {
 func (s *ThreadState) Clone() *ThreadState {
 	c := *s
 	c.Messages = append([]Message(nil), s.Messages...)
+	for i, m := range c.Messages {
+		if len(m.Images) > 0 {
+			c.Messages[i].Images = append([]contracts.ImageRef(nil), m.Images...)
+		}
+	}
 	c.AgentOrder = append([]contracts.AgentID(nil), s.AgentOrder...)
 	c.SharedOrder = append([]string(nil), s.SharedOrder...)
 	c.Mailbox = append([]MailboxMessage(nil), s.Mailbox...)

@@ -159,8 +159,12 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if strings.TrimSpace(cmd.Text) == "" {
 			return nil, fmt.Errorf("%w: turn text is required", ErrInvalidCommand)
 		}
+		images, err := validateImages(cmd.Images)
+		if err != nil {
+			return nil, err
+		}
 		payloads := []contracts.EventPayload{
-			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text},
+			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text, Images: images},
 		}
 		if s.Draft {
 			payloads = append(payloads, contracts.DraftStarted{})
@@ -427,7 +431,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if cmd.Message == nil || strings.TrimSpace(cmd.Message.Text) == "" {
 			return nil, fmt.Errorf("%w: message payload is required", ErrInvalidCommand)
 		}
-		return []contracts.EventPayload{*cmd.Message}, nil
+		images, err := validateImages(cmd.Message.Images)
+		if err != nil {
+			return nil, err
+		}
+		msg := *cmd.Message
+		msg.Images = images
+		return []contracts.EventPayload{msg}, nil
 
 	case contracts.CmdSteeringInjected:
 		if !s.Exists {
@@ -495,8 +505,12 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 				return nil, fmt.Errorf("%w: review comment %q is not pending", ErrInvalidCommand, id)
 			}
 		}
+		images, err := validateImages(cmd.Images)
+		if err != nil {
+			return nil, err
+		}
 		return []contracts.EventPayload{
-			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text},
+			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text, Images: images},
 			*cmd.ReviewSubmit,
 		}, nil
 
@@ -656,4 +670,34 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 	default:
 		return nil, fmt.Errorf("%w: unknown command type %q", ErrInvalidCommand, cmd.Type)
 	}
+}
+
+// validateImages checks a message's image refs against the shared caps and
+// id/mime shapes. The store already validated them at upload; this is the
+// decisive gate before a turn records them, so a replayed or foreign command
+// cannot smuggle more than the caps allow.
+func validateImages(images []contracts.ImageRef) ([]contracts.ImageRef, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	if len(images) > contracts.MaxTurnImages {
+		return nil, fmt.Errorf("%w: a turn carries at most %d images", ErrInvalidCommand, contracts.MaxTurnImages)
+	}
+	var total int64
+	for _, img := range images {
+		if !contracts.ValidImageID(img.ID) {
+			return nil, fmt.Errorf("%w: image id %q is not an attachment id", ErrInvalidCommand, img.ID)
+		}
+		if !contracts.ValidImageMime(img.Mime) {
+			return nil, fmt.Errorf("%w: image %q has unsupported type %q", ErrInvalidCommand, img.ID, img.Mime)
+		}
+		if img.Size <= 0 || img.Size > contracts.MaxImageBytes {
+			return nil, fmt.Errorf("%w: image %q exceeds the %d MiB per-image limit", ErrInvalidCommand, img.ID, contracts.MaxImageBytes>>20)
+		}
+		total += img.Size
+	}
+	if total > contracts.MaxTurnImageBytes {
+		return nil, fmt.Errorf("%w: images exceed the %d MiB per-turn limit", ErrInvalidCommand, contracts.MaxTurnImageBytes>>20)
+	}
+	return images, nil
 }

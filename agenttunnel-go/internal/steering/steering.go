@@ -8,13 +8,16 @@ import (
 	"sync"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
 // Entry is one queued steering message: the prompt text handed to the next
-// pass and the transcript message it was recorded as.
+// pass, the transcript message it was recorded as, plus any images the user
+// attached mid-run. The images ride the next pass the same way a turn's do.
 type Entry struct {
 	MessageID string
 	Text      string
+	Images    []providers.ImageInput
 }
 
 // Box holds pending steering messages, partitioned by thread.
@@ -29,14 +32,14 @@ func New() *Box {
 }
 
 // Post records a steering message for a thread.
-func (b *Box) Post(threadID contracts.ThreadID, messageID, text string) {
+func (b *Box) Post(threadID contracts.ThreadID, messageID, text string, images ...providers.ImageInput) {
 	text = strings.TrimSpace(text)
-	if threadID == "" || text == "" {
+	if threadID == "" || (text == "" && len(images) == 0) {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.pending[threadID] = append(b.pending[threadID], Entry{MessageID: messageID, Text: text})
+	b.pending[threadID] = append(b.pending[threadID], Entry{MessageID: messageID, Text: text, Images: images})
 }
 
 // Drain returns and clears a thread's pending steering messages.

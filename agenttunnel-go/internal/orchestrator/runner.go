@@ -540,7 +540,7 @@ func (r *Runner) leadRuntime(ctx context.Context, threadID contracts.ThreadID, l
 // runOrchestratorPass runs one orchestrator process for lead `lead` and collects
 // its text output and tool calls. Usage from the orchestrator is attributed as
 // orchestrator.
-func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.ThreadID, lead int, agentID contracts.AgentID, role contracts.Role, prompt string, pass int) (string, []ToolCall, error) {
+func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.ThreadID, lead int, agentID contracts.AgentID, role contracts.Role, prompt string, pass int, images []providers.ImageInput) (string, []ToolCall, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	tc := r.trackCancel(agentID, cancel)
 	defer r.untrackCancel(agentID, tc)
@@ -559,6 +559,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		Model:    model,
 		Variant:  variant,
 		Prompt:   prompt,
+		Images:   images,
 		Workdir:  r.workdirFor(ctx, threadID),
 		Env:      env,
 	}

@@ -12,11 +12,20 @@ import {
   useState,
   type ClipboardEvent as ReactClipboardEvent,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from "react";
 import { Window } from "@wailsio/runtime";
-import { discover, pickFolder, Rpc, setKeepRunning as emitKeepRunning, type Conn } from "./lib/rpc";
+import {
+  discover,
+  pickFolder,
+  Rpc,
+  setKeepRunning as emitKeepRunning,
+  uploadImage,
+  type Conn,
+  type ImageRef,
+} from "./lib/rpc";
 import {
   addUsage,
   deriveThreadUsage,
@@ -105,6 +114,7 @@ import {
   type PaletteSection,
 } from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import { ThreadImage } from "./components/ThreadImage";
 import { MasterChat } from "./components/MasterChat";
 
 type Role = {
@@ -129,7 +139,33 @@ type Agent = {
   endedAt?: string;
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string };
-type Message = { id: string; author: string; text: string; at: string; consumed?: boolean };
+type Message = {
+  id: string;
+  author: string;
+  text: string;
+  at: string;
+  images?: ImageRef[];
+  /** Set on a steering message once a pass has consumed it. */
+  consumed?: boolean;
+};
+/** Image caps mirror the daemon's /attachments endpoint so a bad paste fails
+ * in the composer, before any turn or tokens are spent. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_TURN_IMAGES = 8;
+const MAX_TURN_IMAGE_BYTES = 32 * 1024 * 1024;
+const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+/** One image in a composer draft: the original bytes (kept so a failed send can
+ * restore the preview), a local objectURL, and the stored ImageRef once the
+ * daemon has accepted the upload. */
+type DraftImage = {
+  localId: number;
+  name: string;
+  file: Blob;
+  previewUrl: string;
+  uploading: boolean;
+  ref?: ImageRef;
+  error?: string;
+};
 /** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
 const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
 function isFailedBlock(m: Message): boolean {
@@ -438,6 +474,13 @@ type MessageActions = {
 };
 const MessageActionsContext = createContext<MessageActions | null>(null);
 
+/** Connection details a transcript message needs to fetch its images over
+ * HTTP: the daemon's base URL and token plus the thread the message sits in.
+ * Provided through a context so memoized message rows never re-render from a
+ * handler's identity; null renders no image section. */
+type MessageImageConn = { httpUrl: string; token: string; threadId: string };
+const MessageImageContext = createContext<MessageImageConn | null>(null);
+
 /** The git-branch glyph the fork button carries; inherits currentColor. */
 function BranchIcon() {
   return (
@@ -465,6 +508,7 @@ function BranchIcon() {
  * handlers arrive via MessageActionsContext so their identity is free. */
 const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
   const actions = useContext(MessageActionsContext);
+  const imageConn = useContext(MessageImageContext);
   return (
     <div
       className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
@@ -503,6 +547,19 @@ const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
       </div>
       <div className="body">
         <Markdown text={m.text} />
+        {!!m.images?.length && imageConn && (
+          <div className="thread-images">
+            {m.images.map((img) => (
+              <ThreadImage
+                key={img.id}
+                httpUrl={imageConn.httpUrl}
+                token={imageConn.token}
+                threadId={imageConn.threadId}
+                image={img}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -969,6 +1026,9 @@ export default function App() {
   const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
   // Files and folders attached per draft through @; sent with the turn as context.
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
+  // Image drafts per paste or drop: previewed locally, uploaded over HTTP on
+  // attach, then sent by attachment id. Keyed like attachments.
+  const [draftImages, setDraftImages] = useState<Record<string, DraftImage[]>>({});
   // Caret in the composer: an @-token is the word ending at the caret.
   const [caret, setCaret] = useState(0);
   const [mentionActive, setMentionActive] = useState(0);
@@ -1059,6 +1119,9 @@ export default function App() {
   });
 
   const rpcRef = useRef<Rpc | null>(null);
+  // The daemon's HTTP origin + token, for image uploads and fetches that must
+  // not ride the WebSocket.
+  const connRef = useRef<Conn | null>(null);
   const debounce = useRef<number | undefined>(undefined);
   // Chat stream auto-scroll: pinned to bottom while the user is already there.
   const streamRef = useRef<HTMLDivElement | null>(null);
@@ -1167,6 +1230,16 @@ export default function App() {
       forkFromMessage,
     }),
     [forkFromMessage, setError],
+  );
+
+  // The connection details transcript images fetch with, memoized so memoized
+  // message rows only re-render when the connection or thread changes.
+  const messageImages = useMemo<MessageImageConn | null>(
+    () =>
+      conn && activeId
+        ? { httpUrl: conn.httpUrl, token: conn.token, threadId: activeId }
+        : null,
+    [conn, activeId],
   );
 
   const installUpdate = useCallback(async () => {
@@ -1684,6 +1757,7 @@ export default function App() {
       }
       if (cancelled) return;
       rpcRef.current = rpc;
+      connRef.current = conn;
       setStatus("online");
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
@@ -2364,6 +2438,17 @@ export default function App() {
     const sentPastes = pastes[draftKey];
     // A shell command takes no context; its attachments stay in the draft.
     const sentFiles = command ? [] : (attachments[draftKey] ?? []);
+    // Images ride the same draft lifecycle: blocked mid-upload or after a
+    // failed upload, cleared on send, put back if the turn never starts.
+    const sentImages = command ? [] : (draftImages[draftKey] ?? []);
+    if (sentImages.some((img) => img.uploading)) {
+      setError("Images are still uploading — send again in a moment.", threadId);
+      return;
+    }
+    if (sentImages.some((img) => img.error !== undefined)) {
+      setError("Remove the image that failed to upload before sending.", threadId);
+      return;
+    }
     setInput("");
     setPastes((prev) => {
       const rest = { ...prev };
@@ -2372,6 +2457,16 @@ export default function App() {
     });
     if (sentFiles.length > 0) {
       setAttachments((prev) => {
+        const rest = { ...prev };
+        delete rest[draftKey];
+        return rest;
+      });
+    }
+    if (sentImages.length > 0) {
+      // Previews are revoked here and rebuilt from the kept bytes if the
+      // turn fails and the draft has to come back.
+      for (const img of sentImages) URL.revokeObjectURL(img.previewUrl);
+      setDraftImages((prev) => {
         const rest = { ...prev };
         delete rest[draftKey];
         return rest;
@@ -2390,6 +2485,7 @@ export default function App() {
           threadId,
           text,
           attachments: sentFiles.map((a) => a.path),
+          images: sentImages.flatMap((img) => (img.ref ? [img.ref.id] : [])),
         });
       } else {
         const params: Record<string, unknown> = {
@@ -2397,6 +2493,13 @@ export default function App() {
           text,
           attachments: sentFiles.map((a) => a.path),
         };
+        // Image attachments ride as stored ids, before the detach flag: the
+        // daemon resolves them when the turn starts.
+        if (sentImages.length > 0) {
+          params.images = sentImages
+            .map((img) => img.ref?.id)
+            .filter((id): id is string => id !== undefined);
+        }
         // Detached turns run on the daemon's lifetime context: closing the
         // window cannot cancel them. An external daemon always detaches.
         if (runInBackground || conn?.attached) params.detach = true;
@@ -2408,6 +2511,11 @@ export default function App() {
       setDrafts((prev) => ({ ...prev, [key]: input }));
       setPastes((prev) => ({ ...prev, [key]: sentPastes ?? {} }));
       if (sentFiles.length > 0) setAttachments((prev) => ({ ...prev, [key]: sentFiles }));
+      if (sentImages.length > 0)
+        setDraftImages((prev) => ({
+          ...prev,
+          [key]: sentImages.map((img) => ({ ...img, previewUrl: URL.createObjectURL(img.file) })),
+        }));
       setError(e instanceof Error ? e.message : String(e), threadId);
       // A failed start left no turn behind: retract the busy flag now instead of
       // waiting for it to end.
@@ -2757,6 +2865,14 @@ export default function App() {
     });
   };
   const onComposerPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    // An image on the clipboard becomes a draft chip: uploaded over HTTP as an
+    // attachment, never inlined into the composer text.
+    const imageFiles = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      attachImages(imageFiles);
+      return;
+    }
     const text = e.clipboardData.getData("text/plain");
     const lines = text.split("\n").length;
     if (lines <= 6 && text.length <= 500) return;
@@ -2807,6 +2923,7 @@ export default function App() {
   });
   // The @ menu: an @-token ends at the caret, and is closed for commands.
   const draftAttachments = attachments[draftKey] ?? [];
+  const draftImageList = draftImages[draftKey] ?? [];
   const mention = commandMode ? null : mentionAt(input, caret);
   const openMention = mention && mention.start !== mentionDismissed ? mention : null;
   const mentionQuery = openMention?.query ?? null;
@@ -2859,6 +2976,89 @@ export default function App() {
       ...prev,
       [draftKey]: (prev[draftKey] ?? []).filter((a) => a.path !== path),
     }));
+
+  const imageSeq = useRef(0);
+  /** Adds pasted or dropped image files as draft chips: a local preview shows
+   * at once, the bytes upload over HTTP, and the chip carries the daemon's
+   * attachment id once stored. */
+  const attachImages = (files: File[]) => {
+    const conn = connRef.current;
+    const threadId = activeId;
+    if (!conn || !threadId || files.length === 0) return;
+    const current = draftImages[draftKey] ?? [];
+    const accepted: File[] = [];
+    // ref().size is 0 until the upload finishes, so in-flight images count by
+    // their local bytes: the estimate cannot be beaten by rapid pastes.
+    let total = current.reduce((sum, img) => sum + (img.ref?.size ?? img.file.size), 0);
+    for (const file of files) {
+      if (!IMAGE_MIMES.has(file.type)) {
+        setError(`"${file.name}" is not a PNG, JPEG, WebP, or GIF image.`);
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        setError(`"${file.name}" is larger than the 8 MiB image limit.`);
+        continue;
+      }
+      if (current.length + accepted.length >= MAX_TURN_IMAGES) {
+        setError(`Attach at most ${MAX_TURN_IMAGES} images per turn.`);
+        break;
+      }
+      if (total + file.size > MAX_TURN_IMAGE_BYTES) {
+        setError("Images would exceed the 32 MiB per-turn limit.");
+        break;
+      }
+      total += file.size;
+      accepted.push(file);
+    }
+    if (accepted.length === 0) return;
+    const entries: DraftImage[] = accepted.map((file) => ({
+      localId: ++imageSeq.current,
+      name: file.name || "pasted image",
+      file,
+      previewUrl: URL.createObjectURL(file),
+      uploading: true,
+    }));
+    setDraftImages((prev) => ({ ...prev, [draftKey]: [...(prev[draftKey] ?? []), ...entries] }));
+    for (const [file, entry] of accepted.map((f, i) => [f, entries[i]] as const)) {
+      uploadImage(conn.httpUrl, conn.token, threadId, file, entry.name)
+        .then((ref) => {
+          setDraftImages((prev) => ({
+            ...prev,
+            [draftKey]: (prev[draftKey] ?? []).map((img) =>
+              img.localId === entry.localId ? { ...img, uploading: false, ref } : img,
+            ),
+          }));
+        })
+        .catch((e) => {
+          setDraftImages((prev) => ({
+            ...prev,
+            [draftKey]: (prev[draftKey] ?? []).map((img) =>
+              img.localId === entry.localId
+                ? { ...img, uploading: false, error: e instanceof Error ? e.message : String(e) }
+                : img,
+            ),
+          }));
+        });
+    }
+  };
+  const removeDraftImage = (localId: number) =>
+    setDraftImages((prev) => {
+      const list = prev[draftKey] ?? [];
+      const gone = list.find((img) => img.localId === localId);
+      if (gone) URL.revokeObjectURL(gone.previewUrl);
+      return { ...prev, [draftKey]: list.filter((img) => img.localId !== localId) };
+    });
+  const onComposerDragOver = (e: ReactDragEvent<HTMLDivElement>) => {
+    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+  };
+  const onComposerDrop = (e: ReactDragEvent<HTMLDivElement>) => {
+    const files = [...e.dataTransfer.files];
+    if (files.length === 0) return;
+    // Swallow every file drop: the webview must not navigate away from the
+    // app (and lose drafts) just because a file missed an image filter.
+    e.preventDefault();
+    attachImages(files.filter((f) => f.type.startsWith("image/")));
+  };
 
   const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Enter confirms an IME candidate during composition; it must not submit.
@@ -3953,13 +4153,15 @@ export default function App() {
                 </div>
               )}
               <MessageActionsContext.Provider value={messageActions}>
-                {groupTurns(thread?.messages ?? []).map((turn) => (
-                  <section className="turn" key={turn[0].id}>
-                    {turn.map((m) => (
-                      <MessageBlock key={m.id} m={m} />
-                    ))}
-                  </section>
-                ))}
+                <MessageImageContext.Provider value={messageImages}>
+                  {groupTurns(thread?.messages ?? []).map((turn) => (
+                    <section className="turn" key={turn[0].id}>
+                      {turn.map((m) => (
+                        <MessageBlock key={m.id} m={m} />
+                      ))}
+                    </section>
+                  ))}
+                </MessageImageContext.Provider>
               </MessageActionsContext.Provider>
               {(thread?.questions ?? []).map((q) => (
                 <QuestionCard
@@ -4041,6 +4243,8 @@ export default function App() {
 
             <div
               className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
+              onDragOver={onComposerDragOver}
+              onDrop={onComposerDrop}
               hidden={composerHidden}
             >
               {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
@@ -4070,6 +4274,37 @@ export default function App() {
                         className="attach-remove"
                         onClick={() => removeAttachment(a.path)}
                         aria-label={`Remove ${a.path}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {draftImageList.length > 0 && (
+                <div className="attach-row img-row">
+                  {draftImageList.map((img) => (
+                    <span
+                      key={img.localId}
+                      className={`img-chip${img.error !== undefined ? " failed" : ""}`}
+                      title={img.error ?? (img.ref ? `${img.name} · ${img.ref.mime}` : img.name)}
+                    >
+                      <img src={img.previewUrl} alt={img.name} />
+                      <span className="img-chip-meta">
+                        <span className="img-chip-name">{img.name}</span>
+                        <span className="img-chip-state">
+                          {img.uploading
+                            ? "uploading…"
+                            : img.error !== undefined
+                              ? img.error
+                              : `${img.ref?.width ?? "?"}×${img.ref?.height ?? "?"}`}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        className="attach-remove"
+                        onClick={() => removeDraftImage(img.localId)}
+                        aria-label={`Remove ${img.name}`}
                       >
                         ×
                       </button>

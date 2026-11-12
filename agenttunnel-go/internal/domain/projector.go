@@ -46,7 +46,11 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Deleted = true
 
 	case contracts.MessageSent:
-		s.Messages = append(s.Messages, Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At})
+		msg := Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At}
+		if len(p.Images) > 0 {
+			msg.Images = append([]contracts.ImageRef(nil), p.Images...)
+		}
+		s.Messages = append(s.Messages, msg)
 		// A user message opens a turn; steering and reports stay in the current one.
 		if p.Author == "user" {
 			s.Turn++

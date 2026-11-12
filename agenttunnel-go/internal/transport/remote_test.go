@@ -242,7 +242,7 @@ func TestWhatsAppControlRPCGetAndSet(t *testing.T) {
 func TestSessionRefusesWhatsAppPairing(t *testing.T) {
 	wa := &fakeRemote{item: RemoteItem{State: "pairing", QR: "2@qr"}}
 	disp := NewDispatcher(DispatcherDeps{Remote: wa})
-	srv := NewServer(disp, nil, nil, "", nil)
+	srv := NewServer(disp, nil, nil, "", nil, nil)
 
 	replies := make(chan Response, 4)
 	sess := srv.NewSession(func(r Response) { replies <- r })

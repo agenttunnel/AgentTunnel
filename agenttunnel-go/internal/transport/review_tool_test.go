@@ -35,7 +35,7 @@ func postReviewCall(t *testing.T, url string, body map[string]any) (int, map[str
 
 func TestReviewToolCallsApplyByRole(t *testing.T) {
 	eng, disp := newCommandFixture(t)
-	srv := httptest.NewServer(NewServer(disp, eng, disp.runner, "", toolbox.New()).Handler())
+	srv := httptest.NewServer(NewServer(disp, eng, disp.runner, "", toolbox.New(), nil).Handler())
 	t.Cleanup(srv.Close)
 	ctx := context.Background()
 	if err := disp.runner.Dispatch(ctx, "t1", []contracts.DispatchTask{
@@ -100,7 +100,7 @@ func TestReviewToolCallsApplyByRole(t *testing.T) {
 
 func TestReviewCommentFromExecutorIsRefused(t *testing.T) {
 	eng, disp := newCommandFixture(t)
-	srv := httptest.NewServer(NewServer(disp, eng, disp.runner, "", toolbox.New()).Handler())
+	srv := httptest.NewServer(NewServer(disp, eng, disp.runner, "", toolbox.New(), nil).Handler())
 	t.Cleanup(srv.Close)
 	if err := disp.runner.Dispatch(context.Background(), "t1", []contracts.DispatchTask{
 		{AgentID: "agent-exec", Name: "exec", Role: contracts.RoleExecutor, Task: "fix"},

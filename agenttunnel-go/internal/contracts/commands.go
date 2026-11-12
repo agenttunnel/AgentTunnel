@@ -119,4 +119,5 @@ type Command struct {
 	QuestionAsk     *QuestionAsked             `json:"questionAsk,omitempty"`
 	QuestionClose   *QuestionClosed            `json:"questionClose,omitempty"`
 	PullRequest     *PullRequestRef            `json:"pullRequest,omitempty"`
+	Images          []ImageRef                 `json:"images,omitempty"`
 }
