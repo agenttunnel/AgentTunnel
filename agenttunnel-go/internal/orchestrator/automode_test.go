@@ -183,6 +183,11 @@ func TestRuntimeChoicesListsEnabledHarnesses(t *testing.T) {
 	}
 }
 
+// staticLister is a model discoverer that reports a fixed list.
+type staticLister []string
+
+func (s staticLister) Discover(context.Context) ([]string, error) { return s, nil }
+
 // TestRuntimeChoicesListsEveryModel checks that a harness with more models than
 // the old prompt cap still offers each one, so the orchestrator can pick any.
 func TestRuntimeChoicesListsEveryModel(t *testing.T) {
@@ -191,9 +196,10 @@ func TestRuntimeChoicesListsEveryModel(t *testing.T) {
 	for i := range 12 {
 		list = append(list, fmt.Sprintf("model-%02d", i))
 	}
-	catalog := models.Default()
-	catalog.Set(contracts.HarnessOpenCode, list)
-	r.models = models.NewService(catalog, nil, r.settings)
+	reg := providers.NewRegistry()
+	reg.RegisterDiscoverer(contracts.HarnessOpenCode, staticLister(list))
+	r.models = models.NewService(reg, r.settings)
+	r.models.Refresh(context.Background(), contracts.HarnessOpenCode)
 
 	choices := r.runtimeChoices()
 	for _, m := range list {
