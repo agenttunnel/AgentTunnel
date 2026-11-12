@@ -54,6 +54,7 @@ func (d *Dispatcher) startSubthread(ctx context.Context, parent contracts.Thread
 	if err := d.engine.Dispatch(ctx, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: child,
 		ProjectID: st.ProjectID, ParentThreadID: parent, Worktree: inheritWorktree(st.Worktree),
+		Owner: contracts.ThreadOwnerOrchestrator,
 	}); err != nil {
 		return "", err
 	}
