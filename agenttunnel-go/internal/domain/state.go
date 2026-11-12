@@ -121,7 +121,18 @@ type ThreadState struct {
 	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
 	// Subthreads lists the threads this one started, in start order.
 	Subthreads []contracts.ThreadID `json:"subthreads,omitempty"`
-	Messages   []Message            `json:"messages"`
+	// Waiting is the thread's armed schedule: the prompt to run once its
+	// dependencies finish. Nil while no schedule is set, or once it has fired
+	// or been cancelled.
+	Waiting *contracts.ScheduleSpec `json:"waiting,omitempty"`
+	// TriggeredFrom records the dependencies that fired the thread's last
+	// scheduled turn. It stays readable after the turn ends; a later trigger
+	// overwrites it.
+	TriggeredFrom []contracts.ThreadID `json:"triggeredFrom,omitempty"`
+	// ControlledBy names the thread that controls this one — it relaunches the
+	// thread while it stays in charge. Empty means the user runs it.
+	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
+	Messages     []Message          `json:"messages"`
 	// Tasks is the agreed task list, in the order the leads added them.
 	Tasks []TaskItem `json:"tasks"`
 	// PullRequests lists the pull requests this thread opened, in the order they
@@ -297,6 +308,12 @@ func (s *ThreadState) Clone() *ThreadState {
 	}
 	c.Questions = append([]Question(nil), s.Questions...)
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
+	if s.Waiting != nil {
+		waiting := *s.Waiting
+		waiting.DependsOn = append([]contracts.ThreadID(nil), s.Waiting.DependsOn...)
+		c.Waiting = &waiting
+	}
+	c.TriggeredFrom = append([]contracts.ThreadID(nil), s.TriggeredFrom...)
 	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
 	c.RoleRuntimes = make(map[string]contracts.LeadRuntime, len(s.RoleRuntimes))

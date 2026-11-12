@@ -48,6 +48,20 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Exists = false
 		s.Deleted = true
 
+	case contracts.ThreadScheduled:
+		spec := contracts.ScheduleSpec{Prompt: p.Prompt, DependsOn: append([]contracts.ThreadID(nil), p.DependsOn...)}
+		s.Waiting = &spec
+
+	case contracts.ThreadTriggered:
+		s.Waiting = nil
+		s.TriggeredFrom = append([]contracts.ThreadID(nil), p.DependsOn...)
+
+	case contracts.ThreadScheduleCancelled:
+		s.Waiting = nil
+
+	case contracts.ThreadControlled:
+		s.ControlledBy = p.Controller
+
 	case contracts.MessageSent:
 		msg := Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At}
 		if len(p.Images) > 0 {
