@@ -54,6 +54,11 @@ import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
+import {
+  CheatSheet,
+  loadCheatSheetOptedOut,
+  saveCheatSheetOptedOut,
+} from "./components/CheatSheet";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
@@ -707,6 +712,9 @@ export default function App() {
   const [fileContentError, setFileContentError] = useState<string | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The how-to sheet opens on every launch unless the user opted out (persisted).
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
+  const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
   // Pasted text per draft: draftKey -> token id -> full text.
   const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
@@ -1484,7 +1492,7 @@ export default function App() {
 
   // Single-letter panel shortcuts (shown in the "+" menu), inactive while typing.
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId || cheatSheetOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
       const t = e.target;
@@ -1503,7 +1511,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openPanel]);
+  }, [activeId, openPanel, cheatSheetOpen]);
 
   // While an agent is open in the detail panel, poll its log.
   useEffect(() => {
@@ -2037,6 +2045,7 @@ export default function App() {
       openPanel: (id) => openPanel(id),
       setTab: (t) => setTab(t),
       openSettings: () => openSettings(),
+      openHelp: () => setCheatSheetOpen(true),
       askBtw: (q) => askBtw(q),
       toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
       togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
@@ -3826,6 +3835,18 @@ export default function App() {
           logs={logs}
           roleName={rolesById[detailAgent.role] || detailAgent.role}
           onClose={() => setDetailId(null)}
+        />
+      )}
+
+      {cheatSheetOpen && (
+        <CheatSheet
+          panels={Object.values(ASIDE_META)}
+          optedOut={cheatSheetOptedOut}
+          onSetOptedOut={(optedOut) => {
+            saveCheatSheetOptedOut(optedOut);
+            setCheatSheetOptedOut(optedOut);
+          }}
+          onClose={() => setCheatSheetOpen(false)}
         />
       )}
 
