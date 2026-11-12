@@ -4,6 +4,7 @@ import {
   type GraphNode,
   conversationBetween,
   conversationKey,
+  harnessTint,
   type MailboxMessage,
 } from "../lib/graph";
 import {
@@ -40,6 +41,8 @@ type GraphAgent = {
   name?: string;
   role: string;
   status: string;
+  harness?: string;
+  model?: string;
   task?: string;
   dependsOn?: string[];
 };
@@ -730,12 +733,16 @@ export function AgentGraph({
             </div>
           </div>
         ))}
-        {layout.nodes.map((n) => (
-          <button
-            key={n.id}
-            className={`graph-node enter${prox?.to === n.id ? " near" : ""}${
-              prox?.from === n.id && prox.snapped ? " snap" : ""
-            }${birth?.members.includes(n.id) ? " born" : ""}`}
+        {layout.nodes.map((n) => {
+          const tint = harnessTint(n.harness);
+          return (
+            <button
+              key={n.id}
+              className={`graph-node enter${tint ? ` ${tint}` : ""}${
+                prox?.to === n.id ? " near" : ""
+              }${prox?.from === n.id && prox.snapped ? " snap" : ""}${
+                birth?.members.includes(n.id) ? " born" : ""
+              }`}
             style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
             onPointerDown={(e) => startDrag(e, n)}
             onPointerMove={moveDrag}
@@ -748,7 +755,7 @@ export function AgentGraph({
               }
               onOpenAgent(n.id);
             }}
-            aria-label={`${n.name} (${n.role}) — open details`}
+            aria-label={`${n.name} (${n.role})${n.model ? ` · ${n.model}` : ""} — open details`}
           >
             {prox?.to === n.id && (
               <span className="graph-rings" aria-hidden>
@@ -763,8 +770,10 @@ export function AgentGraph({
               {n.tokens > 0 && <span className="graph-node-tokens">{fmtTokens(n.tokens)}</span>}
             </div>
             <div className="graph-node-role">{n.role}</div>
-          </button>
-        ))}
+            {n.model && <div className="graph-node-model">{n.model}</div>}
+            </button>
+          );
+        })}
         {unlinks.map((u) => (
           <button
             key={`unlink-${u.id}`}

@@ -28,6 +28,8 @@ export type GraphEvent =
         parentAgentId?: string;
         name?: string;
         role: string;
+        harness?: string;
+        model?: string;
         task: string;
         pipelineId?: string;
         dependsOn?: string[];
@@ -47,6 +49,8 @@ type AgentRecord = {
   name: string;
   role: string;
   status: string;
+  harness: string;
+  model: string;
   task: string;
   pipelineId: string;
   dependsOn: string[];
@@ -122,6 +126,8 @@ export function toGraphEvent(raw: unknown, threadId?: string): GraphEvent | null
           parentAgentId: p.parentAgentId || undefined,
           name: p.name || undefined,
           role: String(p.role ?? ""),
+          harness: p.harness ? String(p.harness) : undefined,
+          model: p.model ? String(p.model) : undefined,
           task: String(p.task ?? ""),
           pipelineId: p.pipelineId || undefined,
           dependsOn: Array.isArray(p.dependsOn) ? p.dependsOn.map(String) : undefined,
@@ -177,6 +183,8 @@ function applyEvent(s: GraphState, ev: GraphEvent) {
         name: p.name ?? "",
         role: p.role,
         status: "pending",
+        harness: p.harness ?? "",
+        model: p.model ?? "",
         task: p.task,
         pipelineId: p.pipelineId ?? "",
         dependsOn: p.dependsOn ?? [],
@@ -193,6 +201,8 @@ function applyEvent(s: GraphState, ev: GraphEvent) {
         name: cur?.name ?? "",
         role: cur?.role ?? "",
         status: ev.payload.status,
+        harness: cur?.harness ?? "",
+        model: cur?.model ?? "",
         task: cur?.task ?? "",
         pipelineId: cur?.pipelineId ?? "",
         dependsOn: cur?.dependsOn ?? [],
@@ -355,6 +365,8 @@ export function toLayoutInput(s: GraphState): Pick<GraphInput, "agents" | "usage
     name: a.name || undefined,
     role: a.role,
     status: a.status,
+    harness: a.harness || undefined,
+    model: a.model || undefined,
     task: a.task,
     dependsOn: a.dependsOn,
   }));
