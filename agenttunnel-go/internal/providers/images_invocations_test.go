@@ -138,7 +138,7 @@ func TestClaudeInvocationWithoutImagesKeepsPromptArg(t *testing.T) {
 }
 
 func TestCursorAndCommandCodeIgnoreImages(t *testing.T) {
-	for _, fn := range []func(SessionSpec) (CommandSpec, error){cursorInvocation, commandCodeInvocation, grokInvocation} {
+	for _, fn := range []func(SessionSpec) (CommandSpec, error){cursorInvocation, commandCodeInvocation} {
 		cs, err := fn(imageSpec("/att/a.png"))
 		if err != nil {
 			t.Fatal(err)
@@ -163,7 +163,6 @@ func TestBuiltinImageSupportMatrix(t *testing.T) {
 		contracts.HarnessPi:          ImagesSupported,
 		contracts.HarnessCursor:      ImagesUnsupported,
 		contracts.HarnessCommandCode: ImagesUnsupported,
-		contracts.HarnessGrok:        ImagesUnknown,
 	}
 	for h, expected := range want {
 		if got := r.ImageSupport(h); got != expected {
@@ -183,7 +182,7 @@ func TestBuiltinImageSupportMatrix(t *testing.T) {
 // A GenericDriver without an explicit capability reads as unknown, and the
 // chainable setter is honored.
 func TestGenericDriverImageSupportDefaultsAndOverrides(t *testing.T) {
-	bare := NewGenericDriver(contracts.HarnessGrok, "grok", grokInvocation, JSONLineTranslator{})
+	bare := NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, JSONLineTranslator{})
 	if bare.ImageSupport() != ImagesUnknown {
 		t.Fatalf("bare driver support = %v", bare.ImageSupport())
 	}
