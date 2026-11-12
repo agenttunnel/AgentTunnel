@@ -255,6 +255,8 @@ type ThreadSummary struct {
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
 	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
+	Draft          bool                   `json:"draft,omitempty"`
+	Issue          *contracts.IssueRef    `json:"issue,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -274,6 +276,11 @@ type (
 		ProjectID string `json:"projectId"`
 		// Worktree cuts the thread's worktree up front instead of on its first turn.
 		Worktree bool `json:"worktree"`
+		// Draft creates a thread that waits for its first turn. Worktree is
+		// ignored: the first turn cuts it.
+		Draft       bool                `json:"draft,omitempty"`
+		Description string              `json:"description,omitempty"`
+		Issue       *contracts.IssueRef `json:"issue,omitempty"`
 	}
 	threadParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
@@ -540,14 +547,25 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
+		if p.Issue != nil {
+			if strings.TrimSpace(p.Issue.URL) == "" {
+				return nil, errors.New("issue url is required")
+			}
+			if existing, found, err := d.issueThread(ctx, p.ProjectID, p.Issue.URL); err != nil {
+				return nil, err
+			} else if found {
+				return nil, fmt.Errorf("issue already has thread %s", existing)
+			}
+		}
 		id := d.newThreadID()
 		var wt *contracts.WorktreeRef
-		if p.Worktree && p.ProjectID != "" {
+		if p.Worktree && p.ProjectID != "" && !p.Draft {
 			wt = d.createWorktreeRef(ctx, p.ProjectID, p.Title, id)
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
 			Title: p.Title, ProjectID: p.ProjectID, Worktree: wt,
+			Draft: p.Draft, Description: p.Description, Issue: p.Issue,
 		}); err != nil {
 			return nil, err
 		}
@@ -583,6 +601,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				Messages: len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode,
 				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
+				Draft: st.Draft, Issue: st.Issue,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
 		}
@@ -619,9 +638,6 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(p.Text) == "" {
-			return nil, errors.New("turn text is required")
-		}
 		st, err := d.engine.State(ctx, p.ThreadID)
 		if err != nil {
 			return nil, err
@@ -629,13 +645,51 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
-		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, p.Text, p.Attachments)
+		// A draft's first turn may omit the text: its title and description are
+		// the prompt, so every client starts a draft the same way.
+		text := p.Text
+		if strings.TrimSpace(text) == "" && st.Draft {
+			text = draftPrompt(st)
+		}
+		if strings.TrimSpace(text) == "" {
+			return nil, errors.New("turn text is required")
+		}
+		prompt, err := d.promptWithAttachments(ctx, p.ThreadID, text, p.Attachments)
 		if err != nil {
 			return nil, err
 		}
 		return d.runTurn(ctx, p.ThreadID, prompt, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: p.Text,
+			ID: d.nextID(), Type: contracts.CmdTurnStart, ThreadID: p.ThreadID, Text: text,
 		})
+
+	case "thread.describe":
+		var p struct {
+			ThreadID    contracts.ThreadID `json:"threadId"`
+			Description string             `json:"description"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadDescribe, ThreadID: p.ThreadID,
+			Description: p.Description,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "issues.list":
+		var p struct {
+			ProjectID string `json:"projectId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		path, err := d.projectPath(p.ProjectID)
+		if err != nil {
+			return scm.IssueList{Status: scm.StatusNone, Message: err.Error()}, nil
+		}
+		return scm.ListIssues(ctx, path), nil
 
 	case "review.submit":
 		var p struct {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -13,6 +14,10 @@ var (
 	ErrThreadNotFound = errors.New("thread not found")
 	ErrInvalidCommand = errors.New("invalid command")
 )
+
+// maxDescriptionRunes bounds a draft's description: it becomes the first
+// prompt, and thread.get ships it whole.
+const maxDescriptionRunes = 20000
 
 // Decide is a pure function: given a command and the current state, it returns
 // the events that command should produce, or an error if the command is invalid
@@ -31,7 +36,10 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		// graph view both rely on the traffic it records. Existing threads stay
 		// as they were, and `thread.setPeerMailbox` remains the override.
 		return []contracts.EventPayload{
-			contracts.ThreadCreated{Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree},
+			contracts.ThreadCreated{
+				Title: title, ProjectID: cmd.ProjectID, ParentThreadID: cmd.ParentThreadID, Worktree: cmd.Worktree,
+				Draft: cmd.Draft, Description: cmd.Description, Issue: cmd.Issue,
+			},
 			contracts.PeerMailboxSet{Enabled: true},
 		}, nil
 
@@ -95,6 +103,18 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.ThreadRenamed{Title: title}}, nil
 
+	case contracts.CmdThreadDescribe:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if !s.Draft {
+			return nil, fmt.Errorf("%w: only a draft takes a description", ErrInvalidCommand)
+		}
+		if utf8.RuneCountInString(cmd.Description) > maxDescriptionRunes {
+			return nil, fmt.Errorf("%w: description is longer than %d characters", ErrInvalidCommand, maxDescriptionRunes)
+		}
+		return []contracts.EventPayload{contracts.ThreadDescribed{Description: cmd.Description}}, nil
+
 	case contracts.CmdThreadDelete:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
@@ -115,9 +135,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if strings.TrimSpace(cmd.Text) == "" {
 			return nil, fmt.Errorf("%w: turn text is required", ErrInvalidCommand)
 		}
-		return []contracts.EventPayload{
+		payloads := []contracts.EventPayload{
 			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text},
-		}, nil
+		}
+		if s.Draft {
+			payloads = append(payloads, contracts.DraftStarted{})
+		}
+		return payloads, nil
 
 	case contracts.CmdModelSet:
 		if !s.Exists {

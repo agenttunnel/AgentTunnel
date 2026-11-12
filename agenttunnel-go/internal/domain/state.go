@@ -71,9 +71,14 @@ type ThreadState struct {
 	Provisional bool `json:"-"`
 	// Deleted marks a tombstoned thread: the event log is retained, but the
 	// thread is gone from listings and refuses further commands.
-	Deleted     bool                     `json:"deleted"`
-	Title       string                   `json:"title"`
-	ProjectID   string                   `json:"projectId,omitempty"`
+	Deleted   bool   `json:"deleted"`
+	Title     string `json:"title"`
+	ProjectID string `json:"projectId,omitempty"`
+	// Draft is a thread that has not run yet: it has a title and description,
+	// no worktree, and no turns. Its first turn clears the flag.
+	Draft       bool                     `json:"draft,omitempty"`
+	Description string                   `json:"description,omitempty"`
+	Issue       *contracts.IssueRef      `json:"issue,omitempty"`
 	UpdatedAt   time.Time                `json:"updatedAt"`
 	Model       contracts.ModelSelection `json:"model"`
 	AutoMode    bool                     `json:"autoMode"`

@@ -11,6 +11,7 @@ const DefaultThreadTitle = "New thread"
 const (
 	CmdThreadCreate       CommandType = "thread.create"
 	CmdThreadRename       CommandType = "thread.rename"
+	CmdThreadDescribe     CommandType = "thread.describe"
 	CmdThreadDelete       CommandType = "thread.delete"
 	CmdWorktreeAttach     CommandType = "thread.worktree.attach"
 	CmdWorktreeDetach     CommandType = "thread.worktree.detach"
@@ -66,6 +67,9 @@ type Command struct {
 	ThreadID       ThreadID                   `json:"threadId"`
 	Text           string                     `json:"text,omitempty"`
 	Title          string                     `json:"title,omitempty"`
+	Description    string                     `json:"description,omitempty"`
+	Draft          bool                       `json:"draft,omitempty"`
+	Issue          *IssueRef                  `json:"issue,omitempty"`
 	ProjectID      string                     `json:"projectId,omitempty"`
 	ModelSelection *ModelSelection            `json:"modelSelection,omitempty"`
 	AutoMode       *bool                      `json:"autoMode,omitempty"`

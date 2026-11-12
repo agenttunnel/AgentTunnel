@@ -124,11 +124,11 @@ func (c Client) resolve(ctx context.Context, workdir string) (provider, branch s
 		return "", "", Snapshot{Status: StatusNone, Message: "Detached HEAD: no branch to look up"}, false
 	}
 
-	out, _, err = c.Run(ctx, workdir, "git", "remote", "get-url", "origin")
-	if err != nil {
+	remote, ok := c.origin(ctx, workdir)
+	if !ok {
 		return "", "", Snapshot{Status: StatusUnsupported, Branch: branch, Message: "No origin remote"}, false
 	}
-	provider = providerFor(strings.TrimSpace(string(out)))
+	provider = providerFor(remote)
 	if provider == "" {
 		return "", "", Snapshot{Status: StatusUnsupported, Branch: branch, Message: "origin is not GitHub or GitLab"}, false
 	}
@@ -139,6 +139,15 @@ func (c Client) resolve(ctx context.Context, workdir string) (provider, branch s
 			Message: cli + " is not installed"}, false
 	}
 	return provider, branch, Snapshot{}, true
+}
+
+// origin reads the URL of the origin remote. ok is false when there is none.
+func (c Client) origin(ctx context.Context, workdir string) (remote string, ok bool) {
+	out, _, err := c.Run(ctx, workdir, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
 }
 
 func (c Client) fetchGitHub(ctx context.Context, workdir, branch string) Snapshot {
