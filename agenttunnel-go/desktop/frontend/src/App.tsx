@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -51,7 +53,11 @@ import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { StatsPage } from "./components/StatsPage";
 import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
 import { RemoteSection } from "./components/RemoteSection";
-import { Markdown } from "./components/Markdown";
+import { DocLinkContext, Markdown } from "./components/Markdown";
+import type { MarkdownDocLike } from "./components/MarkdownViewer";
+import { docPathFromHref } from "./lib/markdownLinks";
+// The viewer is only needed once a markdown file is opened, so it loads on demand.
+const MarkdownViewer = lazy(() => import("./components/MarkdownViewer"));
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
@@ -823,7 +829,7 @@ export default function App() {
     }
   };
 
-  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board">(
+  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board" | "doc">(
     activeId,
     "chat",
     "at.tab",
@@ -831,6 +837,12 @@ export default function App() {
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
+  /** The markdown file open in the center viewer tab, relative to the thread's root. */
+  const [docPath, setDocPath] = useThreadScoped<string | null>(activeId, null);
+  const [doc, setDoc] = useState<MarkdownDocLike | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
+  const docReqRef = useRef(0);
 
   // Inherited context panel state: the environment's shared memory.
   const [inherited, setInherited] = useState<InheritedView | null>(null);
@@ -1089,6 +1101,44 @@ export default function App() {
     }
   }, []);
 
+
+  const loadDoc = useCallback(async (id: string | null, path: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !id) return;
+    // Only the newest request may write: a slow earlier read must not overwrite a later document.
+    const req = ++docReqRef.current;
+    const current = () => activeIdRef.current === id && req === docReqRef.current;
+    setDoc(null);
+    setDocError(null);
+    setDocLoading(true);
+    try {
+      const d = await rpc.call<MarkdownDocLike>("markdown.read", { threadId: id, path });
+      if (current()) setDoc(d);
+    } catch (e) {
+      if (current()) setDocError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (current()) setDocLoading(false);
+    }
+  }, []);
+
+  const openDoc = useCallback(
+    (path: string) => {
+      setDocPath(path);
+      setTab("doc");
+    },
+    [setDocPath, setTab],
+  );
+  // Chat links carry raw hrefs (percent-encoded, maybe with #fragments); the viewer's own links are already resolved.
+  const openChatDoc = useCallback((href: string) => openDoc(docPathFromHref(href)), [openDoc]);
+  const closeDoc = useCallback(() => {
+    setDocPath(null);
+    setTab("chat");
+  }, [setDocPath, setTab]);
+
+  // Waits for the RPC: a document persisted as the open tab loads once status turns online.
+  useEffect(() => {
+    if (tab === "doc" && docPath && status === "online") loadDoc(activeId, docPath).catch(() => undefined);
+  }, [tab, docPath, activeId, status, loadDoc]);
 
   const openPanel = useCallback((id: AsideTabId) => {
     if (id === "council" && draftRef.current) setCouncilTopic(draftRef.current);
@@ -3306,6 +3356,7 @@ export default function App() {
   const asideCollapsed = !layout.asideOpen || setupMode;
 
   return (
+    <DocLinkContext.Provider value={openChatDoc}>
     <div
       className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}`}
       ref={shellRef}
@@ -3438,6 +3489,27 @@ export default function App() {
                 <span className="pill">{agents.filter((a) => a.role !== "orchestrator").length}</span>
               )}
             </div>
+            {docPath !== null && (
+              <div
+                className={`tab ${tab === "doc" ? "on" : ""}`}
+                title={docPath}
+                {...tabProps(tab === "doc", () => setTab("doc"))}
+              >
+                {docPath.slice(docPath.lastIndexOf("/") + 1)}
+                <button
+                  type="button"
+                  className="tab-x"
+                  title="Close document"
+                  aria-label={`Close ${docPath}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeDoc();
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
           <div className="toggles">
             {projectId && (
@@ -3779,6 +3851,17 @@ export default function App() {
             {tasks.length > 0 && <TaskList tasks={tasks} />}
             <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
           </div>
+        ) : tab === "doc" && docPath !== null ? (
+          <Suspense fallback={<div className="stream empty">Loading…</div>}>
+            <MarkdownViewer
+              path={docPath}
+              doc={doc}
+              loading={docLoading}
+              error={docError}
+              onOpenPath={openDoc}
+              onClose={closeDoc}
+            />
+          </Suspense>
         ) : (
           <AgentGraph
             key={activeId ?? ""}
@@ -4761,5 +4844,6 @@ export default function App() {
       {threadOverlays}
       {paletteDialog}
     </div>
+    </DocLinkContext.Provider>
   );
 }
