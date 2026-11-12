@@ -121,6 +121,9 @@ type Bridge struct {
 	// orchestrator; the two are independent.
 	enabled bool
 	control bool
+	// name tells apart several AgentTunnel instances on one account. It is
+	// fixed for the bridge's lifetime (read from whatsapp.json at New).
+	name string
 	// runCtx is the context in Start, so inbound control work is cancelled with
 	// the bridge.
 	runCtx context.Context
@@ -165,6 +168,9 @@ type storedState struct {
 	// Control lets the user's own self-chat messages drive the orchestrator.
 	// Absent means off, so an old whatsapp.json stays read-only.
 	Control bool `json:"control,omitempty"`
+	// Name is this instance's label on a shared account. Empty means unnamed:
+	// it acts on unprefixed commands. Named instances act only on "@name ...".
+	Name string `json:"name,omitempty"`
 }
 
 // New builds a bridge. It does not connect; call Start (daemon) or Connect.
@@ -189,6 +195,7 @@ func New(opts Options) (*Bridge, error) {
 	if st, ok := b.load(); ok {
 		b.enabled = st.Enabled
 		b.control = st.Control
+		b.name = strings.TrimSpace(st.Name)
 	}
 	// Only an adapter that can receive messages gets a handler, and only when
 	// the daemon has somewhere to route them.
@@ -538,6 +545,7 @@ func (b *Bridge) send(ctx context.Context, text string) {
 	if !connected || adapter == nil {
 		return
 	}
+	text = b.stamp(text)
 	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	b.recordSent("", text)
@@ -604,8 +612,9 @@ func (b *Bridge) routeInbound(ctx context.Context, text string) {
 }
 
 // acceptInbound is the whole inbound policy: only the linked account's own
-// chat, only while control is on and the device is linked, no echo of the
-// bridge's own update, and each message id at most once.
+// chat, only while control is on and the device is linked, no AgentTunnel
+// update (another instance's, or this one's echo), a command addressed to this
+// instance, and each message id at most once.
 func (b *Bridge) acceptInbound(msg InboundMessage) (string, bool) {
 	if !msg.FromSelf {
 		return "", false
@@ -617,7 +626,11 @@ func (b *Bridge) acceptInbound(msg InboundMessage) (string, bool) {
 		return "", false
 	}
 	text := strings.TrimSpace(msg.Text)
-	if text == "" {
+	if text == "" || strings.HasPrefix(text, outboundMarker) {
+		return "", false
+	}
+	text, ok := b.addressed(text)
+	if !ok || text == "" {
 		return "", false
 	}
 
@@ -639,6 +652,30 @@ func (b *Bridge) acceptInbound(msg InboundMessage) (string, bool) {
 		}
 	}
 	return text, true
+}
+
+// stamp marks an outbound update so every AgentTunnel instance on the account
+// can tell it apart from a command. A named instance also tags its own name.
+func (b *Bridge) stamp(text string) string {
+	if b.name != "" {
+		return outboundMarker + " [" + b.name + "] " + text
+	}
+	return outboundMarker + " " + text
+}
+
+// addressed reports whether a command is for this instance and returns it with
+// the address stripped. An unnamed instance takes unaddressed commands; a named
+// one takes only "@name <command>", so two instances never both act on one
+// message.
+func (b *Bridge) addressed(text string) (string, bool) {
+	if b.name == "" {
+		return text, !strings.HasPrefix(text, "@")
+	}
+	prefix := "@" + b.name + " "
+	if !strings.HasPrefix(text, prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(text[len(prefix):]), true
 }
 
 // recordSent remembers an outbound message id and text so WhatsApp's echo of it
@@ -714,7 +751,7 @@ func (b *Bridge) load() (storedState, bool) {
 func (b *Bridge) saveState() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.persist(storedState{Enabled: b.enabled, Control: b.control})
+	b.persist(storedState{Enabled: b.enabled, Control: b.control, Name: b.name})
 }
 
 // persist writes whatsapp.json.
@@ -746,6 +783,11 @@ func (b *Bridge) persist(st storedState) {
 		b.logf("whatsapp: save state: %v", err)
 	}
 }
+
+// outboundMarker starts every message this bridge sends. An inbound self-message
+// with this prefix is another instance's update (or this one's echo), never a
+// command. The marker has no trailing space so a bare marker is also matched.
+const outboundMarker = "⟦AgentTunnel⟧"
 
 // unavailableDetail explains a build without an adapter. The row stays off and
 // the UI must not present it as a toggle that can work.

@@ -82,12 +82,17 @@ type ThreadState struct {
 	// thread is gone from listings and refuses further commands.
 	Deleted bool `json:"deleted"`
 	// Archived is set by the user; it moves the thread to the board's Archived column.
-	Archived  bool                     `json:"archived"`
-	Title     string                   `json:"title"`
-	ProjectID string                   `json:"projectId,omitempty"`
-	UpdatedAt time.Time                `json:"updatedAt"`
-	Model     contracts.ModelSelection `json:"model"`
-	AutoMode  bool                     `json:"autoMode"`
+	Archived  bool   `json:"archived"`
+	Title     string `json:"title"`
+	ProjectID string `json:"projectId,omitempty"`
+	// Draft is a thread that has not run yet: it has a title and description,
+	// no worktree, and no turns. Its first turn clears the flag.
+	Draft       bool                     `json:"draft,omitempty"`
+	Description string                   `json:"description,omitempty"`
+	Issue       *contracts.IssueRef      `json:"issue,omitempty"`
+	UpdatedAt   time.Time                `json:"updatedAt"`
+	Model       contracts.ModelSelection `json:"model"`
+	AutoMode    bool                     `json:"autoMode"`
 	// StatusPeriodSeconds is how often a running turn posts a workflow status
 	// report into the thread. Zero means off.
 	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`

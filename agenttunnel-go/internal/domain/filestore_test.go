@@ -92,3 +92,37 @@ func TestFileStoreSkipsTornLine(t *testing.T) {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
 }
+
+// Boot sweeps creation-only logs as ghosts, but a draft's log is only its
+// creation too: it must survive, while a plain created-and-unused thread goes.
+func TestDropEmptyThreadsKeepsDrafts(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewFileStore(filepath.Join(t.TempDir(), "threads"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	clock := func() time.Time { return testClock() }
+	if _, err := s.Append(ctx, "draft", []contracts.EventPayload{
+		contracts.ThreadCreated{Title: "later", Draft: true, Description: "keep me"},
+		contracts.PeerMailboxSet{Enabled: true},
+	}, clock); err != nil {
+		t.Fatalf("append draft: %v", err)
+	}
+	if _, err := s.Append(ctx, "ghost", []contracts.EventPayload{
+		contracts.ThreadCreated{Title: "unused"},
+		contracts.PeerMailboxSet{Enabled: true},
+	}, clock); err != nil {
+		t.Fatalf("append ghost: %v", err)
+	}
+
+	removed, err := s.DropEmptyThreads()
+	if err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "ghost" {
+		t.Fatalf("removed = %v, want only the ghost", removed)
+	}
+	if evs, err := s.Load(ctx, "draft"); err != nil || len(evs) != 2 {
+		t.Fatalf("draft log after sweep: %d events, err %v", len(evs), err)
+	}
+}

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState, type DragEvent } from "react";
 
 /** The PR a thread's worktree branch has, from the daemon's pr.states. */
 export type ThreadPR = {
@@ -26,12 +26,38 @@ export type BoardThread = {
   archived?: boolean;
   runningAgents?: number;
   worktree?: { branch: string } | null;
+  /** A draft has not had its first turn yet: no worktree and no agents. */
+  draft?: boolean;
 };
 
-export type ThreadColumnId = "running" | "uncommitted" | "ready" | "review" | "idle" | "archived";
+/** A GitLab issue assigned to the user, as issues.list reports it. */
+export type BoardIssue = {
+  iid: number;
+  title: string;
+  description: string;
+  webUrl: string;
+  updatedAt?: string;
+};
+
+/** What issues.list reports for a project. Issues is empty unless status is ready. */
+export type BoardIssues = {
+  status: string;
+  message?: string;
+  issues: BoardIssue[];
+};
+
+export type ThreadColumnId =
+  | "draft"
+  | "running"
+  | "uncommitted"
+  | "ready"
+  | "review"
+  | "idle"
+  | "archived";
 
 /** Columns in workflow order, with Archived last. Every thread lands in exactly one column. */
 export const THREAD_COLUMNS: { id: ThreadColumnId; title: string }[] = [
+  { id: "draft", title: "Draft" },
   { id: "running", title: "Running" },
   { id: "uncommitted", title: "Uncommitted" },
   { id: "ready", title: "Ready to merge" },
@@ -41,13 +67,16 @@ export const THREAD_COLUMNS: { id: ThreadColumnId; title: string }[] = [
 ];
 
 /**
- * Running wins over everything: a thread with live agents is never shown as
- * archived, waiting, or uncommitted. A thread the user archived is archived next.
- * Then uncommitted changes win over PR state. Otherwise an open PR is ready to
- * merge only when it is not a draft and its review decision is approved; any
- * other open PR is in review. A merged PR is archived. No PR, or a closed one, is idle.
+ * A draft is waiting for its first turn, so it is in Draft before anything else:
+ * it has no agents, no worktree, and no PR. Otherwise running wins over
+ * everything: a thread with live agents is never shown as archived, waiting, or
+ * uncommitted. A thread the user archived is archived next. Then uncommitted
+ * changes win over PR state. Otherwise an open PR is ready to merge only when it
+ * is not a draft and its review decision is approved; any other open PR is in
+ * review. A merged PR is archived. No PR, or a closed one, is idle.
  */
 export function threadColumn(t: BoardThread, state: ThreadState | undefined): ThreadColumnId {
+  if (t.draft) return "draft";
   if ((t.runningAgents ?? 0) > 0) return "running";
   if (t.archived) return "archived";
   if (state?.dirty) return "uncommitted";
@@ -65,6 +94,7 @@ export function groupThreads<T extends BoardThread>(
   states: Record<string, ThreadState>,
 ): Record<ThreadColumnId, T[]> {
   const out: Record<ThreadColumnId, T[]> = {
+    draft: [],
     running: [],
     uncommitted: [],
     ready: [],
@@ -76,7 +106,20 @@ export function groupThreads<T extends BoardThread>(
   return out;
 }
 
+/** What can be dragged onto the board: a draft card, or a GitLab issue. */
+export type DragKind = "draft" | "issue";
+
+/**
+ * A draft may only be dragged to Running, which starts its first turn. An issue
+ * may only be dropped on Draft, which creates a draft from it. Nothing else is a
+ * drop target.
+ */
+export function canDrop(kind: DragKind, to: ThreadColumnId): boolean {
+  return kind === "draft" ? to === "running" : to === "draft";
+}
+
 const DOT_CLASS: Record<ThreadColumnId, string> = {
+  draft: "pending",
   running: "running",
   uncommitted: "pending",
   archived: "succeeded",
@@ -87,6 +130,8 @@ const DOT_CLASS: Record<ThreadColumnId, string> = {
 
 /** Stops a click on a card control from also opening the thread. */
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+
+type DragPayload = { kind: "draft"; id: string } | { kind: "issue"; issue: BoardIssue };
 
 /**
  * One card. Memoized on its own props so a poll that changes one thread's PR
@@ -103,33 +148,41 @@ export const ThreadBoardCard = memo(function ThreadBoardCard({
   onToggle,
   onArchive,
   onDelete,
+  onDragStart,
+  onDragEnd,
 }: {
   thread: BoardThread;
   pr: ThreadPR | undefined;
   column: ThreadColumnId;
   updated: string;
   selected: boolean;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, draft: boolean) => void;
   onToggle: (id: string) => void;
   onArchive: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
+  onDragStart: (id: string, e: DragEvent) => void;
+  onDragEnd: () => void;
 }) {
   const branch = thread.worktree?.branch;
+  const draft = !!thread.draft;
   return (
     <div
       className={`thread-card tb-card${selected ? " selected" : ""}`}
       role="button"
       tabIndex={0}
       aria-pressed={selected}
+      draggable={draft}
+      onDragStart={draft ? (e) => onDragStart(thread.id, e) : undefined}
+      onDragEnd={draft ? onDragEnd : undefined}
       onClick={(e) => {
         // Cmd/Ctrl- or Shift-click selects for a bulk action; a plain click opens.
         if (e.metaKey || e.ctrlKey || e.shiftKey) onToggle(thread.id);
-        else onOpen(thread.id);
+        else onOpen(thread.id, draft);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onOpen(thread.id);
+          onOpen(thread.id, draft);
         }
       }}
     >
@@ -159,15 +212,18 @@ export const ThreadBoardCard = memo(function ThreadBoardCard({
       <div className="tc-foot">
         {updated && <span className="tc-updated">Updated {updated}</span>}
         <span className="tb-card-actions">
-          <button
-            type="button"
-            onClick={(e) => {
-              stop(e);
-              onArchive(thread.id, column !== "archived");
-            }}
-          >
-            {column === "archived" ? "Restore" : "Archive"}
-          </button>
+          {/* A draft is not in any archive state until it has run, so it is not archivable. */}
+          {!draft && (
+            <button
+              type="button"
+              onClick={(e) => {
+                stop(e);
+                onArchive(thread.id, column !== "archived");
+              }}
+            >
+              {column === "archived" ? "Restore" : "Archive"}
+            </button>
+          )}
           <button
             type="button"
             className="danger-text"
@@ -184,30 +240,90 @@ export const ThreadBoardCard = memo(function ThreadBoardCard({
   );
 });
 
+/** One GitLab issue. Dragging it onto Draft creates a draft from it. */
+const IssueBoardCard = memo(function IssueBoardCard({
+  issue,
+  onDragStart,
+  onDragEnd,
+}: {
+  issue: BoardIssue;
+  onDragStart: (issue: BoardIssue, e: DragEvent) => void;
+  onDragEnd: () => void;
+}) {
+  return (
+    <div
+      className="thread-card tb-card tb-issue"
+      draggable
+      onDragStart={(e) => onDragStart(issue, e)}
+      onDragEnd={onDragEnd}
+      title={issue.title}
+    >
+      <div className="tc-head">
+        <span className="tb-issue-iid">#{issue.iid}</span>
+        <div className="tc-title">{issue.title}</div>
+      </div>
+      <div className="tb-badges">
+        <a
+          className="tb-issue-link"
+          href={issue.webUrl}
+          title={issue.webUrl}
+          draggable={false}
+          onClick={stop}
+        >
+          Open in GitLab
+        </a>
+      </div>
+    </div>
+  );
+});
+
+/** What the Issues column says when there are no issues to show. */
+const ISSUE_FALLBACK: Record<string, string> = {
+  unavailable: "glab is not installed.",
+  unauthenticated: "Log in to GitLab with glab.",
+  unsupported: "Issues are read from GitLab only.",
+  error: "Could not load issues.",
+};
+
 /**
- * The board: one column per thread state, in workflow order, plus a bulk bar
- * for selected threads. Presentation only; the parent supplies threads, PR
- * state, and the actions. Deleting asks for a second click, like the rename
- * and delete dialogs elsewhere in the app.
+ * The board: an Issues source column, then one column per thread state in
+ * workflow order, plus a bulk bar for selected threads. Presentation only: the
+ * parent supplies threads, PR state, the issues, and every handler. Drags carry
+ * their payload in a ref, not in dataTransfer, because dragover cannot read
+ * dataTransfer data. Deleting asks for a second click, like the rename and
+ * delete dialogs elsewhere in the app.
  */
 export function ThreadBoard<T extends BoardThread>({
   threads,
   states,
   formatUpdated,
+  issues,
+  issuesLoading,
   onOpen,
+  onStartDraft,
+  onDropIssue,
+  onRefreshIssues,
   onArchive,
   onDelete,
 }: {
   threads: T[];
   states: Record<string, ThreadState>;
   formatUpdated: (iso?: string) => string;
-  onOpen: (id: string) => void;
+  /** null until the first issues.list reply for this project. */
+  issues: BoardIssues | null;
+  issuesLoading: boolean;
+  onOpen: (id: string, draft: boolean) => void;
+  onStartDraft: (id: string) => void;
+  onDropIssue: (issue: BoardIssue) => void;
+  onRefreshIssues: () => void;
   onArchive: (ids: string[], archived: boolean) => void;
   onDelete: (ids: string[]) => void;
 }) {
   const columns = useMemo(() => groupThreads(threads, states), [threads, states]);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
+  const dragRef = useRef<DragPayload | null>(null);
+  const [over, setOver] = useState<ThreadColumnId | null>(null);
 
   // Card callbacks read the latest handlers from a ref so they never change
   // identity, which keeps memoized cards from re-rendering on every parent update.
@@ -227,6 +343,44 @@ export function ThreadBoard<T extends BoardThread>({
   }, []);
   const askDeleteCard = useCallback((id: string) => setPendingDelete([id]), []);
 
+  const startThreadDrag = useCallback((id: string, e: DragEvent) => {
+    dragRef.current = { kind: "draft", id };
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox and WebKit start no drag without some data set.
+    e.dataTransfer.setData("text/plain", id);
+  }, []);
+  const startIssueDrag = useCallback((issue: BoardIssue, e: DragEvent) => {
+    dragRef.current = { kind: "issue", issue };
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("text/plain", issue.webUrl);
+  }, []);
+  const endDrag = useCallback(() => {
+    dragRef.current = null;
+    setOver(null);
+  }, []);
+
+  const colHandlers = (col: ThreadColumnId) => ({
+    onDragOver: (e: DragEvent) => {
+      const payload = dragRef.current;
+      if (!payload || !canDrop(payload.kind, col)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = payload.kind === "issue" ? "copy" : "move";
+      setOver(col);
+    },
+    onDragLeave: (e: DragEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null);
+    },
+    onDrop: (e: DragEvent) => {
+      const payload = dragRef.current;
+      dragRef.current = null;
+      setOver(null);
+      if (!payload || !canDrop(payload.kind, col)) return;
+      e.preventDefault();
+      if (payload.kind === "draft") onStartDraft(payload.id);
+      else onDropIssue(payload.issue);
+    },
+  });
+
   const selectedIds = [...selected];
   const clearSelection = () => {
     setSelected(new Set());
@@ -244,6 +398,7 @@ export function ThreadBoard<T extends BoardThread>({
   };
 
   const count = pendingDelete?.length ?? 0;
+  const issueList = issues?.status === "ready" ? issues.issues : [];
   return (
     <>
       {(selected.size > 0 || pendingDelete) && (
@@ -277,10 +432,46 @@ export function ThreadBoard<T extends BoardThread>({
         </div>
       )}
       <div className="thread-board">
+        <section className="tb-col tb-col-issues" aria-label="GitLab issues">
+          <header className="tb-col-head">
+            Issues <span className="tb-count">{issueList.length}</span>
+            <button
+              className="tb-refresh"
+              onClick={onRefreshIssues}
+              disabled={issuesLoading}
+              aria-label="Refresh issues"
+              title="Refresh issues"
+            >
+              ↻
+            </button>
+          </header>
+          <div className="tb-cards">
+            {issues === null && <div className="empty">Loading issues…</div>}
+            {issues !== null && issues.status !== "ready" && (
+              <div className="empty">{issues.message || ISSUE_FALLBACK[issues.status] || "No issues."}</div>
+            )}
+            {issues?.status === "ready" && issueList.length === 0 && (
+              <div className="empty">No issues assigned to you</div>
+            )}
+            {issueList.map((issue) => (
+              <IssueBoardCard
+                key={issue.webUrl}
+                issue={issue}
+                onDragStart={startIssueDrag}
+                onDragEnd={endDrag}
+              />
+            ))}
+          </div>
+        </section>
         {THREAD_COLUMNS.map((col) => {
           const items = columns[col.id];
           return (
-            <section className={`tb-col tb-col-${col.id}`} key={col.id} aria-label={col.title}>
+            <section
+              className={`tb-col tb-col-${col.id}${over === col.id ? " tb-col-over" : ""}`}
+              key={col.id}
+              aria-label={col.title}
+              {...colHandlers(col.id)}
+            >
               <header className="tb-col-head">
                 {col.title} <span className="tb-count">{items.length}</span>
               </header>
@@ -298,6 +489,8 @@ export function ThreadBoard<T extends BoardThread>({
                     onToggle={toggle}
                     onArchive={archiveCard}
                     onDelete={askDeleteCard}
+                    onDragStart={startThreadDrag}
+                    onDragEnd={endDrag}
                   />
                 ))}
               </div>
