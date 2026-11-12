@@ -196,6 +196,9 @@ type ThreadCreated struct {
 	ProjectID string `json:"projectId,omitempty"`
 	// ParentThreadID is set on a subthread: the thread that started it.
 	ParentThreadID ThreadID `json:"parentThreadId,omitempty"`
+	// Owner records who started the thread: user or orchestrator. Empty on
+	// logs recorded before owners existed, which read as the user.
+	Owner ThreadOwner `json:"owner,omitempty"`
 	// Worktree is set when the thread was created with its worktree already
 	// cut, or inherits a parent's.
 	Worktree *WorktreeRef `json:"worktree,omitempty"`

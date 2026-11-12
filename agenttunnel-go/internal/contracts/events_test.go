@@ -13,6 +13,8 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 	payloads := []EventPayload{
 		ThreadCreated{Title: "my thread", ProjectID: "proj_1"},
 		ThreadCreated{Title: "sub", ProjectID: "proj_1", ParentThreadID: "t1"},
+		ThreadCreated{Title: "user-owned", ProjectID: "proj_1", Owner: ThreadOwnerUser},
+		ThreadCreated{Title: "spawned", ProjectID: "proj_1", ParentThreadID: "t0", Owner: ThreadOwnerOrchestrator},
 		ThreadCreated{Title: "draft", ProjectID: "proj_1", Draft: true, Description: "fix the login",
 			Issue: &IssueRef{Provider: "gitlab", IID: 7, Title: "Login fails", URL: "https://gitlab.example/g/p/-/issues/7"}},
 		SubthreadSpawned{ThreadID: "t2"},

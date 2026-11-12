@@ -188,6 +188,9 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 		}
 		state.ProjectID = cmd.ProjectID
 		state.ParentThreadID = cmd.ParentThreadID
+		// Same normalization as the decider, so the materialized creation
+		// event carries the explicit owner the provisional state already has.
+		state.Owner = cmd.Owner.Normalized()
 		state.Worktree = cmd.Worktree
 		state.Description = cmd.Description
 		state.Issue = cmd.Issue
@@ -261,6 +264,7 @@ func (e *Engine) materialize(ctx context.Context, id contracts.ThreadID, state *
 		contracts.ThreadCreated{
 			Title: state.Title, ProjectID: state.ProjectID, ParentThreadID: state.ParentThreadID, Worktree: state.Worktree,
 			Description: state.Description, Issue: state.Issue,
+			Owner: state.Owner,
 		},
 		contracts.PeerMailboxSet{Enabled: true},
 		contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},

@@ -16,6 +16,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Title = p.Title
 		s.ProjectID = p.ProjectID
 		s.ParentThreadID = p.ParentThreadID
+		// The event owner is stored as-is: pre-owner logs replay with an
+		// empty owner, which reads as the user.
+		s.Owner = p.Owner
 		s.Worktree = p.Worktree
 		s.Draft = p.Draft
 		s.Description = p.Description

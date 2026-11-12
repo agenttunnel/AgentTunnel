@@ -21,6 +21,8 @@ export type ThreadState = {
 export type BoardThread = {
   id: string;
   title: string;
+  /** Who started this thread; absent (older threads) means user. */
+  owner?: "user" | "orchestrator";
   updatedAt?: string;
   /** Filed by the user; lands the thread in the Archived column. */
   archived?: boolean;
@@ -193,6 +195,11 @@ export const ThreadBoardCard = memo(function ThreadBoardCard({
         </div>
       </div>
       <div className="tb-badges">
+        {thread.owner === "orchestrator" && (
+          <span className="tc-owner" title="Started by the orchestrator">
+            Orchestrator
+          </span>
+        )}
         {branch && (
           <span className="tb-branch" title={branch}>
             {branch}

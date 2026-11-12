@@ -3261,6 +3261,19 @@ table.grid tr.rowlink:hover td {
   margin-top: auto;
   padding-top: 16px;
 }
+/* Owner chip: marks threads the orchestrator started. Absent = user-owned. */
+.tc-owner {
+  flex: none;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  padding: 1px 6px;
+}
 /* --- thread board (status columns over the project's threads) ---------- */
 .view-toggle {
   display: inline-flex;

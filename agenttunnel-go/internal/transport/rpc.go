@@ -345,10 +345,12 @@ type ThreadSummary struct {
 	AutoMode    bool      `json:"autoMode"`
 	Archived    bool      `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
-	ParentThreadID contracts.ThreadID     `json:"parentThreadId,omitempty"`
-	Worktree       *contracts.WorktreeRef `json:"worktree,omitempty"`
-	Draft          bool                   `json:"draft,omitempty"`
-	Issue          *contracts.IssueRef    `json:"issue,omitempty"`
+	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
+	// Owner records who started the thread; absent means user (pre-change logs).
+	Owner    contracts.ThreadOwner  `json:"owner,omitempty"`
+	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
+	Draft    bool                   `json:"draft,omitempty"`
+	Issue    *contracts.IssueRef    `json:"issue,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -993,6 +995,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		id := d.newThreadID()
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id, ProjectID: project.ID,
+			Owner: contracts.ThreadOwnerUser,
 		}); err != nil {
 			return nil, err
 		}
@@ -1027,6 +1030,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id,
 			Title: p.Title, ProjectID: p.ProjectID, Worktree: wt,
 			Draft: p.Draft, Description: p.Description, Issue: p.Issue,
+			Owner: contracts.ThreadOwnerUser,
 		}); err != nil {
 			return nil, err
 		}
@@ -1069,7 +1073,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				FirstPrompt: firstUserPrompt(st),
 				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
-				ParentThreadID: st.ParentThreadID, Worktree: st.Worktree,
+				ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
 				Draft: st.Draft, Issue: st.Issue,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 			})
