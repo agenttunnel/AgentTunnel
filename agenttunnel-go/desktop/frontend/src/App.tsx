@@ -2210,6 +2210,7 @@ export default function App() {
     const threadId = activeId;
     const text = expandPastes(input, pastes[draftKey]).trim();
     if (!rpc || !threadId || !text) return;
+    setRecall(null);
     // A registered "/name" runs its command. Commands never start or steer a
     // turn; an unknown "/word" is sent as ordinary text.
     const slash = parseSlash(text);
@@ -2592,6 +2593,9 @@ export default function App() {
   const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
   const pasteSeq = useRef(0);
+  // Shell-style prompt history: the index of the sent prompt the composer shows
+  // (null = the live draft), with the draft to restore on ArrowDown past the newest.
+  const [recall, setRecall] = useState<{ key: string; idx: number; draft: string } | null>(null);
 
   // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
   // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
@@ -2774,6 +2778,43 @@ export default function App() {
       e.preventDefault();
       setMentionDismissed(openMention.start);
       return;
+    }
+    // ArrowUp on the first line recalls the previous sent prompt; ArrowDown on
+    // the last line steps forward and restores the draft. Popups keep their arrows.
+    if (
+      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      !slashOpen &&
+      !openMention &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      e.currentTarget.selectionStart === e.currentTarget.selectionEnd
+    ) {
+      const { selectionStart: at, value } = e.currentTarget;
+      const up = e.key === "ArrowUp";
+      const cur = recall && recall.key === draftKey ? recall : null;
+      const onEdge = up ? !value.slice(0, at).includes("\n") : !value.slice(at).includes("\n");
+      if (onEdge && (up || cur)) {
+        e.preventDefault();
+        const prompts = (thread?.messages ?? []).filter((m) => m.author === "user").map((m) => m.text);
+        if (up) {
+          const idx = cur ? cur.idx - 1 : prompts.length - 1;
+          if (idx >= 0) {
+            const next = prompts[idx];
+            setRecall({ key: draftKey, idx, draft: cur ? cur.draft : input });
+            if (next !== input) pendingCaret.current = next.length;
+            setInput(next);
+          }
+        } else {
+          const idx = cur!.idx + 1;
+          const next = idx < prompts.length ? prompts[idx] : cur!.draft;
+          setRecall(idx < prompts.length ? { key: draftKey, idx, draft: cur!.draft } : null);
+          if (next !== input) pendingCaret.current = next.length;
+          setInput(next);
+        }
+        return;
+      }
     }
     // A token is one unit: Backspace/Delete at its edge removes it whole.
     const { selectionStart: pos, selectionEnd } = e.currentTarget;
@@ -3958,6 +3999,7 @@ export default function App() {
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value);
+                    setRecall(null);
                     setSlashIdx(0);
                     setCaret(e.target.selectionStart);
                     setMentionActive(0);
