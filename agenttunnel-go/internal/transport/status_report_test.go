@@ -171,3 +171,85 @@ func TestStatusReportStopsOnContextCancel(t *testing.T) {
 		t.Fatalf("ticker stops = %d, want 1", ticker.stops)
 	}
 }
+
+// reportState reads the fixture thread the way postStatusReport does.
+func reportState(t *testing.T, eng *domain.Engine) *domain.ThreadState {
+	t.Helper()
+	st, err := eng.State(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestStatusReportDoneAndTodoSections(t *testing.T) {
+	eng, _, _, _ := statusFixture(t, 30)
+
+	got := statusReportText(reportState(t, eng), 90*time.Second)
+	want := strings.Join([]string{
+		"Workflow status · 1m30s elapsed",
+		"Done so far:",
+		"- task Plan",
+		"- agent review succeeded",
+		"Still to do:",
+		"- task Implement (todo)",
+		"- agent implement (executor): running",
+		"Settled: 1 (1 succeeded)",
+		"Tasks: 1/2 done",
+	}, "\n")
+	if got != want {
+		t.Fatalf("status report =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestStatusReportWorthKnowing(t *testing.T) {
+	ctx := context.Background()
+	eng, _, _, _ := statusFixture(t, 30)
+
+	dispatch := func(cmd contracts.Command) {
+		t.Helper()
+		if err := eng.Dispatch(ctx, cmd); err != nil {
+			t.Fatalf("dispatch %s: %v", cmd.Type, err)
+		}
+	}
+	dispatch(contracts.Command{
+		ID: "s3", Type: contracts.CmdAgentStatusSet, ThreadID: "t1",
+		Status: &contracts.AgentStatusChanged{AgentID: "agent-1", Status: contracts.AgentFailed, Reason: "tests failed\nin pkg/x"},
+	})
+	dispatch(contracts.Command{
+		ID: "q1", Type: contracts.CmdQuestionAsk, ThreadID: "t1",
+		QuestionAsk: &contracts.QuestionAsked{QuestionID: "q1", AgentID: "agent-1", Kind: contracts.QuestionText, Question: "Which\nbranch?"},
+	})
+
+	got := statusReportText(reportState(t, eng), 0)
+	for _, want := range []string{
+		"Done so far:\n- task Plan\n- agent review succeeded\n",
+		"Still to do:\n- task Implement (todo)\n",
+		"Worth knowing:\n- agent implement failed: tests failed in pkg/x\n- question waiting: Which branch?\n",
+		"Settled: 2 (1 succeeded, 1 failed)\n",
+		"Tasks: 1/2 done",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status report missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "agent implement (executor)") {
+		t.Fatalf("failed agent must not also be listed as still to do:\n%s", got)
+	}
+}
+
+func TestStatusReportEmptyThread(t *testing.T) {
+	ctx := context.Background()
+	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
+	eng.Start(ctx)
+	t.Cleanup(eng.Close)
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1", Title: "T"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := statusReportText(reportState(t, eng), 0)
+	want := "Workflow status · 0s elapsed\nTasks: 0/0 done"
+	if got != want {
+		t.Fatalf("empty status report = %q, want %q", got, want)
+	}
+}

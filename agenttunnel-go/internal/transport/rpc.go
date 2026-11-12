@@ -604,43 +604,66 @@ func (d *Dispatcher) postStatusReport(ctx context.Context, threadID contracts.Th
 	})
 }
 
-// statusReportText renders a concise workflow status: agents with their
-// statuses, task progress, and how long the turn has been running.
+// statusReportText renders a workflow status: what is done, what is still open,
+// and what needs the human's attention. Tasks and agents are read in one pass
+// each; the report is built in a single builder.
 func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
-
-	// Live agents are the useful part of a heartbeat; finished ones collapse to
-	// a count so a long thread does not repost its whole roster every period.
-	var active strings.Builder
-	activeCount := 0
-	settled := map[contracts.AgentStatus]int{}
-	for _, id := range st.AgentOrder {
-		a := st.Agents[id]
-		if a.Status.Terminal() {
-			settled[a.Status]++
+	var (
+		doneLines, todoLines, worthLines []string
+		doneTasks                        int
+		settled                          = map[contracts.AgentStatus]int{}
+	)
+	for _, t := range st.Tasks {
+		label := strings.TrimSpace(t.Title)
+		if label == "" {
+			label = t.Name
+		}
+		if t.Status == contracts.TaskDone {
+			doneTasks++
+			doneLines = append(doneLines, "- task "+label)
 			continue
 		}
-		activeCount++
+		todoLines = append(todoLines, fmt.Sprintf("- task %s (%s)", label, t.Status))
+	}
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
 		name := strings.TrimSpace(a.Name)
 		if name == "" {
 			name = string(id)
 		}
-		role := string(a.Role)
-		if role == "" {
-			role = "agent"
+		switch a.Status {
+		case contracts.AgentSucceeded:
+			settled[a.Status]++
+			doneLines = append(doneLines, "- agent "+name+" succeeded")
+		case contracts.AgentFailed, contracts.AgentCancelled:
+			settled[a.Status]++
+			line := "- agent " + name + " " + string(a.Status)
+			if reason := oneLine(a.Reason); reason != "" {
+				line += ": " + reason
+			}
+			worthLines = append(worthLines, line)
+		default:
+			role := string(a.Role)
+			if role == "" {
+				role = "agent"
+			}
+			todoLines = append(todoLines, fmt.Sprintf("- agent %s (%s): %s", name, role, a.Status))
 		}
-		fmt.Fprintf(&active, "- %s (%s): %s\n", name, role, a.Status)
 	}
-	if activeCount == 0 {
-		b.WriteString("Agents: none active\n")
-	} else {
-		b.WriteString("Agents:\n")
-		b.WriteString(active.String())
+	for _, q := range st.Questions {
+		if q.Status == domain.QuestionPending {
+			worthLines = append(worthLines, "- question waiting: "+oneLine(q.Question))
+		}
 	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Workflow status · %s elapsed\n", elapsed.Truncate(time.Second))
+	writeReportSection(&b, "Done so far", doneLines)
+	writeReportSection(&b, "Still to do", todoLines)
+	writeReportSection(&b, "Worth knowing", worthLines)
 	if len(settled) > 0 {
 		total := 0
 		var parts []string
@@ -652,15 +675,25 @@ func statusReportText(st *domain.ThreadState, elapsed time.Duration) string {
 		}
 		fmt.Fprintf(&b, "Settled: %d (%s)\n", total, strings.Join(parts, ", "))
 	}
-
-	done := 0
-	for _, t := range st.Tasks {
-		if t.Status == contracts.TaskDone {
-			done++
-		}
-	}
-	fmt.Fprintf(&b, "Tasks: %d/%d done", done, len(st.Tasks))
+	fmt.Fprintf(&b, "Tasks: %d/%d done", doneTasks, len(st.Tasks))
 	return b.String()
+}
+
+// writeReportSection writes a titled list, skipping the section when empty.
+func writeReportSection(b *strings.Builder, title string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString(title + ":\n")
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+}
+
+// oneLine collapses whitespace so a multi-line reason or question stays on one
+// report line.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // promptWithAttachments appends the composer's attached files and folders to
