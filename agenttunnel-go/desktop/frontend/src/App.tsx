@@ -92,7 +92,7 @@ import type {
   HarnessUpdateResult,
 } from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
-import type { MailboxMessage } from "./lib/graph";
+import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import { fuzzyScore } from "./lib/fuzzy";
 import {
@@ -209,6 +209,8 @@ export type ThreadState = {
   leads?: number;
   /** Per-lead runtime overrides by lead index; an empty harness inherits the Orchestrator role. */
   leadRuntimes?: LeadRuntimeView[];
+  /** Solo override: one agent on one harness, no orchestrator team. Absent means orchestrator mode. */
+  soloRuntime?: LeadRuntimeView;
   messages: Message[] | null;
   mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
@@ -253,6 +255,8 @@ type ThreadSummary = {
   draft?: boolean;
   /** The GitLab issue the thread was started from, if any. */
   issue?: { provider: string; iid: number; title: string; url: string } | null;
+  /** Solo override: one agent on one harness, no orchestrator team. Absent means orchestrator mode. */
+  soloRuntime?: LeadRuntimeView;
 };
 
 // A prompt hit must be stronger than a title hit to win, so a thread whose
@@ -533,7 +537,9 @@ const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
                     ? "Subthread"
                     : m.author === "status"
                       ? "Status"
-                      : "Orchestrator"}
+                      : m.author === "solo"
+                        ? "Solo"
+                        : "Orchestrator"}
         </span>
       </div>
       <div className="msg-actions">
@@ -2619,6 +2625,24 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
+  /** Turns solo mode on (a non-empty harness) or off (an empty harness);
+   * from the next turn the thread runs one agent with no orchestrator team. */
+  const setSolo = async (rt: LeadRuntimeView | null) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setSolo", {
+        threadId: activeId,
+        harness: rt?.harness ?? "",
+        model: rt?.model ?? "",
+        variant: rt?.variant ?? "",
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    refresh(activeId).catch(() => undefined);
+  };
+
   /** Stops the turn running on the active thread, if any. */
   const stopTurn = async () => {
     const rpc = rpcRef.current;
@@ -3881,35 +3905,38 @@ export default function App() {
                 +
               </span>
             </div>
-            {projectThreads.map((t) => (
-              <div
-                className={`thread-card${t.stale ? " is-stale" : ""}`}
-                key={t.id}
-                style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-                {...clickable(() => selectThread(t.id))}
-                onContextMenu={(e) => openThreadMenu(t, e)}
-              >
-                <div className="tc-head">
-                  <div className="tc-title" title={t.title}>
-                    {t.title}
+            {projectThreads.map((t) => {
+              const tint = t.soloRuntime ? harnessTint(t.soloRuntime.harness ?? "") : "";
+              return (
+                <div
+                  className={`thread-card${t.stale ? " is-stale" : ""}${tint ? ` ${tint}` : ""}`}
+                  key={t.id}
+                  style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
+                  {...clickable(() => selectThread(t.id))}
+                  onContextMenu={(e) => openThreadMenu(t, e)}
+                >
+                  <div className="tc-head">
+                    <div className="tc-title" title={t.title}>
+                      {t.title}
+                    </div>
+                    {t.owner === "orchestrator" && (
+                      <span className="tc-owner" title="Started by the orchestrator">
+                        Orchestrator
+                      </span>
+                    )}
                   </div>
-                  {t.owner === "orchestrator" && (
-                    <span className="tc-owner" title="Started by the orchestrator">
-                      Orchestrator
-                    </span>
-                  )}
+                  <div className="tc-meta">
+                    {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
+                  </div>
+                  <div className="tc-foot">
+                    <ThreadClock t={t} />
+                    {fmtUpdated(t.updatedAt) && (
+                      <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
+                    )}
+                  </div>
                 </div>
-                <div className="tc-meta">
-                  {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
-                </div>
-                <div className="tc-foot">
-                  <ThreadClock t={t} />
-                  {fmtUpdated(t.updatedAt) && (
-                    <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           )}
           {threadOverlays}
@@ -3926,6 +3953,9 @@ export default function App() {
   const setupMode = setupPending && setupReadyId !== activeId;
   const composerHidden = setupMode;
   const asideCollapsed = !layout.asideOpen || setupMode;
+  // Solo threads tint the chat-head tabs with their harness color, like the
+  // thread card and the graph node do.
+  const soloTint = thread?.soloRuntime ? harnessTint(thread.soloRuntime.harness ?? "") : "";
 
   return (
     <DocLinkContext.Provider value={openChatDoc}>
@@ -4031,20 +4061,20 @@ export default function App() {
         <div className="chat-head">
           <div className="tabs" role="tablist" aria-label="Thread view">
             <div
-              className={`tab ${tab === "chat" ? "on" : ""}`}
+              className={`tab ${tab === "chat" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "chat", () => setTab("chat"))}
             >
               Chat
             </div>
             <div
-              className={`tab ${tab === "review" ? "on" : ""}`}
+              className={`tab ${tab === "review" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "review", () => setTab("review"))}
             >
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
             </div>
             <div
-              className={`tab ${tab === "graph" ? "on" : ""}`}
+              className={`tab ${tab === "graph" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "graph", () => setTab("graph"))}
             >
               Graph
@@ -4053,7 +4083,7 @@ export default function App() {
               )}
             </div>
             <div
-              className={`tab ${tab === "board" ? "on" : ""}`}
+              className={`tab ${tab === "board" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "board", () => setTab("board"))}
             >
               Board
@@ -4132,6 +4162,7 @@ export default function App() {
                     addLead={addLead}
                     addingLead={addingLead}
                     setLeadRuntime={setLeadRuntime}
+                    setSolo={setSolo}
                     updateRole={updateRole}
                     persistRole={persistRole}
                     refreshModels={refreshModels}
@@ -4563,6 +4594,7 @@ export default function App() {
                 addLead={addLead}
                 addingLead={addingLead}
                 setLeadRuntime={setLeadRuntime}
+                setSolo={setSolo}
                 updateRole={updateRole}
                 persistRole={persistRole}
                 refreshModels={refreshModels}

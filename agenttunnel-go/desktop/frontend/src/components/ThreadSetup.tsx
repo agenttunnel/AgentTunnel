@@ -9,6 +9,7 @@ type ThreadSetupProps = {
   addLead: (count: number) => Promise<void>;
   addingLead: boolean;
   setLeadRuntime: (index: number, rt: LeadRuntimeView) => Promise<void>;
+  setSolo: (rt: LeadRuntimeView | null) => Promise<void>;
   updateRole: (id: string, patch: Partial<RoleConfigView>) => void;
   persistRole: (row: RoleConfigView) => Promise<void>;
   refreshModels: (harness: string) => Promise<void>;
@@ -39,6 +40,7 @@ export function ThreadSetup({
   addLead,
   addingLead,
   setLeadRuntime,
+  setSolo,
   updateRole,
   persistRole,
   refreshModels,
@@ -51,6 +53,15 @@ export function ThreadSetup({
   const count = thread?.leads && thread.leads > 0 ? thread.leads : 1;
   const multiLead = count > 1;
   const peerOn = !!thread?.peerMailbox || multiLead;
+  const solo = thread?.soloRuntime;
+  const soloOn = !!solo;
+  const soloHarn = solo?.harness ?? "";
+  // Turning solo on pins a harness right away: the thread's current solo
+  // harness (re-enabling), else the Orchestrator role's, else the first
+  // enabled one. With no harness available the toggle stays a no-op instead
+  // of sending a would-clear-it-empty string.
+  const orchHarness = settings?.roles.find((r) => r.id === "orchestrator")?.harness ?? "";
+  const firstSoloHarness = soloHarn || orchHarness || harnessOptionsFor("")[0]?.value || "";
   const statusPeriod = thread?.statusPeriodSeconds ?? 0;
   const statusPeriodValue = String(statusPeriod);
   const statusPeriodOptions = STATUS_PERIOD_OPTIONS.some((o) => o.value === statusPeriodValue)
@@ -63,7 +74,7 @@ export function ThreadSetup({
   return (
     <>
       {settings && (
-        <div className="model-summary">
+        <div className="model-summary" style={soloOn ? { opacity: 0.45 } : undefined}>
           {thread?.autoMode && <span className="ms-auto">auto</span>}
           {settings.roles
             .filter((r) => r.enabled)
@@ -80,26 +91,77 @@ export function ThreadSetup({
           <div
             className={`toggle${thread?.autoMode ? " on" : ""}`}
             {...switchProps(!!thread?.autoMode, () =>
-              thread && toggle("autoMode", !thread.autoMode),
+              thread && !soloOn && toggle("autoMode", !thread.autoMode),
             )}
-            title="Auto mode: the orchestrator picks each task's model and harness"
+            aria-disabled={soloOn || undefined}
+            title={
+              soloOn
+                ? "Parked while solo mode is on — the solo agent runs the whole turn itself"
+                : "Auto mode: the orchestrator picks each task's model and harness"
+            }
           >
             <span className="sw" /> Auto mode
           </div>
+          <div
+            className={`toggle${soloOn ? " on" : ""}`}
+            {...switchProps(soloOn, () =>
+              thread &&
+              (soloOn
+                ? setSolo(null)
+                : firstSoloHarness && setSolo({ harness: firstSoloHarness })),
+            )}
+            title="Solo mode: one agent on the chosen harness, no orchestrator team"
+          >
+            <span className="sw" /> Solo mode
+          </div>
+          {soloOn && (
+            <div className="role-edit">
+              <span className="rn">Solo</span>
+              <Dropdown
+                value={soloHarn}
+                options={harnessOptionsFor(soloHarn)}
+                disabled={!thread}
+                onChange={(v) => setSolo({ harness: v })}
+              />
+              <Dropdown
+                value={solo?.model ?? ""}
+                options={modelOptions(soloHarn, solo?.model ?? "")}
+                searchable
+                placeholder="model (default)"
+                disabled={!thread}
+                onRefresh={() => refreshModels(soloHarn).catch(() => undefined)}
+                addLabel="Add model"
+                onAdd={(m) => {
+                  addModel(soloHarn, m)
+                    .then(() =>
+                      setSolo({ harness: soloHarn, model: m, variant: solo?.variant ?? "" }),
+                    )
+                    .catch(() => undefined);
+                }}
+                onChange={(v) =>
+                  setSolo({ harness: soloHarn, model: v, variant: solo?.variant ?? "" })
+                }
+              />
+            </div>
+          )}
           <p className="hint">
-            {thread?.autoMode
-              ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
-              : "Roles are global: their harness and model apply to every thread on the next turn. Leads below are per thread."}
+            {soloOn
+              ? "Solo mode is on — this thread runs one agent and no orchestrator team. Other settings are parked."
+              : thread?.autoMode
+                ? "Auto mode is on — the orchestrator picks each task's model and harness. Other roles are parked."
+                : "Roles are global: their harness and model apply to every thread on the next turn. Leads below are per thread."}
           </p>
           {settings.roles.map((r) => {
-            const parked = !!thread?.autoMode && r.id !== "orchestrator";
+            const parked = soloOn || (!!thread?.autoMode && r.id !== "orchestrator");
             return (
               <div
                 className={`role-edit has-switch${parked ? " parked" : ""}${r.enabled ? "" : " off"}`}
                 key={r.id}
                 title={
                   parked
-                    ? "Parked while auto mode is on — the orchestrator decides this role's runtime"
+                    ? soloOn
+                      ? "Parked while solo mode is on — the solo agent runs this thread alone"
+                      : "Parked while auto mode is on — the orchestrator decides this role's runtime"
                     : undefined
                 }
               >
@@ -154,7 +216,11 @@ export function ThreadSetup({
               </div>
             );
           })}
-          <div className="lead-block">
+          <div
+            className="lead-block"
+            style={soloOn ? { opacity: 0.45 } : undefined}
+            title={soloOn ? "Parked while solo mode is on — one agent, no team" : undefined}
+          >
             <div className="lead-head">
               <span className="rn">Leads</span>
             </div>
@@ -177,7 +243,7 @@ export function ThreadSetup({
                       { value: "", label: `Orchestrator (${orch?.harness ?? "default"})` },
                       ...harnessOptionsFor(harness),
                     ]}
-                    disabled={!thread}
+                    disabled={!thread || soloOn}
                     onChange={(v) => setLeadRuntime(i, { harness: v })}
                   />
                   <Dropdown
@@ -185,7 +251,7 @@ export function ThreadSetup({
                     options={modelOptions(effective, model)}
                     searchable
                     placeholder="model (default)"
-                    disabled={!thread}
+                    disabled={!thread || soloOn}
                     onRefresh={() => refreshModels(effective).catch(() => undefined)}
                     addLabel="Add model"
                     onAdd={(m) => {
@@ -203,7 +269,7 @@ export function ThreadSetup({
               className="lead-add"
               aria-label="Add a lead"
               title="Add a lead"
-              disabled={!thread || addingLead}
+              disabled={!thread || addingLead || soloOn}
               onClick={() => addLead(count + 1)}
             >
               +
@@ -212,16 +278,20 @@ export function ThreadSetup({
           <div className="setup-peer">
             <div
               className={`toggle${peerOn ? " on" : ""}`}
-              {...switchProps(peerOn, () => thread && !multiLead && toggle("peerMailbox", !thread.peerMailbox))}
-              aria-disabled={multiLead || !thread}
+              {...switchProps(peerOn, () =>
+                thread && !multiLead && !soloOn && toggle("peerMailbox", !thread.peerMailbox),
+              )}
+              aria-disabled={soloOn || multiLead || !thread}
               title="Let leads message each other"
             >
               <span className="sw" /> Peer messaging
             </div>
             <p className="hint">
-              {multiLead
-                ? "Required with more than one lead."
-                : "Lets leads message each other. Needed when you run more than one lead."}
+              {soloOn
+                ? "Parked while solo mode is on — a solo thread has no team to message."
+                : multiLead
+                  ? "Required with more than one lead."
+                  : "Lets leads message each other. Needed when you run more than one lead."}
             </p>
           </div>
           <div className="lead-block">
