@@ -628,6 +628,72 @@ const MessageBlock = memo(function MessageBlock({
   );
 });
 
+/** One turn: the user's prompt heads it, the team's response stacks under it.
+ *  The response can be collapsed to a single summary row; collapsed state is
+ *  per turn (keyed by the prompt message's instance), so streamed messages
+ *  arriving in a collapsed turn never expand it. */
+const TurnBlock = memo(function TurnBlock({
+  turn,
+  index,
+  total,
+}: {
+  turn: Message[];
+  index: Map<string, number>;
+  total: number;
+}) {
+  const position = (m: Message) => {
+    const i = index.get(m.id) ?? 0;
+    return { hasPrev: i > 0, hasNext: i < total - 1 };
+  };
+  const [expanded, setExpanded] = useState(true);
+  // An opening block with no prompt (transcript that starts mid-run) has
+  // nothing to toggle: it renders flat, exactly as before.
+  if (turn[0].author !== "user") {
+    return (
+      <section className="turn">
+        {turn.map((m) => {
+          const { hasPrev, hasNext } = position(m);
+          return <MessageBlock key={m.id} m={m} hasPrev={hasPrev} hasNext={hasNext} />;
+        })}
+      </section>
+    );
+  }
+  const response = turn.slice(1);
+  return (
+    <section className="turn">
+      <MessageBlock m={turn[0]} {...position(turn[0])} />
+      {response.length > 0 &&
+        (expanded ? (
+          <button
+            type="button"
+            className="turn-toggle"
+            onClick={() => setExpanded(false)}
+            aria-expanded="true"
+            aria-label="Hide response"
+            title="Hide response"
+          >
+            ▾ Response
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="turn-hidden"
+            onClick={() => setExpanded(true)}
+            aria-expanded="false"
+            aria-label="Show response"
+            title="Show response"
+          >
+            ▸ Response hidden — {response.length} {response.length === 1 ? "message" : "messages"}
+          </button>
+        ))}
+      {expanded &&
+        response.map((m) => (
+          <MessageBlock key={m.id} m={m} {...position(m)} />
+        ))}
+    </section>
+  );
+});
+
 /** Composer drafts keyed by project and thread, remembered across restarts. */
 function draftKeyOf(projectId: string | null, threadId: string | null): string {
   return `${projectId ?? ""}\u001f${threadId ?? ""}`;
@@ -1341,6 +1407,11 @@ export default function App() {
         : null,
     [conn, activeId],
   );
+
+  // Turn groupings memoized on the message list: App re-renders on keystrokes
+  // and live log lines, but only a changed transcript regroups, so memoized
+  // turns and their message rows stay untouched.
+  const turnBlocks = useMemo(() => groupTurns(thread?.messages ?? []), [thread?.messages]);
 
   const installUpdate = useCallback(async () => {
     const rpc = rpcRef.current;
@@ -4675,20 +4746,13 @@ export default function App() {
               )}
               <MessageActionsContext.Provider value={messageActions}>
                 <MessageImageContext.Provider value={messageImages}>
-                  {groupTurns(thread?.messages ?? []).map((turn) => (
-                    <section className="turn" key={turn[0].id}>
-                      {turn.map((m) => {
-                        const i = messageIndex.get(m.id) ?? 0;
-                        return (
-                          <MessageBlock
-                            key={m.id}
-                            m={m}
-                            hasPrev={i > 0}
-                            hasNext={i < messageTotal - 1}
-                          />
-                        );
-                      })}
-                    </section>
+                  {turnBlocks.map((turn) => (
+                    <TurnBlock
+                      key={turn[0].id}
+                      turn={turn}
+                      index={messageIndex}
+                      total={messageTotal}
+                    />
                   ))}
                 </MessageImageContext.Provider>
               </MessageActionsContext.Provider>
