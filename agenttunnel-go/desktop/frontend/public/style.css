@@ -877,9 +877,9 @@ body.is-resizing * {
 .composer:focus-within {
   border-top-color: var(--accent);
 }
+/* The composer surface spans the full pane width; messages above keep their
+   900px reading width. Padding comes from the .composer wrapper. */
 .composer .box {
-  max-width: 900px;
-  margin: 0 auto;
   display: flex;
   gap: 6px;
   align-items: flex-end;
@@ -962,8 +962,7 @@ body.is-resizing * {
   border-radius: var(--r-sm);
 }
 .composer-foot {
-  max-width: 900px;
-  margin: 7px auto 0;
+  margin: 7px 0 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -999,11 +998,11 @@ body.is-resizing * {
 /* @ menu: fuzzy file and folder matches, opening above the composer. */
 .mention-menu {
   position: absolute;
-  left: 50%;
+  left: 20px;
+  right: 20px;
   bottom: calc(100% - 4px);
-  transform: translateX(-50%);
   z-index: 5;
-  width: min(900px, calc(100% - 40px));
+  width: auto;
   max-height: 260px;
   overflow-y: auto;
   padding: 4px;
@@ -1054,8 +1053,7 @@ body.is-resizing * {
 }
 /* Attached files and folders, shown above the box until the turn is sent. */
 .attach-row {
-  max-width: 900px;
-  margin: 0 auto 6px;
+  margin: 0 0 6px;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -4261,8 +4259,7 @@ button.danger-text {
 /* --- context menu ------------------------------------------------------- */
 /* /btw side answer: sits above the composer box, outside the thread. */
 .btw {
-  max-width: 900px;
-  margin: 0 auto 8px;
+  margin: 0 0 8px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -4339,10 +4336,10 @@ button.danger-text {
 /* Slash popup: floats above the composer box, keyboard driven by the textarea. */
 .slash-menu {
   position: absolute;
-  left: 50%;
+  left: 20px;
+  right: 20px;
   bottom: 100%;
-  transform: translateX(-50%);
-  width: min(900px, calc(100% - 40px));
+  width: auto;
   max-height: 280px;
   overflow: auto;
   margin-bottom: 6px;
