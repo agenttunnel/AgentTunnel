@@ -107,6 +107,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindSteer:
 		s.handleSteerCall(w, r, req)
 		return
+	case toolbox.KindAgentLogs:
+		s.handleAgentLogsCall(w, r, req)
+		return
 	}
 
 	// Peer messages are delivered immediately rather than queued in the tool

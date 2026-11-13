@@ -71,6 +71,10 @@ const (
 	// once, not queued: the reply tells the lead whether the steer was queued
 	// for that agent's next run. See Runner.Steer.
 	KindSteer Kind = "steer"
+	// KindAgentLogs reads a dispatched subagent's full output log, for when a
+	// result summary is missing detail. Answered at once, and only leads may
+	// call it; see transport's handleAgentLogsCall.
+	KindAgentLogs Kind = "agent-logs"
 )
 
 // IsReview reports whether a kind is a review-thread call.

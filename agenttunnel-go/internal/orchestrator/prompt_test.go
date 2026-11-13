@@ -37,6 +37,21 @@ func TestOrchestratorPromptDocumentsSteerWithSubagents(t *testing.T) {
 	}
 }
 
+// The agent-logs tool is documented to a lead only when it has subagents
+// whose logs it might need to read.
+func TestOrchestratorPromptDocumentsAgentLogsWithSubagents(t *testing.T) {
+	const line = `"$AT_TOOL" tool agent-logs --to <agent name or id>`
+	role := contracts.Role{SystemPrompt: "lead"}
+	with := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go", AgentLogs: true})
+	if !strings.Contains(with, "## Subagent logs") || !strings.Contains(with, line) {
+		t.Fatalf("lead with subagents lacks the agent-logs section:\n%s", with)
+	}
+	without := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go"})
+	if strings.Contains(without, "agent-logs") {
+		t.Fatalf("lead without subagents should not document agent-logs:\n%s", without)
+	}
+}
+
 // Steers queued for a subagent render in their own labelled block, and only
 // when there are some.
 func TestSubagentPromptCarriesSteering(t *testing.T) {

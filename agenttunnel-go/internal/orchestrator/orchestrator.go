@@ -642,6 +642,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Pass:           pass,
 		Steering:       steering,
 		Steer:          hasSubagents(state),
+		AgentLogs:      hasSubagents(state),
 		RuntimeChoices: runtimeChoices,
 	})
 

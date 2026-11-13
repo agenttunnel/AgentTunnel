@@ -31,7 +31,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell|agent-logs> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -201,6 +201,9 @@ func Run(args []string) int {
 	if kind == "read-file" {
 		return printFile(resp.Body)
 	}
+	if kind == "agent-logs" {
+		return printAgentLogs(resp.Body)
+	}
 	if kind == "shell" {
 		return printShell(resp.Body)
 	}
@@ -235,6 +238,38 @@ func printFile(body io.Reader) int {
 	fmt.Print(res.Text)
 	if res.Truncated {
 		fmt.Fprintf(os.Stderr, "tool read-file: %s is %d bytes; only the first %d were shown\n", res.Path, res.Size, files.MaxReadBytes)
+	}
+	return 0
+}
+
+// agentLogsReply is the daemon's answer to `tool agent-logs`.
+type agentLogsReply struct {
+	Agent     string `json:"agent"`
+	Name      string `json:"name"`
+	Lines     int    `json:"lines"`
+	Truncated bool   `json:"truncated"`
+	Text      string `json:"text"`
+}
+
+// printAgentLogs writes a subagent's log as it is, so the lead reads the full
+// history. A log cut at the read cap kept only its newest bytes; that is noted
+// on stderr.
+func printAgentLogs(body io.Reader) int {
+	var reply agentLogsReply
+	if err := json.NewDecoder(body).Decode(&reply); err != nil {
+		fmt.Fprintf(os.Stderr, "tool agent-logs: %v\n", err)
+		return 1
+	}
+	fmt.Print(reply.Text)
+	if reply.Text != "" && !strings.HasSuffix(reply.Text, "\n") {
+		fmt.Println()
+	}
+	if reply.Truncated {
+		agent := reply.Name
+		if agent == "" {
+			agent = reply.Agent
+		}
+		fmt.Fprintf(os.Stderr, "tool agent-logs: %s log shows only the newest %d bytes\n", agent, files.MaxReadBytes)
 	}
 	return 0
 }
