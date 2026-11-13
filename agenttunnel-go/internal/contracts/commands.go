@@ -9,42 +9,45 @@ type CommandType string
 const DefaultThreadTitle = "New thread"
 
 const (
-	CmdThreadCreate       CommandType = "thread.create"
-	CmdThreadFork         CommandType = "thread.fork"
-	CmdThreadRename       CommandType = "thread.rename"
-	CmdThreadDescribe     CommandType = "thread.describe"
-	CmdThreadDelete       CommandType = "thread.delete"
-	CmdWorktreeAttach     CommandType = "thread.worktree.attach"
-	CmdWorktreeDetach     CommandType = "thread.worktree.detach"
-	CmdWorktreeReplace    CommandType = "thread.worktree.replace"
-	CmdTurnStart          CommandType = "thread.turn.start"
-	CmdModelSet           CommandType = "thread.model.set"
-	CmdAutoModeSet        CommandType = "thread.automode.set"
-	CmdArchiveSet         CommandType = "thread.archive.set"
-	CmdStatusPeriodSet    CommandType = "thread.status-period.set"
-	CmdPeerMailboxSet     CommandType = "thread.peer-mailbox.set"
-	CmdLeadsSet           CommandType = "thread.leads.set"
-	CmdLeadRuntimeSet     CommandType = "thread.leads.runtime.set"
-	CmdRoleRuntimeSet     CommandType = "thread.role.runtime.set"
-	CmdSubthreadSpawn     CommandType = "thread.subthread.spawn"
-	CmdTaskAdd            CommandType = "thread.task.add"
-	CmdTaskStatusSet      CommandType = "thread.task.status.set"
-	CmdTaskDispatch       CommandType = "agent.task.dispatch"
-	CmdAgentStatusSet     CommandType = "agent.status.set"
-	CmdUsageRecord        CommandType = "agent.usage.record"
-	CmdSharedContextSet   CommandType = "context.shared.set"
-	CmdMailboxPost        CommandType = "mailbox.post"
-	CmdMessageAppend      CommandType = "thread.message.append"
-	CmdSteeringConsume    CommandType = "thread.steering.consume"
-	CmdReviewCommentAdd   CommandType = "review.comment.add"
-	CmdReviewSubmit       CommandType = "review.submit"
-	CmdReviewThreadOpen   CommandType = "review.thread.open"
-	CmdReviewThreadReply  CommandType = "review.thread.reply"
-	CmdReviewThreadStatus CommandType = "review.thread.status"
-	CmdQuestionAsk        CommandType = "thread.question.ask"
-	CmdQuestionClose      CommandType = "thread.question.close"
-	CmdPRTrack            CommandType = "thread.pr.track"
-	CmdSteeringInjected   CommandType = "thread.steering.injected"
+	CmdThreadCreate         CommandType = "thread.create"
+	CmdThreadFork           CommandType = "thread.fork"
+	CmdThreadRename         CommandType = "thread.rename"
+	CmdThreadDescribe       CommandType = "thread.describe"
+	CmdThreadDelete         CommandType = "thread.delete"
+	CmdWorktreeAttach       CommandType = "thread.worktree.attach"
+	CmdWorktreeDetach       CommandType = "thread.worktree.detach"
+	CmdWorktreeReplace      CommandType = "thread.worktree.replace"
+	CmdTurnStart            CommandType = "thread.turn.start"
+	CmdModelSet             CommandType = "thread.model.set"
+	CmdAutoModeSet          CommandType = "thread.automode.set"
+	CmdArchiveSet           CommandType = "thread.archive.set"
+	CmdStatusPeriodSet      CommandType = "thread.status-period.set"
+	CmdPeerMailboxSet       CommandType = "thread.peer-mailbox.set"
+	CmdLeadsSet             CommandType = "thread.leads.set"
+	CmdLeadRuntimeSet       CommandType = "thread.leads.runtime.set"
+	CmdRoleRuntimeSet       CommandType = "thread.role.runtime.set"
+	CmdSubthreadSpawn       CommandType = "thread.subthread.spawn"
+	CmdThreadSchedule       CommandType = "thread.schedule"
+	CmdThreadScheduleCancel CommandType = "thread.unschedule"
+	CmdThreadControl        CommandType = "thread.control"
+	CmdTaskAdd              CommandType = "thread.task.add"
+	CmdTaskStatusSet        CommandType = "thread.task.status.set"
+	CmdTaskDispatch         CommandType = "agent.task.dispatch"
+	CmdAgentStatusSet       CommandType = "agent.status.set"
+	CmdUsageRecord          CommandType = "agent.usage.record"
+	CmdSharedContextSet     CommandType = "context.shared.set"
+	CmdMailboxPost          CommandType = "mailbox.post"
+	CmdMessageAppend        CommandType = "thread.message.append"
+	CmdSteeringConsume      CommandType = "thread.steering.consume"
+	CmdReviewCommentAdd     CommandType = "review.comment.add"
+	CmdReviewSubmit         CommandType = "review.submit"
+	CmdReviewThreadOpen     CommandType = "review.thread.open"
+	CmdReviewThreadReply    CommandType = "review.thread.reply"
+	CmdReviewThreadStatus   CommandType = "review.thread.status"
+	CmdQuestionAsk          CommandType = "thread.question.ask"
+	CmdQuestionClose        CommandType = "thread.question.close"
+	CmdPRTrack              CommandType = "thread.pr.track"
+	CmdSteeringInjected     CommandType = "thread.steering.injected"
 )
 
 // IsBuiltinRole reports whether id names a role every daemon registers. The
@@ -70,11 +73,23 @@ type DispatchTask struct {
 	Model         string     `json:"model,omitempty"`
 	Pipeline      PipelineID `json:"pipelineId,omitempty"`
 	DependsOn     []string   `json:"dependsOn,omitempty"`
+	// Brief is the agent definition for a wildcard dispatch; it becomes the
+	// agent's system prompt. It is consumed when the task runs, so it stays off
+	// the TaskDispatched event.
+	Brief string `json:"brief,omitempty"`
 
 	// Override honors Harness/Model even outside auto mode. It marks an
 	// explicit user choice (council membership) rather than an orchestrator
 	// pick, so it does not persist and never crosses a client boundary.
 	Override bool `json:"-"`
+}
+
+// ScheduleSpec is what a scheduled thread runs once its dependencies finish:
+// the threads it waits on, and the prompt for the turn they trigger. The
+// scheduling command's ThreadID is the thread being armed.
+type ScheduleSpec struct {
+	DependsOn []ThreadID `json:"dependsOn"`
+	Prompt    string     `json:"prompt"`
 }
 
 // Command is a request to change thread state. Exactly one payload field is
@@ -101,6 +116,8 @@ type Command struct {
 	Owner           ThreadOwner                `json:"owner,omitempty"`
 	Worktree        *WorktreeRef               `json:"worktree,omitempty"`
 	Subthread       *SubthreadSpawned          `json:"subthread,omitempty"`
+	Schedule        *ScheduleSpec              `json:"schedule,omitempty"`
+	Controller      ThreadID                   `json:"controller,omitempty"`
 	TaskAdd         *TaskAdded                 `json:"taskAdd,omitempty"`
 	TaskStatus      *TaskStatusChanged         `json:"taskStatus,omitempty"`
 	Dispatch        *DispatchTask              `json:"dispatch,omitempty"`

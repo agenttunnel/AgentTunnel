@@ -167,13 +167,96 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if err != nil {
 			return nil, err
 		}
-		payloads := []contracts.EventPayload{
-			contracts.MessageSent{MessageID: cmd.ID, Author: "user", Text: cmd.Text, Images: images},
+		// A waiting thread's turn is its trigger: record the dependencies it
+		// waited on, so the schedule discharges in the same durable write as
+		// the prompt it carries.
+		var payloads []contracts.EventPayload
+		if s.Waiting != nil {
+			payloads = append(payloads, contracts.ThreadTriggered{DependsOn: s.Waiting.DependsOn})
 		}
+		// The turn's message records who asked for it. The user asks for its
+		// own turns; a controlled thread's turns are asked for by its
+		// controller — a relaunch — so the transcript names the controller
+		// instead of a phantom user. The projector opens a turn for either
+		// author, keeping per-turn spend attributable.
+		author := "user"
+		if s.ControlledBy != "" {
+			author = string(s.ControlledBy)
+		}
+		payloads = append(payloads, contracts.MessageSent{MessageID: cmd.ID, Author: author, Text: cmd.Text, Images: images})
 		if s.Draft {
 			payloads = append(payloads, contracts.DraftStarted{})
 		}
 		return payloads, nil
+
+	case contracts.CmdThreadSchedule:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		spec := cmd.Schedule
+		if spec == nil {
+			return nil, fmt.Errorf("%w: schedule payload is required", ErrInvalidCommand)
+		}
+		if strings.TrimSpace(spec.Prompt) == "" {
+			return nil, fmt.Errorf("%w: schedule prompt is required", ErrInvalidCommand)
+		}
+		if len(spec.DependsOn) == 0 {
+			return nil, fmt.Errorf("%w: a schedule waits on at least one thread", ErrInvalidCommand)
+		}
+		seen := make(map[contracts.ThreadID]bool, len(spec.DependsOn))
+		for _, dep := range spec.DependsOn {
+			if dep == cmd.ThreadID {
+				return nil, fmt.Errorf("%w: a thread cannot wait on itself", ErrInvalidCommand)
+			}
+			if seen[dep] {
+				return nil, fmt.Errorf("%w: duplicate dependency %q", ErrInvalidCommand, dep)
+			}
+			seen[dep] = true
+		}
+		// Whether the dependencies exist (and the graph is acyclic) is the
+		// scheduler's check: the decider is pure and sees one thread at a time.
+		if s.Waiting != nil {
+			return nil, fmt.Errorf("%w: thread already has a schedule", ErrInvalidCommand)
+		}
+		if s.ParentThreadID != "" {
+			return nil, fmt.Errorf("%w: a subthread cannot be scheduled", ErrInvalidCommand)
+		}
+		// An archived thread is out of the working set; firing invisible
+		// turn work on it would pull it back without the user asking.
+		// Unarchive first.
+		if s.Archived {
+			return nil, fmt.Errorf("%w: an archived thread cannot be scheduled", ErrInvalidCommand)
+		}
+		for id, a := range s.Agents {
+			if !a.Status.Terminal() {
+				return nil, fmt.Errorf("%w: agent %q is still %s", ErrInvalidCommand, id, a.Status)
+			}
+		}
+		return []contracts.EventPayload{contracts.ThreadScheduled{
+			DependsOn: append([]contracts.ThreadID(nil), spec.DependsOn...),
+			Prompt:    spec.Prompt,
+		}}, nil
+
+	case contracts.CmdThreadScheduleCancel:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if s.Waiting == nil {
+			return nil, fmt.Errorf("%w: thread has no schedule to cancel", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.ThreadScheduleCancelled{DependsOn: s.Waiting.DependsOn}}, nil
+
+	case contracts.CmdThreadControl:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.Controller == cmd.ThreadID {
+			return nil, fmt.Errorf("%w: a thread cannot control itself", ErrInvalidCommand)
+		}
+		if cmd.Controller == "" && s.ControlledBy == "" {
+			return nil, fmt.Errorf("%w: thread is not controlled", ErrInvalidCommand)
+		}
+		return []contracts.EventPayload{contracts.ThreadControlled{Controller: cmd.Controller}}, nil
 
 	case contracts.CmdModelSet:
 		if !s.Exists {

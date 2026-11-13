@@ -17,6 +17,9 @@ const (
 	RoleReviewer       RoleID = "reviewer"
 	RoleFacilitator    RoleID = "facilitator"
 	RoleContextManager RoleID = "context-manager"
+	// RoleWildcard is an agent the team lead defines: its dispatch carries a
+	// brief that becomes the agent's system prompt. The wire role stays this id.
+	RoleWildcard RoleID = "wildcard"
 )
 
 // Role describes an agent role: its identity, system prompt, and default runtime.
@@ -34,9 +37,9 @@ type Role struct {
 	Required     bool `json:"required,omitempty"`
 }
 
-// BuiltinRoles returns the seven roles AgentTunnel ships: orchestrator, planner,
+// BuiltinRoles returns the eight roles AgentTunnel ships: orchestrator, planner,
 // executor, tester (QA), reviewer, the council facilitator, and the experimental
-// context manager.
+// context manager and wildcard.
 func BuiltinRoles() []Role {
 	return []Role{
 		{
@@ -108,6 +111,16 @@ func BuiltinRoles() []Role {
 			SystemPrompt: "You are the context manager. Read the thread's collected subagent results and write one " +
 				"concise, current summary of what is known, decided, and still open. Keep it short and factual, " +
 				"drop anything superseded, and do not add work of your own.",
+		},
+		{
+			ID:             RoleWildcard,
+			Name:           "Wildcard",
+			Builtin:        true,
+			Experimental:   true,
+			DefaultHarness: HarnessOpenCode,
+			// The team lead's brief replaces this prompt at dispatch; this is
+			// only the fallback for a wildcard run that somehow has no brief.
+			SystemPrompt: "You are a custom agent the team lead defined. Follow your brief exactly and report findings.",
 		},
 	}
 }
