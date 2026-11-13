@@ -1481,9 +1481,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
-		}); err != nil {
+		if err := d.setArchived(ctx, p.ThreadID, p.Enabled); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -2418,6 +2416,24 @@ func (d *Dispatcher) threadBusy(id contracts.ThreadID, st *domain.ThreadState) b
 // check and the dispatch can still get the delete refused, leaving the thread
 // with its worktree already gone. The window is one engine round-trip. Closing it
 // would need worktree removal inside the decider, which the engine does not do.
+// setArchived archives or restores a thread. Archiving a busy thread is refused
+// with the same message delete uses, so the user sees what to do. The decider
+// still enforces the rule for races that land after this check.
+func (d *Dispatcher) setArchived(ctx context.Context, id contracts.ThreadID, archived bool) error {
+	if archived {
+		st, err := d.engine.State(ctx, id)
+		if err != nil {
+			return err
+		}
+		if st.Exists && d.threadBusy(id, st) {
+			return fmt.Errorf("%w: thread %q is running; stop it first", domain.ErrInvalidCommand, id)
+		}
+	}
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: id, Archived: &archived,
+	})
+}
+
 func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, removeWorktree bool) error {
 	st, err := d.engine.State(ctx, id)
 	if err != nil {
