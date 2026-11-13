@@ -53,14 +53,30 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Exists = false
 		s.Deleted = true
 
+	case contracts.ThreadScheduled:
+		spec := contracts.ScheduleSpec{Prompt: p.Prompt, DependsOn: append([]contracts.ThreadID(nil), p.DependsOn...)}
+		s.Waiting = &spec
+
+	case contracts.ThreadTriggered:
+		s.Waiting = nil
+		s.TriggeredFrom = append([]contracts.ThreadID(nil), p.DependsOn...)
+
+	case contracts.ThreadScheduleCancelled:
+		s.Waiting = nil
+
+	case contracts.ThreadControlled:
+		s.ControlledBy = p.Controller
+
 	case contracts.MessageSent:
 		msg := Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At}
 		if len(p.Images) > 0 {
 			msg.Images = append([]contracts.ImageRef(nil), p.Images...)
 		}
 		s.Messages = append(s.Messages, msg)
-		// A user message opens a turn; steering and reports stay in the current one.
-		if p.Author == "user" {
+		// A user message opens a turn, and so does a message authored by the
+		// thread's controller — a relaunch is a real turn, with its own prompt
+		// and its own spend. Steering and reports stay in the current one.
+		if p.Author == "user" || (s.ControlledBy != "" && p.Author == string(s.ControlledBy)) {
 			s.Turn++
 			s.turnFor(s.Turn).At = e.At
 		}

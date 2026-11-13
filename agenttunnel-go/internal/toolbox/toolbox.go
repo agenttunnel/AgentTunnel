@@ -94,8 +94,10 @@ type Call struct {
 	Harness   string            `json:"harness,omitempty"`
 	Model     string            `json:"model,omitempty"`
 	DependsOn []string          `json:"dependsOn,omitempty"`
-	Text      string            `json:"text,omitempty"`
-	To        string            `json:"to,omitempty"`
+	// Brief is the agent definition a wildcard dispatch runs under.
+	Brief string `json:"brief,omitempty"`
+	Text  string `json:"text,omitempty"`
+	To    string `json:"to,omitempty"`
 	// File, Line, EndLine and Side anchor a review comment; Thread names the
 	// review thread a reply or resolution answers; Reopen moves it back to open.
 	File    string `json:"file,omitempty"`

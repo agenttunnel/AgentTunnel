@@ -206,6 +206,12 @@ type Dispatcher struct {
 
 	// questions holds the blocked `tool ask` calls, keyed by thread and question.
 	questions *questionBroker
+
+	// schedMu guards the thread scheduler's index: which threads are waiting
+	// on which dependencies, and which have a trigger turn being started.
+	schedMu     sync.Mutex
+	schedArmed  map[contracts.ThreadID]map[contracts.ThreadID]bool
+	schedFiring map[contracts.ThreadID]bool
 }
 
 // NewDispatcher constructs a dispatcher.
@@ -356,6 +362,14 @@ type ThreadSummary struct {
 	RunningAgents     int  `json:"runningAgents"`
 	StaleAfterSeconds int  `json:"staleAfterSeconds"`
 	Stale             bool `json:"stale"`
+
+	// Waiting is the thread's armed schedule, nil once it fired or was
+	// cancelled; TriggeredFrom records what fired the last scheduled turn.
+	Waiting       *contracts.ScheduleSpec `json:"waiting,omitempty"`
+	TriggeredFrom []contracts.ThreadID    `json:"triggeredFrom,omitempty"`
+	// ControlledBy names the thread that controls this one; empty means the
+	// user runs it.
+	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
 }
 
 // AgentView pairs an agent with its accumulated usage.
@@ -1080,6 +1094,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 					Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
 					ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
 					Draft: st.Draft, Issue: st.Issue,
+					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
 					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 				},
 				createdAt: st.CreatedAt,
@@ -1592,6 +1607,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}); err != nil {
 			return nil, err
 		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.schedule":
+		var p struct {
+			ThreadID  contracts.ThreadID   `json:"threadId"`
+			DependsOn []contracts.ThreadID `json:"dependsOn"`
+			Prompt    string               `json:"prompt"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.armSchedule(ctx, p.ThreadID, p.DependsOn, p.Prompt); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.unschedule":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadScheduleCancel, ThreadID: p.ThreadID,
+		}); err != nil {
+			return nil, err
+		}
+		// The disarmed thread leaves the scheduler's index now rather than on
+		// the event, which a busy channel could drop.
+		d.scheduleForget(p.ThreadID)
 		return map[string]any{"ok": true}, nil
 
 	case "agents.list":
@@ -2402,9 +2446,17 @@ func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, re
 			return err
 		}
 	}
-	return d.engine.Dispatch(ctx, contracts.Command{
+	if err := d.engine.Dispatch(ctx, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
-	})
+	}); err != nil {
+		return err
+	}
+	// The tombstone landed, so its claim on the threads it controlled cannot
+	// be honest anymore: release them. The scan is engine-wide, like the
+	// scheduler's index maintenance — the decider, which sees one thread at
+	// a time, has no way to notice the controller is gone.
+	d.releaseControlledThreads(ctx, id)
+	return nil
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {

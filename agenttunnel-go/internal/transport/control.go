@@ -543,6 +543,60 @@ func (d *Dispatcher) ControlTurn(ctx context.Context, id contracts.ThreadID, tex
 	return nil
 }
 
+// LaunchThreadTurn is the transport half of a relaunch: it claims the
+// target's turn slot synchronously (the ControlTurn pattern — beginTurn is
+// the atomic busy check, so the advisory read-model check in the runner
+// cannot be raced into a second turn on the same thread), records the
+// controller's claim and the turn's opener while the slot is held, then runs
+// the turn in the background through the same machinery thread.turn.start
+// uses — worktree gate, status reports, RunTurn — releasing both the slot and
+// the controller's claim when the turn ends. The daemon assembly installs
+// it as the Runner's launcher, so the orchestrator layer that decides a
+// relaunch never needs the dispatcher's internals.
+func (d *Dispatcher) LaunchThreadTurn(ctx context.Context, target contracts.ThreadID, text string, record func() error, finish func(turnCtx context.Context)) error {
+	if d.orch == nil {
+		return errors.New("the orchestrator is unavailable")
+	}
+	// The turn belongs to the daemon's lifetime, not the caller's own turn:
+	// the target's turn must outlive the thread that asked for it, exactly
+	// like a detached user turn.
+	base := d.baseCtx
+	if base == nil {
+		base = context.WithoutCancel(ctx)
+	}
+	turnCtx, done, err := d.beginTurn(base, target)
+	if err != nil {
+		return err
+	}
+	// record runs in the caller's drain, inside the claim, so the opener is
+	// committed before the caller's turn ends.
+	if err := record(); err != nil {
+		done()
+		return err
+	}
+	go func() {
+		defer done()
+		// Control is scoped to this launch: whatever keeps the turn from
+		// running — a worktree that cannot be restored, or the turn itself
+		// failing — the controller's claim is released with the slot.
+		defer finish(turnCtx)
+		if err := d.ensureWorktree(base, target); err != nil {
+			d.auditLog("thread.relaunch.worktree.failed", map[string]any{
+				"threadId": string(target), "error": err.Error(),
+			})
+			return
+		}
+		stopReports := d.startStatusReports(turnCtx, target)
+		defer stopReports()
+		if err := d.orch.RunTurn(turnCtx, target, text); err != nil && turnCtx.Err() == nil {
+			d.auditLog("thread.relaunch.turn.failed", map[string]any{
+				"threadId": string(target), "error": err.Error(),
+			})
+		}
+	}()
+	return nil
+}
+
 // ControlSteer queues steering text through the same RPC the desktop uses, so
 // the transcript records it exactly as a typed steer.
 func (d *Dispatcher) ControlSteer(ctx context.Context, id contracts.ThreadID, text string) error {

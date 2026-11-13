@@ -23,6 +23,12 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
+// readLimit caps one inbound client frame on the daemon side. A
+// thread.turn.start with a long prompt or attachments can exceed websocket's
+// 32768-byte default, which closed the connection before the RPC ran. It
+// mirrors the relay's MaxFrameBytes convention (pkg/relay/protocol.go).
+const readLimit = 4 << 20
+
 // Server exposes the daemon over HTTP: a health probe, an authenticated
 // JSON-RPC WebSocket, the tool endpoint agents call from their shell, and the
 // attachment upload/download surface image data rides instead of the socket.
@@ -160,10 +166,16 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		Lane:      req.Lane,
 		Role:      contracts.RoleID(req.Role),
 		Task:      req.Task,
+		Brief:     req.Brief,
 		Harness:   req.Harness,
 		Model:     req.Model,
 		DependsOn: req.DependsOn,
-		Text:      req.Text,
+		// The queued call keeps its target thread: thread-relaunch and
+		// thread-results ride it, and a call that lost it is refused by the
+		// drain ("target thread is required"). (The kinds that name a target
+		// through Target — thread-delete — are routed earlier in the switch.)
+		Thread: req.Thread,
+		Text:   req.Text,
 	})
 	s.disp.auditLog("tool", map[string]any{
 		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
@@ -266,6 +278,7 @@ type toolCallRequest struct {
 	Lane      string             `json:"lane"`
 	Role      string             `json:"role"`
 	Task      string             `json:"task"`
+	Brief     string             `json:"brief"`
 	Harness   string             `json:"harness"`
 	Model     string             `json:"model"`
 	DependsOn []string           `json:"dependsOn"`
@@ -570,6 +583,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ws.SetReadLimit(readLimit)
 	defer ws.CloseNow()
 
 	c := &conn{ws: ws, engine: s.engine, disp: s.disp, srv: s}
