@@ -37,6 +37,39 @@ func TestOrchestratorPromptDocumentsSteerWithSubagents(t *testing.T) {
 	}
 }
 
+// The agent-logs tool is documented to a lead only when it has subagents
+// whose logs it might need to read.
+func TestOrchestratorPromptDocumentsAgentLogsWithSubagents(t *testing.T) {
+	const line = `"$AT_TOOL" tool agent-logs --to <agent name or id>`
+	role := contracts.Role{SystemPrompt: "lead"}
+	with := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go", AgentLogs: true})
+	if !strings.Contains(with, "## Subagent logs") || !strings.Contains(with, line) {
+		t.Fatalf("lead with subagents lacks the agent-logs section:\n%s", with)
+	}
+	without := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go"})
+	if strings.Contains(without, "agent-logs") {
+		t.Fatalf("lead without subagents should not document agent-logs:\n%s", without)
+	}
+}
+
+// The revive tool is documented to a lead only when it has subagents it might
+// bring back, and its section sits right after the agent-logs one.
+func TestOrchestratorPromptDocumentsReviveWithSubagents(t *testing.T) {
+	const line = `"$AT_TOOL" tool revive --to <agent name or id> --text "<question>"`
+	role := contracts.Role{SystemPrompt: "lead"}
+	with := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go", Revive: true, AgentLogs: true})
+	if !strings.Contains(with, "## Reviving subagents") || !strings.Contains(with, line) {
+		t.Fatalf("lead with subagents lacks the revive section:\n%s", with)
+	}
+	if logsAt, reviveAt := strings.Index(with, "## Subagent logs"), strings.Index(with, "## Reviving subagents"); logsAt > reviveAt || reviveAt < 0 {
+		t.Fatalf("the revive section must follow the subagent logs section:\n%s", with)
+	}
+	without := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go"})
+	if strings.Contains(without, "tool revive") {
+		t.Fatalf("lead without subagents should not document revive:\n%s", without)
+	}
+}
+
 // The lead's --role choices and disabled-role line come from the thread's
 // usable roles, not a hardcoded list.
 func TestOrchestratorPromptRoleChoices(t *testing.T) {

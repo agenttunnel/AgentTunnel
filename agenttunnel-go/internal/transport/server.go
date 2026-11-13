@@ -113,6 +113,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindSteer:
 		s.handleSteerCall(w, r, req)
 		return
+	case toolbox.KindAgentLogs:
+		s.handleAgentLogsCall(w, r, req)
+		return
 	}
 
 	// Peer messages are delivered immediately rather than queued in the tool
@@ -170,12 +173,13 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		Harness:   req.Harness,
 		Model:     req.Model,
 		DependsOn: req.DependsOn,
+		Text:      req.Text,
 		// The queued call keeps its target thread: thread-relaunch and
 		// thread-results ride it, and a call that lost it is refused by the
 		// drain ("target thread is required"). (The kinds that name a target
 		// through Target — thread-delete — are routed earlier in the switch.)
 		Thread: req.Thread,
-		Text:   req.Text,
+		To:     req.To,
 	})
 	s.disp.auditLog("tool", map[string]any{
 		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),

@@ -8,6 +8,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
@@ -125,7 +126,13 @@ type OrchestratorPrompt struct {
 	Pass              int
 	Steering          []string
 	// Steer offers the steer tool: the thread has subagents to steer.
-	Steer          bool
+	Steer bool
+	// AgentLogs offers the agent-logs tool: the thread has subagents whose
+	// output the lead can read.
+	AgentLogs bool
+	// Revive offers the revive tool: the thread has finished subagents the
+	// lead can bring back with a follow-up question.
+	Revive         bool
 	RuntimeChoices string
 	// RoleChoices lists the roles the lead may dispatch, joined with "|" for the
 	// --role flag. Empty falls back to executor, which is required and so always
@@ -221,6 +228,19 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("Send a course correction to an agent you dispatched. A steer does not interrupt a run in progress: the agent reads it when its next run starts, so use it for work still waiting on its dependencies or for a later run. To change running work, dispatch a follow-up with --depends-on instead:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool steer --to <agent name> --text \"<adjustment>\"\n\n")
 		b.WriteString("The reply says whether the steer was queued for that agent's next run.")
+	}
+	if in.AgentLogs {
+		b.WriteString("\n\n## Subagent logs\n")
+		b.WriteString("A result summary can be missing detail the full run had. Read a dispatched agent's whole output log — its text, tool lines and errors — capped at the newest ")
+		b.WriteString(strconv.Itoa(files.MaxReadBytes / 1024))
+		b.WriteString(" KB:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool agent-logs --to <agent name or id>\n")
+	}
+	if in.Revive {
+		b.WriteString("\n\n## Reviving subagents\n")
+		b.WriteString("A finished subagent's result can be missing something you needed, and its next run knows nothing of the last one. Revive it: a follow-up question re-dispatches the subagent under its own name and role, with its prior output log and your question:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool revive --to <agent name or id> --text \"<question>\"\n\n")
+		b.WriteString("The revived run sees its original task, its previous log, and your question, so ask as if continuing the same conversation. Only finished agents can be revived; a running one reads a message instead.")
 	}
 	b.WriteString("\n\n## Tracking the plan\n")
 	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")

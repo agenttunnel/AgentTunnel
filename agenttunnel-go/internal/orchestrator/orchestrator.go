@@ -152,6 +152,21 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 			}
 			o.decideSpawnRequest(threadID, call, &tasks, names)
 
+		case toolbox.KindRevive:
+			// Revive is a lead's tool like dispatch: a subagent cannot
+			// re-dispatch a teammate under the lead's name, and the refusal
+			// lands in the caller's log so its model stops assuming it ran.
+			if !fromLead {
+				line := "tool revive refused: only the team lead can revive a subagent"
+				_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+				o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
+				continue
+			}
+			if task, ok := o.reviveTask(ctx, threadID, orchID, call); ok {
+				names[task.Name] = true
+				tasks = append(tasks, task)
+			}
+
 		case KindThreadRelaunch:
 			// A refused relaunch reaches the caller as tool error text, like a
 			// rejected peer message: the turn survives, the model learns why.
@@ -694,6 +709,8 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Pass:              pass,
 		Steering:          steering,
 		Steer:             hasSubagents(state),
+		AgentLogs:         hasSubagents(state),
+		Revive:            hasSubagents(state),
 		RuntimeChoices:    runtimeChoices,
 		DependencyThreads: o.runner.RenderDependencyThreads(ctx, state),
 	})
