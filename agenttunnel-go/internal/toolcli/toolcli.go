@@ -31,7 +31,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell|agent-logs> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell|agent-logs|revive> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -46,7 +46,7 @@ func Run(args []string) int {
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
 	text := fs.String("text", "", "text for a note or progress update")
 	summary := fs.String("summary", "", "summary for done")
-	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message); the subagent to steer (for steer)")
+	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message); the subagent to steer (for steer) or to revive (for revive)")
 	status := fs.String("status", "", "todo|doing|done (for task-update)")
 	question := fs.String("question", "", "the question to ask the human (for ask)")
 	questionKind := fs.String("kind", "", "choice|multi|text: the shape of the answer (for ask)")

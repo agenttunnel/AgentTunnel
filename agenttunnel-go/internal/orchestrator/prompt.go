@@ -126,7 +126,10 @@ type OrchestratorPrompt struct {
 	Steer bool
 	// AgentLogs offers the agent-logs tool: the thread has subagents whose
 	// output the lead can read.
-	AgentLogs      bool
+	AgentLogs bool
+	// Revive offers the revive tool: the thread has finished subagents the
+	// lead can bring back with a follow-up question.
+	Revive         bool
 	RuntimeChoices string
 }
 
@@ -207,6 +210,12 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString(strconv.Itoa(files.MaxReadBytes / 1024))
 		b.WriteString(" KB:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool agent-logs --to <agent name or id>\n")
+	}
+	if in.Revive {
+		b.WriteString("\n\n## Reviving subagents\n")
+		b.WriteString("A finished subagent's result can be missing something you needed, and its next run knows nothing of the last one. Revive it: a follow-up question re-dispatches the subagent under its own name and role, with its prior output log and your question:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool revive --to <agent name or id> --text \"<question>\"\n\n")
+		b.WriteString("The revived run sees its original task, its previous log, and your question, so ask as if continuing the same conversation. Only finished agents can be revived; a running one reads a message instead.")
 	}
 	b.WriteString("\n\n## Tracking the plan\n")
 	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")

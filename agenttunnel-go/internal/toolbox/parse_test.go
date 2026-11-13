@@ -63,6 +63,24 @@ func TestParseCommandLineMessage(t *testing.T) {
 	}
 }
 
+// A printed revive line parses like a printed message: --to and --text are
+// both required, so a lead that only echoes the command text still revives.
+func TestParseCommandLineRevive(t *testing.T) {
+	call, ok := ParseCommandLine(`$AT_TOOL tool revive --to hub --text "which file did you touch?"`)
+	if !ok {
+		t.Fatal("expected a revive call")
+	}
+	if call.Kind != KindRevive || call.To != "hub" || call.Text != "which file did you touch?" {
+		t.Fatalf("call = %+v", call)
+	}
+	if call, ok := ParseCommandLine(`tool revive --to hub`); ok {
+		t.Fatalf("revive without a question parsed as %+v", call)
+	}
+	if call, ok := ParseCommandLine(`tool revive --text "no target"`); ok {
+		t.Fatalf("revive without a target parsed as %+v", call)
+	}
+}
+
 func TestParseCommandLineIgnoresProse(t *testing.T) {
 	for _, line := range []string{
 		"I will use the tool dispatch flow.",
