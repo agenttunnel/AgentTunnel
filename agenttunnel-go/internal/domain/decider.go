@@ -346,6 +346,28 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{set}, nil
 
+	case contracts.CmdSoloRuntimeSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.SoloRuntime == nil {
+			return nil, fmt.Errorf("%w: solo runtime is required", ErrInvalidCommand)
+		}
+		set := *cmd.SoloRuntime
+		events := []contracts.EventPayload{}
+		if set.Runtime.Harness != "" {
+			if !set.Runtime.Harness.Valid() {
+				return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalidCommand, set.Runtime.Harness)
+			}
+			// Solo runs exactly one agent: a multi-lead team is normalized away.
+			if s.Leads > 1 {
+				events = append(events, contracts.LeadsSet{Count: 1})
+			}
+		}
+		// A zero runtime clears solo mode; the projector reads an empty
+		// Harness as "off".
+		return append(events, set), nil
+
 	case contracts.CmdRoleRuntimeSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
@@ -375,6 +397,11 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		if *cmd.Leads < 1 {
 			return nil, fmt.Errorf("%w: leads must be at least 1", ErrInvalidCommand)
+		}
+		// A solo thread runs one agent; widening the team would re-normalize
+		// solo mode away behind the caller's back.
+		if *cmd.Leads > 1 && s.SoloRuntime != nil {
+			return nil, fmt.Errorf("%w: a solo thread runs one agent; turn solo mode off first", ErrInvalidCommand)
 		}
 		events := []contracts.EventPayload{contracts.LeadsSet{Count: *cmd.Leads}}
 		// A team of leads agrees through peer messages, so a multi-lead thread

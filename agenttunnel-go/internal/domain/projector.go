@@ -124,6 +124,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 		}
 		s.LeadRuntimes[p.Index] = p.Runtime
 
+	case contracts.SoloRuntimeSet:
+		if p.Runtime.Harness == "" {
+			s.SoloRuntime = nil
+		} else {
+			rt := p.Runtime
+			s.SoloRuntime = &rt
+		}
+
 	case contracts.RoleRuntimeSet:
 		if s.RoleRuntimes == nil {
 			s.RoleRuntimes = make(map[string]contracts.LeadRuntime)

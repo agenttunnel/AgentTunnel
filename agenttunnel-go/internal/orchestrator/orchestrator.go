@@ -441,6 +441,12 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		return err
 	}
 
+	// A solo thread takes its own turn shape: one agent on the thread's solo
+	// runtime works the request directly, with no orchestrator team behind it.
+	if state.SoloRuntime != nil {
+		return o.runSoloTurn(ctx, threadID, userMessage, images, *state.SoloRuntime)
+	}
+
 	// A thread that still carries its placeholder name is titled right away,
 	// from the first prompt alone, off the turn so it cannot delay the reply.
 	// The cycle's summary refines it once the turn lands. titleDone orders the

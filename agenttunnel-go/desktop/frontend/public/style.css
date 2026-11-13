@@ -4944,6 +4944,47 @@ button.danger-text {
   background: rgba(171, 178, 196, 0.1);
   border-color: rgba(171, 178, 196, 0.45);
 }
+/* Solo-thread harness tints: the same colors as the graph nodes above, keyed
+   by the same h-* classes harnessTint mints, applied to solo thread cards and
+   the chat-head tabs of the open solo thread. Sits after .tab.on and
+   .thread-card:hover in the file, so equal specificity lets the tint hold on
+   the active tab and through card hover; the border pairs are copied from the
+   .graph-node.h-* rules, with a slightly fainter wash for the large card. */
+.thread-card.h-claude,
+.tab.h-claude {
+  background: rgba(250, 179, 135, 0.08);
+  border-color: rgba(250, 179, 135, 0.45);
+}
+.thread-card.h-opencode,
+.tab.h-opencode {
+  background: rgba(140, 169, 238, 0.08);
+  border-color: rgba(140, 169, 238, 0.45);
+}
+.thread-card.h-codex,
+.tab.h-codex {
+  background: rgba(166, 209, 137, 0.08);
+  border-color: rgba(166, 209, 137, 0.45);
+}
+.thread-card.h-cursor,
+.tab.h-cursor {
+  background: rgba(237, 135, 150, 0.08);
+  border-color: rgba(237, 135, 150, 0.45);
+}
+.thread-card.h-pi,
+.tab.h-pi {
+  background: rgba(244, 231, 148, 0.08);
+  border-color: rgba(244, 231, 148, 0.45);
+}
+.thread-card.h-commandcode,
+.tab.h-commandcode {
+  background: rgba(227, 196, 113, 0.1);
+  border-color: rgba(227, 196, 113, 0.5);
+}
+.thread-card.h-grok,
+.tab.h-grok {
+  background: rgba(171, 178, 196, 0.08);
+  border-color: rgba(171, 178, 196, 0.45);
+}
 /* A base-panel ring keeps the status dot readable over any tint. */
 .graph-node .dot {
   box-shadow: 0 0 0 2px var(--panel);

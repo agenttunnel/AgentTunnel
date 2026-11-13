@@ -357,6 +357,8 @@ type ThreadSummary struct {
 	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
 	Draft    bool                   `json:"draft,omitempty"`
 	Issue    *contracts.IssueRef    `json:"issue,omitempty"`
+	// SoloRuntime is the thread's solo override; nil means orchestrator mode.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -422,6 +424,14 @@ type (
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
+	// setSoloParams sets or clears a thread's solo runtime. An empty Harness
+	// clears it: the decider and projector define that semantics.
+	setSoloParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
 		Harness  contracts.Harness  `json:"harness,omitempty"`
 		Model    string             `json:"model,omitempty"`
 		Variant  string             `json:"variant,omitempty"`
@@ -1093,7 +1103,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 					FirstPrompt: firstUserPrompt(st),
 					Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
 					ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
-					Draft: st.Draft, Issue: st.Issue,
+					Draft: st.Draft, Issue: st.Issue, SoloRuntime: st.SoloRuntime,
 					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
 					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 				},
@@ -1218,6 +1228,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		if st.SoloRuntime != nil {
+			return nil, errors.New("turn solo mode off to submit review comments")
 		}
 		var pending []contracts.ReviewCommentAdded
 		var ids []string
@@ -1537,6 +1550,21 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
 			LeadRuntime: &contracts.LeadRuntimeSet{
 				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setSolo":
+		var p setSoloParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdSoloRuntimeSet, ThreadID: p.ThreadID,
+			SoloRuntime: &contracts.SoloRuntimeSet{
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
 		}); err != nil {
