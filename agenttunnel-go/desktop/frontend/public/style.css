@@ -682,12 +682,47 @@ body.is-resizing * {
   border-color: var(--accent-line);
   background: var(--panel-2);
 }
+/* Jump-to-top pill: same 32px shape as the bottom one, anchored to the
+   stream's top. The sticky wrapper is zero-height so the pill overlays the
+   transcript instead of reserving space — a plain sticky element at the top
+   would shove the content down whenever it mounts. */
+.stream-top-anchor {
+  position: sticky;
+  top: 0;
+  height: 0;
+}
+.scroll-top {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  display: block;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 30px;
+  text-align: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+.scroll-top:hover {
+  border-color: var(--accent-line);
+  background: var(--panel-2);
+}
 .msg {
   position: relative;
   max-width: 900px;
   margin: 0 auto;
   padding: 12px 14px 14px;
   border-top: 1px solid var(--border-soft);
+  /* Keeps a nav-scrolled message's header clear of the sticky top pill. */
+  scroll-margin-top: 44px;
 }
 .msg .who {
   font-size: 11px;
@@ -726,9 +761,10 @@ body.is-resizing * {
   font-size: 11px;
   background: var(--surface-2);
 }
-/* Branch (fork) button is icon-only: keeps the one-row cluster compact.
-   The cluster is absolutely positioned, so revealing it on hover shifts nothing. */
-.msg-actions .msg-fork {
+/* Icon-only buttons in the cluster (fork, message nav arrows): keeps the
+   one-row cluster compact. The cluster is absolutely positioned, so
+   revealing it on hover shifts nothing. */
+.msg-actions .msg-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
