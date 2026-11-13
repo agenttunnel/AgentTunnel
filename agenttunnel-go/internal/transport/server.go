@@ -166,6 +166,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		Lane:      req.Lane,
 		Role:      contracts.RoleID(req.Role),
 		Task:      req.Task,
+		Brief:     req.Brief,
 		Harness:   req.Harness,
 		Model:     req.Model,
 		DependsOn: req.DependsOn,
@@ -277,6 +278,7 @@ type toolCallRequest struct {
 	Lane      string             `json:"lane"`
 	Role      string             `json:"role"`
 	Task      string             `json:"task"`
+	Brief     string             `json:"brief"`
 	Harness   string             `json:"harness"`
 	Model     string             `json:"model"`
 	DependsOn []string           `json:"dependsOn"`

@@ -477,10 +477,12 @@ function groupTurns(messages: Message[]): Message[][] {
 
 /** Per-message actions App supplies through a context, so a memoized message
  * row never re-renders because a handler's identity changed. `copyText` writes
- * to the clipboard; `forkFromMessage` branches the thread off one message. */
+ * to the clipboard; `forkFromMessage` branches the thread off one message;
+ * `scrollToMessage` scrolls to the next (1) or previous (-1) message. */
 type MessageActions = {
   copyText: (text: string) => void;
   forkFromMessage: (messageId: string) => void;
+  scrollToMessage: (messageId: string, dir: -1 | 1) => void;
 };
 const MessageActionsContext = createContext<MessageActions | null>(null);
 
@@ -513,14 +515,43 @@ function BranchIcon() {
   );
 }
 
-/** One chat message. Memoized on its message: refreshing a busy thread
- * re-renders only the blocks whose own message changed, and the action
- * handlers arrive via MessageActionsContext so their identity is free. */
-const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
+/** The up/down glyph the message nav arrows carry; inherits currentColor. */
+function ChevronIcon({ up }: { up: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="11"
+      height="11"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {up ? <polyline points="6 15 12 9 18 15" /> : <polyline points="6 9 12 15 18 9" />}
+    </svg>
+  );
+}
+
+/** One chat message. Memoized on its message plus its nav edge flags:
+ * refreshing a busy thread re-renders only the blocks whose own message (or
+ * first/last position) changed, and the action handlers arrive via
+ * MessageActionsContext so their identity is free. */
+const MessageBlock = memo(function MessageBlock({
+  m,
+  hasPrev,
+  hasNext,
+}: {
+  m: Message;
+  hasPrev: boolean;
+  hasNext: boolean;
+}) {
   const actions = useContext(MessageActionsContext);
   const imageConn = useContext(MessageImageContext);
   return (
     <div
+      data-mid={m.id}
       className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
     >
       <div className="who">
@@ -543,11 +574,33 @@ const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
         </span>
       </div>
       <div className="msg-actions">
+        {hasPrev && (
+          <button
+            type="button"
+            className="msg-icon-btn"
+            onClick={() => actions?.scrollToMessage(m.id, -1)}
+            aria-label="Previous message"
+            title="Previous message"
+          >
+            <ChevronIcon up />
+          </button>
+        )}
+        {hasNext && (
+          <button
+            type="button"
+            className="msg-icon-btn"
+            onClick={() => actions?.scrollToMessage(m.id, 1)}
+            aria-label="Next message"
+            title="Next message"
+          >
+            <ChevronIcon up={false} />
+          </button>
+        )}
         <button onClick={() => actions?.copyText(m.text)} title="Copy this block">
           Copy
         </button>
         <button
-          className="msg-fork"
+          className="msg-icon-btn"
           onClick={() => actions?.forkFromMessage(m.id)}
           title="Branch from here — new thread with the transcript up to this message"
           aria-label="Branch from here"
@@ -579,23 +632,36 @@ const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
  *  The response can be collapsed to a single summary row; collapsed state is
  *  per turn (keyed by the prompt message's instance), so streamed messages
  *  arriving in a collapsed turn never expand it. */
-const TurnBlock = memo(function TurnBlock({ turn }: { turn: Message[] }) {
+const TurnBlock = memo(function TurnBlock({
+  turn,
+  index,
+  total,
+}: {
+  turn: Message[];
+  index: Map<string, number>;
+  total: number;
+}) {
+  const position = (m: Message) => {
+    const i = index.get(m.id) ?? 0;
+    return { hasPrev: i > 0, hasNext: i < total - 1 };
+  };
   const [expanded, setExpanded] = useState(true);
   // An opening block with no prompt (transcript that starts mid-run) has
   // nothing to toggle: it renders flat, exactly as before.
   if (turn[0].author !== "user") {
     return (
       <section className="turn">
-        {turn.map((m) => (
-          <MessageBlock key={m.id} m={m} />
-        ))}
+        {turn.map((m) => {
+          const { hasPrev, hasNext } = position(m);
+          return <MessageBlock key={m.id} m={m} hasPrev={hasPrev} hasNext={hasNext} />;
+        })}
       </section>
     );
   }
   const response = turn.slice(1);
   return (
     <section className="turn">
-      <MessageBlock m={turn[0]} />
+      <MessageBlock m={turn[0]} {...position(turn[0])} />
       {response.length > 0 &&
         (expanded ? (
           <button
@@ -620,7 +686,10 @@ const TurnBlock = memo(function TurnBlock({ turn }: { turn: Message[] }) {
             ▸ Response hidden — {response.length} {response.length === 1 ? "message" : "messages"}
           </button>
         ))}
-      {expanded && response.map((m) => <MessageBlock key={m.id} m={m} />)}
+      {expanded &&
+        response.map((m) => (
+          <MessageBlock key={m.id} m={m} {...position(m)} />
+        ))}
     </section>
   );
 });
@@ -894,6 +963,9 @@ const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } 
     },
   ],
 });
+
+// The jump-to-top pill appears once the stream is scrolled this far down.
+const TOP_SHOW = 240;
 
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
@@ -1188,6 +1260,8 @@ export default function App() {
   // Only the edge is stored, so scrolling re-renders when the user crosses it.
   const [atBottom, setAtBottom] = useState(true);
   const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  // Jump-to-top pill shows once the stream is scrolled this far down.
+  const [atTop, setAtTop] = useState(false);
 
   useEffect(() => {
     const el = streamRef.current;
@@ -1208,6 +1282,27 @@ export default function App() {
     const el = streamRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
+
+  const scrollToTop = () => {
+    const el = streamRef.current;
+    if (el) el.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  /** Scrolls the previous (-1) or next (1) message into view. Rows carry
+   * data-mid so the DOM can be walked at click time only; navigating never
+   * re-renders the transcript. */
+  const scrollToMessage = useCallback(
+    (messageId: string, dir: -1 | 1) => {
+      const el = streamRef.current;
+      if (!el) return;
+      const nodes = Array.from(el.querySelectorAll<HTMLElement>(".msg[data-mid]"));
+      const idx = nodes.findIndex((n) => n.dataset.mid === messageId);
+      if (idx < 0) return;
+      const target = nodes[idx + dir];
+      if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
+    },
+    [streamRef],
+  );
 
   // Live log follows the newest output, unless the user scrolled up to read.
   // Reopening a collapsed box jumps back to the newest output.
@@ -1288,9 +1383,20 @@ export default function App() {
         navigator.clipboard.writeText(text).catch(() => setError("Could not copy"));
       },
       forkFromMessage,
+      scrollToMessage,
     }),
-    [forkFromMessage, setError],
+    [forkFromMessage, scrollToMessage, setError],
   );
+
+  // Flat DOM position and total of the rendered messages, so each row knows
+  // whether a prev/next neighbor exists. Props only — a position map in a
+  // context would re-render every row each refresh.
+  const messageIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    (thread?.messages ?? []).forEach((m, i) => map.set(m.id, i));
+    return map;
+  }, [thread?.messages]);
+  const messageTotal = messageIndex.size;
 
   // The connection details transcript images fetch with, memoized so memoized
   // message rows only re-render when the connection or thread changes.
@@ -2824,8 +2930,9 @@ export default function App() {
     })();
   }, [modelsOpen, settings]);
 
-  // /btw side answers, one per thread (ephemeral: never a thread event or message).
-  const [btw, setBtw] = useState<Record<string, BtwEntry>>({});
+  // /btw side answers, a per-thread conversation (ephemeral: never a thread
+  // event or message). Each ask appends an entry; closing clears the list.
+  const [btw, setBtw] = useState<Record<string, BtwEntry[]>>({});
   const btwSeq = useRef(0);
   // Slash popup: highlighted row, and the input it was dismissed on with Esc.
   const [slashIdx, setSlashIdx] = useState(0);
@@ -2857,10 +2964,16 @@ export default function App() {
     const settle = (patch: Partial<BtwEntry>) =>
       setBtw((prev) => {
         const cur = prev[threadId];
-        if (!cur || cur.id !== id) return prev;
-        return { ...prev, [threadId]: { ...cur, ...patch } };
+        if (!cur || cur[cur.length - 1]?.id !== id) return prev;
+        return {
+          ...prev,
+          [threadId]: cur.map((e, i) => (i === cur.length - 1 ? { ...e, ...patch } : e)),
+        };
       });
-    setBtw((prev) => ({ ...prev, [threadId]: { id, question: q, answer: null, error: null } }));
+    setBtw((prev) => ({
+      ...prev,
+      [threadId]: [...(prev[threadId] ?? []), { id, question: q, answer: null, error: null }],
+    }));
     rpc
       .call<{ answer: string }>("thread.btw", { threadId, question: q })
       .then((r) => settle({ answer: r.answer }))
@@ -2898,7 +3011,7 @@ export default function App() {
     slashQ !== null && slashClosed !== input ? matchCommands(slashCommands(), slashQ) : [];
   const slashOpen = slashMatches.length > 0;
   const slashSel = Math.min(slashIdx, slashMatches.length - 1);
-  const btwEntry = activeId ? (btw[activeId] ?? null) : null;
+  const btwList = activeId ? (btw[activeId] ?? null) : null;
 
   /** Tab and Enter on a command that takes text complete its name; a bare
    * command runs at once (Enter or click). */
@@ -4524,8 +4637,27 @@ export default function App() {
             <div
               className="stream"
               ref={streamRef}
-              onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
+              onScroll={(e) => {
+                setAtBottom(nearBottom(e.currentTarget));
+                setAtTop(e.currentTarget.scrollTop > TOP_SHOW);
+              }}
             >
+              {/* Zero-height sticky anchor: mounting the jump-to-top pill
+                  never shifts the transcript (it overlays, unlike a plain
+                  sticky sibling, which would push content down). */}
+              <div className="stream-top-anchor">
+                {atTop && (
+                  <button
+                    type="button"
+                    className="scroll-top"
+                    onClick={scrollToTop}
+                    aria-label="Jump to top of thread"
+                    title="Jump to top of thread"
+                  >
+                    ↑
+                  </button>
+                )}
+              </div>
               {activeSummary?.waiting && (
                 <div className="schedule-banner">
                   <div className="schedule-banner-main">
@@ -4615,7 +4747,12 @@ export default function App() {
               <MessageActionsContext.Provider value={messageActions}>
                 <MessageImageContext.Provider value={messageImages}>
                   {turnBlocks.map((turn) => (
-                    <TurnBlock key={turn[0].id} turn={turn} />
+                    <TurnBlock
+                      key={turn[0].id}
+                      turn={turn}
+                      index={messageIndex}
+                      total={messageTotal}
+                    />
                   ))}
                 </MessageImageContext.Provider>
               </MessageActionsContext.Provider>
@@ -4703,7 +4840,7 @@ export default function App() {
               onDrop={onComposerDrop}
               hidden={composerHidden}
             >
-              {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
+              {btwList && <BtwPanel entries={btwList} onClose={closeBtw} />}
               {slashOpen && (
                 <SlashMenu
                   items={slashMatches}

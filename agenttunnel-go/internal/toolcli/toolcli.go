@@ -41,6 +41,7 @@ func Run(args []string) int {
 	name := fs.String("name", "", "short task name, used by --depends-on")
 	lane := fs.String("lane", "", "pipeline this task belongs to (for the agents view)")
 	task := fs.String("task", "", "task description (for dispatch, spawn, task-create and subthread)")
+	brief := fs.String("brief", "", "agent definition for a wildcard dispatch; it becomes the agent's instructions (for dispatch)")
 	harness := fs.String("harness", "", "harness override (for dispatch and spawn)")
 	model := fs.String("model", "", "model override (for dispatch and spawn)")
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
@@ -78,6 +79,7 @@ func Run(args []string) int {
 		"lane":           *lane,
 		"role":           *role,
 		"task":           *task,
+		"brief":          *brief,
 		"harness":        *harness,
 		"model":          *model,
 		"text":           *text,

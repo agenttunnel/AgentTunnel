@@ -107,6 +107,13 @@ type Runner struct {
 	notebookMu sync.Mutex
 	notebooks  map[contracts.ThreadID]*contextstore.Notebook
 
+	// btwSessions holds each thread's /btw side-conversation memory. The
+	// runner is shared daemon-wide, so a session is keyed by thread ID, never
+	// by agent: agent ids are thread-agnostic and would collide across
+	// threads.
+	btwMu       sync.Mutex
+	btwSessions map[contracts.ThreadID]*btwSession
+
 	// curator single-flights the auto context manager per thread.
 	curator contextCurator
 
@@ -127,27 +134,28 @@ func NewRunner(d Deps) *Runner {
 		d.Clock = time.Now
 	}
 	r := &Runner{
-		engine:     d.Engine,
-		registry:   d.Registry,
-		roles:      d.Roles,
-		logs:       d.Logs,
-		ledger:     d.Ledger,
-		mailbox:    d.Mailbox,
-		inherited:  d.Inherited,
-		settings:   d.Settings,
-		models:     d.Models,
-		tools:      d.Tools,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		toolPath:   d.ToolPath,
-		token:      d.Token,
-		endpoint:   d.Endpoint,
-		clock:      d.Clock,
-		cfg:        d.Cfg,
-		spawns:     newSpawnStore(),
-		steers:     newSteerQueue(),
-		notebooks:  map[contracts.ThreadID]*contextstore.Notebook{},
-		launchTurn: d.LaunchThreadTurn,
+		engine:      d.Engine,
+		registry:    d.Registry,
+		roles:       d.Roles,
+		logs:        d.Logs,
+		ledger:      d.Ledger,
+		mailbox:     d.Mailbox,
+		inherited:   d.Inherited,
+		settings:    d.Settings,
+		models:      d.Models,
+		tools:       d.Tools,
+		steering:    d.Steering,
+		audit:       d.Audit,
+		toolPath:    d.ToolPath,
+		token:       d.Token,
+		endpoint:    d.Endpoint,
+		clock:       d.Clock,
+		cfg:         d.Cfg,
+		spawns:      newSpawnStore(),
+		steers:      newSteerQueue(),
+		notebooks:   map[contracts.ThreadID]*contextstore.Notebook{},
+		btwSessions: map[contracts.ThreadID]*btwSession{},
+		launchTurn:  d.LaunchThreadTurn,
 	}
 	r.background = New(r)
 	return r
@@ -370,6 +378,15 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	if !r.roleUsable(t.Role) {
 		return "", fmt.Errorf("role %q is disabled", t.Role)
 	}
+	// A wildcard agent is the lead's definition: its brief is the system
+	// prompt. role is a copy of the registered value, so the registry keeps the
+	// fallback prompt.
+	if t.Role == contracts.RoleWildcard {
+		if strings.TrimSpace(t.Brief) == "" {
+			return "", fmt.Errorf("role %q needs a brief", t.Role)
+		}
+		role.SystemPrompt = strings.TrimSpace(t.Brief)
+	}
 	auto := r.autoModeFor(ctx, threadID)
 	// An explicit user choice (council membership) is honored regardless of
 	// auto mode; an orchestrator pick still needs auto mode to override.
@@ -419,7 +436,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	}
 	r.auditLog("agent.spawn", map[string]any{
 		"agentId": string(t.AgentID), "role": string(t.Role), "harness": string(harness),
-		"model": model, "workdir": spec.Workdir, "task": t.Task,
+		"model": model, "workdir": spec.Workdir, "task": t.Task, "brief": clip(t.Brief, 500),
 	})
 	if err := adapter.Start(ctx, spec); err != nil {
 		r.auditLog("agent.error", map[string]any{"agentId": string(t.AgentID), "error": err.Error()})
@@ -809,6 +826,30 @@ func (r *Runner) roleUsable(id contracts.RoleID) bool {
 		return !role.Experimental
 	}
 	return r.settings.RoleEnabled(id) && (!role.Experimental || r.settings.ExperimentalRoles())
+}
+
+// experimentalRoles reports whether the user opted into experimental roles.
+func (r *Runner) experimentalRoles() bool {
+	return r.settings != nil && r.settings.ExperimentalRoles()
+}
+
+// roleChoices splits the registry into the roles the lead may dispatch and the
+// non-required roles that are off, rendered for the lead's prompt. The lead's
+// own role and the facilitator are left out: the facilitator is dispatched only
+// by the council machinery, never by the lead.
+func (r *Runner) roleChoices() (usable, disabled string) {
+	var on, off []string
+	for _, role := range r.roles.List() {
+		if role.ID == contracts.RoleOrchestrator || role.ID == contracts.RoleFacilitator {
+			continue
+		}
+		if r.roleUsable(role.ID) {
+			on = append(on, string(role.ID))
+		} else {
+			off = append(off, string(role.ID))
+		}
+	}
+	return strings.Join(on, "|"), strings.Join(off, ", ")
 }
 
 // runtimeChoices renders the harness/model options the orchestrator may pick
