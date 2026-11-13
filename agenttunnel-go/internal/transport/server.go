@@ -167,6 +167,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		Model:     req.Model,
 		DependsOn: req.DependsOn,
 		Text:      req.Text,
+		To:        req.To,
 	})
 	s.disp.auditLog("tool", map[string]any{
 		"kind": req.Kind, "agentId": string(req.AgentID), "threadId": string(req.ThreadID),
