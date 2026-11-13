@@ -81,3 +81,30 @@ func TestCustomRoleCanBeRegistered(t *testing.T) {
 		t.Fatal("custom role not found")
 	}
 }
+
+func TestWildcardRoleIsBuiltinAndExperimental(t *testing.T) {
+	roles := contracts.NewRoleRegistry(contracts.BuiltinRoles()...)
+	role, ok := roles.Get(contracts.RoleWildcard)
+	if !ok {
+		t.Fatal("wildcard role missing")
+	}
+	if !role.Builtin || !role.Experimental || role.Required {
+		t.Fatalf("wildcard = %+v, want builtin, experimental, not required", role)
+	}
+}
+
+// The brief rides the protocol frame and the legacy printed-line path alike, so
+// a wildcard dispatch keeps its definition wherever it came from.
+func TestDispatchFrameCarriesBrief(t *testing.T) {
+	const brief = "You review SQL migrations for lock-heavy DDL."
+	frame := &ToolCall{Name: "dispatch_task", TaskID: "sql", Role: "wildcard", Brief: brief, Task: "review migrations"}
+
+	call, ok := frameCall(frame)
+	if !ok || call.Brief != brief {
+		t.Fatalf("frameCall = %+v ok=%v, want brief carried", call, ok)
+	}
+	tasks := ToDispatchTasks("agent-orchestrator", []ToolCall{*frame}, func(string) bool { return false })
+	if len(tasks) != 1 || tasks[0].Brief != brief || tasks[0].Role != contracts.RoleWildcard {
+		t.Fatalf("ToDispatchTasks = %+v, want brief carried", tasks)
+	}
+}

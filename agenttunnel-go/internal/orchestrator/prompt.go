@@ -127,6 +127,16 @@ type OrchestratorPrompt struct {
 	// Steer offers the steer tool: the thread has subagents to steer.
 	Steer          bool
 	RuntimeChoices string
+	// RoleChoices lists the roles the lead may dispatch, joined with "|" for the
+	// --role flag. Empty falls back to executor, which is required and so always
+	// dispatchable.
+	RoleChoices string
+	// DisabledRoles lists the non-required roles that are off for this thread,
+	// joined with ", ". Empty renders no line.
+	DisabledRoles string
+	// Wildcard offers the experimental wildcard role: the lead defines the
+	// agent in a brief. Set only when experimental roles are on.
+	Wildcard bool
 }
 
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including
@@ -184,11 +194,23 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
 	b.WriteString("The task runs as its own agent in this project, and its result comes back to you. ")
-	b.WriteString("Use --depends-on <name> to order tasks, --role planner|executor|tester|reviewer to pick the role, ")
+	roleChoices := in.RoleChoices
+	if roleChoices == "" {
+		roleChoices = string(contracts.RoleExecutor)
+	}
+	b.WriteString("Use --depends-on <name> to order tasks, --role " + roleChoices + " to pick the role, ")
 	b.WriteString("--model <id> to override the model, and --harness <id> to override the harness. ")
-	b.WriteString("Model and harness overrides apply when auto mode is on for the thread. Report findings with:\n\n")
+	b.WriteString("Model and harness overrides apply when auto mode is on for the thread.")
+	if in.DisabledRoles != "" {
+		b.WriteString("\n\nDisabled roles (do not dispatch): " + in.DisabledRoles + ".")
+	}
+	b.WriteString(" Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+	if in.Wildcard {
+		b.WriteString("\n\nYou can also define a custom agent when no builtin role fits. Pass --role wildcard with --brief; the brief becomes that agent's instructions:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool dispatch --role wildcard --name <short-name> --brief \"<agent definition>\" --task \"<what to do>\"")
+	}
 	if peerMailbox {
 		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")

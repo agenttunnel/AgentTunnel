@@ -73,6 +73,10 @@ type DispatchTask struct {
 	Model         string     `json:"model,omitempty"`
 	Pipeline      PipelineID `json:"pipelineId,omitempty"`
 	DependsOn     []string   `json:"dependsOn,omitempty"`
+	// Brief is the agent definition for a wildcard dispatch; it becomes the
+	// agent's system prompt. It is consumed when the task runs, so it stays off
+	// the TaskDispatched event.
+	Brief string `json:"brief,omitempty"`
 
 	// Override honors Harness/Model even outside auto mode. It marks an
 	// explicit user choice (council membership) rather than an orchestrator
