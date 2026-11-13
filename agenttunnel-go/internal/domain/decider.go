@@ -221,6 +221,12 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if s.ParentThreadID != "" {
 			return nil, fmt.Errorf("%w: a subthread cannot be scheduled", ErrInvalidCommand)
 		}
+		// An archived thread is out of the working set; firing invisible
+		// turn work on it would pull it back without the user asking.
+		// Unarchive first.
+		if s.Archived {
+			return nil, fmt.Errorf("%w: an archived thread cannot be scheduled", ErrInvalidCommand)
+		}
 		for id, a := range s.Agents {
 			if !a.Status.Terminal() {
 				return nil, fmt.Errorf("%w: agent %q is still %s", ErrInvalidCommand, id, a.Status)

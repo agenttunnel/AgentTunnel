@@ -56,6 +56,8 @@ func TestDecideThreadScheduleRefusals(t *testing.T) {
 	idle.Agents["a1"] = contracts.Agent{ID: "a1", Status: contracts.AgentSucceeded}
 	sub := liveThread("t1")
 	sub.ParentThreadID = "t0"
+	archived := liveThread("t1")
+	archived.Archived = true
 	deleted := NewThreadState("t1")
 	deleted.Deleted = true
 	noPayload := scheduleCmd("t1", "t2")
@@ -78,6 +80,7 @@ func TestDecideThreadScheduleRefusals(t *testing.T) {
 		{"duplicate dependency", scheduleCmd("t1", "t2", "t2"), liveThread("t1"), ErrInvalidCommand},
 		{"already waiting", scheduleCmd("t1", "t2"), waitingThread("t1", "t2"), ErrInvalidCommand},
 		{"subthread", scheduleCmd("t1", "t2"), sub, ErrInvalidCommand},
+		{"archived thread", scheduleCmd("t1", "t2"), archived, ErrInvalidCommand},
 		{"busy running agent", scheduleCmd("t1", "t2"), busy, ErrInvalidCommand},
 		{"busy pending agent", scheduleCmd("t1", "t2"), pending, ErrInvalidCommand},
 	}
