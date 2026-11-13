@@ -107,6 +107,13 @@ type Runner struct {
 	notebookMu sync.Mutex
 	notebooks  map[contracts.ThreadID]*contextstore.Notebook
 
+	// btwSessions holds each thread's /btw side-conversation memory. The
+	// runner is shared daemon-wide, so a session is keyed by thread ID, never
+	// by agent: agent ids are thread-agnostic and would collide across
+	// threads.
+	btwMu       sync.Mutex
+	btwSessions map[contracts.ThreadID]*btwSession
+
 	// curator single-flights the auto context manager per thread.
 	curator contextCurator
 
@@ -127,27 +134,28 @@ func NewRunner(d Deps) *Runner {
 		d.Clock = time.Now
 	}
 	r := &Runner{
-		engine:     d.Engine,
-		registry:   d.Registry,
-		roles:      d.Roles,
-		logs:       d.Logs,
-		ledger:     d.Ledger,
-		mailbox:    d.Mailbox,
-		inherited:  d.Inherited,
-		settings:   d.Settings,
-		models:     d.Models,
-		tools:      d.Tools,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		toolPath:   d.ToolPath,
-		token:      d.Token,
-		endpoint:   d.Endpoint,
-		clock:      d.Clock,
-		cfg:        d.Cfg,
-		spawns:     newSpawnStore(),
-		steers:     newSteerQueue(),
-		notebooks:  map[contracts.ThreadID]*contextstore.Notebook{},
-		launchTurn: d.LaunchThreadTurn,
+		engine:      d.Engine,
+		registry:    d.Registry,
+		roles:       d.Roles,
+		logs:        d.Logs,
+		ledger:      d.Ledger,
+		mailbox:     d.Mailbox,
+		inherited:   d.Inherited,
+		settings:    d.Settings,
+		models:      d.Models,
+		tools:       d.Tools,
+		steering:    d.Steering,
+		audit:       d.Audit,
+		toolPath:    d.ToolPath,
+		token:       d.Token,
+		endpoint:    d.Endpoint,
+		clock:       d.Clock,
+		cfg:         d.Cfg,
+		spawns:      newSpawnStore(),
+		steers:      newSteerQueue(),
+		notebooks:   map[contracts.ThreadID]*contextstore.Notebook{},
+		btwSessions: map[contracts.ThreadID]*btwSession{},
+		launchTurn:  d.LaunchThreadTurn,
 	}
 	r.background = New(r)
 	return r

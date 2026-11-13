@@ -37,8 +37,8 @@ type ControlQuestion struct {
 // ControlActions is the entire reach of the control surface. Every method is a
 // deliberate, named capability; there is no generic RPC passthrough.
 type ControlActions interface {
-	// ControlThreads lists the top-level threads the chat may drive, most
-	// recently active first.
+	// ControlThreads lists the top-level threads the chat may drive, newest
+	// submission first.
 	ControlThreads(ctx context.Context) ([]ControlThread, error)
 	// ControlTurn starts a user turn on a thread and returns at once.
 	ControlTurn(ctx context.Context, id contracts.ThreadID, text string) error

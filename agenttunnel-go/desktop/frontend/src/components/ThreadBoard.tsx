@@ -98,7 +98,7 @@ export function threadColumn(t: BoardThread, state: ThreadState | undefined): Th
   return "idle";
 }
 
-/** Groups threads into board columns, keeping the incoming (recency) order. */
+/** Groups threads into board columns, keeping the incoming (submission) order. */
 export function groupThreads<T extends BoardThread>(
   threads: T[],
   states: Record<string, ThreadState>,

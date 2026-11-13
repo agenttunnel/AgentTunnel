@@ -194,7 +194,12 @@ func (e *Engine) process(ctx context.Context, cmd contracts.Command) error {
 		state.Worktree = cmd.Worktree
 		state.Description = cmd.Description
 		state.Issue = cmd.Issue
-		state.UpdatedAt = e.clock()
+		now := e.clock()
+		state.UpdatedAt = now
+		// The just-created thread holds its submission slot in thread.list
+		// from the moment it is created; the first durable command
+		// materializes it and the ThreadCreated envelope time takes over.
+		state.CreatedAt = now
 		e.states[cmd.ThreadID] = state
 		e.mu.Unlock()
 		return nil
