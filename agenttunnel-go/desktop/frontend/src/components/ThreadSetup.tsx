@@ -1,4 +1,5 @@
-import type { LeadRuntimeView, RoleConfigView, SettingsView, ThreadState } from "../App";
+import { useState } from "react";
+import type { LeadRuntimeView, RoleConfigView, SettingsView, ThreadState, ThreadSummary } from "../App";
 import { switchProps } from "../lib/switchProps";
 import { Dropdown, type DropdownOption } from "./Dropdown";
 
@@ -19,6 +20,16 @@ type ThreadSetupProps = {
   toggleRoleEnabled: (row: RoleConfigView, enabled: boolean) => Promise<void>;
   /** Seconds between workflow status reports while a turn runs; 0 is off. */
   setStatusPeriod: (seconds: number) => Promise<void>;
+  /** The active thread's list row: carries its schedule, if one is set. */
+  summary: ThreadSummary | null;
+  /** The environment's other top-level threads this thread may wait on. */
+  scheduleCandidates: ThreadSummary[];
+  /** Resolves a thread id to its title, falling back to the raw id. */
+  threadTitle: (id: string) => string;
+  /** Schedules the current thread to start once every listed thread finishes. */
+  schedule: (dependsOn: string[], prompt: string) => Promise<void>;
+  /** Cancels the current thread's schedule. */
+  unschedule: () => Promise<void>;
 };
 
 const STATUS_PERIOD_OPTIONS: DropdownOption[] = [
@@ -49,6 +60,11 @@ export function ThreadSetup({
   harnessOptionsFor,
   toggleRoleEnabled,
   setStatusPeriod,
+  summary,
+  scheduleCandidates,
+  threadTitle,
+  schedule,
+  unschedule,
 }: ThreadSetupProps) {
   const count = thread?.leads && thread.leads > 0 ? thread.leads : 1;
   const multiLead = count > 1;
@@ -312,8 +328,140 @@ export function ThreadSetup({
               when the orchestrator is busy. Takes effect on the next turn; zero turns it off.
             </p>
           </div>
+          {/* Subthreads cannot be scheduled: their parent owns when they run. */}
+          {summary && !summary.parentThreadId && (
+            <ScheduleSection
+              summary={summary}
+              candidates={scheduleCandidates}
+              threadTitle={threadTitle}
+              schedule={schedule}
+              unschedule={unschedule}
+            />
+          )}
         </>
       )}
     </>
+  );
+}
+
+/** The thread's schedule: pick the other threads it waits on and the prompt to
+ * run when they finish — or cancel the schedule while it waits. */
+function ScheduleSection({
+  summary,
+  candidates,
+  threadTitle,
+  schedule,
+  unschedule,
+}: {
+  summary: ThreadSummary;
+  candidates: ThreadSummary[];
+  threadTitle: (id: string) => string;
+  schedule: (dependsOn: string[], prompt: string) => Promise<void>;
+  unschedule: () => Promise<void>;
+}) {
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const cancel = () => {
+    setBusy(true);
+    setError(null);
+    unschedule()
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  if (summary.waiting) {
+    const waiting = summary.waiting;
+    return (
+      <div className="lead-block">
+        <div className="lead-head">
+          <span className="rn">Schedule</span>
+        </div>
+        <div className="setup-waiting">
+          <span className="dot pending" />
+          <span className="setup-waiting-deps">
+            Waiting on {waiting.dependsOn.map(threadTitle).join(", ")}
+          </span>
+        </div>
+        <div className="setup-waiting-prompt" title={waiting.prompt}>
+          {waiting.prompt}
+        </div>
+        <button type="button" disabled={busy} onClick={cancel}>
+          {busy ? "Cancelling…" : "Cancel schedule"}
+        </button>
+        {error && <p className="hint err-text">{error}</p>}
+      </div>
+    );
+  }
+
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const submit = () => {
+    setBusy(true);
+    setError(null);
+    schedule([...selected], prompt)
+      .then(() => {
+        setSelected(new Set());
+        setPrompt("");
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="lead-block">
+      <div className="lead-head">
+        <span className="rn">Schedule</span>
+      </div>
+      <p className="hint">
+        Start this thread automatically once other threads finish. Pick the threads it waits on
+        and the prompt to run.
+      </p>
+      {candidates.length === 0 && (
+        <p className="hint">No other threads to wait on yet.</p>
+      )}
+      {candidates.length > 0 && (
+        <div className="schedule-pick">
+          {candidates.map((c) => (
+            <label key={c.id} className="schedule-pick-row" title={c.title}>
+              <input
+                type="checkbox"
+                checked={selected.has(c.id)}
+                onChange={() => toggle(c.id)}
+              />
+              <span className="schedule-pick-title">{c.title}</span>
+              <span className="schedule-pick-state">
+                {(c.runningAgents ?? 0) > 0 ? "running" : "idle"}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      <textarea
+        className="schedule-prompt-input"
+        rows={3}
+        placeholder="Prompt to run when the threads finish…"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+      />
+      <div className="schedule-actions">
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || selected.size === 0 || prompt.trim() === ""}
+          onClick={submit}
+        >
+          {busy ? "Scheduling…" : "Schedule"}
+        </button>
+        {error && <span className="err-text">{error}</span>}
+      </div>
+    </div>
   );
 }

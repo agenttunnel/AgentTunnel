@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,5 +177,41 @@ func TestRunnerHonoursRoleRuntimeOverride(t *testing.T) {
 	// The override model belongs to the override harness, so it is resolved on that harness.
 	if got := r.resolveModel(role, contracts.HarnessClaude, "", r.settings.AutoMode(), false); got != "sonnet" {
 		t.Fatalf("resolveModel should use the override: %q", got)
+	}
+}
+
+// A wildcard run takes its brief as the system prompt and records the wildcard
+// wire role, so the agent is identified by its name, not a derived role id.
+func TestWildcardRunUsesBriefAsPrompt(t *testing.T) {
+	const brief = "You count the Go files in the worktree and report only the number."
+	var seen providers.SessionSpec
+	r, eng, ctx := newHarnessInvoking(t, func(spec providers.SessionSpec) (providers.CommandSpec, error) {
+		if spec.Role == contracts.RoleWildcard {
+			seen = spec
+		}
+		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", `printf '{"type":"text","text":"3"}\n'`}, PromptVia: "stdin"}, nil
+	})
+	r.settings.SetExperimentalRoles(true)
+
+	tasks := []contracts.DispatchTask{{AgentID: "agent-w", Name: "counter", Role: contracts.RoleWildcard, Brief: brief, Task: "count"}}
+	if err := r.Dispatch(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	if state.Agents["agent-w"].Status != contracts.AgentSucceeded || state.Agents["agent-w"].Role != contracts.RoleWildcard {
+		t.Fatalf("agent = %+v, want a succeeded wildcard", state.Agents["agent-w"])
+	}
+	if seen.Role != contracts.RoleWildcard {
+		t.Fatalf("spawn role = %q, want wildcard", seen.Role)
+	}
+	if !strings.HasPrefix(seen.Prompt, brief) || strings.Contains(seen.Prompt, "custom agent the team lead defined") {
+		t.Fatalf("prompt does not open with the brief:\n%s", seen.Prompt)
+	}
+	if !slices.Contains(seen.Env, "AT_ROLE=wildcard") {
+		t.Fatalf("env lacks AT_ROLE=wildcard: %v", seen.Env)
 	}
 }

@@ -126,9 +126,13 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 					role = contracts.RoleExecutor
 				}
 				if !o.runner.roleUsable(role) {
-					line := fmt.Sprintf("dispatch refused: role %q is disabled or unknown", role)
-					_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
-					o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
+					o.refuseDispatch(threadID, call.AgentID, fmt.Sprintf("dispatch refused: role %q is disabled or unknown", role))
+					continue
+				}
+				// A wildcard agent is defined by its brief alone; without one
+				// there is nothing to run.
+				if role == contracts.RoleWildcard && strings.TrimSpace(call.Brief) == "" {
+					o.refuseDispatch(threadID, call.AgentID, "dispatch refused: role \"wildcard\" needs --brief")
 					continue
 				}
 				if task, ok := o.dispatchTask(orchID, call, taken); ok {
@@ -147,9 +151,35 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 				continue
 			}
 			o.decideSpawnRequest(threadID, call, &tasks, names)
+
+		case KindThreadRelaunch:
+			// A refused relaunch reaches the caller as tool error text, like a
+			// rejected peer message: the turn survives, the model learns why.
+			// A relaunch's successful receipt is logged by RelaunchThread.
+			if err := o.runner.RelaunchThread(ctx, threadID, call.AgentID, call); err != nil {
+				line := "tool thread-relaunch failed: " + err.Error()
+				_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+				o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
+			}
+
+		case KindThreadResults:
+			text, err := o.runner.ThreadResults(ctx, threadID, call.AgentID, call)
+			kind, label := contracts.LogTool, text
+			if err != nil {
+				kind, label = contracts.LogError, "tool thread-results failed: "+err.Error()
+			}
+			_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: kind, Text: label, At: o.runner.clock()})
+			o.runner.publishOutput(threadID, call.AgentID, kind, label)
 		}
 	}
 	return tasks
+}
+
+// refuseDispatch tells the lead, in its own log, why a dispatch did not run, so
+// it does not assume the work started.
+func (o *Orchestrator) refuseDispatch(threadID contracts.ThreadID, agentID contracts.AgentID, line string) {
+	_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+	o.runner.publishOutput(threadID, agentID, contracts.LogError, line)
 }
 
 // dispatchTask converts one lead dispatch or spawn call into a task, skipping
@@ -179,6 +209,7 @@ func (o *Orchestrator) dispatchTask(parentID contracts.AgentID, call toolbox.Cal
 		Name:          name,
 		Role:          role,
 		Task:          call.Task,
+		Brief:         call.Brief,
 		Harness:       contracts.Harness(call.Harness),
 		Model:         call.Model,
 		Pipeline:      contracts.PipelineID(call.Lane),
@@ -213,6 +244,9 @@ func (o *Orchestrator) recordSpawnRequest(threadID contracts.ThreadID, call tool
 		return
 	case role == contracts.RoleOrchestrator:
 		refuse("only the team lead may orchestrate")
+		return
+	case role == contracts.RoleWildcard:
+		refuse("only the team lead may define wildcard agents")
 		return
 	}
 	if _, known := o.runner.roles.Get(role); !known {
@@ -302,11 +336,13 @@ func (o *Orchestrator) decideSpawnRequest(threadID contracts.ThreadID, call tool
 
 // toolCallKey identifies a call for deduplication within one pass. Agent id is
 // intentionally excluded: a printed echo and the real call may carry different
-// attribution but represent the same work.
+// attribution but represent the same work. The target thread counts, so two
+// relaunches of different threads with the same prompt are not each other's
+// echo.
 func toolCallKey(call toolbox.Call) string {
 	return strings.Join([]string{
-		string(call.Kind), call.Name, call.Task, call.Text, call.Harness,
-		call.Model, call.Lane, call.To, strings.Join(call.DependsOn, ","),
+		string(call.Kind), call.Name, call.Task, call.Brief, call.Text, call.Harness,
+		call.Model, call.Lane, call.To, call.Thread, strings.Join(call.DependsOn, ","),
 	}, "\x00")
 }
 
@@ -569,9 +605,10 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
-	for _, id := range t.leads {
-		o.runner.setStatus(ctx, threadID, id, contracts.AgentSucceeded, "")
-	}
+	// The turn's summary is recorded before the leads are marked terminal:
+	// a terminal lead is the thread scheduler's "this turn is finished"
+	// signal, and everything the turn left behind must be durable by then or
+	// a dependent schedule compiles its results a beat too early.
 	if strings.TrimSpace(finalText) != "" {
 		if err := o.runner.engine.Dispatch(ctx, contracts.Command{
 			ID:       o.runner.nextID(),
@@ -581,6 +618,9 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}); err != nil {
 			return err
 		}
+	}
+	for _, id := range t.leads {
+		o.runner.setStatus(ctx, threadID, id, contracts.AgentSucceeded, "")
 	}
 
 	// The first cycle names the thread twice: once from the prompt at the start
@@ -598,12 +638,14 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 // priorMessages returns the thread's conversation before the current turn. The
 // engine appends the turn's user message before RunTurn, so the last user
 // message with the current text marks where this turn starts; everything after
-// it is this run's own output, carried by other prompt sections. A subthread
-// appends no user message, so nothing matches and the whole history is prior.
+// it is this run's own output, carried by other prompt sections. A relaunched
+// thread's opener is authored by its controller instead, so that author counts
+// too. A subthread appends no user message, so nothing matches and the whole
+// history is prior.
 func priorMessages(state *domain.ThreadState, current string) []domain.Message {
 	for i := len(state.Messages) - 1; i >= 0; i-- {
 		m := state.Messages[i]
-		if m.Author == "user" && m.Text == current {
+		if m.Text == current && (m.Author == "user" || (state.ControlledBy != "" && m.Author == string(state.ControlledBy))) {
 			return state.Messages[:i]
 		}
 	}
@@ -633,22 +675,27 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		runtimeChoices = o.runner.runtimeChoices()
 	}
 	peerMailbox := o.runner.peerMailboxFor(ctx, t.threadID)
+	roleChoices, disabledRoles := o.runner.roleChoices()
 	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
-		Role:           t.role,
-		UserMessage:    t.message,
-		History:        renderHistory(priorMessages(state, t.message)),
-		Inherited:      inherited,
-		Shared:         o.runner.notebookFor(t.threadID).Render(),
-		Roster:         o.runner.Roster(state),
-		PendingSpawns:  renderPendingSpawns(state, o.runner.spawns.list(t.threadID)),
-		PeerMessages:   peerMessages,
-		PeerMailbox:    peerMailbox,
-		Subthreads:     subthreadsOffered(state, peerMailbox),
-		Team:           teamBrief(t.leads, i, peerMailbox),
-		Pass:           pass,
-		Steering:       steering,
-		Steer:          hasSubagents(state),
-		RuntimeChoices: runtimeChoices,
+		RoleChoices:       roleChoices,
+		DisabledRoles:     disabledRoles,
+		Wildcard:          o.runner.experimentalRoles(),
+		Role:              t.role,
+		UserMessage:       t.message,
+		History:           renderHistory(priorMessages(state, t.message)),
+		Inherited:         inherited,
+		Shared:            o.runner.notebookFor(t.threadID).Render(),
+		Roster:            o.runner.Roster(state),
+		PendingSpawns:     renderPendingSpawns(state, o.runner.spawns.list(t.threadID)),
+		PeerMessages:      peerMessages,
+		PeerMailbox:       peerMailbox,
+		Subthreads:        subthreadsOffered(state, peerMailbox),
+		Team:              teamBrief(t.leads, i, peerMailbox),
+		Pass:              pass,
+		Steering:          steering,
+		Steer:             hasSubagents(state),
+		RuntimeChoices:    runtimeChoices,
+		DependencyThreads: o.runner.RenderDependencyThreads(ctx, state),
 	})
 
 	// The turn's attachments, plus any steering images, reach the lead every

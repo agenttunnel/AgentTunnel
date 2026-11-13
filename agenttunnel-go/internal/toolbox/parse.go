@@ -63,6 +63,8 @@ func ParseCommandLine(line string) (Call, bool) {
 			call.Name = value
 		case "--task":
 			call.Task = value
+		case "--brief":
+			call.Brief = value
 		case "--harness":
 			call.Harness = value
 		case "--model":
