@@ -33,6 +33,13 @@ type reply struct {
 	err    *RPCError
 }
 
+// readLimit caps one incoming frame on the CLI side. Daemon replies (a
+// thread.list over real thread history) can exceed websocket's 32768-byte
+// default, which broke every CLI command that resolves a thread ref. It
+// mirrors the relay's MaxFrameBytes convention (pkg/relay/protocol.go) and
+// only needs to cover the largest reply the daemon legitimately sends.
+const readLimit = 4 << 20
+
 // Client is one JSON-RPC connection to a daemon. A single read loop dispatches
 // pushed frames and correlates replies by id, so concurrent Call invocations
 // never steal each other's frames.
@@ -64,6 +71,7 @@ func Dial(ctx context.Context, wsURL, token string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	ws.SetReadLimit(readLimit)
 	c := &Client{
 		ws:      ws,
 		pending: make(map[string]chan reply),

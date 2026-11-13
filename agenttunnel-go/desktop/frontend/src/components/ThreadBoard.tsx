@@ -30,6 +30,8 @@ export type BoardThread = {
   worktree?: { branch: string } | null;
   /** A draft has not had its first turn yet: no worktree and no agents. */
   draft?: boolean;
+  /** Set while the thread is scheduled: it starts once these threads finish. */
+  waiting?: { dependsOn: string[]; prompt: string };
 };
 
 /** A GitLab issue assigned to the user, as issues.list reports it. */
@@ -50,6 +52,7 @@ export type BoardIssues = {
 
 export type ThreadColumnId =
   | "draft"
+  | "scheduled"
   | "running"
   | "uncommitted"
   | "ready"
@@ -60,6 +63,7 @@ export type ThreadColumnId =
 /** Columns in workflow order, with Archived last. Every thread lands in exactly one column. */
 export const THREAD_COLUMNS: { id: ThreadColumnId; title: string }[] = [
   { id: "draft", title: "Draft" },
+  { id: "scheduled", title: "Scheduled" },
   { id: "running", title: "Running" },
   { id: "uncommitted", title: "Uncommitted" },
   { id: "ready", title: "Ready to merge" },
@@ -69,8 +73,11 @@ export const THREAD_COLUMNS: { id: ThreadColumnId; title: string }[] = [
 ];
 
 /**
- * A draft is waiting for its first turn, so it is in Draft before anything else:
- * it has no agents, no worktree, and no PR. Otherwise running wins over
+ * A scheduled thread is intentionally waiting, so it is Scheduled before
+ * anything else: it is not running, and even a dirty worktree or a draft's
+ * first-turn state do not move it — the schedule is the state. Otherwise a
+ * draft is waiting for its first turn, so it is in Draft before anything
+ * else: it has no agents, no worktree, and no PR. Then running wins over
  * everything: a thread with live agents is never shown as archived, waiting, or
  * uncommitted. A thread the user archived is archived next. Then uncommitted
  * changes win over PR state. Otherwise an open PR is ready to merge only when it
@@ -78,6 +85,7 @@ export const THREAD_COLUMNS: { id: ThreadColumnId; title: string }[] = [
  * review. A merged PR is archived. No PR, or a closed one, is idle.
  */
 export function threadColumn(t: BoardThread, state: ThreadState | undefined): ThreadColumnId {
+  if (t.waiting) return "scheduled";
   if (t.draft) return "draft";
   if ((t.runningAgents ?? 0) > 0) return "running";
   if (t.archived) return "archived";
@@ -97,6 +105,7 @@ export function groupThreads<T extends BoardThread>(
 ): Record<ThreadColumnId, T[]> {
   const out: Record<ThreadColumnId, T[]> = {
     draft: [],
+    scheduled: [],
     running: [],
     uncommitted: [],
     ready: [],
@@ -122,6 +131,7 @@ export function canDrop(kind: DragKind, to: ThreadColumnId): boolean {
 
 const DOT_CLASS: Record<ThreadColumnId, string> = {
   draft: "pending",
+  scheduled: "pending",
   running: "running",
   uncommitted: "pending",
   archived: "succeeded",

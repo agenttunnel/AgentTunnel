@@ -10,42 +10,46 @@ import (
 type EventType string
 
 const (
-	EvtThreadCreated      EventType = "thread.created"
-	EvtThreadRenamed      EventType = "thread.renamed"
-	EvtThreadDescribed    EventType = "thread.described"
-	EvtDraftStarted       EventType = "thread.draft-started"
-	EvtThreadDeleted      EventType = "thread.deleted"
-	EvtWorktreeAttached   EventType = "thread.worktree-attached"
-	EvtWorktreeDetached   EventType = "thread.worktree-detached"
-	EvtWorktreeReplaced   EventType = "thread.worktree-replaced"
-	EvtMessageSent        EventType = "thread.message-sent"
-	EvtSteeringInjected   EventType = "thread.steering-injected"
-	EvtSteeringConsumed   EventType = "thread.steering-consumed"
-	EvtModelSet           EventType = "thread.model-set"
-	EvtAutoModeSet        EventType = "thread.automode-set"
-	EvtArchiveSet         EventType = "thread.archive-set"
-	EvtStatusPeriodSet    EventType = "thread.status-period-set"
-	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
-	EvtLeadsSet           EventType = "thread.leads-set"
-	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
-	EvtRoleRuntimeSet     EventType = "thread.role-runtime-set"
-	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
-	EvtTaskAdded          EventType = "thread.task-added"
-	EvtTaskStatusChanged  EventType = "thread.task-status-changed"
-	EvtTaskDispatched     EventType = "agent.task-dispatched"
-	EvtAgentStatusChanged EventType = "agent.status-changed"
-	EvtUsageRecorded      EventType = "agent.usage-recorded"
-	EvtSharedContextSet   EventType = "context.shared-set"
-	EvtMailboxPosted      EventType = "mailbox.posted"
-	EvtReviewCommentAdded EventType = "review.comment-added"
-	EvtReviewSubmitted    EventType = "review.comments-submitted"
-	EvtReviewThreadOpened EventType = "review.thread-opened"
-	EvtReviewThreadReply  EventType = "review.thread-replied"
-	EvtReviewThreadStatus EventType = "review.thread-status-changed"
-	EvtAgentOutput        EventType = "agent.output"
-	EvtQuestionAsked      EventType = "thread.question-asked"
-	EvtQuestionClosed     EventType = "thread.question-closed"
-	EvtPRTracked          EventType = "thread.pr-tracked"
+	EvtThreadCreated           EventType = "thread.created"
+	EvtThreadRenamed           EventType = "thread.renamed"
+	EvtThreadDescribed         EventType = "thread.described"
+	EvtDraftStarted            EventType = "thread.draft-started"
+	EvtThreadDeleted           EventType = "thread.deleted"
+	EvtWorktreeAttached        EventType = "thread.worktree-attached"
+	EvtWorktreeDetached        EventType = "thread.worktree-detached"
+	EvtWorktreeReplaced        EventType = "thread.worktree-replaced"
+	EvtMessageSent             EventType = "thread.message-sent"
+	EvtSteeringInjected        EventType = "thread.steering-injected"
+	EvtSteeringConsumed        EventType = "thread.steering-consumed"
+	EvtModelSet                EventType = "thread.model-set"
+	EvtAutoModeSet             EventType = "thread.automode-set"
+	EvtArchiveSet              EventType = "thread.archive-set"
+	EvtStatusPeriodSet         EventType = "thread.status-period-set"
+	EvtPeerMailboxSet          EventType = "thread.peer-mailbox-set"
+	EvtLeadsSet                EventType = "thread.leads-set"
+	EvtLeadRuntimeSet          EventType = "thread.lead-runtime-set"
+	EvtRoleRuntimeSet          EventType = "thread.role-runtime-set"
+	EvtSubthreadSpawned        EventType = "thread.subthread-spawned"
+	EvtThreadScheduled         EventType = "thread.scheduled"
+	EvtThreadTriggered         EventType = "thread.triggered"
+	EvtThreadScheduleCancelled EventType = "thread.schedule-cancelled"
+	EvtThreadControlled        EventType = "thread.controlled"
+	EvtTaskAdded               EventType = "thread.task-added"
+	EvtTaskStatusChanged       EventType = "thread.task-status-changed"
+	EvtTaskDispatched          EventType = "agent.task-dispatched"
+	EvtAgentStatusChanged      EventType = "agent.status-changed"
+	EvtUsageRecorded           EventType = "agent.usage-recorded"
+	EvtSharedContextSet        EventType = "context.shared-set"
+	EvtMailboxPosted           EventType = "mailbox.posted"
+	EvtReviewCommentAdded      EventType = "review.comment-added"
+	EvtReviewSubmitted         EventType = "review.comments-submitted"
+	EvtReviewThreadOpened      EventType = "review.thread-opened"
+	EvtReviewThreadReply       EventType = "review.thread-replied"
+	EvtReviewThreadStatus      EventType = "review.thread-status-changed"
+	EvtAgentOutput             EventType = "agent.output"
+	EvtQuestionAsked           EventType = "thread.question-asked"
+	EvtQuestionClosed          EventType = "thread.question-closed"
+	EvtPRTracked               EventType = "thread.pr-tracked"
 )
 
 // EventPayload is implemented by every concrete event payload. The unexported
@@ -146,6 +150,14 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[RoleRuntimeSet](data)
 	case EvtSubthreadSpawned:
 		return decodePayload[SubthreadSpawned](data)
+	case EvtThreadScheduled:
+		return decodePayload[ThreadScheduled](data)
+	case EvtThreadTriggered:
+		return decodePayload[ThreadTriggered](data)
+	case EvtThreadScheduleCancelled:
+		return decodePayload[ThreadScheduleCancelled](data)
+	case EvtThreadControlled:
+		return decodePayload[ThreadControlled](data)
 	case EvtTaskAdded:
 		return decodePayload[TaskAdded](data)
 	case EvtTaskStatusChanged:
@@ -395,6 +407,41 @@ type SubthreadSpawned struct {
 }
 
 func (SubthreadSpawned) eventType() EventType { return EvtSubthreadSpawned }
+
+// ThreadScheduled arms a thread: it waits for the threads in DependsOn to
+// finish, then runs Prompt as its next turn. Whether those threads exist, and
+// together with this one form no cycle, is the scheduler layer's check — the
+// event records only what was accepted.
+type ThreadScheduled struct {
+	DependsOn []ThreadID `json:"dependsOn"`
+	Prompt    string     `json:"prompt"`
+}
+
+func (ThreadScheduled) eventType() EventType { return EvtThreadScheduled }
+
+// ThreadTriggered is written when a waiting thread's turn starts: it records
+// the dependencies the thread was waiting on and discharges the schedule.
+type ThreadTriggered struct {
+	DependsOn []ThreadID `json:"dependsOn"`
+}
+
+func (ThreadTriggered) eventType() EventType { return EvtThreadTriggered }
+
+// ThreadScheduleCancelled disarms a scheduled thread without running it.
+type ThreadScheduleCancelled struct {
+	DependsOn []ThreadID `json:"dependsOn"`
+}
+
+func (ThreadScheduleCancelled) eventType() EventType { return EvtThreadScheduleCancelled }
+
+// ThreadControlled records control passing to the thread named by Controller,
+// which may relaunch it while it stays in charge. An empty Controller hands
+// control back to the user.
+type ThreadControlled struct {
+	Controller ThreadID `json:"controller"`
+}
+
+func (ThreadControlled) eventType() EventType { return EvtThreadControlled }
 
 // TaskStatus is where a task on a thread's agreed list stands. Statuses are
 // set by the leads as they judge progress; they are not derived from agent runs.

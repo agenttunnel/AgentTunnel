@@ -118,9 +118,12 @@ type OrchestratorPrompt struct {
 	PeerMailbox   bool
 	// Subthreads offers the subthread tool: the thread may start one.
 	Subthreads bool
-	Team       string
-	Pass       int
-	Steering   []string
+	// DependencyThreads lists the threads this one was triggered by, rendered
+	// for the scheduling tool offer. Empty renders no section.
+	DependencyThreads string
+	Team              string
+	Pass              int
+	Steering          []string
 	// Steer offers the steer tool: the thread has subagents to steer.
 	Steer          bool
 	RuntimeChoices string
@@ -229,6 +232,16 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("  \"$AT_TOOL\" tool thread-list\n")
 	b.WriteString("  \"$AT_TOOL\" tool thread-delete --id <thread id> [--remove-worktree]\n\n")
 	b.WriteString("You cannot delete this thread, and a thread with work still running cannot be deleted. --remove-worktree also removes that thread's worktree, and is refused if it has uncommitted changes.")
+	if strings.TrimSpace(in.DependencyThreads) != "" {
+		b.WriteString("\n\n## Threads you were triggered by\n")
+		b.WriteString("These threads triggered this thread, and you may also drive any you already relaunched:\n")
+		b.WriteString(in.DependencyThreads)
+		b.WriteString("\nRead one's state and its final messages with:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool thread-results --thread <thread id>\n\n")
+		b.WriteString("When a dependency's result is not enough or it did not reach its goal, relaunch it with a new prompt instead of redoing its work yourself:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool thread-relaunch --thread <thread id> --text \"<what to do next>\"\n\n")
+		b.WriteString("A relaunch marks the thread controlled by this one and starts your prompt as its next turn, so say exactly what you need from it. A busy thread refuses the relaunch until its current turn ends.")
+	}
 	b.WriteString("\n\n## Files and shell\n")
 	b.WriteString("You can read and write files in this thread's worktree, and run a shell command there. Relative paths resolve against the worktree, and a file path cannot leave it:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool read-file --path <path>\n")
