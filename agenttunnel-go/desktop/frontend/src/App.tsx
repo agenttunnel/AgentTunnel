@@ -228,7 +228,7 @@ export type ThreadState = {
   /** The agreed task list, in the order the leads added it. */
   tasks?: TaskItem[] | null;
 };
-type ThreadSummary = {
+export type ThreadSummary = {
   id: string;
   title: string;
   projectId?: string;
@@ -253,6 +253,12 @@ type ThreadSummary = {
   draft?: boolean;
   /** The GitLab issue the thread was started from, if any. */
   issue?: { provider: string; iid: number; title: string; url: string } | null;
+  /** Set while the thread is scheduled: it starts once these threads finish. */
+  waiting?: { dependsOn: string[]; prompt: string };
+  /** Thread ids whose completion has triggered relaunches of this one. */
+  triggeredFrom?: string[];
+  /** The thread that relaunched this one, when another thread controls it. */
+  controlledBy?: string;
 };
 
 // A prompt hit must be stronger than a title hit to win, so a thread whose
@@ -2155,6 +2161,20 @@ export default function App() {
   const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
+  /** The active thread's list row, where waiting/controlledBy announce
+   * themselves; null while the list has not loaded it yet. */
+  const activeSummary = activeId ? threads.find((t) => t.id === activeId) ?? null : null;
+  /** The environment's other top-level threads this thread may wait on. */
+  const scheduleCandidates = useMemo(
+    () => threads.filter((t) => t.id !== activeId && !t.parentThreadId && !t.archived),
+    [threads, activeId],
+  );
+  /** A thread id to its title, falling back to the raw id when the thread is
+   * gone (deleted or from another environment). */
+  const threadTitle = useCallback(
+    (id: string) => threads.find((t) => t.id === id)?.title ?? id,
+    [threads],
+  );
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
   // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
@@ -2585,6 +2605,22 @@ export default function App() {
   };
 
   const [addingLead, setAddingLead] = useState(false);
+
+  /** Schedules the active thread: it starts once every listed thread finishes. */
+  const scheduleThread = useCallback(async (dependsOn: string[], prompt: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    await rpc.call("thread.schedule", { threadId: activeId, dependsOn, prompt });
+    refresh(activeId).catch(() => undefined);
+  }, [activeId, refresh]);
+
+  /** Cancels the active thread's schedule, back to a plain thread. */
+  const unscheduleThread = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    await rpc.call("thread.unschedule", { threadId: activeId });
+    refresh(activeId).catch(() => undefined);
+  }, [activeId, refresh]);
 
   /** Grows the lead team by one from the next turn on. */
   const addLead = async (count: number) => {
@@ -4272,7 +4308,7 @@ export default function App() {
           {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
+              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
               {...clickable(() => {
                 if (t.subthreads > 0) toggleSubthreads(t.id);
@@ -4282,6 +4318,11 @@ export default function App() {
             >
               <div className="t" title={t.title}>
                 {t.title}
+                {t.waiting && (
+                  <span className="row-scheduled" title={`Scheduled — waiting on ${t.waiting.dependsOn.length} thread${t.waiting.dependsOn.length === 1 ? "" : "s"}`}>
+                    ◷ {t.waiting.dependsOn.length}
+                  </span>
+                )}
                 {t.subthreads > 0 && (
                   <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
                     {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
@@ -4293,6 +4334,26 @@ export default function App() {
               </div>
               <div className="thread-row-foot">
                 <ThreadClock t={t} />
+                {t.controlledBy && (
+                  <button
+                    type="button"
+                    className="controlled-chip"
+                    title={`Relaunched by ${threads.find((c) => c.id === t.controlledBy)?.title ?? t.controlledBy}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (t.controlledBy) selectThread(t.controlledBy);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (t.controlledBy) selectThread(t.controlledBy);
+                      }
+                    }}
+                  >
+                    ⌁ controlled
+                  </button>
+                )}
                 {fmtUpdated(t.updatedAt) && <span className="u">{fmtUpdated(t.updatedAt)}</span>}
               </div>
             </div>
@@ -4410,6 +4471,49 @@ export default function App() {
               ref={streamRef}
               onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
             >
+              {activeSummary?.waiting && (
+                <div className="schedule-banner">
+                  <div className="schedule-banner-main">
+                    <div className="schedule-banner-title">
+                      <span className="pill wait">◷ Scheduled</span>
+                      <span className="schedule-waiting">
+                        waiting on{" "}
+                        {activeSummary.waiting.dependsOn
+                          .map((id) => threads.find((t) => t.id === id)?.title ?? id)
+                          .join(", ")}
+                      </span>
+                    </div>
+                    <div className="schedule-prompt" title={activeSummary.waiting.prompt}>
+                      {activeSummary.waiting.prompt}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="schedule-cancel"
+                    onClick={() => {
+                      unscheduleThread().catch((e) =>
+                        setError(e instanceof Error ? e.message : String(e)),
+                      );
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              {activeSummary?.controlledBy && (
+                <button
+                  type="button"
+                  className="controlled-link"
+                  title="Open the thread that relaunched this one"
+                  onClick={() => {
+                    if (activeSummary.controlledBy) selectThread(activeSummary.controlledBy);
+                  }}
+                >
+                  ⌁ Controlled by{" "}
+                  {threads.find((t) => t.id === activeSummary.controlledBy)?.title ??
+                    activeSummary.controlledBy}
+                </button>
+              )}
               {setupMode && thread && (
                 <div className="setup-view">
                   <ThreadSetup
@@ -4427,6 +4531,11 @@ export default function App() {
                     harnessOptionsFor={harnessOptionsFor}
                     toggleRoleEnabled={toggleRoleEnabled}
                     setStatusPeriod={setStatusPeriod}
+                    summary={activeSummary}
+                    scheduleCandidates={scheduleCandidates}
+                    threadTitle={threadTitle}
+                    schedule={scheduleThread}
+                    unschedule={unscheduleThread}
                   />
                   {composerHidden && (
                     <button
@@ -4858,6 +4967,11 @@ export default function App() {
                 harnessOptionsFor={harnessOptionsFor}
                 toggleRoleEnabled={toggleRoleEnabled}
                 setStatusPeriod={setStatusPeriod}
+                summary={activeSummary}
+                scheduleCandidates={scheduleCandidates}
+                threadTitle={threadTitle}
+                schedule={scheduleThread}
+                unschedule={unscheduleThread}
               />
             </div>
           ) : asideActive === "agents" ? (
