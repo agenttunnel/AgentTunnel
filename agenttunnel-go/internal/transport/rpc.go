@@ -314,7 +314,7 @@ func threadStates(
 }
 
 // maxSummaryPromptRunes bounds the searchable prompt in the thread list: the
-// openers are short, and the list is shipped whole on every recency change.
+// openers are short, and the list is shipped whole on every state change.
 const maxSummaryPromptRunes = 200
 
 // firstUserPrompt returns the thread's first human message, truncated to the
@@ -357,6 +357,8 @@ type ThreadSummary struct {
 	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
 	Draft    bool                   `json:"draft,omitempty"`
 	Issue    *contracts.IssueRef    `json:"issue,omitempty"`
+	// SoloRuntime is the thread's solo override; nil means orchestrator mode.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
@@ -422,6 +424,14 @@ type (
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
+	// setSoloParams sets or clears a thread's solo runtime. An empty Harness
+	// clears it: the decider and projector define that semantics.
+	setSoloParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
 		Harness  contracts.Harness  `json:"harness,omitempty"`
 		Model    string             `json:"model,omitempty"`
 		Variant  string             `json:"variant,omitempty"`
@@ -1062,7 +1072,6 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := make([]ThreadSummary, 0, len(ids))
 		staleAfter := defaultStaleAfterSeconds
 		if d.settings != nil {
 			staleAfter = d.settings.StaleAfterMinutes() * 60
@@ -1071,6 +1080,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.engine != nil {
 			now = d.engine.Now()
 		}
+		type summaryRow struct {
+			summary   ThreadSummary
+			createdAt time.Time
+		}
+		rows := make([]summaryRow, 0, len(ids))
 		for _, id := range ids {
 			st, err := d.engine.State(ctx, id)
 			if err != nil {
@@ -1083,24 +1097,32 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				}
 			}
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
-			out = append(out, ThreadSummary{
-				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
-				FirstPrompt: firstUserPrompt(st),
-				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
-				ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
-				Draft: st.Draft, Issue: st.Issue,
-				Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
-				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+			rows = append(rows, summaryRow{
+				summary: ThreadSummary{
+					ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
+					FirstPrompt: firstUserPrompt(st),
+					Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
+					ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
+					Draft: st.Draft, Issue: st.Issue, SoloRuntime: st.SoloRuntime,
+					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
+					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+				},
+				createdAt: st.CreatedAt,
 			})
 		}
-		// The thread list is a recency list: newest activity first. Event stores
-		// may enumerate files in any order, so sort explicitly.
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
-				return out[i].ID < out[j].ID
+		// The thread list is ordered by submission time, newest first: a
+		// thread keeps its slot while it runs. Event stores may enumerate files
+		// in any order, so it sorts explicitly.
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].createdAt.Equal(rows[j].createdAt) {
+				return rows[i].summary.ID < rows[j].summary.ID
 			}
-			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+			return rows[i].createdAt.After(rows[j].createdAt)
 		})
+		out := make([]ThreadSummary, len(rows))
+		for i, r := range rows {
+			out[i] = r.summary
+		}
 		return out, nil
 
 	case "thread.get":
@@ -1206,6 +1228,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		if st.SoloRuntime != nil {
+			return nil, errors.New("turn solo mode off to submit review comments")
 		}
 		var pending []contracts.ReviewCommentAdded
 		var ids []string
@@ -1481,9 +1506,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
-		}); err != nil {
+		if err := d.setArchived(ctx, p.ThreadID, p.Enabled); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -1527,6 +1550,21 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
 			LeadRuntime: &contracts.LeadRuntimeSet{
 				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setSolo":
+		var p setSoloParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdSoloRuntimeSet, ThreadID: p.ThreadID,
+			SoloRuntime: &contracts.SoloRuntimeSet{
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
 		}); err != nil {
@@ -2418,6 +2456,24 @@ func (d *Dispatcher) threadBusy(id contracts.ThreadID, st *domain.ThreadState) b
 // check and the dispatch can still get the delete refused, leaving the thread
 // with its worktree already gone. The window is one engine round-trip. Closing it
 // would need worktree removal inside the decider, which the engine does not do.
+// setArchived archives or restores a thread. Archiving a busy thread is refused
+// with the same message delete uses, so the user sees what to do. The decider
+// still enforces the rule for races that land after this check.
+func (d *Dispatcher) setArchived(ctx context.Context, id contracts.ThreadID, archived bool) error {
+	if archived {
+		st, err := d.engine.State(ctx, id)
+		if err != nil {
+			return err
+		}
+		if st.Exists && d.threadBusy(id, st) {
+			return fmt.Errorf("%w: thread %q is running; stop it first", domain.ErrInvalidCommand, id)
+		}
+	}
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: id, Archived: &archived,
+	})
+}
+
 func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, removeWorktree bool) error {
 	st, err := d.engine.State(ctx, id)
 	if err != nil {

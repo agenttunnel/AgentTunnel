@@ -23,6 +23,11 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Draft = p.Draft
 		s.Description = p.Description
 		s.Issue = p.Issue
+		// Submission time is stamped from the envelope, unconditionally: a
+		// provisional thread's in-memory preview gives way to the durable
+		// event time, so the live read model and a replay of the same log
+		// agree.
+		s.CreatedAt = e.At
 
 	case contracts.ThreadDescribed:
 		s.Description = p.Description
@@ -118,6 +123,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 			s.LeadRuntimes = append(s.LeadRuntimes, contracts.LeadRuntime{})
 		}
 		s.LeadRuntimes[p.Index] = p.Runtime
+
+	case contracts.SoloRuntimeSet:
+		if p.Runtime.Harness == "" {
+			s.SoloRuntime = nil
+		} else {
+			rt := p.Runtime
+			s.SoloRuntime = &rt
+		}
 
 	case contracts.RoleRuntimeSet:
 		if s.RoleRuntimes == nil {

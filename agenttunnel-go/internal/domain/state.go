@@ -88,12 +88,15 @@ type ThreadState struct {
 	ProjectID string `json:"projectId,omitempty"`
 	// Draft is a thread that has not run yet: it has a title and description,
 	// no worktree, and no turns. Its first turn clears the flag.
-	Draft       bool                     `json:"draft,omitempty"`
-	Description string                   `json:"description,omitempty"`
-	Issue       *contracts.IssueRef      `json:"issue,omitempty"`
-	UpdatedAt   time.Time                `json:"updatedAt"`
-	Model       contracts.ModelSelection `json:"model"`
-	AutoMode    bool                     `json:"autoMode"`
+	Draft       bool                `json:"draft,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Issue       *contracts.IssueRef `json:"issue,omitempty"`
+	// CreatedAt is when the thread was created: the ThreadCreated event's
+	// envelope time. It never moves; UpdatedAt advances with every event.
+	CreatedAt time.Time                `json:"createdAt"`
+	UpdatedAt time.Time                `json:"updatedAt"`
+	Model     contracts.ModelSelection `json:"model"`
+	AutoMode  bool                     `json:"autoMode"`
 	// StatusPeriodSeconds is how often a running turn posts a workflow status
 	// report into the thread. Zero means off.
 	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`
@@ -105,6 +108,9 @@ type ThreadState struct {
 	// entry means the lead inherits the orchestrator role. Read through
 	// LeadRuntimeFor.
 	LeadRuntimes []contracts.LeadRuntime `json:"leadRuntimes,omitempty"`
+	// SoloRuntime is the thread's solo override: one agent on one harness, no
+	// orchestrator team. Nil means orchestrator mode. Read through Solo.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
 	// RoleRuntimes holds thread-scoped runtime overrides keyed by role id. They
 	// win over the daemon-wide settings.RoleConfig for this thread only, so two
 	// concurrent turns can run different runtimes. Read through RoleRuntimeFor.
@@ -237,6 +243,10 @@ func (s *ThreadState) LeadCount() int {
 	return s.Leads
 }
 
+// Solo reports whether the thread runs in solo mode: one agent on one
+// harness, no orchestrator team.
+func (s *ThreadState) Solo() bool { return s.SoloRuntime != nil }
+
 // NewThreadState returns an empty read model for a thread.
 func NewThreadState(id contracts.ThreadID) *ThreadState {
 	return &ThreadState{
@@ -317,6 +327,10 @@ func (s *ThreadState) Clone() *ThreadState {
 	c.TriggeredFrom = append([]contracts.ThreadID(nil), s.TriggeredFrom...)
 	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
+	if s.SoloRuntime != nil {
+		rt := *s.SoloRuntime
+		c.SoloRuntime = &rt
+	}
 	c.RoleRuntimes = make(map[string]contracts.LeadRuntime, len(s.RoleRuntimes))
 	for k, v := range s.RoleRuntimes {
 		c.RoleRuntimes[k] = v

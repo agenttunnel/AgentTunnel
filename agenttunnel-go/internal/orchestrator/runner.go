@@ -107,6 +107,13 @@ type Runner struct {
 	notebookMu sync.Mutex
 	notebooks  map[contracts.ThreadID]*contextstore.Notebook
 
+	// btwSessions holds each thread's /btw side-conversation memory. The
+	// runner is shared daemon-wide, so a session is keyed by thread ID, never
+	// by agent: agent ids are thread-agnostic and would collide across
+	// threads.
+	btwMu       sync.Mutex
+	btwSessions map[contracts.ThreadID]*btwSession
+
 	// curator single-flights the auto context manager per thread.
 	curator contextCurator
 
@@ -127,27 +134,28 @@ func NewRunner(d Deps) *Runner {
 		d.Clock = time.Now
 	}
 	r := &Runner{
-		engine:     d.Engine,
-		registry:   d.Registry,
-		roles:      d.Roles,
-		logs:       d.Logs,
-		ledger:     d.Ledger,
-		mailbox:    d.Mailbox,
-		inherited:  d.Inherited,
-		settings:   d.Settings,
-		models:     d.Models,
-		tools:      d.Tools,
-		steering:   d.Steering,
-		audit:      d.Audit,
-		toolPath:   d.ToolPath,
-		token:      d.Token,
-		endpoint:   d.Endpoint,
-		clock:      d.Clock,
-		cfg:        d.Cfg,
-		spawns:     newSpawnStore(),
-		steers:     newSteerQueue(),
-		notebooks:  map[contracts.ThreadID]*contextstore.Notebook{},
-		launchTurn: d.LaunchThreadTurn,
+		engine:      d.Engine,
+		registry:    d.Registry,
+		roles:       d.Roles,
+		logs:        d.Logs,
+		ledger:      d.Ledger,
+		mailbox:     d.Mailbox,
+		inherited:   d.Inherited,
+		settings:    d.Settings,
+		models:      d.Models,
+		tools:       d.Tools,
+		steering:    d.Steering,
+		audit:       d.Audit,
+		toolPath:    d.ToolPath,
+		token:       d.Token,
+		endpoint:    d.Endpoint,
+		clock:       d.Clock,
+		cfg:         d.Cfg,
+		spawns:      newSpawnStore(),
+		steers:      newSteerQueue(),
+		notebooks:   map[contracts.ThreadID]*contextstore.Notebook{},
+		btwSessions: map[contracts.ThreadID]*btwSession{},
+		launchTurn:  d.LaunchThreadTurn,
 	}
 	r.background = New(r)
 	return r
@@ -679,6 +687,84 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 	return strings.TrimSpace(strings.Join(kept, "\n")), calls, werr
 }
 
+// runSoloPass runs one one-shot session of a solo thread's single agent and
+// returns its text. There is no orchestrator protocol: every text line is
+// conversation, no tool lines are parsed or routed, and the spec carries no
+// AT_* environment at all — the solo agent has lead git parity and the
+// process adapter scrubs ambient AT_* regardless.
+func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, agentID contracts.AgentID, rt contracts.LeadRuntime, prompt string, images []providers.ImageInput, pass int) (string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	tc := r.trackCancel(agentID, cancel)
+	defer r.untrackCancel(agentID, tc)
+
+	if !rt.Harness.Valid() {
+		return "", fmt.Errorf("solo harness %q is not set", rt.Harness)
+	}
+	if !r.harnessAllowed(rt.Harness) {
+		return "", fmt.Errorf("harness %q is disabled", rt.Harness)
+	}
+	spec := providers.SessionSpec{
+		AgentID:  agentID,
+		ThreadID: threadID,
+		Role:     contracts.RoleOrchestrator,
+		Harness:  rt.Harness,
+		Model:    rt.Model,
+		Variant:  rt.Variant,
+		Prompt:   prompt,
+		Images:   images,
+		Workdir:  r.workdirFor(ctx, threadID),
+	}
+	adapter, err := r.registry.NewAdapter(spec)
+	if err != nil {
+		return "", err
+	}
+	r.auditLog("agent.spawn", map[string]any{
+		"agentId": string(agentID), "role": soloName, "pass": pass,
+		"harness": string(rt.Harness), "model": spec.Model, "workdir": spec.Workdir,
+	})
+	if err := adapter.Start(ctx, spec); err != nil {
+		r.auditLog("agent.error", map[string]any{"agentId": string(agentID), "error": err.Error()})
+		return "", err
+	}
+	events, err := adapter.Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	var text []string
+	emitted := false
+	for ev := range events {
+		emitted = true
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
+		r.publishOutput(threadID, agentID, ev.Kind, ev.Text)
+		if ev.Usage != nil {
+			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
+		}
+		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
+			text = append(text, ev.Text)
+		}
+	}
+	werr := adapter.Wait(ctx)
+	r.auditLog("agent.exit", map[string]any{
+		"agentId": string(agentID), "role": soloName, "pass": pass,
+		"status": statusWord(werr), "error": errString(werr),
+	})
+
+	// A harness that exits cleanly but emitted nothing is a silent failure —
+	// the same guard runTask applies — and must not read as a green, empty
+	// result.
+	if werr == nil && !emitted {
+		msg := "harness exited without any output (check its auth or quota)"
+		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: contracts.LogError, Text: msg, At: r.clock()})
+		r.publishOutput(threadID, agentID, contracts.LogError, msg)
+		return "", errors.New(msg)
+	}
+
+	// Text deltas are arbitrary chunks, so join without separators; real
+	// newlines are already in the deltas.
+	return strings.TrimSpace(strings.Join(text, "")), werr
+}
+
 // auditLog records one action for post-hoc debugging.
 func (r *Runner) auditLog(kind string, fields map[string]any) {
 	if r.audit != nil {
@@ -1100,12 +1186,25 @@ func (r *Runner) HasSteering(threadID contracts.ThreadID) bool {
 	return r.steering != nil && r.steering.Has(threadID)
 }
 
+// titleRuntimeFor is generateTitle's runtime resolution: the thread's solo
+// runtime when set — a solo thread names itself on its own harness instead of
+// quietly running the orchestrator role's — falling back to the role's.
+func (r *Runner) titleRuntimeFor(ctx context.Context, threadID contracts.ThreadID, role contracts.Role) (contracts.Harness, string, string) {
+	if r.engine != nil {
+		if st, err := r.engine.State(ctx, threadID); err == nil && st != nil && st.SoloRuntime != nil {
+			rt := *st.SoloRuntime
+			return rt.Harness, rt.Model, rt.Variant
+		}
+	}
+	return r.roleRuntimeFor(ctx, threadID, role)
+}
+
 // generateTitle asks the orchestrator's model to name the session. It is
 // invoked at the start of the first turn (prompt only) and again when that turn
 // completes (prompt plus the cycle's summary). It runs off the turn so it
 // cannot delay the reply.
 func (r *Runner) generateTitle(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, userMessage, summary string) {
-	harness, model, variant := r.roleRuntimeFor(ctx, threadID, role)
+	harness, model, variant := r.titleRuntimeFor(ctx, threadID, role)
 	if !r.harnessAllowed(harness) {
 		return
 	}
