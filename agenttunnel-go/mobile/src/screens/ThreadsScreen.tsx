@@ -1,4 +1,4 @@
-// Threads: the instance's threads grouped by project, most recent first.
+// Threads: the instance's threads grouped by project, newest submission first.
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

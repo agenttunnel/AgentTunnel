@@ -1990,7 +1990,7 @@ export default function App() {
   }, [projects]);
 
   // Other projects keep working while their tab is in the background. Poll the
-  // recency list so their tabs stay honest about running agents and activity.
+  // thread list so their tabs stay honest about running agents and activity.
   useEffect(() => {
     if (status !== "online") return;
     const timer = window.setInterval(() => {
@@ -2176,7 +2176,7 @@ export default function App() {
       const score = threadSearchScore(thread, query);
       if (score !== null) ranked.push({ thread, score });
     }
-    // Array.sort is stable, so equal scores keep the daemon's recency order.
+    // Array.sort is stable, so equal scores keep the daemon's submission order.
     ranked.sort((a, b) => b.score - a.score);
     return arrangeThreads(ranked.map((r) => r.thread));
   }, [threads, projectId, query]);
