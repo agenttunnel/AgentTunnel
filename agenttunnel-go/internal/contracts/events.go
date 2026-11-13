@@ -28,6 +28,7 @@ const (
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
 	EvtLeadRuntimeSet     EventType = "thread.lead-runtime-set"
+	EvtSoloRuntimeSet     EventType = "thread.solo-runtime-set"
 	EvtRoleRuntimeSet     EventType = "thread.role-runtime-set"
 	EvtSubthreadSpawned   EventType = "thread.subthread-spawned"
 	EvtTaskAdded          EventType = "thread.task-added"
@@ -142,6 +143,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[LeadsSet](data)
 	case EvtLeadRuntimeSet:
 		return decodePayload[LeadRuntimeSet](data)
+	case EvtSoloRuntimeSet:
+		return decodePayload[SoloRuntimeSet](data)
 	case EvtRoleRuntimeSet:
 		return decodePayload[RoleRuntimeSet](data)
 	case EvtSubthreadSpawned:
@@ -371,6 +374,15 @@ type LeadRuntimeSet struct {
 }
 
 func (LeadRuntimeSet) eventType() EventType { return EvtLeadRuntimeSet }
+
+// SoloRuntimeSet sets a thread's solo runtime. Solo mode runs exactly one
+// agent on one harness with no orchestrator team; an empty Harness clears it
+// and returns the thread to orchestrator mode.
+type SoloRuntimeSet struct {
+	Runtime LeadRuntime `json:"runtime"`
+}
+
+func (SoloRuntimeSet) eventType() EventType { return EvtSoloRuntimeSet }
 
 // RoleRuntimeSet sets a role's runtime override on one thread, so a job
 // template can pin executor=tester harness/model for a single thread without
