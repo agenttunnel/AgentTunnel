@@ -161,6 +161,11 @@ func (s *FileStore) DropEmptyThreads() ([]contracts.ThreadID, error) {
 					empty = false
 				}
 			case contracts.PeerMailboxSet:
+			case contracts.ThreadScheduled:
+				// A scheduled thread has not run yet: creation plus the
+				// schedule can be its whole log, and the scheduler still
+				// needs to fire it.
+				empty = false
 			default:
 				empty = false
 			}

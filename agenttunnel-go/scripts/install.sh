@@ -78,7 +78,7 @@ if [ "$os" = "darwin" ]; then
       rm -rf "$app_dir/AgentTunnel.app"
       mv "$app_dir/AgentTunnel.app.new" "$app_dir/AgentTunnel.app"
       xattr -dr com.apple.quarantine "$app_dir/AgentTunnel.app" 2>/dev/null || true
-      app_binary="$app_dir/AgentTunnel.app/Contents/MacOS/agenttunnel"
+      app_binary="$app_dir/AgentTunnel.app/Contents/MacOS/agenttunnel-desktop"
       echo "install: installed app into ${app_dir}/AgentTunnel.app"
     else
       echo "install: app archive was not a valid bundle; installing the CLI only" >&2
@@ -102,7 +102,7 @@ installed=0
 for name in atd agenttunnel agenttunnel-desktop; do
   for candidate in "$name" "$name.exe"; do
     if [ -f "$tmpdir/$candidate" ]; then
-      if [ "$name" = "agenttunnel-desktop" ] && [ -n "$app_binary" ]; then
+      if [ "$name" = "agenttunnel-desktop" ] && [ -n "$app_binary" ] && [ -x "$app_binary" ]; then
         ln -sf "$app_binary" "$install_dir/agenttunnel-desktop"
       else
         # Drop any old link first: cp would write through a symlink into the app bundle.

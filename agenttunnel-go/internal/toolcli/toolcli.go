@@ -31,7 +31,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell|agent-logs|revive> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|thread-relaunch|thread-results|read-file|write-file|shell|agent-logs|revive> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -41,6 +41,7 @@ func Run(args []string) int {
 	name := fs.String("name", "", "short task name, used by --depends-on")
 	lane := fs.String("lane", "", "pipeline this task belongs to (for the agents view)")
 	task := fs.String("task", "", "task description (for dispatch, spawn, task-create and subthread)")
+	brief := fs.String("brief", "", "agent definition for a wildcard dispatch; it becomes the agent's instructions (for dispatch)")
 	harness := fs.String("harness", "", "harness override (for dispatch and spawn)")
 	model := fs.String("model", "", "model override (for dispatch and spawn)")
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
@@ -58,7 +59,7 @@ func Run(args []string) int {
 	line := fs.Int("line", 0, "line a review comment is anchored to (for review-comment)")
 	endLine := fs.Int("end-line", 0, "last line of a review comment's range (for review-comment)")
 	side := fs.String("side", "", "old or new: which side of the diff a review comment is on (for review-comment)")
-	thread := fs.String("thread", "", "review thread id (for review-reply and review-resolve)")
+	thread := fs.String("thread", "", "review thread id (for review-reply and review-resolve); the target thread (for thread-relaunch and thread-results)")
 	reopen := fs.Bool("reopen", false, "move a resolved review thread back to open (for review-resolve)")
 	threadID := fs.String("id", "", "thread to delete (for thread-delete)")
 	removeWorktree := fs.Bool("remove-worktree", false, "also remove the deleted thread's worktree (for thread-delete)")
@@ -78,6 +79,7 @@ func Run(args []string) int {
 		"lane":           *lane,
 		"role":           *role,
 		"task":           *task,
+		"brief":          *brief,
 		"harness":        *harness,
 		"model":          *model,
 		"text":           *text,

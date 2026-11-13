@@ -137,3 +137,13 @@ func TestParseCommandLineApproveAndRejectRequireName(t *testing.T) {
 		t.Fatalf("reject without a name parsed as %+v", call)
 	}
 }
+
+func TestParseCommandLineDispatchBrief(t *testing.T) {
+	call, ok := ParseCommandLine(`"$AT_TOOL" tool dispatch --role wildcard --name counter --brief "You count the Go files; report the number only." --task "count the files"`)
+	if !ok {
+		t.Fatal("expected a dispatch call")
+	}
+	if call.Role != contracts.RoleWildcard || call.Brief != "You count the Go files; report the number only." || call.Task != "count the files" {
+		t.Fatalf("call = %+v", call)
+	}
+}
