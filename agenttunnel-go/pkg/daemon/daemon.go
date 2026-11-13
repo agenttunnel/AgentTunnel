@@ -136,6 +136,13 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	var endpoint atomic.Value
 	endpoint.Store("")
 
+	// The dispatcher is the runner's launcher for turns an agent starts on
+	// another thread (a relaunch): turn slots, first-worktree cuts, and status
+	// reports live in the transport layer. It is forward-declared and reached
+	// only through a closure, so the runner can be wired before the
+	// dispatcher that completes it exists.
+	var disp *transport.Dispatcher
+
 	// Image attachments live under the state dir, one directory per thread.
 	attachStore := attachments.New(filepath.Join(opts.StateDir, "attachments"))
 
@@ -160,6 +167,9 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 			return ""
 		},
 		Cfg: opts.Config,
+		LaunchThreadTurn: func(ctx context.Context, target contracts.ThreadID, text string, record func() error, finish func(turnCtx context.Context)) error {
+			return disp.LaunchThreadTurn(ctx, target, text, record, finish)
+		},
 	})
 	orch := orchestrator.New(runner)
 
@@ -182,9 +192,9 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if adapter == nil {
 		adapter = remote.NewDefaultAdapter(opts.StateDir)
 	}
-	var disp *transport.Dispatcher
 	// The chat control router needs the dispatcher, and the bridge (which the
-	// dispatcher needs) needs the router. Both are closures over this variable.
+	// dispatcher needs) needs the router. Both are closures over the
+	// dispatcher variable declared above.
 	var router *transport.ControlRouter
 	bridge, err := remote.New(remote.Options{
 		StateDir: opts.StateDir,

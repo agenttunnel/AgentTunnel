@@ -584,9 +584,10 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
-	for _, id := range t.leads {
-		o.runner.setStatus(ctx, threadID, id, contracts.AgentSucceeded, "")
-	}
+	// The turn's summary is recorded before the leads are marked terminal:
+	// a terminal lead is the thread scheduler's "this turn is finished"
+	// signal, and everything the turn left behind must be durable by then or
+	// a dependent schedule compiles its results a beat too early.
 	if strings.TrimSpace(finalText) != "" {
 		if err := o.runner.engine.Dispatch(ctx, contracts.Command{
 			ID:       o.runner.nextID(),
@@ -596,6 +597,9 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}); err != nil {
 			return err
 		}
+	}
+	for _, id := range t.leads {
+		o.runner.setStatus(ctx, threadID, id, contracts.AgentSucceeded, "")
 	}
 
 	// The first cycle names the thread twice: once from the prompt at the start

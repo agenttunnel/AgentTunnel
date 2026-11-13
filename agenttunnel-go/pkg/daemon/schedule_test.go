@@ -166,12 +166,14 @@ func createThread(t *testing.T, c *websocket.Conn, title string) contracts.Threa
 	return created.ThreadID
 }
 
-// waitForTurnEnd returns a predicate matching the thread's final
-// orchestrator message — the durable marker that a turn finished.
+// waitForTurnEnd returns a predicate matching the thread's lead reaching a
+// terminal status — the durable marker that a turn finished. The turn's
+// summary is recorded before its lead settles, so this implies the transcript
+// is complete too.
 func waitForTurnEnd(id contracts.ThreadID) func(contracts.Event) bool {
 	return func(ev contracts.Event) bool {
-		p, ok := ev.Payload.(contracts.MessageSent)
-		return ok && ev.ThreadID == id && p.Author == "orchestrator"
+		p, ok := ev.Payload.(contracts.AgentStatusChanged)
+		return ok && ev.ThreadID == id && p.AgentID == "agent-orchestrator" && p.Status.Terminal()
 	}
 }
 

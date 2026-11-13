@@ -31,6 +31,19 @@ type Config struct {
 	MaxConcurrency int
 }
 
+// LaunchThreadTurnFunc launches a turn on a thread from inside another
+// thread's turn — the relaunch path. It claims the target's turn slot
+// synchronously, so a busy target is refused before anything is recorded;
+// runs record while the claim is held, so the control claim and the turn's
+// opener land in the caller's own drain and the agent that asked learns the
+// outcome in the same pass; then runs the turn in the background on the
+// claimed context and hands the ended turn, whatever its outcome, to finish.
+// The transport layer installs the real one — turn slots, first-worktree
+// cuts, and per-turn status reports live in the dispatcher. A Runner with
+// none (an orchestrator-level harness) records directly and runs the turn
+// itself, detached from the caller's turn context.
+type LaunchThreadTurnFunc func(ctx context.Context, target contracts.ThreadID, text string, record func() error, finish func(turnCtx context.Context)) error
+
 // Deps are the collaborators a runner needs.
 type Deps struct {
 	Engine    *domain.Engine
@@ -50,6 +63,9 @@ type Deps struct {
 	Endpoint  func() string
 	Clock     domain.Clock
 	Cfg       Config
+	// LaunchThreadTurn runs turns the Runner starts on other threads. Nil
+	// falls back to the Runner's own orchestrator.
+	LaunchThreadTurn LaunchThreadTurnFunc
 }
 
 // Runner executes dispatched tasks with dependency-aware, bounded concurrency,
@@ -93,6 +109,16 @@ type Runner struct {
 
 	// curator single-flights the auto context manager per thread.
 	curator contextCurator
+
+	// launchTurn runs turns this Runner starts on other threads (see
+	// LaunchThreadTurnFunc); nil uses background below.
+	launchTurn LaunchThreadTurnFunc
+
+	// background is the orchestrator that runs turns the Runner itself
+	// starts — a relaunch with no transport launcher. One instance, kept for
+	// the Runner's lifetime, keeps its dispatch sequence growing like any
+	// other orchestrator.
+	background *Orchestrator
 }
 
 // NewRunner wires a runner from its dependencies.
@@ -100,28 +126,31 @@ func NewRunner(d Deps) *Runner {
 	if d.Clock == nil {
 		d.Clock = time.Now
 	}
-	return &Runner{
-		engine:    d.Engine,
-		registry:  d.Registry,
-		roles:     d.Roles,
-		logs:      d.Logs,
-		ledger:    d.Ledger,
-		mailbox:   d.Mailbox,
-		inherited: d.Inherited,
-		settings:  d.Settings,
-		models:    d.Models,
-		tools:     d.Tools,
-		steering:  d.Steering,
-		audit:     d.Audit,
-		toolPath:  d.ToolPath,
-		token:     d.Token,
-		endpoint:  d.Endpoint,
-		clock:     d.Clock,
-		cfg:       d.Cfg,
-		spawns:    newSpawnStore(),
-		steers:    newSteerQueue(),
-		notebooks: map[contracts.ThreadID]*contextstore.Notebook{},
+	r := &Runner{
+		engine:     d.Engine,
+		registry:   d.Registry,
+		roles:      d.Roles,
+		logs:       d.Logs,
+		ledger:     d.Ledger,
+		mailbox:    d.Mailbox,
+		inherited:  d.Inherited,
+		settings:   d.Settings,
+		models:     d.Models,
+		tools:      d.Tools,
+		steering:   d.Steering,
+		audit:      d.Audit,
+		toolPath:   d.ToolPath,
+		token:      d.Token,
+		endpoint:   d.Endpoint,
+		clock:      d.Clock,
+		cfg:        d.Cfg,
+		spawns:     newSpawnStore(),
+		steers:     newSteerQueue(),
+		notebooks:  map[contracts.ThreadID]*contextstore.Notebook{},
+		launchTurn: d.LaunchThreadTurn,
 	}
+	r.background = New(r)
+	return r
 }
 
 // Ledger exposes the environment usage ledger.

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -46,6 +47,50 @@ func relaunchCall(target, prompt string) toolbox.Call {
 	return toolbox.Call{Kind: KindThreadRelaunch, AgentID: "agent-orchestrator", Thread: target, Text: prompt}
 }
 
+// relaunchMarks collects what one relaunched thread's turn left on the event
+// stream: the controller's claim, the controller-authored opener, the turn's
+// final orchestrator message, and the control release that ends the relaunch.
+type relaunchMarks struct {
+	claimed bool
+	opener  string
+	summary bool
+}
+
+// waitRelaunchSettled waits until the target's relaunch turn has fully
+// unwound — through its final orchestrator message to the control release
+// that follows it — and reports the marks seen on the way. The relaunch turn
+// is asynchronous (the caller's turn does not wait for it), so tests watch it
+// settle rather than reading a state snapshot that can race it.
+func waitRelaunchSettled(t *testing.T, events <-chan contracts.Event, target, controller contracts.ThreadID) relaunchMarks {
+	t.Helper()
+	var m relaunchMarks
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("relaunch turn on %s never settled: claimed=%v opener=%q summary=%v", target, m.claimed, m.opener, m.summary)
+		case ev := <-events:
+			if ev.ThreadID != target {
+				continue
+			}
+			switch p := ev.Payload.(type) {
+			case contracts.ThreadControlled:
+				if p.Controller == "" {
+					return m
+				}
+				m.claimed = true
+			case contracts.MessageSent:
+				if p.Author == string(controller) {
+					m.opener = p.Text
+				}
+				if p.Author == "orchestrator" {
+					m.summary = true
+				}
+			}
+		}
+	}
+}
+
 func TestRelaunchRefusesForeignThread(t *testing.T) {
 	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	createThread(t, eng, ctx, "t2")
@@ -83,18 +128,28 @@ func TestRelaunchHappyPathRecordsControlAndTurn(t *testing.T) {
 	})
 	settleTrigger(t, eng, ctx, "t2")
 
+	events, stop := eng.SubscribeAll()
+	defer stop()
 	if err := r.RelaunchThread(ctx, "t1", "agent-orchestrator", relaunchCall("t2", "go deeper and check the parser tests")); err != nil {
 		t.Fatalf("relaunch: %v", err)
 	}
+	m := waitRelaunchSettled(t, events, "t2", "t1")
+
+	if !m.claimed || !m.summary {
+		t.Fatalf("claimed=%v summary=%v, want the control claim and a completed relaunch turn", m.claimed, m.summary)
+	}
 	st, _ := eng.State(ctx, "t2")
-	if st.ControlledBy != "t1" {
-		t.Fatalf("controlledBy = %q, want the caller t1", st.ControlledBy)
+	// Control is scoped to the relaunched turn: the claim landed, the turn
+	// ran and ended, so the claim was released with it.
+	if st.ControlledBy != "" {
+		t.Fatalf("controlledBy = %q after the relaunch turn ended, want control released", st.ControlledBy)
 	}
 	if st.Turn != 1 || len(st.Turns) != 1 {
 		t.Fatalf("turn = %d over %d tracked turns, want a fresh turn opened", st.Turn, len(st.Turns))
 	}
-	if len(st.Messages) != 1 {
-		t.Fatalf("messages = %+v, want the relaunch opener", st.Messages)
+	// The relaunch opener plus the turn's own summary.
+	if len(st.Messages) != 2 {
+		t.Fatalf("messages = %+v, want the relaunch opener and the final summary", st.Messages)
 	}
 	msg := st.Messages[0]
 	if msg.Author != "t1" {
@@ -106,16 +161,19 @@ func TestRelaunchHappyPathRecordsControlAndTurn(t *testing.T) {
 	if !strings.Contains(msg.Text, "relaunched by thread t1") {
 		t.Fatalf("relaunch message text = %q, want the report-back instruction for the relaunched agent", msg.Text)
 	}
+	if st.Messages[1].Author != "orchestrator" {
+		t.Fatalf("final message author = %q, want the turn's own summary", st.Messages[1].Author)
+	}
 	// The receipt reaches the caller's log, so the agent that ran the tool
 	// sees that the relaunch landed.
 	found := false
-	for _, e := range r.logs.Entries("t1") {
+	for _, e := range r.Logs().Entries("t1") {
 		if strings.Contains(e.Text, "relaunched t2") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("no relaunch receipt in the caller's log: %+v", r.logs.Entries("t1"))
+		t.Fatalf("no relaunch receipt in the caller's log: %+v", r.Logs().Entries("t1"))
 	}
 }
 
@@ -161,35 +219,50 @@ func TestRelaunchRefusesUnknownTargetAndSelf(t *testing.T) {
 	}
 }
 
-// A thread stays able to relaunch what it already controls even after a later
-// trigger overwrites its TriggeredFrom record.
-func TestRelaunchAcceptsControlledThreadAcrossTriggers(t *testing.T) {
+// Control is scoped to the turn it governs: once a relaunch turn has ended,
+// the caller keeps its permission to relaunch through the TriggeredFrom
+// record, which is never cleared — until a later trigger overwrites it and
+// moves the permission to the new dependencies.
+func TestRelaunchPermissionRidesTriggeredFrom(t *testing.T) {
 	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	createThread(t, eng, ctx, "t2")
 	createThread(t, eng, ctx, "t3")
 	settleTrigger(t, eng, ctx, "t2")
 
+	events, stop := eng.SubscribeAll()
+	defer stop()
 	if err := r.RelaunchThread(ctx, "t1", "agent-orchestrator", relaunchCall("t2", "first relaunch")); err != nil {
 		t.Fatalf("first relaunch: %v", err)
 	}
-	// A new cycle of the schedule: the trigger record now points at t3 only.
-	settleTrigger(t, eng, ctx, "t3")
+	waitRelaunchSettled(t, events, "t2", "t1")
 
+	// The first relaunch's turn ended and its control was released, but the
+	// trigger record still names t2, so the caller may relaunch it again on
+	// that permission alone.
 	if err := r.RelaunchThread(ctx, "t1", "agent-orchestrator", relaunchCall("t2", "second relaunch")); err != nil {
-		t.Fatalf("relaunch of a controlled thread: %v", err)
+		t.Fatalf("relaunch of a released dependency: %v", err)
+	}
+	waitRelaunchSettled(t, events, "t2", "t1")
+
+	// A new cycle of the schedule: the trigger record now points at t3 only,
+	// so the permission to drive t2 moves with it.
+	settleTrigger(t, eng, ctx, "t3")
+	if err := r.RelaunchThread(ctx, "t1", "agent-orchestrator", relaunchCall("t2", "third relaunch")); !errors.Is(err, ErrThreadNotYours) {
+		t.Fatalf("relaunch of a dropped dependency err = %v, want ErrThreadNotYours", err)
 	}
 	if err := r.RelaunchThread(ctx, "t1", "agent-orchestrator", relaunchCall("t3", "fresh dep")); err != nil {
 		t.Fatalf("relaunch of the latest dependency: %v", err)
 	}
-	// t2 was relaunched twice — once as the triggered dependency, once as a
-	// controlled thread — so it carries two turns; t3 once.
+	waitRelaunchSettled(t, events, "t3", "t1")
+
+	// t2 was relaunched twice and t3 once, each turn fully run.
 	st2, _ := eng.State(ctx, "t2")
-	if st2.Turn != 2 || len(st2.Messages) != 2 {
-		t.Fatalf("t2: turn %d with %d openers, want two relaunches", st2.Turn, len(st2.Messages))
+	if st2.Turn != 2 || len(st2.Messages) != 4 {
+		t.Fatalf("t2: turn %d with %d messages, want two relaunches", st2.Turn, len(st2.Messages))
 	}
 	st3, _ := eng.State(ctx, "t3")
-	if st3.Turn != 1 || len(st3.Messages) != 1 {
-		t.Fatalf("t3: turn %d with %d openers, want one relaunch", st3.Turn, len(st3.Messages))
+	if st3.Turn != 1 || len(st3.Messages) != 2 {
+		t.Fatalf("t3: turn %d with %d messages, want one relaunch", st3.Turn, len(st3.Messages))
 	}
 }
 
@@ -201,15 +274,36 @@ func TestDrainedRelaunchesAreKeyedByTargetThread(t *testing.T) {
 	createThread(t, eng, ctx, "t3")
 	settleTrigger(t, eng, ctx, "t2", "t3")
 
+	events, stop := eng.SubscribeAll()
+	defer stop()
 	r.tools.Post("t1", relaunchCall("t2", "go again"))
 	r.tools.Post("t1", relaunchCall("t2", "go again")) // the printed echo
 	r.tools.Post("t1", relaunchCall("t3", "go again"))
 	New(r).toolTasks(ctx, "t1", "agent-orchestrator", nil, nil)
 
+	// Both targets' turns run concurrently; one loop watches both to the
+	// control release. Each lands exactly one opener (the echo was
+	// deduplicated), so each transcript holds the opener and the turn's own
+	// summary.
+	released := map[contracts.ThreadID]bool{}
+	deadline := time.After(20 * time.Second)
+	for !released["t2"] || !released["t3"] {
+		select {
+		case <-deadline:
+			t.Fatalf("relaunch turns never settled: %v", released)
+		case ev := <-events:
+			if ev.ThreadID != "t2" && ev.ThreadID != "t3" {
+				continue
+			}
+			if c, ok := ev.Payload.(contracts.ThreadControlled); ok && c.Controller == "" {
+				released[ev.ThreadID] = true
+			}
+		}
+	}
 	for _, id := range []contracts.ThreadID{"t2", "t3"} {
 		st, _ := eng.State(ctx, id)
-		if st.Turn != 1 || len(st.Messages) != 1 {
-			t.Fatalf("%s: turn %d with %d openers, want exactly one relaunch", id, st.Turn, len(st.Messages))
+		if st.Turn != 1 || len(st.Messages) != 2 {
+			t.Fatalf("%s: turn %d with %d messages, want exactly one relaunch turn", id, st.Turn, len(st.Messages))
 		}
 	}
 }
@@ -277,20 +371,40 @@ func TestThreadResultsRefusesNonDepIds(t *testing.T) {
 	}
 }
 
-// A thread the caller already controls stays readable across triggers, like it
-// stays relaunchable.
-func TestThreadResultsAcceptsControlledThread(t *testing.T) {
+// A dependency stays readable across its own relaunch — the read rides the
+// same TriggeredFrom permission the relaunch does, not the transient control
+// claim — and the permission moves when a later trigger overwrites the
+// record.
+func TestThreadResultsRideTriggeredFrom(t *testing.T) {
 	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	createThread(t, eng, ctx, "t2")
 	createThread(t, eng, ctx, "t3")
 	settleTrigger(t, eng, ctx, "t2")
+
+	events, stop := eng.SubscribeAll()
+	defer stop()
 	if err := r.RelaunchThread(ctx, "t1", "agent-orchestrator", relaunchCall("t2", "go again")); err != nil {
 		t.Fatalf("relaunch: %v", err)
 	}
-	settleTrigger(t, eng, ctx, "t3")
-
+	// While the relaunch turn runs — control held — the target stays
+	// readable; after it settles — control released — it stays readable
+	// through the trigger record.
 	if _, err := r.ThreadResults(ctx, "t1", "agent-orchestrator", toolbox.Call{Kind: KindThreadResults, Thread: "t2"}); err != nil {
-		t.Fatalf("reading a controlled thread: %v", err)
+		t.Fatalf("reading a relaunched dependency mid-turn: %v", err)
+	}
+	waitRelaunchSettled(t, events, "t2", "t1")
+	if _, err := r.ThreadResults(ctx, "t1", "agent-orchestrator", toolbox.Call{Kind: KindThreadResults, Thread: "t2"}); err != nil {
+		t.Fatalf("reading a relaunched dependency after its turn: %v", err)
+	}
+
+	// A new trigger moves the permission: t2 is no longer one of this
+	// thread's dependencies, t3 is.
+	settleTrigger(t, eng, ctx, "t3")
+	if _, err := r.ThreadResults(ctx, "t1", "agent-orchestrator", toolbox.Call{Kind: KindThreadResults, Thread: "t3"}); err != nil {
+		t.Fatalf("reading the latest dependency: %v", err)
+	}
+	if _, err := r.ThreadResults(ctx, "t1", "agent-orchestrator", toolbox.Call{Kind: KindThreadResults, Thread: "t2"}); !errors.Is(err, ErrThreadNotYours) {
+		t.Fatalf("reading a dropped dependency err = %v, want ErrThreadNotYours", err)
 	}
 }
 
@@ -349,30 +463,17 @@ func TestRelaunchFlowsThroughALeadPass(t *testing.T) {
 		t.Fatalf("turn: %v", err)
 	}
 
-	var controlled, relaunched bool
-	for {
-		select {
-		case ev := <-events:
-			if ev.ThreadID != "t2" {
-				continue
-			}
-			if c, ok := ev.Payload.(contracts.ThreadControlled); ok && c.Controller == "t1" {
-				controlled = true
-			}
-			if m, ok := ev.Payload.(contracts.MessageSent); ok && m.Author == "t1" {
-				relaunched = true
-			}
-		default:
-			goto drained
-		}
-	}
-drained:
-	if !controlled || !relaunched {
-		t.Fatalf("controlled=%v relaunched=%v, want the relaunch to have landed during the turn", controlled, relaunched)
+	// The relaunch's turn runs after the caller's turn returns; watched to
+	// the control release, the marks it must leave are the claim, the
+	// controller-authored opener, and its own summary.
+	m := waitRelaunchSettled(t, events, "t2", "t1")
+	if !m.claimed || m.opener == "" || !m.summary {
+		t.Fatalf("claimed=%v opener=%q summary=%v, want the relaunch to have landed during the turn", m.claimed, m.opener, m.summary)
 	}
 	st, _ := eng.State(ctx, "t2")
-	if st.ControlledBy != "t1" || st.Turn != 1 {
-		t.Fatalf("target after the turn: controlledBy=%q turn=%d", st.ControlledBy, st.Turn)
+	// The turn ended, so its control was released with it.
+	if st.ControlledBy != "" || st.Turn != 1 {
+		t.Fatalf("target after the turn: controlledBy=%q turn=%d, want one completed relaunch turn with control released", st.ControlledBy, st.Turn)
 	}
 }
 

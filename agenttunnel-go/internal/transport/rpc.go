@@ -2434,9 +2434,17 @@ func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, re
 			return err
 		}
 	}
-	return d.engine.Dispatch(ctx, contracts.Command{
+	if err := d.engine.Dispatch(ctx, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
-	})
+	}); err != nil {
+		return err
+	}
+	// The tombstone landed, so its claim on the threads it controlled cannot
+	// be honest anymore: release them. The scan is engine-wide, like the
+	// scheduler's index maintenance — the decider, which sees one thread at
+	// a time, has no way to notice the controller is gone.
+	d.releaseControlledThreads(ctx, id)
+	return nil
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {

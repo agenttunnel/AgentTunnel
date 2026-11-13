@@ -85,9 +85,16 @@ func (r *Runner) canDrive(ctx context.Context, caller, target contracts.ThreadID
 
 // RelaunchThread starts a new turn on the target with the caller's prompt. It
 // first claims control — the turn is then authored by the controller in the
-// transcript, never "user", so the read model records who relaunched the thread
-// and per-turn spend stays honest. Refusals name the reason and are shown to
-// the agent that asked.
+// transcript, never "user", so the read model records who relaunched the
+// thread and per-turn spend stays honest — and runs the target's turn
+// through the runtime's turn machinery, so the relaunched thread actually
+// executes the prompt rather than hanging in an open, agentless turn.
+// Control is scoped to the relaunched turn: it is released when the turn
+// ends, whatever the outcome, because a claim that outlived its turn would
+// misattribute every later user- or scheduler-started turn to the
+// controller. Nothing is lost by the release — the durable permission to
+// relaunch again rides on the caller's TriggeredFrom record, which is never
+// cleared. Refusals name the reason and are shown to the agent that asked.
 func (r *Runner) RelaunchThread(ctx context.Context, caller contracts.ThreadID, agent contracts.AgentID, call toolbox.Call) error {
 	prompt := strings.TrimSpace(call.Text)
 	if prompt == "" {
@@ -99,29 +106,48 @@ func (r *Runner) RelaunchThread(ctx context.Context, caller contracts.ThreadID, 
 	}
 	// A busy target would fold two runs into one transcript; the caller waits
 	// for its current turn to finish instead. The check is the read model's
-	// agent statuses — the runtime that executes the turn re-claims the
-	// thread's turn slot, which is the authority while a turn is in flight.
+	// agent statuses — the launch path below re-claims the thread's turn slot
+	// before anything is recorded, which is the authority while a turn is in
+	// flight.
 	for id, a := range targetState.Agents {
 		if !a.Status.Terminal() {
 			return fmt.Errorf("%w: agent %q is still %s", ErrThreadBusy, id, a.Status)
 		}
 	}
 	target := targetState.ID
-	if err := r.engine.Dispatch(ctx, contracts.Command{
-		ID:         r.nextID(),
-		Type:       contracts.CmdThreadControl,
-		ThreadID:   target,
-		Controller: caller,
-	}); err != nil {
-		return err
+	turnText := relaunchPrompt(caller, prompt)
+	// One text serves both the recorded opener and the turn the target runs,
+	// so priorMessages finds the turn boundary and the lead is not handed
+	// its own opener a second time as history.
+	record := func() error {
+		if err := r.engine.Dispatch(ctx, contracts.Command{
+			ID:         r.nextID(),
+			Type:       contracts.CmdThreadControl,
+			ThreadID:   target,
+			Controller: caller,
+		}); err != nil {
+			return err
+		}
+		return r.engine.Dispatch(ctx, contracts.Command{
+			ID:       r.nextID(),
+			Type:     contracts.CmdTurnStart,
+			ThreadID: target,
+			Text:     turnText,
+		})
 	}
-	if err := r.engine.Dispatch(ctx, contracts.Command{
-		ID:       r.nextID(),
-		Type:     contracts.CmdTurnStart,
-		ThreadID: target,
-		Text:     relaunchPrompt(caller, prompt),
-	}); err != nil {
-		return err
+	if r.launchTurn != nil {
+		finish := func(turnCtx context.Context) { r.releaseThreadControl(turnCtx, target) }
+		if err := r.launchTurn(ctx, target, turnText, record, finish); err != nil {
+			return err
+		}
+	} else {
+		// No transport launcher: record now and run the turn on this Runner's
+		// own orchestrator, detached from the caller's turn context so the
+		// relaunch outlives the turn that asked for it.
+		if err := record(); err != nil {
+			return err
+		}
+		go r.runBackgroundTurn(context.WithoutCancel(ctx), caller, target, turnText)
 	}
 	r.auditLog("thread.relaunch", map[string]any{
 		"threadId": string(caller), "agentId": string(agent), "target": string(target),
@@ -130,6 +156,31 @@ func (r *Runner) RelaunchThread(ctx context.Context, caller contracts.ThreadID, 
 	_ = r.logs.Append(caller, contracts.LogEntry{AgentID: agent, Kind: contracts.LogTool, Text: line, At: r.clock()})
 	r.publishOutput(caller, agent, contracts.LogTool, line)
 	return nil
+}
+
+// runBackgroundTurn runs one relaunched thread's turn on the Runner's own
+// orchestrator — the fallback for a Runner with no transport launcher
+// installed — and closes the relaunch out: errors are audited, and control is
+// released once the turn has ended.
+func (r *Runner) runBackgroundTurn(turnCtx context.Context, caller, target contracts.ThreadID, turnText string) {
+	if err := r.background.RunTurn(turnCtx, target, turnText); err != nil && turnCtx.Err() == nil {
+		r.auditLog("thread.relaunch.turn.failed", map[string]any{
+			"threadId": string(target), "controller": string(caller), "error": err.Error(),
+		})
+	}
+	r.releaseThreadControl(turnCtx, target)
+}
+
+// releaseThreadControl gives up the controller's claim on a thread once the
+// turn it governed has ended, whatever the outcome. The dispatch is detached
+// from the turn context so a stopped turn is still released.
+func (r *Runner) releaseThreadControl(turnCtx context.Context, target contracts.ThreadID) {
+	_ = r.engine.Dispatch(context.WithoutCancel(turnCtx), contracts.Command{
+		ID:         r.nextID(),
+		Type:       contracts.CmdThreadControl,
+		ThreadID:   target,
+		Controller: "",
+	})
 }
 
 // relaunchPrompt carries the report-back instruction inside the turn the

@@ -369,6 +369,16 @@ func (f *scheduleTurnFixture) promptFor(t *testing.T, id contracts.ThreadID) str
 	return f.prompts[id][0]
 }
 
+// leadSettled matches the thread's lead reaching a terminal status — the
+// durable marker that a turn finished. The turn's summary is recorded before
+// its lead settles, so this implies the transcript is complete too.
+func leadSettled(id contracts.ThreadID) func(contracts.Event) bool {
+	return func(ev contracts.Event) bool {
+		p, ok := ev.Payload.(contracts.AgentStatusChanged)
+		return ok && ev.ThreadID == id && p.AgentID == "agent-orchestrator" && p.Status.Terminal()
+	}
+}
+
 // eventRecorder turns an engine-wide subscription into a waitable, ordered
 // log. Subscribe before the actions under test so nothing can slip past.
 type eventRecorder struct {
@@ -451,17 +461,19 @@ func TestScheduleFiresImmediatelyWhenDependenciesAlreadyFinished(t *testing.T) {
 		_, ok := ev.Payload.(contracts.ThreadTriggered)
 		return ok && ev.ThreadID == "t-a"
 	})
-	watch.wait(t, "t-a turn end", func(ev contracts.Event) bool {
-		p, ok := ev.Payload.(contracts.MessageSent)
-		return ok && ev.ThreadID == "t-a" && p.Author == "orchestrator"
-	})
+	watch.wait(t, "t-a turn end", leadSettled("t-a"))
 
 	st, _ := f.eng.State(context.Background(), "t-a")
 	if len(st.Messages) != 3 {
 		t.Fatalf("messages = %+v, want user prompt, scheduler results, orchestrator summary", st.Messages)
 	}
-	if st.Messages[0].Author != "user" || st.Messages[0].Text != "integrate b" {
-		t.Fatalf("first message = %+v, want the user's scheduled prompt", st.Messages[0])
+	// The recorded opener is the whole turn the trigger runs — the scheduled
+	// prompt followed by the compiled results — so priorMessages finds the
+	// turn boundary and the lead is never handed its own opener (and the
+	// results) a second time as history.
+	if st.Messages[0].Author != "user" || !strings.HasPrefix(st.Messages[0].Text, "integrate b") ||
+		!strings.Contains(st.Messages[0].Text, "RESULTS") || !strings.Contains(st.Messages[0].Text, "b shipped the thing") {
+		t.Fatalf("first message = %+v, want the user's scheduled prompt carrying the compiled results", st.Messages[0])
 	}
 	if st.Messages[1].Author != AuthorScheduler {
 		t.Fatalf("results message author = %q, want %q", st.Messages[1].Author, AuthorScheduler)
@@ -478,11 +490,137 @@ func TestScheduleFiresImmediatelyWhenDependenciesAlreadyFinished(t *testing.T) {
 		t.Fatalf("turn = %d, turns = %+v, want one closed turn", st.Turn, st.Turns)
 	}
 
+	// The lead saw the scheduled prompt followed by the compiled results: the
+	// deps' ids, titles, worktree paths, and final messages — and only once:
+	// a duplicated history section would render the results a second time.
 	prompt := f.promptFor(t, "t-a")
 	for _, want := range []string{"integrate b", "RESULTS", "t-b", "Worktree:", "b shipped the thing"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("triggered prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Count(prompt, "RESULTS:") != 1 {
+		t.Fatalf("triggered prompt carries the results section %d times, want exactly once:\n%s", strings.Count(prompt, "RESULTS:"), prompt)
+	}
+}
+
+// TestSchedulerRefiresAnArmedThreadThatWasBusyAtTriggerTime pins the recovery
+// from a failed trigger attempt: the first fire found the armed thread's turn
+// slot taken (its own turn was just starting), audited the failure, and left
+// the schedule armed. The thread's own next terminal settle is a new chance:
+// the armed thread is re-evaluated on its own terminal events, so the busy
+// window does not wedge the schedule until a restart.
+func TestSchedulerRefiresAnArmedThreadThatWasBusyAtTriggerTime(t *testing.T) {
+	f := newScheduleTurnFixture(t)
+	stop := f.disp.StartScheduler(context.Background())
+	t.Cleanup(stop)
+	watch := f.watch()
+	t.Cleanup(watch.close)
+
+	finishThread(t, f.eng, "t-b", "b finished while a was busy")
+
+	// Hold t-a's turn slot the way a turn in flight does, so the armed
+	// schedule's first trigger attempt fails on the busy gate.
+	ctx := context.Background()
+	_, release, err := f.disp.beginTurn(ctx, "t-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduleRPC(t, f.disp, "t-a", []string{"t-b"}, "integrate b late"); err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	// The failed attempt releases its single-flight guard; wait for that, so
+	// the release below cannot race the busy refusal.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.disp.schedMu.Lock()
+		firing := f.disp.schedFiring[contracts.ThreadID("t-a")]
+		f.disp.schedMu.Unlock()
+		if !firing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the armed thread's first trigger attempt never finished")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+
+	// Nothing re-fires the wedged thread on its own: only its own agents
+	// settling again are a new chance. Drive one agent on the armed thread to a
+	// terminal status — its settle is the event that must re-evaluate it.
+	dispatch := func(cmd contracts.Command) {
+		t.Helper()
+		if err := f.eng.Dispatch(ctx, cmd); err != nil {
+			t.Fatalf("dispatch %s: %v", cmd.Type, err)
+		}
+	}
+	dispatch(contracts.Command{
+		ID: "d-a", Type: contracts.CmdTaskDispatch, ThreadID: "t-a",
+		Dispatch: &contracts.DispatchTask{AgentID: "agent-relief", Role: contracts.RoleExecutor, Task: "settle"},
+	})
+	dispatch(contracts.Command{
+		ID: "s-a", Type: contracts.CmdAgentStatusSet, ThreadID: "t-a",
+		Status: &contracts.AgentStatusChanged{AgentID: "agent-relief", Status: contracts.AgentSucceeded},
+	})
+
+	watch.wait(t, "t-a trigger", func(ev contracts.Event) bool {
+		_, ok := ev.Payload.(contracts.ThreadTriggered)
+		return ok && ev.ThreadID == "t-a"
+	})
+	watch.wait(t, "t-a turn end", leadSettled("t-a"))
+	prompt := f.promptFor(t, "t-a")
+	if !strings.Contains(prompt, "integrate b late") || !strings.Contains(prompt, "b finished while a was busy") {
+		t.Fatalf("refired prompt = %q, want the scheduled prompt with the dep's results", prompt)
+	}
+}
+
+// TestDeletingAControllerReleasesItsThreads pins the deletion cleanup: a
+// deleted thread cannot keep controlling the threads it relaunched, or every
+// later turn on them would be authored by a controller that no longer exists.
+func TestDeletingAControllerReleasesItsThreads(t *testing.T) {
+	eng, disp := newScheduleFixture(t)
+	ctx := context.Background()
+
+	// t-b was relaunched by t-a: the decider authored its turn opener with the
+	// controller, and the read model still records the claim.
+	dispatch := func(cmd contracts.Command) {
+		t.Helper()
+		if err := eng.Dispatch(ctx, cmd); err != nil {
+			t.Fatalf("dispatch %s: %v", cmd.Type, err)
+		}
+	}
+	dispatch(contracts.Command{ID: "c", Type: contracts.CmdTurnStart, ThreadID: "t-b", Text: "run b"})
+	dispatch(contracts.Command{
+		ID: "k", Type: contracts.CmdThreadControl, ThreadID: "t-b", Controller: "t-a",
+	})
+	dispatch(contracts.Command{
+		ID: "k2", Type: contracts.CmdThreadControl, ThreadID: "t-c", Controller: "t-a",
+	})
+	if st, _ := eng.State(ctx, "t-b"); st.ControlledBy != "t-a" {
+		t.Fatalf("controlledBy = %q, want t-a before the delete", st.ControlledBy)
+	}
+
+	if err := disp.deleteThread(ctx, "t-a", false); err != nil {
+		t.Fatalf("delete controller: %v", err)
+	}
+	for _, id := range []contracts.ThreadID{"t-b", "t-c"} {
+		st, err := eng.State(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !st.Exists {
+			t.Fatalf("%s vanished with its controller's delete", id)
+		}
+		if st.ControlledBy != "" {
+			t.Fatalf("%s controlledBy = %q after its controller was deleted, want released", id, st.ControlledBy)
+		}
+	}
+	// A thread that was never controlled keeps its own authorship rule.
+	dispatch(contracts.Command{ID: "u1", Type: contracts.CmdTurnStart, ThreadID: "t-b", Text: "run b again"})
+	st, _ := eng.State(ctx, "t-b")
+	if len(st.Messages) < 2 || st.Messages[len(st.Messages)-1].Author != "user" {
+		t.Fatalf("post-release turn author = %+v, want the user", st.Messages)
 	}
 }
 
@@ -512,10 +650,7 @@ func TestSchedulerTriggersWhenEveryDependencyTurnEnds(t *testing.T) {
 	if p, ok := trig.Payload.(contracts.ThreadTriggered); !ok || len(p.DependsOn) != 2 {
 		t.Fatalf("trigger = %#v, want both dependencies recorded", trig.Payload)
 	}
-	watch.wait(t, "t-a turn end", func(ev contracts.Event) bool {
-		p, ok := ev.Payload.(contracts.MessageSent)
-		return ok && ev.ThreadID == "t-a" && p.Author == "orchestrator"
-	})
+	watch.wait(t, "t-a turn end", leadSettled("t-a"))
 
 	// The trigger strictly follows the last dependency's lead going terminal:
 	// it fired because c ended, never because b alone had.
@@ -573,10 +708,7 @@ func TestSchedulerRecoversArmedSchedulesAtStart(t *testing.T) {
 		_, ok := ev.Payload.(contracts.ThreadTriggered)
 		return ok && ev.ThreadID == "t-a"
 	})
-	watch.wait(t, "t-a turn end", func(ev contracts.Event) bool {
-		p, ok := ev.Payload.(contracts.MessageSent)
-		return ok && ev.ThreadID == "t-a" && p.Author == "orchestrator"
-	})
+	watch.wait(t, "t-a turn end", leadSettled("t-a"))
 	prompt := f.promptFor(t, "t-a")
 	if !strings.Contains(prompt, "b finished before the crash") {
 		t.Fatalf("recovered prompt missing the dep's results:\n%s", prompt)

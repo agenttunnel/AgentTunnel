@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -91,9 +92,19 @@ func (d *Dispatcher) onScheduleEvent(ctx context.Context, ev contracts.Event) {
 		// A deleted thread is neither a waiter nor an unfinished dependency.
 		d.scheduleForget(ev.ThreadID)
 		d.scheduleDepAdvanced(ctx, ev.ThreadID)
+		// Nor can it keep controlling the threads it relaunched: its claim
+		// would misattribute every later user- or scheduler-started turn on
+		// them to a controller that no longer exists.
+		d.releaseControlledThreads(ctx, ev.ThreadID)
 	case contracts.AgentStatusChanged:
 		if p.Status.Terminal() {
 			d.scheduleDepAdvanced(ctx, ev.ThreadID)
+			// A thread whose own trigger attempt failed — its turn slot was
+			// taken when the fire arrived, or its worktree could not be
+			// restored — stays armed. Its own agents settling is a new
+			// chance to fire; the state re-read inside drops threads that
+			// are not waiting, so the extra lookup is all this costs.
+			d.scheduleEvaluate(ctx, ev.ThreadID)
 		}
 	}
 }
@@ -168,6 +179,43 @@ func (d *Dispatcher) checkScheduleAcyclic(ctx context.Context, threadID contract
 		}
 	}
 	return nil
+}
+
+// releaseControlledThreads clears the given thread's claim on every thread it
+// controls — the engine-wide cleanup that must follow a controller's
+// deletion, like the armed index maintenance above. Relaunch permission is
+// not lost by the threads that were controlled: the controller drove them
+// because they fired one of its schedules, and that TriggeredFrom record is
+// never cleared.
+func (d *Dispatcher) releaseControlledThreads(ctx context.Context, controller contracts.ThreadID) {
+	ids, err := d.engine.Threads(ctx)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		if id == controller {
+			continue
+		}
+		st, err := d.engine.State(ctx, id)
+		if err != nil || st.ControlledBy != controller {
+			continue
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID:         d.nextID(),
+			Type:       contracts.CmdThreadControl,
+			ThreadID:   id,
+			Controller: "",
+		}); err != nil {
+			// A refusal here is a benign race: the release was already run by
+			// the thread.delete path or the delete event, which both own this
+			// cleanup.
+			if !errors.Is(err, domain.ErrInvalidCommand) {
+				d.auditLog("thread.control.release.failed", map[string]any{
+					"threadId": string(id), "controller": string(controller), "error": err.Error(),
+				})
+			}
+		}
+	}
 }
 
 // scheduleArm re-reads a thread's waiting spec and evaluates it. Called when a
@@ -276,9 +324,11 @@ func (d *Dispatcher) scheduleFireDone(id contracts.ThreadID) {
 // transcript is written by two authors: the user's own scheduled prompt opens
 // the turn (which keeps per-turn spend accounting on the turn the trigger
 // actually runs), and the compiled RESULTS section is appended as a scheduler
-// note that joins that turn without opening another. The harness prompt is
-// the scheduled prompt followed by the results, so the lead sees everything
-// its dependencies produced.
+// note that joins that turn without opening another. The turn text is built
+// once and carries both; it is the opener AND the harness prompt, so
+// priorMessages — which finds the turn boundary by matching the current
+// message — cannot mistake the opener for earlier conversation and hand the
+// lead its own prompt and the results twice.
 func (d *Dispatcher) fireSchedule(id contracts.ThreadID) {
 	base := d.baseCtx
 	if base == nil {
@@ -303,11 +353,13 @@ func (d *Dispatcher) fireSchedule(id contracts.ThreadID) {
 		d.scheduleFireDone(id)
 		return
 	}
+	results := d.scheduleResults(base, st.Waiting.DependsOn)
+	prompt := st.Waiting.Prompt + "\n\n" + results
 	if err := d.engine.Dispatch(base, contracts.Command{
 		ID:       d.nextID(),
 		Type:     contracts.CmdTurnStart,
 		ThreadID: id,
-		Text:     st.Waiting.Prompt,
+		Text:     prompt,
 	}); err != nil {
 		d.scheduleFireDone(id)
 		d.auditLog("schedule.trigger.failed", map[string]any{"threadId": string(id), "error": err.Error()})
@@ -318,7 +370,6 @@ func (d *Dispatcher) fireSchedule(id contracts.ThreadID) {
 		"threadId": string(id), "deps": st.Waiting.DependsOn,
 	})
 
-	results := d.scheduleResults(base, st.Waiting.DependsOn)
 	// The results note joins the turn the trigger opened; a failure to record
 	// it must not cancel work that was already promised.
 	if err := d.engine.Dispatch(base, contracts.Command{
@@ -336,7 +387,6 @@ func (d *Dispatcher) fireSchedule(id contracts.ThreadID) {
 	}
 	stopReports := d.startStatusReports(turnCtx, id)
 	defer stopReports()
-	prompt := st.Waiting.Prompt + "\n\n" + results
 	if err := d.orch.RunTurn(turnCtx, id, prompt); err != nil {
 		if turnCtx.Err() == nil {
 			d.auditLog("schedule.turn.failed", map[string]any{"threadId": string(id), "error": err.Error()})
