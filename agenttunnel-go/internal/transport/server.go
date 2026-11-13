@@ -23,6 +23,12 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
+// readLimit caps one inbound client frame on the daemon side. A
+// thread.turn.start with a long prompt or attachments can exceed websocket's
+// 32768-byte default, which closed the connection before the RPC ran. It
+// mirrors the relay's MaxFrameBytes convention (pkg/relay/protocol.go).
+const readLimit = 4 << 20
+
 // Server exposes the daemon over HTTP: a health probe, an authenticated
 // JSON-RPC WebSocket, the tool endpoint agents call from their shell, and the
 // attachment upload/download surface image data rides instead of the socket.
@@ -575,6 +581,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ws.SetReadLimit(readLimit)
 	defer ws.CloseNow()
 
 	c := &conn{ws: ws, engine: s.engine, disp: s.disp, srv: s}
