@@ -101,3 +101,18 @@ func TestSubagentPromptCarriesSteering(t *testing.T) {
 		t.Fatalf("no steers should render no section:\n%s", plain)
 	}
 }
+
+// The wildcard offer is documented to the lead only while experimental roles
+// are on, so a lead never sees a role it may not use.
+func TestOrchestratorPromptWildcardOffer(t *testing.T) {
+	const line = `--role wildcard --name <short-name> --brief "<agent definition>"`
+	role := contracts.Role{SystemPrompt: "lead"}
+	on := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go", Wildcard: true})
+	if !strings.Contains(on, line) {
+		t.Fatalf("lead with experimental roles lacks the wildcard offer:\n%s", on)
+	}
+	off := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go"})
+	if strings.Contains(off, "wildcard") {
+		t.Fatalf("lead without experimental roles should not see wildcard:\n%s", off)
+	}
+}

@@ -126,9 +126,13 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 					role = contracts.RoleExecutor
 				}
 				if !o.runner.roleUsable(role) {
-					line := fmt.Sprintf("dispatch refused: role %q is disabled or unknown", role)
-					_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: call.AgentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
-					o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
+					o.refuseDispatch(threadID, call.AgentID, fmt.Sprintf("dispatch refused: role %q is disabled or unknown", role))
+					continue
+				}
+				// A wildcard agent is defined by its brief alone; without one
+				// there is nothing to run.
+				if role == contracts.RoleWildcard && strings.TrimSpace(call.Brief) == "" {
+					o.refuseDispatch(threadID, call.AgentID, "dispatch refused: role \"wildcard\" needs --brief")
 					continue
 				}
 				if task, ok := o.dispatchTask(orchID, call, taken); ok {
@@ -150,6 +154,13 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 		}
 	}
 	return tasks
+}
+
+// refuseDispatch tells the lead, in its own log, why a dispatch did not run, so
+// it does not assume the work started.
+func (o *Orchestrator) refuseDispatch(threadID contracts.ThreadID, agentID contracts.AgentID, line string) {
+	_ = o.runner.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: contracts.LogError, Text: line, At: o.runner.clock()})
+	o.runner.publishOutput(threadID, agentID, contracts.LogError, line)
 }
 
 // dispatchTask converts one lead dispatch or spawn call into a task, skipping
@@ -179,6 +190,7 @@ func (o *Orchestrator) dispatchTask(parentID contracts.AgentID, call toolbox.Cal
 		Name:          name,
 		Role:          role,
 		Task:          call.Task,
+		Brief:         call.Brief,
 		Harness:       contracts.Harness(call.Harness),
 		Model:         call.Model,
 		Pipeline:      contracts.PipelineID(call.Lane),
@@ -213,6 +225,9 @@ func (o *Orchestrator) recordSpawnRequest(threadID contracts.ThreadID, call tool
 		return
 	case role == contracts.RoleOrchestrator:
 		refuse("only the team lead may orchestrate")
+		return
+	case role == contracts.RoleWildcard:
+		refuse("only the team lead may define wildcard agents")
 		return
 	}
 	if _, known := o.runner.roles.Get(role); !known {
@@ -305,7 +320,7 @@ func (o *Orchestrator) decideSpawnRequest(threadID contracts.ThreadID, call tool
 // attribution but represent the same work.
 func toolCallKey(call toolbox.Call) string {
 	return strings.Join([]string{
-		string(call.Kind), call.Name, call.Task, call.Text, call.Harness,
+		string(call.Kind), call.Name, call.Task, call.Brief, call.Text, call.Harness,
 		call.Model, call.Lane, call.To, strings.Join(call.DependsOn, ","),
 	}, "\x00")
 }
@@ -631,6 +646,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
 		RoleChoices:    roleChoices,
 		DisabledRoles:  disabledRoles,
+		Wildcard:       o.runner.experimentalRoles(),
 		Role:           t.role,
 		UserMessage:    t.message,
 		History:        renderHistory(priorMessages(state, t.message)),

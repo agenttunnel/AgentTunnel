@@ -131,6 +131,9 @@ type OrchestratorPrompt struct {
 	// DisabledRoles lists the non-required roles that are off for this thread,
 	// joined with ", ". Empty renders no line.
 	DisabledRoles string
+	// Wildcard offers the experimental wildcard role: the lead defines the
+	// agent in a brief. Set only when experimental roles are on.
+	Wildcard bool
 }
 
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including
@@ -201,6 +204,10 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString(" Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+	if in.Wildcard {
+		b.WriteString("\n\nYou can also define a custom agent when no builtin role fits. Pass --role wildcard with --brief; the brief becomes that agent's instructions:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool dispatch --role wildcard --name <short-name> --brief \"<agent definition>\" --task \"<what to do>\"")
+	}
 	if peerMailbox {
 		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
