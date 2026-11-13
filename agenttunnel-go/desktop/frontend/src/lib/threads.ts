@@ -1,7 +1,7 @@
 // Thread-list layout: pure ordering, no React. A subthread sits directly under
 // the thread that started it, one level deeper. The daemon already sorts the
-// list by recency; this keeps that order among siblings and only moves the
-// subthreads.
+// list by submission time, newest first; this keeps that order among siblings
+// and only moves the subthreads.
 
 /** A thread row with its depth in the subthread tree (0 at the top level) and
  * how many subthreads it started directly. */

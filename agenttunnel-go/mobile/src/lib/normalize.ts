@@ -99,7 +99,7 @@ export function arrangeThreads<T extends { id: string; parentThreadId?: string }
 }
 
 /**
- * Groups the daemon's recency-sorted thread list by project, in project order.
+ * Groups the daemon's submission-sorted thread list (newest first) by project, in project order.
  * Threads whose project is unknown land in a trailing "Other" section.
  */
 export function groupThreads(threads: ThreadSummary[], projects: ProjectView[]): ThreadSection[] {

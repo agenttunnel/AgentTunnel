@@ -88,12 +88,15 @@ type ThreadState struct {
 	ProjectID string `json:"projectId,omitempty"`
 	// Draft is a thread that has not run yet: it has a title and description,
 	// no worktree, and no turns. Its first turn clears the flag.
-	Draft       bool                     `json:"draft,omitempty"`
-	Description string                   `json:"description,omitempty"`
-	Issue       *contracts.IssueRef      `json:"issue,omitempty"`
-	UpdatedAt   time.Time                `json:"updatedAt"`
-	Model       contracts.ModelSelection `json:"model"`
-	AutoMode    bool                     `json:"autoMode"`
+	Draft       bool                `json:"draft,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Issue       *contracts.IssueRef `json:"issue,omitempty"`
+	// CreatedAt is when the thread was created: the ThreadCreated event's
+	// envelope time. It never moves; UpdatedAt advances with every event.
+	CreatedAt time.Time                `json:"createdAt"`
+	UpdatedAt time.Time                `json:"updatedAt"`
+	Model     contracts.ModelSelection `json:"model"`
+	AutoMode  bool                     `json:"autoMode"`
 	// StatusPeriodSeconds is how often a running turn posts a workflow status
 	// report into the thread. Zero means off.
 	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`
