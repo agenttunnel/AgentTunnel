@@ -104,3 +104,23 @@ func TestCouncilRefusesDisabledMemberRole(t *testing.T) {
 		t.Fatalf("err = %v, want a disabled-role refusal", err)
 	}
 }
+
+// The lead is told which roles it may dispatch and which non-required roles are
+// off. Its own role and the council-internal facilitator are never listed, and
+// experimental roles follow the experimental setting.
+func TestRoleChoicesFollowSettings(t *testing.T) {
+	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+
+	usable, disabled := r.roleChoices()
+	if usable != "planner|executor|tester|reviewer" || disabled != "context-manager" {
+		t.Fatalf("defaults: usable %q, disabled %q", usable, disabled)
+	}
+
+	r.settings.SetRoleEnabled(contracts.RolePlanner, false)
+	r.settings.SetRoleEnabled(contracts.RoleTester, false)
+	r.settings.SetExperimentalRoles(true)
+	usable, disabled = r.roleChoices()
+	if usable != "executor|reviewer|context-manager" || disabled != "planner, tester" {
+		t.Fatalf("after disabling planner/tester and enabling experimental: usable %q, disabled %q", usable, disabled)
+	}
+}

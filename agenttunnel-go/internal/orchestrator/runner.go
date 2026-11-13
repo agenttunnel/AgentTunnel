@@ -782,6 +782,25 @@ func (r *Runner) roleUsable(id contracts.RoleID) bool {
 	return r.settings.RoleEnabled(id) && (!role.Experimental || r.settings.ExperimentalRoles())
 }
 
+// roleChoices splits the registry into the roles the lead may dispatch and the
+// non-required roles that are off, rendered for the lead's prompt. The lead's
+// own role and the facilitator are left out: the facilitator is dispatched only
+// by the council machinery, never by the lead.
+func (r *Runner) roleChoices() (usable, disabled string) {
+	var on, off []string
+	for _, role := range r.roles.List() {
+		if role.ID == contracts.RoleOrchestrator || role.ID == contracts.RoleFacilitator {
+			continue
+		}
+		if r.roleUsable(role.ID) {
+			on = append(on, string(role.ID))
+		} else {
+			off = append(off, string(role.ID))
+		}
+	}
+	return strings.Join(on, "|"), strings.Join(off, ", ")
+}
+
 // runtimeChoices renders the harness/model options the orchestrator may pick
 // from in auto mode: enabled harnesses with every model each reports, so any
 // listed model can be requested.

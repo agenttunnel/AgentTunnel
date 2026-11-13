@@ -627,7 +627,10 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		runtimeChoices = o.runner.runtimeChoices()
 	}
 	peerMailbox := o.runner.peerMailboxFor(ctx, t.threadID)
+	roleChoices, disabledRoles := o.runner.roleChoices()
 	prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+		RoleChoices:    roleChoices,
+		DisabledRoles:  disabledRoles,
 		Role:           t.role,
 		UserMessage:    t.message,
 		History:        renderHistory(priorMessages(state, t.message)),

@@ -37,6 +37,58 @@ func TestOrchestratorPromptDocumentsSteerWithSubagents(t *testing.T) {
 	}
 }
 
+// The lead's --role choices and disabled-role line come from the thread's
+// usable roles, not a hardcoded list.
+func TestOrchestratorPromptRoleChoices(t *testing.T) {
+	tests := []struct {
+		name          string
+		roleChoices   string
+		disabledRoles string
+		wantFlag      string
+		wantDisabled  string
+	}{
+		{
+			name:        "only usable roles are offered",
+			roleChoices: "planner|tester|reviewer",
+			wantFlag:    "--role planner|tester|reviewer to pick the role",
+		},
+		{
+			name:          "disabled roles get one warning line",
+			roleChoices:   "planner|reviewer",
+			disabledRoles: "tester, context-manager",
+			wantFlag:      "--role planner|reviewer to pick the role",
+			wantDisabled:  "Disabled roles (do not dispatch): tester, context-manager.",
+		},
+		{
+			name:     "empty choices fall back to executor",
+			wantFlag: "--role executor to pick the role",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt := BuildOrchestratorPrompt(OrchestratorPrompt{
+				Role: contracts.Role{SystemPrompt: "lead"}, UserMessage: "go",
+				RoleChoices: tt.roleChoices, DisabledRoles: tt.disabledRoles,
+			})
+			if !strings.Contains(prompt, tt.wantFlag) {
+				t.Fatalf("prompt lacks %q:\n%s", tt.wantFlag, prompt)
+			}
+			if strings.Contains(prompt, "planner|executor|tester|reviewer") {
+				t.Fatalf("prompt kept the hardcoded role list:\n%s", prompt)
+			}
+			if tt.wantDisabled == "" {
+				if strings.Contains(prompt, "Disabled roles") {
+					t.Fatalf("no disabled roles should render no line:\n%s", prompt)
+				}
+				return
+			}
+			if n := strings.Count(prompt, tt.wantDisabled); n != 1 {
+				t.Fatalf("disabled line appears %d times, want 1:\n%s", n, prompt)
+			}
+		})
+	}
+}
+
 // Steers queued for a subagent render in their own labelled block, and only
 // when there are some.
 func TestSubagentPromptCarriesSteering(t *testing.T) {
