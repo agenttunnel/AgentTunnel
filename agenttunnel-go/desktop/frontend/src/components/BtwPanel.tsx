@@ -10,14 +10,15 @@ export type BtwEntry = {
 };
 
 /**
- * BtwPanel shows a /btw side answer above the composer. It is ephemeral: it is
- * not a thread message and does not touch the running turn. Dismiss with × or Esc.
+ * BtwPanel shows a /btw side conversation above the composer: one exchange per
+ * ask, follow-ups keep appending. It is ephemeral: it is not a thread message
+ * and does not touch the running turn. Dismiss the whole panel with × or Esc.
  */
 export const BtwPanel = memo(function BtwPanel({
-  entry,
+  entries,
   onClose,
 }: {
-  entry: BtwEntry;
+  entries: BtwEntry[];
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -29,24 +30,33 @@ export const BtwPanel = memo(function BtwPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const last = entries.length - 1;
+  const latest = entries[last];
+
   return (
     <section className="btw" aria-label="Side question">
       <header className="btw-head">
         <span className="btw-tag">/btw</span>
-        <span className="btw-question">{entry.question}</span>
+        <span className="btw-question">{latest.question}</span>
         <button type="button" className="btw-close" onClick={onClose} title="Dismiss (Esc)" aria-label="Dismiss side answer">
           ×
         </button>
       </header>
       <div className="btw-body">
-        {entry.error !== null ? (
-          <p className="btw-error">{entry.error}</p>
-        ) : entry.answer === null ? (
-          <p className="btw-wait">Thinking. The running turn keeps going.</p>
-        ) : (
-          <Markdown text={entry.answer} />
-        )}
+        {entries.map((e, i) => (
+          <div className="btw-msg" key={e.id}>
+            <p className="btw-msg-q">{e.question}</p>
+            {e.error !== null ? (
+              <p className="btw-error">{e.error}</p>
+            ) : e.answer === null ? (
+              i === last ? <p className="btw-wait">Thinking. The running turn keeps going.</p> : null
+            ) : (
+              <Markdown text={e.answer} />
+            )}
+          </div>
+        ))}
       </div>
+      <p className="btw-hint">Follow up with /btw &lt;question&gt;</p>
     </section>
   );
 });

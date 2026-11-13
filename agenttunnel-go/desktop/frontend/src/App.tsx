@@ -2769,8 +2769,9 @@ export default function App() {
     })();
   }, [modelsOpen, settings]);
 
-  // /btw side answers, one per thread (ephemeral: never a thread event or message).
-  const [btw, setBtw] = useState<Record<string, BtwEntry>>({});
+  // /btw side answers, a per-thread conversation (ephemeral: never a thread
+  // event or message). Each ask appends an entry; closing clears the list.
+  const [btw, setBtw] = useState<Record<string, BtwEntry[]>>({});
   const btwSeq = useRef(0);
   // Slash popup: highlighted row, and the input it was dismissed on with Esc.
   const [slashIdx, setSlashIdx] = useState(0);
@@ -2802,10 +2803,16 @@ export default function App() {
     const settle = (patch: Partial<BtwEntry>) =>
       setBtw((prev) => {
         const cur = prev[threadId];
-        if (!cur || cur.id !== id) return prev;
-        return { ...prev, [threadId]: { ...cur, ...patch } };
+        if (!cur || cur[cur.length - 1]?.id !== id) return prev;
+        return {
+          ...prev,
+          [threadId]: cur.map((e, i) => (i === cur.length - 1 ? { ...e, ...patch } : e)),
+        };
       });
-    setBtw((prev) => ({ ...prev, [threadId]: { id, question: q, answer: null, error: null } }));
+    setBtw((prev) => ({
+      ...prev,
+      [threadId]: [...(prev[threadId] ?? []), { id, question: q, answer: null, error: null }],
+    }));
     rpc
       .call<{ answer: string }>("thread.btw", { threadId, question: q })
       .then((r) => settle({ answer: r.answer }))
@@ -2843,7 +2850,7 @@ export default function App() {
     slashQ !== null && slashClosed !== input ? matchCommands(slashCommands(), slashQ) : [];
   const slashOpen = slashMatches.length > 0;
   const slashSel = Math.min(slashIdx, slashMatches.length - 1);
-  const btwEntry = activeId ? (btw[activeId] ?? null) : null;
+  const btwList = activeId ? (btw[activeId] ?? null) : null;
 
   /** Tab and Enter on a command that takes text complete its name; a bare
    * command runs at once (Enter or click). */
@@ -4652,7 +4659,7 @@ export default function App() {
               onDrop={onComposerDrop}
               hidden={composerHidden}
             >
-              {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
+              {btwList && <BtwPanel entries={btwList} onClose={closeBtw} />}
               {slashOpen && (
                 <SlashMenu
                   items={slashMatches}

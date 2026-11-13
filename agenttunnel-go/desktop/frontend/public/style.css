@@ -4281,6 +4281,25 @@ button.danger-text {
   color: var(--err);
 }
 
+/* One ask/answer exchange inside the transcript. */
+.btw-msg + .btw-msg {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+.btw-msg-q {
+  margin: 0 0 4px;
+  color: var(--dim);
+  font-size: 12px;
+}
+.btw-hint {
+  margin: 0;
+  padding: 4px 12px 6px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px;
+  color: var(--faint);
+}
+
 /* Slash popup: floats above the composer box, keyboard driven by the textarea. */
 .slash-menu {
   position: absolute;
