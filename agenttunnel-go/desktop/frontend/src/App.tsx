@@ -98,6 +98,7 @@ import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import { fuzzyScore } from "./lib/fuzzy";
+import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
   buildCommands,
   matchCommands,
@@ -1165,6 +1166,9 @@ export default function App() {
   const [showWorktrees, setShowWorktrees] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Appearance is a device preference: saved in localStorage, not daemon state.
+  const [theme, setTheme] = useState<ThemeId>(loadTheme);
+  useEffect(() => applyTheme(theme), [theme]);
   // The how-to sheet opens on every launch unless the user opted out (persisted).
   const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
   const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
@@ -1191,9 +1195,6 @@ export default function App() {
   // daemon WebSocket.
   const [conn, setConn] = useState<Conn | null>(null);
   const [keepRunning, setKeepRunningState] = useState(false);
-  // Send turns detached (daemon-scoped) so closing the window cannot cancel
-  // them. Defaults on when the daemon already outlives this window.
-  const [runInBackground, setRunInBackground] = useState(false);
 
   // Council of agents: convene several perspectives on one question and let
   // them debate to a synthesized outcome.
@@ -1969,9 +1970,6 @@ export default function App() {
       setStatus("online");
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
-      // A daemon that outlives this window (external, or kept running) makes
-      // detached turns the sane default.
-      if (conn.attached || conn.keepRunning) setRunInBackground(true);
       // Not awaited: a slow GitHub lookup must not hold up startup.
       checkForUpdate();
       // Read-and-clear on the daemon: a null answer means nothing is pending.
@@ -2716,7 +2714,9 @@ export default function App() {
         return rest;
       });
     }
-    const detached = !command && !steer && (runInBackground || !!conn?.attached);
+    // Every turn belongs to the daemon, not to the socket that started it:
+    // closing the window or dropping the connection must not cancel work.
+    const detached = !command && !steer;
     sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
     if (detached) noteDetachedTurn(threadId);
@@ -2744,9 +2744,9 @@ export default function App() {
             .map((img) => img.ref?.id)
             .filter((id): id is string => id !== undefined);
         }
-        // Detached turns run on the daemon's lifetime context: closing the
-        // window cannot cancel them. An external daemon always detaches.
-        if (runInBackground || conn?.attached) params.detach = true;
+        // Detached turns run on the daemon's lifetime context, so they keep
+        // going when this client goes away.
+        params.detach = true;
         await rpc.call("thread.turn.start", params);
       }
     } catch (e) {
@@ -2784,7 +2784,7 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     const steer = running.length > 0 || busy;
-    const detached = !steer && (runInBackground || !!conn?.attached);
+    const detached = !steer;
     if (!steer) setTurnBusy(threadId, true);
     if (detached) noteDetachedTurn(threadId);
     setTab("chat");
@@ -3472,12 +3472,10 @@ export default function App() {
     })();
   };
 
-  /** Persists the shell's keep-running preference; a background daemon makes
-   * detached turns the right default. */
+  /** Persists the shell's keep-running preference. */
   const toggleKeepRunning = (enabled: boolean) => {
     setKeepRunningState(enabled);
     emitKeepRunning(enabled);
-    if (enabled) setRunInBackground(true);
   };
 
   const flashSaved = () => {
@@ -3718,6 +3716,26 @@ export default function App() {
           <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
         </svg>
         Stats
+      </div>
+      <div
+        className="ptab pt-home"
+        {...tabProps(false, () => setSuperViewOpen(true))}
+        title="All threads across projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+        </svg>
+        All threads
       </div>
       <div className="pt-scroll" role="tablist" aria-label="Open projects">
         {openProjects.map((p) => {
@@ -4050,6 +4068,32 @@ export default function App() {
           </div>
         </div>
         <div className="sheet-body">
+          <section className="set-section">
+            <h4>Appearance</h4>
+            <p className="hint">
+              Color theme for this device. It applies everywhere and is saved locally, not in
+              the daemon config.
+            </p>
+            <div className="theme-grid">
+              {THEMES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`theme-card ${theme === t.id ? "on" : ""}`}
+                  aria-pressed={theme === t.id}
+                  onClick={() => setTheme(t.id)}
+                >
+                  <span className="theme-swatch" aria-hidden="true">
+                    {t.swatches.map((c, i) => (
+                      <span key={`${t.id}-${i}`} style={{ background: c }} />
+                    ))}
+                  </span>
+                  <span className="theme-name">{t.name}</span>
+                  <span className="theme-note">{t.note}</span>
+                </button>
+              ))}
+            </div>
+          </section>
           <section className="set-section">
             <h4>New thread defaults</h4>
             <p className="hint">
@@ -5097,25 +5141,6 @@ export default function App() {
                   <span className="ctx-chip" title={selectedProject.path}>
                     {selectedProject.name}
                   </span>
-                )}
-                {(conn?.attached || keepRunning) && (
-                  <label
-                    className={`bg-turn${runInBackground || conn?.attached ? " on" : ""}`}
-                    title={
-                      conn?.attached
-                        ? "Attached to an external daemon: turns always run in the background"
-                        : "The turn keeps running after you close the window"
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      checked={runInBackground || !!conn?.attached}
-                      disabled={!!conn?.attached}
-                      onChange={(e) => setRunInBackground(e.target.checked)}
-                    />
-                    Run in background
-                    <span className="bg-hint">keeps running after you close the window</span>
-                  </label>
                 )}
                 <button
                   className={`model-btn${modelsOpen ? " open" : ""}`}
