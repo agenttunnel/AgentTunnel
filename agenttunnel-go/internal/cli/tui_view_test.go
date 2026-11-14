@@ -1,0 +1,474 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// tuiFakeCaller answers RPCs from a method table and records every call, so the
+// views can be driven through their real Load and Key hooks with no daemon.
+type tuiFakeCaller struct {
+	mu      sync.Mutex
+	replies map[string]string
+	calls   []tuiFakeCall
+}
+
+type tuiFakeCall struct {
+	method string
+	params string
+}
+
+func (f *tuiFakeCaller) Call(_ context.Context, method string, params, out any) error {
+	raw, _ := json.Marshal(params)
+	f.mu.Lock()
+	f.calls = append(f.calls, tuiFakeCall{method: method, params: string(raw)})
+	reply, ok := f.replies[method]
+	f.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no reply scripted for %s", method)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal([]byte(reply), out)
+}
+
+// sent reports whether method was called with params containing every fragment.
+func (f *tuiFakeCaller) sent(method string, fragments ...string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c.method != method {
+			continue
+		}
+		match := true
+		for _, frag := range fragments {
+			if !strings.Contains(c.params, frag) {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// tuiViewReplies scripts every RPC the built-in views read, so one caller can
+// load all of them.
+func tuiViewReplies() map[string]string {
+	return map[string]string{
+		"settings.get":        `{"workdir":"/w","autoMode":false,"roles":[{"id":"executor","name":"Executor","harness":"claude","model":"m1","enabled":true}],"lead":{"harness":"","model":""},"staleAfterMinutes":10}`,
+		"harness.list":        `{"all":["claude","codex"],"available":["claude"],"enabled":["claude"],"models":{"claude":["m1"]}}`,
+		"usage.get":           `{"orchestrator":{"inputTokens":100,"outputTokens":50,"costUsd":0.5},"subagents":{"inputTokens":10,"outputTokens":5,"costUsd":0.1},"byAgent":[{"agentId":"agent-1","role":"executor","usage":{"inputTokens":10,"outputTokens":5}}]}`,
+		"usage.limits":        `[{"harness":"claude","available":true,"windows":[{"id":"5h","label":"5-hour","usedPercent":95,"resetsAt":"2026-11-14T20:00:00Z"}]}]`,
+		"stats.harnesses":     `[{"harness":"claude","threads":1,"agents":2,"subagents":1,"usage":{"inputTokens":10}}]`,
+		"stats.models":        `[{"harness":"claude","model":"m1","subagents":1,"usage":{"inputTokens":10}}]`,
+		"review.diff":         `{"files":[{"path":"a.go","additions":1,"deletions":1,"lines":[{"old":1,"kind":"delete","text":"x := 0"},{"new":1,"kind":"add","text":"x := 1"}]}],"empty":false}`,
+		"thread.get":          `{"exists":true,"reviewThreads":[{"id":"r1","file":"a.go","line":1,"side":"new","body":"nit","status":"open"}]}`,
+		"pr.status":           `{"status":"ready","provider":"github","branch":"feat","request":{"number":7,"title":"Add thing","state":"open","checks":"passing","review":"approved","url":"https://x/7","comments":[{"author":"ana","body":"lgtm"}]}}`,
+		"pr.list":             `{"status":"ready","requests":[{"number":8,"title":"Other","state":"open"}]}`,
+		"files.tree":          `{"entries":[{"name":"src","path":"src","dir":true,"children":[{"name":"a.go","path":"src/a.go","dir":false}]},{"name":"README.md","path":"README.md","dir":false}],"status":{"README.md":"modified"}}`,
+		"files.read":          `{"path":"src/a.go","size":11,"text":"package a\nvar x"}`,
+		"files.search":        `{"matches":[{"path":"src/a.go","dir":false}]}`,
+		"worktree.list":       `[{"path":"/p/wt","branch":"b","base":"main","exists":true,"dirty":true,"ahead":1,"behind":0,"threadIds":["t1"]}]`,
+		"project.list":        `[{"id":"p1","name":"proj","path":"/p","threads":1}]`,
+		"issues.list":         `{"status":"ready","provider":"github","issues":[{"iid":1,"title":"Bug","description":"it breaks","webUrl":"https://x/1"}]}`,
+		"master.history.list": `[{"id":"c1","title":"Plan","messages":2}]`,
+		"master.history.open": `{"id":"c1","title":"Plan","messages":[{"role":"user","text":"hi"},{"role":"master","text":"hello"}]}`,
+		"master.send":         `{"reply":"hello"}`,
+		"remote.status":       `{"items":[{"id":"phone","label":"Phone","state":"connected"},{"id":"whatsapp","label":"WhatsApp","state":"off","controlSupported":true}]}`,
+		"relay.status":        `{"enabled":false}`,
+		"update.check":        `{"current":"1.0.0","latest":"1.1.0","enabled":true,"available":true}`,
+	}
+}
+
+// tuiViewModel is a plain-text model with one thread in the list, so views that
+// read the focused thread have one to read.
+func tuiViewModel() *tuiModel {
+	m := newTuiModel(time.Now())
+	m.theme = tuiTheme{}
+	m.setList([]psRow{{thread: threadListRow{ID: "t1", ProjectID: "p1", Title: "Thread one"}, project: "proj"}})
+	return m
+}
+
+// tuiViewOf returns the registered view id, failing the test if it is missing.
+func tuiViewOf(t *testing.T, id string) tuiView {
+	t.Helper()
+	v, ok := tuiViewByID(id)
+	if !ok {
+		t.Fatalf("view %q is not registered", id)
+	}
+	return v
+}
+
+// tuiWaitIdle blocks until a background run has finished, without a sleep.
+func tuiWaitIdle(t *testing.T, b *tuiBase) {
+	t.Helper()
+	b.mu.Lock()
+	ch := b.idle
+	b.mu.Unlock()
+	if ch != nil {
+		<-ch
+	}
+}
+
+// tuiKeys feeds a sequence of keys through a view's Key hook, one by one.
+func tuiKeys(t *testing.T, m *tuiModel, id string, keys ...tuiKey) {
+	t.Helper()
+	v := tuiViewOf(t, id)
+	for _, k := range keys {
+		v.Key(m, k)
+	}
+}
+
+func tuiRunes(s string) []tuiKey {
+	var out []tuiKey
+	for _, r := range s {
+		out = append(out, tuiKey{Kind: keyRune, Rune: r})
+	}
+	return out
+}
+
+var tuiEnter = tuiKey{Kind: keyEnter}
+
+func TestTUIViewsRegisterEveryAppView(t *testing.T) {
+	want := []string{"settings", "usage", "review", "pr", "files", "worktrees", "projects", "issues", "master", "remote"}
+	for _, id := range want {
+		v := tuiViewOf(t, id)
+		if v.Title == "" {
+			t.Errorf("view %s has no title", id)
+		}
+		if v.Render == nil || v.Load == nil || len(v.Hints) == 0 {
+			t.Errorf("view %s is missing Render, Load, or Hints", id)
+		}
+	}
+}
+
+// TestTUIViewsRenderEverySizeAndTheme loads every built-in view and paints it at
+// sizes from one cell up. Each frame must be exactly the requested height, and a
+// plain theme must emit no escape codes, so NO_COLOR and dumb terminals stay clean.
+func TestTUIViewsRenderEverySizeAndTheme(t *testing.T) {
+	sizes := [][2]int{{1, 1}, {2, 2}, {3, 3}, {4, 2}, {6, 3}, {10, 5}, {40, 12}, {100, 30}}
+	for _, v := range tuiViewRegistry {
+		m := tuiViewModel()
+		c := &tuiFakeCaller{replies: tuiViewReplies()}
+		m.view = v.ID
+		v.Load(context.Background(), c, m)
+		for _, sz := range sizes {
+			cols, rows := sz[0], sz[1]
+			out := render(m, cols, rows)
+			if got := len(strings.Split(out, "\n")); got != rows {
+				t.Errorf("view %s at %dx%d: %d lines, want %d", v.ID, cols, rows, got, rows)
+			}
+			if strings.Contains(out, "\x1b") {
+				t.Errorf("view %s at %dx%d: plain theme emitted an escape code", v.ID, cols, rows)
+			}
+		}
+	}
+}
+
+func TestTUIViewUsageShowsWindowMeters(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewUsage
+	tuiViewOf(t, tuiViewUsage).Load(context.Background(), c, m)
+
+	out := render(m, 80, 30)
+	for _, want := range []string{"5-hour", "95%", "claude/m1", "$0.6000"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage view missing %q in:\n%s", want, out)
+		}
+	}
+	if tuiPctColor(95) != tuiColErr || tuiPctColor(75) != tuiColWarn || tuiPctColor(10) != tuiColOK {
+		t.Errorf("meter thresholds are not ok<70<=warn<90<=err")
+	}
+	if got := tuiMeter(30, 50, "50%").width(); got != 30 {
+		t.Errorf("meter width = %d, want 30", got)
+	}
+}
+
+func TestTUIViewSettingsTogglesThroughSettingsSet(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewSettings
+	tuiViewOf(t, tuiViewSettings).Load(context.Background(), c, m)
+
+	// The first switch is auto mode; Enter flips it on with one settings.set.
+	tuiKeys(t, m, tuiViewSettings, tuiEnter)
+	if !c.sent("settings.set", `"autoMode":true`) {
+		t.Fatalf("enter on auto mode did not send settings.set autoMode=true; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewSettingsDownArrowMovesToHarnessRows(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewSettings
+	tuiViewOf(t, tuiViewSettings).Load(context.Background(), c, m)
+
+	// auto, experimental, the executor role, then claude: three steps down.
+	tuiKeys(t, m, tuiViewSettings, tuiKey{Kind: keyDown}, tuiKey{Kind: keyDown}, tuiKey{Kind: keyDown})
+	tuiKeys(t, m, tuiViewSettings, tuiEnter)
+	if !c.sent("settings.set", `"harness":{"enabled":false,"id":"claude"}`) {
+		t.Fatalf("enter on the claude harness did not disable it; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewPRMergeNeedsASecondPress(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewPR
+	v := tuiViewOf(t, tuiViewPR)
+	v.Load(context.Background(), c, m)
+	st := tuiPROf(m)
+
+	tuiKeys(t, m, tuiViewPR, tuiKey{Kind: keyRune, Rune: 'M'})
+	if c.sent("pr.merge") {
+		t.Fatal("the first M merged; it should only arm the merge")
+	}
+	if st.status() == nil {
+		t.Fatal("arming a merge should show its prompt in the status row")
+	}
+
+	// Any other key disarms: the next M arms again instead of merging.
+	tuiKeys(t, m, tuiViewPR, tuiKey{Kind: keyDown}, tuiKey{Kind: keyRune, Rune: 'M'})
+	if c.sent("pr.merge") {
+		t.Fatal("a stray key left the merge armed")
+	}
+
+	tuiKeys(t, m, tuiViewPR, tuiKey{Kind: keyRune, Rune: 'M'})
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("pr.merge", `"threadId":"t1"`) {
+		t.Fatalf("the second M did not merge; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewMasterSendsIntoTheDurableConversation(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewMaster
+	v := tuiViewOf(t, tuiViewMaster)
+	v.Load(context.Background(), c, m)
+	st := tuiMasterOf(m)
+
+	tuiKeys(t, m, tuiViewMaster, tuiEnter) // open the first conversation
+	if !st.inChat || st.chatID != "c1" {
+		t.Fatalf("enter did not open conversation c1 (inChat=%v chat=%q)", st.inChat, st.chatID)
+	}
+	tuiKeys(t, m, tuiViewMaster, tuiRunes("ok")...)
+	tuiKeys(t, m, tuiViewMaster, tuiEnter)
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("master.send", `"text":"ok"`, `"threadId":"c1"`) {
+		t.Fatalf("send did not reach master.send with the durable thread; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewMasterEscLeavesTheChat(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewMaster
+	tuiViewOf(t, tuiViewMaster).Load(context.Background(), c, m)
+	tuiKeys(t, m, tuiViewMaster, tuiEnter)
+
+	if !tuiViewOf(t, tuiViewMaster).Key(m, tuiKey{Kind: keyEsc}) {
+		t.Fatal("esc in the chat should be consumed, not fall through to the thread list")
+	}
+	if tuiMasterOf(m).inChat {
+		t.Fatal("esc did not return to the conversation list")
+	}
+}
+
+func TestTUIViewFilesExpandPreviewAndSearch(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewFiles
+	tuiViewOf(t, tuiViewFiles).Load(context.Background(), c, m)
+	st := tuiFilesOf(m)
+
+	tuiKeys(t, m, tuiViewFiles, tuiEnter) // expand src
+	if got := len(st.visible()); got != 3 {
+		t.Fatalf("after expanding src the tree has %d rows, want 3 (src, a.go, README.md)", got)
+	}
+	tuiKeys(t, m, tuiViewFiles, tuiKey{Kind: keyDown}, tuiEnter) // open src/a.go
+	if !c.sent("files.read", `"path":"src/a.go"`) || st.preview == nil {
+		t.Fatalf("enter on a file did not open its preview; calls: %+v", c.calls)
+	}
+	if !tuiViewOf(t, tuiViewFiles).Key(m, tuiKey{Kind: keyEsc}) || st.preview != nil {
+		t.Fatal("esc should close the preview and stay on the files tab")
+	}
+
+	tuiKeys(t, m, tuiViewFiles, tuiRunes("/")...)
+	tuiKeys(t, m, tuiViewFiles, tuiRunes("a.go")...)
+	tuiKeys(t, m, tuiViewFiles, tuiEnter)
+	if !c.sent("files.search", `"query":"a.go"`) || len(st.search) != 1 {
+		t.Fatalf("search did not run; search=%v calls=%+v", st.search, c.calls)
+	}
+}
+
+func TestTUIViewReviewCommentsTheDiffLineUnderTheCursor(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewReview
+	tuiViewOf(t, tuiViewReview).Load(context.Background(), c, m)
+	st := tuiReviewOf(m)
+
+	idx := -1
+	for i, a := range st.anchors {
+		if a != nil && a.side == "new" {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatal("the diff has no added line to anchor a comment on")
+	}
+	st.cursor = idx
+	tuiKeys(t, m, tuiViewReview, tuiRunes("c")...)
+	tuiKeys(t, m, tuiViewReview, tuiRunes("nit")...)
+	tuiKeys(t, m, tuiViewReview, tuiEnter)
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("review.comment", `"file":"a.go"`, `"side":"new"`, `"body":"nit"`) {
+		t.Fatalf("comment did not anchor to the added line; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewReviewSubmitNeedsASecondPress(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewReview
+	tuiViewOf(t, tuiViewReview).Load(context.Background(), c, m)
+	st := tuiReviewOf(m)
+
+	tuiKeys(t, m, tuiViewReview, tuiRunes("s")...)
+	if c.sent("review.submit") {
+		t.Fatal("the first s submitted the review")
+	}
+	tuiKeys(t, m, tuiViewReview, tuiRunes("s")...)
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("review.submit", `"threadId":"t1"`) {
+		t.Fatalf("the second s did not submit; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewRemoteNeverShowsThePairingQR(t *testing.T) {
+	replies := tuiViewReplies()
+	replies["remote.status"] = `{"items":[{"id":"phone","label":"Phone","state":"pairing","qr":"SECRET-PAIR-CODE"}]}`
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: replies}
+	m.view = tuiViewRemote
+	tuiViewOf(t, tuiViewRemote).Load(context.Background(), c, m)
+
+	if out := render(m, 80, 24); strings.Contains(out, "SECRET-PAIR-CODE") {
+		t.Fatal("the pairing QR leaked into the remote view")
+	}
+}
+
+func TestTUIViewUpdateApplyNeedsASecondPress(t *testing.T) {
+	replies := tuiViewReplies()
+	replies["update.apply"] = `{"current":"1.0.0","latest":"1.1.0","available":false,"installed":"1.1.0"}`
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: replies}
+	m.view = tuiViewRemote
+	tuiViewOf(t, tuiViewRemote).Load(context.Background(), c, m)
+	st := tuiRemoteOf(m)
+
+	tuiKeys(t, m, tuiViewRemote, tuiRunes("A")...)
+	if c.sent("update.apply") {
+		t.Fatal("the first A installed the update")
+	}
+	tuiKeys(t, m, tuiViewRemote, tuiRunes("A")...)
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("update.apply") {
+		t.Fatalf("the second A did not apply; calls: %+v", c.calls)
+	}
+	if got := st.updateStatus().Installed; got != "1.1.0" {
+		t.Fatalf("installed version = %q, want 1.1.0 after the apply", got)
+	}
+}
+
+func TestTUIViewWorktreesRemoveNeedsASecondPress(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewWorktrees
+	tuiViewOf(t, tuiViewWorktrees).Load(context.Background(), c, m)
+	st := tuiWorktreesOf(m)
+
+	tuiKeys(t, m, tuiViewWorktrees, tuiRunes("x")...)
+	if c.sent("worktree.remove") {
+		t.Fatal("the first x removed the worktree")
+	}
+	tuiKeys(t, m, tuiViewWorktrees, tuiRunes("x")...)
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("worktree.remove", `"path":"/p/wt"`, `"force":false`) {
+		t.Fatalf("the second x did not remove; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewProjectsAddDerivesTheNameFromThePath(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewProjects
+	tuiViewOf(t, tuiViewProjects).Load(context.Background(), c, m)
+	st := tuiProjectsOf(m)
+
+	tuiKeys(t, m, tuiViewProjects, tuiRunes("a")...)
+	tuiKeys(t, m, tuiViewProjects, tuiRunes("/src/widget")...)
+	tuiKeys(t, m, tuiViewProjects, tuiEnter)
+	tuiWaitIdle(t, &st.tuiBase)
+	if !c.sent("project.create", `"name":"widget"`, `"path":"/src/widget"`) {
+		t.Fatalf("add did not create the project; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewIssuesDetailsToggle(t *testing.T) {
+	m := tuiViewModel()
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewIssues
+	tuiViewOf(t, tuiViewIssues).Load(context.Background(), c, m)
+
+	if out := render(m, 80, 24); strings.Contains(out, "it breaks") {
+		t.Fatal("the description should be closed until enter opens it")
+	}
+	tuiKeys(t, m, tuiViewIssues, tuiEnter)
+	if out := render(m, 80, 24); !strings.Contains(out, "it breaks") {
+		t.Fatal("enter did not open the issue's description")
+	}
+}
+
+// TestTUIViewReloadOnTheFocusedThreadChange checks that moving the list cursor
+// to another thread reloads the focused views instead of showing the old thread.
+func TestTUIViewReloadOnTheFocusedThreadChange(t *testing.T) {
+	m := tuiViewModel()
+	m.setList([]psRow{
+		{thread: threadListRow{ID: "t1", ProjectID: "p1", Title: "one"}, project: "proj"},
+		{thread: threadListRow{ID: "t2", ProjectID: "p1", Title: "two"}, project: "proj"},
+	})
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewPR
+	tuiViewOf(t, tuiViewPR).Load(context.Background(), c, m)
+	before := len(c.calls)
+
+	m.cursor = 1
+	tuiViewOf(t, tuiViewPR).Load(context.Background(), c, m)
+	if len(c.calls) == before || !c.sent("pr.status", `"threadId":"t2"`) {
+		t.Fatalf("moving to thread t2 did not reload its request; calls: %+v", c.calls)
+	}
+}
+
+func TestTUIViewEditorTakesTextAndSubmits(t *testing.T) {
+	var e tuiEditor
+	e.open("name", "")
+	e.key(tuiKey{Kind: keyRune, Rune: 'q'})
+	if e.value() != "q" {
+		t.Fatalf("editor did not take q as text: %q", e.value())
+	}
+	if !e.key(tuiEnter) || e.on {
+		t.Fatal("enter should submit and close the editor")
+	}
+}
