@@ -246,6 +246,8 @@ export type ThreadSummary = {
   updatedAt?: string;
   messages: number;
   agents: number;
+  /** The only agent's harness on a solo thread; drives the row's tint. */
+  harness?: string;
   autoMode: boolean;
   /** Filed by the user; shown in the board's Archived column. */
   archived?: boolean;
@@ -4574,7 +4576,7 @@ export default function App() {
           {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""}`}
+              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""} ${harnessTint(t.harness ?? "")}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
               {...clickable(() => {
                 if (t.subthreads > 0) toggleSubthreads(t.id);
