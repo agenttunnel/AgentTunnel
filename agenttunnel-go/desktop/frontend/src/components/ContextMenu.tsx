@@ -60,7 +60,7 @@ export function ContextMenu({
       {items.map((item) => (
         <button
           key={item.label}
-          className={`ctx-item${item.danger ? " danger" : ""}`}
+          className={`ctx-item${item.danger ? " ctx-danger" : ""}`}
           onClick={() => {
             onClose();
             item.onSelect();
