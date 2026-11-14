@@ -250,6 +250,23 @@ term with a 10 EUR setup fee. Steady state is about 5 EUR/mo excl. IVA for
 datacenter or the Spanish support, and then order the 1-month term (it is
 selectable) so the promo structure does not lock you in.
 
+**RunPod (or any stop-when-idle pod host).** Not cheaper even part-time,
+and its model fights this design. Pods are containers, not VMs — no systemd,
+no Docker Compose; `atd` would have to run as the container entrypoint.
+Stopping a pod erases its container disk (the CLIs, their logins, everything
+not on a volume), volume-disk storage bills at double the running rate while
+stopped, and only network volumes survive both stop and terminate, at
+$0.07/GB/mo — roughly $3.50/mo for a 50 GB volume before any compute.
+Billing is per-second on demand (savings plans are discontinued); the
+cheapest published rate is a $0.16/hr GPU pod, CPU-only pods exist but
+publish no rate, and there is no built-in auto-stop. Inbound HTTP goes
+through a Cloudflare proxy with a 100-second timeout — wrong for a
+long-lived `wss` — and TCP exposure gives a public IP whose external port
+mapping rotates whenever the pod resets, so every restart re-points saved
+CLI profiles and the desktop connection. Even one hour of use a day costs
+more than Hetzner's flat price. RunPod's lane is per-thread GPU execution
+sandboxes later, not the daemon.
+
 **Rejected for daemon hosting:**
 
 - **Cloud Run** — no persistent disk (thread state would need to live
@@ -275,7 +292,8 @@ otherwise fine: a home server, a Pi, a spare box at the office. The relay
   server. The daemon never imports a local checkout.
 - **No sleep/wake, no cost controls.** The server runs and bills around the
   clock. Stopping the instance stops the daemon; there is no suspend/resume
-  of in-flight turns and no budget gate on provider spend.
+  of in-flight turns and no budget gate on provider spend. A stop-when-idle
+  host does not fix this — see RunPod under hosting.
 - **Worktrees assume git on the server.** Per-thread worktrees are cut from
   the project's repo on the daemon's machine; `git` must be installed there,
   and clones must be real clones (SSH), not mounted folders.
