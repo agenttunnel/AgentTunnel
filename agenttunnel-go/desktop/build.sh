@@ -17,6 +17,12 @@ export NODE_ENV=development
 echo "› building frontend"
 ( cd frontend && npm run build )
 
+# Mirror the SPA into the daemon's embed dir so `go:embed all:dist` in
+# internal/webui serves the real assets instead of the committed placeholder.
+echo "› syncing SPA into ../internal/webui/dist"
+mkdir -p ../internal/webui/dist
+cp -R frontend/dist/. ../internal/webui/dist/
+
 echo "› linking bin/agenttunnel-desktop"
 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/agenttunnel-desktop .
 

@@ -102,6 +102,23 @@ shows a PARENT column; `attach` names the parent in its header.
 - `attach <thread>`: replays recent output, streams live output, and takes
   steering text (`/stop`, `/detach`, `/help`). It leaves when the turn it
   watches ends, or on Ctrl-C (which detaches and leaves the turn running).
+- `tui [thread]`: full-screen UI over the same daemon. The list screen moves
+  with ↑/↓ or j/k and opens with Enter (r refreshes, q quits). The thread
+  screen shows the log tail (live output follows; PgUp/PgDn scrolls back), the
+  roster, and an input line: submitting text steers a running turn, starts a
+  detached one on an idle thread (`/stop` stops it), and an open question owns
+  the next line. `/help` lists commands; Esc or a bare q returns to the list,
+  Ctrl-C leaves. The terminal (alternate screen, raw mode) is restored on
+  every exit path. Like `attach` it connects read-only — it never starts a
+  daemon — so it can drive any daemon that is already running, including the
+  desktop's.
+
+## WhatsApp
+
+- `whatsapp connect`: pair WhatsApp as a linked device. The QR code is drawn in
+  the terminal; scan it with WhatsApp > Linked devices. The command returns once
+  the device is linked, pairing fails, or you press Ctrl-C (pairing keeps going
+  in the daemon). On a terminal the code redraws in place as WhatsApp rotates it.
 
 ## Desktop
 
