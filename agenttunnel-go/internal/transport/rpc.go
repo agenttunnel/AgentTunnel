@@ -375,6 +375,11 @@ type ThreadSummary struct {
 	// ControlledBy names the thread that controls this one; empty means the
 	// user runs it.
 	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
+	// LastSeenAt is when a user last opened the thread; nil is never. A pointer
+	// keeps the zero time off the wire for never-viewed threads.
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	// Unseen is derived: the newest completed turn ended after the last view.
+	Unseen bool `json:"unseen"`
 }
 
 // soleHarness names the harness of a thread's only agent, or "" when the
@@ -1112,6 +1117,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				}
 			}
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
+			// A running thread is seen by definition; otherwise a completed turn
+			// after the last view is what makes a thread unseen. A thread with
+			// no completed turn at all (a draft) is never unseen.
+			ended := st.LastTurnEndedAt()
+			unseen := running == 0 && !ended.IsZero() &&
+				(st.LastSeenAt == nil || ended.After(*st.LastSeenAt))
 			rows = append(rows, summaryRow{
 				summary: ThreadSummary{
 					ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
@@ -1122,6 +1133,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 					Draft: st.Draft, Issue: st.Issue, SoloRuntime: st.SoloRuntime,
 					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
 					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+					LastSeenAt: st.LastSeenAt, Unseen: unseen,
 				},
 				createdAt: st.CreatedAt,
 			})
@@ -1523,6 +1535,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		if err := d.setArchived(ctx, p.ThreadID, p.Enabled); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.markSeen":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadSeen, ThreadID: p.ThreadID,
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil

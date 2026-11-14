@@ -117,6 +117,8 @@ import {
   type PaletteSection,
 } from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import { SuperView } from "./components/SuperView";
+import { TERMINAL } from "./lib/graphEvents";
 import { ThreadImage } from "./components/ThreadImage";
 import { MasterChat } from "./components/MasterChat";
 
@@ -254,6 +256,10 @@ export type ThreadSummary = {
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
+  /** When the user last opened the thread; absent means never. */
+  lastSeenAt?: string;
+  /** A finished turn ended after the last view (derived by the daemon). */
+  unseen?: boolean;
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
   /** A draft has not had its first turn yet. */
@@ -2080,6 +2086,10 @@ export default function App() {
     let buffered: LiveLine[] | null = [];
     setLive([]);
     rpc.call("thread.subscribe", { threadId: activeId }).catch(() => undefined);
+    // Opening a thread clears its "finished but unseen" state server-side. The
+    // resulting event and the 4s thread.list poll refresh the badge; the call
+    // is fire-and-forget, so a refused mark never blocks the view.
+    rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
     // Snapshot and buffered frames are both raw chunks, so overlap is compared
     // before the chunks are merged into display lines.
     const applyBuffered = (snapshot: LiveLine[]) => {
@@ -2101,7 +2111,7 @@ export default function App() {
       const ev = raw as {
         type?: string;
         threadId?: string;
-        payload?: { agentId?: string; kind?: string; text?: string };
+        payload?: { agentId?: string; kind?: string; status?: string; text?: string };
       };
       if (ev?.type === "agent.output" && ev.payload) {
         // Output from another thread belongs to that thread's log; it is
@@ -2115,6 +2125,19 @@ export default function App() {
         if (buffered) buffered.push(line);
         else setLive((prev) => pushLiveLine(prev, line));
         return;
+      }
+      // A turn that ends while the user is watching counts as seen the moment
+      // its agents go terminal: the open-time markSeen above only fires on
+      // thread switches, so without this the thread would flip to "not seen
+      // yet" the instant it finishes. The server drops the call when nothing
+      // finished after the last view, so extra calls stay free.
+      if (
+        ev?.type === "agent.status-changed" &&
+        !stale &&
+        ev.threadId === activeId &&
+        TERMINAL.has(String(ev.payload?.status ?? ""))
+      ) {
+        rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
       }
       if (threadViewRef.current === "board") scheduleBoardReload();
       scheduleRefresh(activeId);
@@ -3002,6 +3025,9 @@ export default function App() {
     paletteReturn.current = null;
     if (el?.isConnected) el.focus();
   }, []);
+  // The super view: every project's threads in one overlay, grouped running /
+  // finished-but-unseen / quiet. Rides the existing 4s thread.list poll.
+  const [superViewOpen, setSuperViewOpen] = useState(false);
 
   /** Asks the daemon a side question. It runs beside any running turn: no turn
    * slot, no steer, no message. Only the newest ask on a thread may settle. */
@@ -3910,6 +3936,7 @@ export default function App() {
         newThread: () => newThread(),
         createProject: () => addProject(),
         openSettings: () => openSettings(),
+        openSuperView: () => setSuperViewOpen(true),
         refresh: () => refreshAll(),
         stopTurn: () => stopTurn(),
         toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
@@ -3953,6 +3980,24 @@ export default function App() {
       rightTitle={palette.rightTitle}
       onRun={runPalette}
       onClose={closePalette}
+    />
+  );
+  // The super view reads the same thread.list data the views poll; a row opens
+  // the thread the way the palette does, including across projects.
+  const superViewDialog = superViewOpen && (
+    <SuperView
+      threads={threads}
+      projects={projects}
+      onOpen={(t) => {
+        setSuperViewOpen(false);
+        // A row click always clears the unseen badge, even for the thread
+        // already open: switching to the same activeId does not re-run the
+        // open-time markSeen in the subscription effect.
+        const rpc = rpcRef.current;
+        if (rpc) rpc.call("thread.markSeen", { threadId: t.id }).catch(() => undefined);
+        goToThread(t);
+      }}
+      onClose={() => setSuperViewOpen(false)}
     />
   );
 
@@ -4285,6 +4330,7 @@ export default function App() {
           </div>
           <StatsPage rpc={rpcRef.current} />
         </div>
+        {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
@@ -4309,6 +4355,7 @@ export default function App() {
             }}
           />
         </div>
+        {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
@@ -4379,6 +4426,7 @@ export default function App() {
             ))}
           </div>
         </div>
+        {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
@@ -4516,6 +4564,7 @@ export default function App() {
           </div>
           )}
           {threadOverlays}
+          {superViewDialog}
           {newProjectDialog}
           {paletteDialog}
           {settingsSheet}
@@ -5864,6 +5913,7 @@ export default function App() {
       {settingsSheet}
 
       {threadOverlays}
+      {superViewDialog}
       {newProjectDialog}
       {paletteDialog}
     </div>
