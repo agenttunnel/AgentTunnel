@@ -63,6 +63,8 @@ func ParseCommandLine(line string) (Call, bool) {
 			call.Name = value
 		case "--task":
 			call.Task = value
+		case "--brief":
+			call.Brief = value
 		case "--harness":
 			call.Harness = value
 		case "--model":
@@ -105,6 +107,8 @@ func ParseCommandLine(line string) (Call, bool) {
 		return call, strings.TrimSpace(call.Text) != ""
 	case KindMessage:
 		return call, strings.TrimSpace(call.Text) != "" && strings.TrimSpace(call.To) != ""
+	case KindRevive:
+		return call, strings.TrimSpace(call.Text) != "" && strings.TrimSpace(call.To) != ""
 	case KindApprove, KindReject:
 		return call, strings.TrimSpace(call.Name) != ""
 	case KindReviewComment:
@@ -121,7 +125,8 @@ func ParseCommandLine(line string) (Call, bool) {
 func knownKind(s string) bool {
 	switch Kind(s) {
 	case KindDispatch, KindNote, KindProgress, KindDone, KindLearn, KindMessage,
-		KindSpawn, KindApprove, KindReject, KindReviewComment, KindReviewReply, KindReviewResolve:
+		KindSpawn, KindApprove, KindReject, KindReviewComment, KindReviewReply, KindReviewResolve,
+		KindRevive:
 		return true
 	default:
 		return false

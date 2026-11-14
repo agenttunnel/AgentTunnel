@@ -86,8 +86,8 @@ func collectPs(ctx context.Context, c cliCaller, opts psOptions) ([]psRow, error
 
 // nestPsRows orders rows so every subthread follows its parent, indented one
 // level deeper. A subthread whose parent is not listed (hidden as stale, or
-// deleted) stays at the root. Siblings keep the recency order they arrived in,
-// and a seen-set keeps a malformed parent cycle from looping or dropping rows.
+// deleted) stays at the root. Siblings keep the submission order they arrived
+// in, and a seen-set keeps a malformed parent cycle from looping or dropping rows.
 func nestPsRows(rows []psRow) []psRow {
 	listed := make(map[string]bool, len(rows))
 	for _, row := range rows {
