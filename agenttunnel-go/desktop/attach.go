@@ -94,6 +94,17 @@ func hostFromWS(ws string) string {
 // they survive restarts without touching daemon settings.
 type prefs struct {
 	KeepRunning bool `json:"keepRunning"`
+	// Remote is the daemon this window connects to instead of a local one.
+	// Set means the next launch drives the remote daemon and starts no local one.
+	Remote *remoteConfig `json:"remote,omitempty"`
+}
+
+// updatePrefs applies change to the saved preferences and writes them back, so
+// one setting never clobbers another.
+func updatePrefs(stateDir string, change func(*prefs)) error {
+	p := loadPrefs(stateDir)
+	change(&p)
+	return savePrefs(stateDir, p)
 }
 
 func prefsPath(stateDir string) string { return filepath.Join(stateDir, "desktop-prefs.json") }

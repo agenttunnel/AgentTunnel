@@ -91,7 +91,15 @@ func main() {
 		return
 	}
 
-	keepRunning.Store(loadPrefs(state).KeepRunning)
+	prefsNow := loadPrefs(state)
+	keepRunning.Store(prefsNow.KeepRunning)
+
+	// A saved remote daemon takes the window. No local daemon is started, and
+	// a local one never shadows it.
+	if prefsNow.Remote != nil {
+		runRemote(state, *prefsNow.Remote, dir, thread)
+		return
+	}
 
 	// A daemon someone else owns (an `agenttunnel` autostart, or a desktop left in the
 	// background) answers discovery. Attach to it: never start a second daemon
@@ -118,7 +126,7 @@ func runAttached(state string, target daemonTarget, dir, thread string) {
 		attached:     true,
 	}
 	// Closing the window ends this shell; the external daemon keeps running.
-	app := newApp(conn, state, true, nil)
+	app := newApp(&connHolder{local: &conn}, state, true, nil)
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -181,7 +189,7 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir, thread
 		launchThread: thread,
 		host:         ln.Addr().String(),
 	}
-	app := newApp(conn, state, false, func(a *application.App) {
+	app := newApp(&connHolder{local: &conn}, state, false, func(a *application.App) {
 		windowClosed.Store(true)
 		if keepRunning.Load() {
 			// The daemon stays; drop this window's launch lock so a fresh
@@ -221,6 +229,25 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir, thread
 	}
 }
 
+// runRemote shows a window onto the remote daemon saved in prefs. Nothing is
+// started locally; project-opening arguments need the local daemon, so they are
+// ignored with a note.
+func runRemote(state string, cfg remoteConfig, dir, thread string) {
+	if dir != "" || thread != "" {
+		fmt.Fprintln(os.Stderr, "agenttunnel-desktop: a remote daemon is configured; opening a project here needs the local daemon, so the argument is ignored")
+	}
+	proxy, err := startRemoteProxy(cfg)
+	if err != nil {
+		log.Fatalf("agenttunnel-desktop: remote daemon: %v", err)
+	}
+	holder := &connHolder{}
+	holder.setRemote(proxy)
+	app := newApp(holder, state, true, nil)
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
 // shellConn is the connection handoff the UI receives from the shell. It is
 // only shell capability data (where the daemon lives and how it is hosted);
 // everything else rides the same daemon WebSocket as any other client.
@@ -232,10 +259,14 @@ type shellConn struct {
 	launchThread string
 	host         string
 	attached     bool
+	// remoteName and remoteURL are set while the window drives a remote daemon.
+	// The remote token is never part of the handoff.
+	remoteName string
+	remoteURL  string
 }
 
 func (c shellConn) payload() map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"wsUrl":        c.wsURL,
 		"httpUrl":      c.httpURL,
 		"token":        c.token,
@@ -245,11 +276,15 @@ func (c shellConn) payload() map[string]any {
 		"attached":     c.attached,
 		"keepRunning":  keepRunning.Load(),
 	}
+	if c.remoteURL != "" {
+		out["remote"] = map[string]any{"name": c.remoteName, "url": c.remoteURL}
+	}
+	return out
 }
 
 // newApp creates the window and wires the shell's capability events. A nil
 // onWindowClosing leaves the platform's close behavior alone (attached mode).
-func newApp(conn shellConn, state string, terminateOnClose bool, onWindowClosing func(*application.App)) *application.App {
+func newApp(holder *connHolder, state string, terminateOnClose bool, onWindowClosing func(*application.App)) *application.App {
 	app := application.New(application.Options{
 		Name:        "AgentTunnel",
 		Description: "Multi-agent coding workflow",
@@ -279,19 +314,20 @@ func newApp(conn shellConn, state string, terminateOnClose bool, onWindowClosing
 		})
 	}
 
-	installShellEvents(app, conn, state)
+	installShellEvents(app, holder, state)
 	return app
 }
 
 // installShellEvents wires the events only the native shell can answer:
 // connection info, the native folder picker, external links, and the
 // keep-running preference.
-func installShellEvents(app *application.App, conn shellConn, state string) {
+func installShellEvents(app *application.App, holder *connHolder, state string) {
 	// Hand connection info to the UI. The UI asks for it on mount; the startup
 	// burst covers the window before the webview is listening.
 	app.Event.On("at:request", func(*application.CustomEvent) {
-		app.Event.Emit("at:connection", conn.payload())
+		app.Event.Emit("at:connection", holder.current().payload())
 	})
+	installRemoteEvents(app, holder, state)
 
 	// Native folder picker, used when adding a project. The UI asks over an event
 	// and receives the chosen path (empty when cancelled).
@@ -326,14 +362,14 @@ func installShellEvents(app *application.App, conn shellConn, state string) {
 		data, _ := e.Data.(map[string]any)
 		enabled, _ := data["enabled"].(bool)
 		keepRunning.Store(enabled)
-		if err := savePrefs(state, prefs{KeepRunning: enabled}); err != nil {
+		if err := updatePrefs(state, func(p *prefs) { p.KeepRunning = enabled }); err != nil {
 			log.Printf("agenttunnel-desktop: save desktop preferences: %v", err)
 		}
 	})
 
 	go func() {
 		for i := 0; i < 40; i++ {
-			app.Event.Emit("at:connection", conn.payload())
+			app.Event.Emit("at:connection", holder.current().payload())
 			time.Sleep(250 * time.Millisecond)
 		}
 	}()

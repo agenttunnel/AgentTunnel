@@ -16,7 +16,11 @@ export type Conn = {
   attached?: boolean;
   /** The shell's saved keep-running preference. */
   keepRunning?: boolean;
+  /** Set while the window drives a remote daemon. The token never reaches the UI. */
+  remote?: { name: string; url: string };
 };
+
+export type RemoteResult = { ok: boolean; error?: string; restart?: boolean };
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 type ThreadEventHandler = (event: unknown) => void;
@@ -275,4 +279,37 @@ export function pickFolder(): Promise<string | null> {
       resolve(null);
     }
   });
+}
+
+/** shellRemoteRequest sends one remote-daemon request to the shell and waits for its answer. */
+function shellRemoteRequest(channel: string, data: unknown): Promise<RemoteResult> {
+  if (!inDesktopShell()) {
+    return Promise.resolve({ ok: false, error: "A remote daemon needs the desktop app." });
+  }
+  return new Promise((resolve) => {
+    const off = Events.On("at:remote-result", (event: { data?: RemoteResult }) => {
+      if (typeof off === "function") off();
+      resolve(event.data ?? { ok: false, error: "No answer from the desktop app." });
+    });
+    Promise.resolve(Events.Emit(channel, data)).catch(() =>
+      resolve({ ok: false, error: "No answer from the desktop app." }),
+    );
+  });
+}
+
+/**
+ * connectRemote asks the shell to verify a remote daemon and token, save them,
+ * and switch the window to that daemon. A successful answer means the caller
+ * should reload so the window re-reads its connection.
+ */
+export function connectRemote(input: { name: string; url: string; token: string }): Promise<RemoteResult> {
+  return shellRemoteRequest("at:remote-connect", input);
+}
+
+/**
+ * disconnectRemote forgets the saved remote daemon. restart is true when the
+ * window cannot switch to the local daemon until the app restarts.
+ */
+export function disconnectRemote(): Promise<RemoteResult> {
+  return shellRemoteRequest("at:remote-disconnect", null);
 }
