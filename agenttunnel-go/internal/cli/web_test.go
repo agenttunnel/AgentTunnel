@@ -215,6 +215,13 @@ func TestRunWebFlagWithCommandIsUsageError(t *testing.T) {
 	if code != 2 || !strings.Contains(stderr, "takes no command") {
 		t.Fatalf("Run(--web . ps) = %d, stderr %q", code, stderr)
 	}
+	// A directory landing after other flags is a flag-ordering mistake, not a
+	// command: the error must name the --web spelling instead of quoting the
+	// directory as if it were one.
+	code, stderr = run("--web", "--home-dir", state, ".")
+	if code != 2 || !strings.Contains(stderr, "takes no command") || !strings.Contains(stderr, "--web=<dir>") {
+		t.Fatalf("Run(--web --home-dir X .) = %d, stderr %q", code, stderr)
+	}
 	code, stderr = run("--web", "--home-dir", state, "--daemon", "ws://127.0.0.1:1/ws")
 	if code != 2 || !strings.Contains(stderr, "--daemon") {
 		t.Fatalf("Run(--web --daemon …) = %d, stderr %q", code, stderr)

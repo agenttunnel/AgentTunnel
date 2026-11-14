@@ -152,7 +152,7 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 			return exitCode(env, usageError("--web cannot be combined with --daemon"))
 		}
 		if len(rest) > 0 {
-			return exitCode(env, usageError("agenttunnel --web takes no command (saw %q)", rest[0]))
+			return exitCode(env, usageError("agenttunnel --web takes no command (saw %q); --web takes its directory directly after the flag, or as --web=<dir>", rest[0]))
 		}
 		return exitCode(env, runWeb(context.Background(), env, env.Web))
 	}

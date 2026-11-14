@@ -118,7 +118,7 @@ func startWeb(ctx context.Context, env *Env, dir string) (*webServer, error) {
 	// and never touch its discovery file.
 	if c, info, cerr := env.connectExisting(ctx); cerr == nil {
 		c.Close()
-		return startWebAttached(ctx, env, info, resolved)
+		return startWebAttached(ctx, info, resolved)
 	}
 
 	// Serialize the "no daemon here yet, so I may boot one" decision across
@@ -132,7 +132,7 @@ func startWeb(ctx context.Context, env *Env, dir string) (*webServer, error) {
 	if c, info, cerr := env.connectExisting(ctx); cerr == nil {
 		c.Close()
 		lock.Release()
-		return startWebAttached(ctx, env, info, resolved)
+		return startWebAttached(ctx, info, resolved)
 	}
 	return startWebOwned(ctx, env, resolved, lock)
 }
@@ -250,7 +250,7 @@ func startWebOwned(ctx context.Context, env *Env, resolved string, lock *daemonl
 // the browser reaches the daemon through this server's /conn handoff and a
 // token-injecting /attachments proxy, so everything stays same-origin and the
 // daemon keeps no CORS surface.
-func startWebAttached(ctx context.Context, env *Env, info discovery.Info, resolved string) (*webServer, error) {
+func startWebAttached(ctx context.Context, info discovery.Info, resolved string) (*webServer, error) {
 	webCtx, cancel := context.WithCancel(ctx)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -358,9 +358,7 @@ func loopbackHostHeader(host string) bool {
 // webServer is a running web mode server: the web UI plus, in owned mode, the
 // daemon it owns and the daemon-served routes on the same listener.
 type webServer struct {
-	url      string
-	stateDir string
-	conn     webConn
+	url string
 
 	cancel    context.CancelFunc
 	serveDone chan struct{}
@@ -371,9 +369,6 @@ type webServer struct {
 
 // URL is the web server's http origin.
 func (w *webServer) URL() string { return w.url }
-
-// StateDir is the state directory the daemon was resolved against.
-func (w *webServer) StateDir() string { return w.stateDir }
 
 // Done is closed once serving has ended and cleanup has run.
 func (w *webServer) Done() <-chan struct{} { return w.serveDone }
