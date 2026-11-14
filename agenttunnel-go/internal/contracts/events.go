@@ -24,6 +24,7 @@ const (
 	EvtModelSet           EventType = "thread.model-set"
 	EvtAutoModeSet        EventType = "thread.automode-set"
 	EvtArchiveSet         EventType = "thread.archive-set"
+	EvtThreadSeen         EventType = "thread.seen"
 	EvtStatusPeriodSet    EventType = "thread.status-period-set"
 	EvtPeerMailboxSet     EventType = "thread.peer-mailbox-set"
 	EvtLeadsSet           EventType = "thread.leads-set"
@@ -134,6 +135,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AutoModeSet](data)
 	case EvtArchiveSet:
 		return decodePayload[ArchiveSet](data)
+	case EvtThreadSeen:
+		return decodePayload[ThreadSeen](data)
 	case EvtStatusPeriodSet:
 		return decodePayload[StatusPeriodSet](data)
 	case EvtPeerMailboxSet:
@@ -328,6 +331,13 @@ func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
 type ArchiveSet struct{ Archived bool }
 
 func (ArchiveSet) eventType() EventType { return EvtArchiveSet }
+
+// ThreadSeen records that a user opened the thread after its newest completed
+// turn, clearing its "unseen" state. The envelope's time is the view time.
+// Repeated opens with nothing new in between record nothing.
+type ThreadSeen struct{}
+
+func (ThreadSeen) eventType() EventType { return EvtThreadSeen }
 
 // Status report period limits, in seconds. Zero turns the report off; new
 // threads start at the default.

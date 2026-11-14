@@ -356,6 +356,12 @@ type ThreadSummary struct {
 	RunningAgents     int  `json:"runningAgents"`
 	StaleAfterSeconds int  `json:"staleAfterSeconds"`
 	Stale             bool `json:"stale"`
+
+	// LastSeenAt is when a user last opened the thread; nil is never. A pointer
+	// keeps the zero time off the wire for never-viewed threads.
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	// Unseen is derived: the newest completed turn ended after the last view.
+	Unseen bool `json:"unseen"`
 }
 
 // AgentView pairs an agent with its accumulated usage.
@@ -1069,6 +1075,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				}
 			}
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
+			// A running thread is seen by definition; otherwise a completed turn
+			// after the last view is what makes a thread unseen. A thread with
+			// no completed turn at all (a draft) is never unseen.
+			ended := st.LastTurnEndedAt()
+			unseen := running == 0 && !ended.IsZero() &&
+				(st.LastSeenAt == nil || ended.After(*st.LastSeenAt))
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				FirstPrompt: firstUserPrompt(st),
@@ -1076,6 +1088,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
 				Draft: st.Draft, Issue: st.Issue,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+				LastSeenAt: st.LastSeenAt, Unseen: unseen,
 			})
 		}
 		// The thread list is a recency list: newest activity first. Event stores
@@ -1468,6 +1481,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.markSeen":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadSeen, ThreadID: p.ThreadID,
 		}); err != nil {
 			return nil, err
 		}

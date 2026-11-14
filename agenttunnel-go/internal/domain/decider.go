@@ -201,6 +201,23 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.ArchiveSet{Archived: *cmd.Archived}}, nil
 
+	case contracts.CmdThreadSeen:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		// A view is recorded only when there is something new to see: the
+		// newest completed turn ended after the last recorded view. So
+		// "unseen" is "a turn finished after the user last SAW the thread" —
+		// the frontend re-fires markSeen when a turn ends while the thread is
+		// open, so watching a turn complete counts as seeing it. A thread with
+		// no completed turn (a draft, or a first turn still running — ended is
+		// zero, which never follows any stamp) has nothing to mark yet.
+		ended := s.LastTurnEndedAt()
+		if ended.IsZero() || (s.LastSeenAt != nil && !ended.After(*s.LastSeenAt)) {
+			return nil, nil
+		}
+		return []contracts.EventPayload{contracts.ThreadSeen{}}, nil
+
 	case contracts.CmdAutoModeSet:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

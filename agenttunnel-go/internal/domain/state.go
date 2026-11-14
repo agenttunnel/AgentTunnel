@@ -86,6 +86,11 @@ type ThreadState struct {
 	Archived  bool   `json:"archived"`
 	Title     string `json:"title"`
 	ProjectID string `json:"projectId,omitempty"`
+	// LastSeenAt is when a user last saw the thread (opened it, or had it open
+	// when a turn ended). A pointer so "never" is key-absent on the wire, the
+	// same sentinel thread.list's summary uses; the unseen derivation
+	// compares it against the last turn end.
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
 	// Draft is a thread that has not run yet: it has a title and description,
 	// no worktree, and no turns. Its first turn clears the flag.
 	Draft       bool                     `json:"draft,omitempty"`
@@ -225,6 +230,18 @@ func (s *ThreadState) LeadCount() int {
 	return s.Leads
 }
 
+// LastTurnEndedAt is when a lead last reached a terminal status: the
+// thread's newest completed turn. Zero for drafts and pre-tracking logs.
+func (s *ThreadState) LastTurnEndedAt() time.Time {
+	var last time.Time
+	for _, t := range s.Turns {
+		if !t.EndedAt.IsZero() && t.EndedAt.After(last) {
+			last = t.EndedAt
+		}
+	}
+	return last
+}
+
 // NewThreadState returns an empty read model for a thread.
 func NewThreadState(id contracts.ThreadID) *ThreadState {
 	return &ThreadState{
@@ -280,6 +297,10 @@ func (s *ThreadState) HasPullRequest(url string) bool {
 // Clone returns a deep copy so readers cannot race the engine's worker.
 func (s *ThreadState) Clone() *ThreadState {
 	c := *s
+	if s.LastSeenAt != nil {
+		at := *s.LastSeenAt
+		c.LastSeenAt = &at
+	}
 	c.Messages = append([]Message(nil), s.Messages...)
 	for i, m := range c.Messages {
 		if len(m.Images) > 0 {

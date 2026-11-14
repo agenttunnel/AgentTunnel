@@ -21,6 +21,7 @@ const (
 	CmdModelSet           CommandType = "thread.model.set"
 	CmdAutoModeSet        CommandType = "thread.automode.set"
 	CmdArchiveSet         CommandType = "thread.archive.set"
+	CmdThreadSeen         CommandType = "thread.seen"
 	CmdStatusPeriodSet    CommandType = "thread.status-period.set"
 	CmdPeerMailboxSet     CommandType = "thread.peer-mailbox.set"
 	CmdLeadsSet           CommandType = "thread.leads.set"
