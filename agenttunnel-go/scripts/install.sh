@@ -5,20 +5,43 @@
 # Spotlight/Launchpad with its icon) and links agenttunnel-desktop into
 # ~/.local/bin. Every platform gets the atd daemon and the agenttunnel CLI.
 #
+# --server (Linux only) installs a headless daemon instead: just atd and the
+# agenttunnel CLI, a dedicated state directory, a systemd unit, and a sample
+# Caddyfile that puts TLS in front of atd. Nothing is started; the script
+# prints the commands to run next.
+#
 # Usage:
 #   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
+#   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sudo sh -s -- --server
 #
 # Environment:
 #   AGENTTUNNEL_VERSION      Release tag to install (default: latest).
-#   AGENTTUNNEL_INSTALL_DIR  CLI directory (default: ~/.local/bin).
+#   AGENTTUNNEL_INSTALL_DIR  CLI directory (default: ~/.local/bin; /usr/local/bin with --server).
 #   AGENTTUNNEL_APP_DIR      macOS app directory (default: ~/Applications).
 #   AGENTTUNNEL_REPO         GitHub repository (default: agenttunnel/AgentTunnel).
 #   AGENTTUNNEL_BASE_URL     Override the release download base URL.
+#
+# --server only:
+#   AGENTTUNNEL_STATE_DIR    State directory (default: /var/lib/agenttunnel).
+#   AGENTTUNNEL_USER         Service account that runs atd (default: agenttunnel).
+#                            Created when running as root and missing.
+#   AGENTTUNNEL_SYSTEMD_DIR  Where atd.service is written (default: /etc/systemd/system).
+#   AGENTTUNNEL_CONFIG_DIR   Where Caddyfile.sample is written (default: /etc/agenttunnel).
 set -eu
+
+server=0
+for arg in "$@"; do
+  case "$arg" in
+    --server) server=1 ;;
+    *)
+      echo "install: unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 repo="${AGENTTUNNEL_REPO:-agenttunnel/AgentTunnel}"
 version="${AGENTTUNNEL_VERSION:-latest}"
-install_dir="${AGENTTUNNEL_INSTALL_DIR:-${HOME:-/tmp}/.local/bin}"
 app_dir="${AGENTTUNNEL_APP_DIR:-${HOME:-/tmp}/Applications}"
 
 case "$(uname -s)" in
@@ -31,6 +54,11 @@ case "$(uname -s)" in
     ;;
 esac
 
+if [ "$server" -eq 1 ] && [ "$os" != "linux" ]; then
+  echo "install: --server is supported on Linux only (this is ${os})" >&2
+  exit 1
+fi
+
 case "$(uname -m)" in
   x86_64 | amd64) arch=amd64 ;;
   arm64 | aarch64) arch=arm64 ;;
@@ -40,6 +68,13 @@ case "$(uname -m)" in
     ;;
 esac
 
+if [ "$server" -eq 1 ]; then
+  default_install_dir=/usr/local/bin
+else
+  default_install_dir="${HOME:-/tmp}/.local/bin"
+fi
+install_dir="${AGENTTUNNEL_INSTALL_DIR:-$default_install_dir}"
+
 if [ -n "${AGENTTUNNEL_BASE_URL:-}" ]; then
   base="${AGENTTUNNEL_BASE_URL%/}"
 elif [ "$version" = "latest" ]; then
@@ -47,6 +82,106 @@ elif [ "$version" = "latest" ]; then
 else
   base="https://github.com/${repo}/releases/download/${version}"
 fi
+
+# setup_server writes the systemd unit, the state directory, and the sample
+# Caddyfile for a headless atd. $1 is the directory atd was installed into.
+setup_server() {
+  bin_dir="$1"
+  state_dir="${AGENTTUNNEL_STATE_DIR:-/var/lib/agenttunnel}"
+  systemd_dir="${AGENTTUNNEL_SYSTEMD_DIR:-/etc/systemd/system}"
+  config_dir="${AGENTTUNNEL_CONFIG_DIR:-/etc/agenttunnel}"
+  service_user="${AGENTTUNNEL_USER:-agenttunnel}"
+  unit="${systemd_dir}/atd.service"
+  caddyfile="${config_dir}/Caddyfile.sample"
+  root=0
+  if [ "$(id -u)" -eq 0 ]; then root=1; fi
+
+  if [ "$root" -eq 1 ] && ! id "$service_user" >/dev/null 2>&1; then
+    if ! useradd --system --home-dir "$state_dir" --shell /usr/sbin/nologin "$service_user"; then
+      echo "install: cannot create service user ${service_user}" >&2
+      exit 1
+    fi
+    echo "install: created system user ${service_user}"
+  fi
+
+  # The state dir holds the token, provider logins (HOME is the state dir for
+  # the service user), and thread data. Only the owner may read it.
+  if ! mkdir -p "$state_dir/workspace" "$systemd_dir" "$config_dir"; then
+    echo "install: cannot create ${state_dir}, ${systemd_dir}, or ${config_dir}" >&2
+    echo "install: run as root, or set AGENTTUNNEL_STATE_DIR, AGENTTUNNEL_SYSTEMD_DIR, AGENTTUNNEL_CONFIG_DIR" >&2
+    exit 1
+  fi
+  chmod 0700 "$state_dir"
+  if [ "$root" -eq 1 ]; then
+    chown "$service_user:$service_user" "$state_dir" "$state_dir/workspace"
+  fi
+
+  cat >"$unit" <<EOF
+# AgentTunnel daemon. Installed by install-agenttunnel-go.sh --server.
+# atd binds loopback only; put a TLS reverse proxy (see Caddyfile.sample) in front.
+[Unit]
+Description=AgentTunnel daemon (atd)
+Documentation=https://github.com/agenttunnel/AgentTunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${service_user}
+Group=${service_user}
+ExecStart=${bin_dir}/atd --host 127.0.0.1 --port 7331 --home-dir ${state_dir} --workdir ${state_dir}/workspace
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$unit"
+
+  cat >"$caddyfile" <<'EOF'
+# Sample Caddyfile: TLS reverse proxy in front of atd.
+#
+# Copy this into your Caddy config (usually /etc/caddy/Caddyfile), replace the
+# host name, and reload Caddy. Caddy obtains the TLS certificate itself.
+#
+# atd listens on 127.0.0.1:7331 only. Caddy connects from loopback, which is
+# what lets clients pass the token as ?token= (browser clients cannot set an
+# Authorization header on a WebSocket). CLI clients should send
+# "Authorization: Bearer <token>" instead.
+#
+# Caddy logs the request URI by default, and that includes ?token=. Redact it
+# in the log block below (unverified against a Caddy binary; check it with
+# `caddy validate` before relying on it).
+
+atd.example.com {
+	reverse_proxy 127.0.0.1:7331
+
+	# log {
+	# 	output file /var/log/caddy/atd-access.log
+	# 	format filter {
+	# 		wrap json
+	# 		fields {
+	# 			request>uri query {
+	# 				replace token REDACTED
+	# 			}
+	# 		}
+	# 	}
+	# }
+}
+EOF
+  chmod 0644 "$caddyfile"
+
+  echo "install: wrote ${unit}"
+  echo "install: wrote ${caddyfile}"
+  echo "install: state directory ${state_dir} (the token is created on first start at ${state_dir}/token, mode 0600)"
+  echo "next:"
+  echo "  1. Log each provider CLI in as ${service_user} on this host (its HOME is ${state_dir})."
+  echo "  2. sudo systemctl daemon-reload && sudo systemctl enable --now atd"
+  echo "  3. Edit ${caddyfile}, copy it into your Caddy config, and reload Caddy."
+  echo "  4. Read the token with: sudo cat ${state_dir}/token"
+}
 
 tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t agenttunnel)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM
@@ -100,6 +235,10 @@ tar -xzf "$tmpdir/$asset" -C "$tmpdir"
 
 installed=0
 for name in atd agenttunnel agenttunnel-desktop; do
+  # A headless server has no desktop shell to run.
+  if [ "$server" -eq 1 ] && [ "$name" = "agenttunnel-desktop" ]; then
+    continue
+  fi
   for candidate in "$name" "$name.exe"; do
     if [ -f "$tmpdir/$candidate" ]; then
       if [ "$name" = "agenttunnel-desktop" ] && [ -n "$app_binary" ]; then
@@ -121,6 +260,12 @@ if [ "$installed" -eq 0 ]; then
 fi
 
 echo "install: installed into ${install_dir}"
+
+if [ "$server" -eq 1 ]; then
+  setup_server "$install_dir"
+  exit 0
+fi
+
 if [ "$os" = "darwin" ] && [ -n "$app_binary" ]; then
   echo "install: launch AgentTunnel from ${app_dir}/AgentTunnel.app"
 fi

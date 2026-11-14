@@ -1,0 +1,20 @@
+# AgentTunnel daemon. Installed by install-agenttunnel-go.sh --server.
+# atd binds loopback only; put a TLS reverse proxy (see Caddyfile.sample) in front.
+[Unit]
+Description=AgentTunnel daemon (atd)
+Documentation=https://github.com/agenttunnel/AgentTunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agenttunnel
+Group=agenttunnel
+ExecStart=/usr/local/bin/atd --host 127.0.0.1 --port 7331 --home-dir /var/lib/agenttunnel --workdir /var/lib/agenttunnel/workspace
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

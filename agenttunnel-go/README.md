@@ -83,8 +83,10 @@ Daemon (the server any client connects to):
 
 ```bash
 go run ./cmd/atd --port 7331 --workdir /path/to/a/repo
-# prints: pairing URL: http://127.0.0.1:7331/?token=...
+# prints: atd token file: <state dir>/token (the token is not logged)
 ```
+
+The token is read from `--token-file`, then `AT_DAEMON_TOKEN`, then `<state dir>/token`, which is created (0600) on first start and reused after that. Read it with `cat <state dir>/token`.
 
 Desktop app (embeds the daemon and opens a native window):
 
