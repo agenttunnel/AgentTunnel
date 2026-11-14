@@ -5,7 +5,7 @@
  * command never starts or steers a turn.
  */
 
-export type CenterTab = "chat" | "review" | "graph" | "board";
+export type CenterTab = "chat" | "review" | "graph" | "board" | "p2p";
 
 export type SlashCommand = {
   name: string;
@@ -36,6 +36,7 @@ const CENTER_TABS: { tab: CenterTab; description: string }[] = [
   { tab: "review", description: "Show the review view" },
   { tab: "graph", description: "Show the agent graph" },
   { tab: "board", description: "Show the task board" },
+  { tab: "p2p", description: "Show the agent-to-agent chat" },
 ];
 
 export function buildCommands<P extends string>(a: SlashActions<P>): SlashCommand[] {

@@ -6002,3 +6002,174 @@ button.danger-text {
   font: 600 10.5px var(--mono);
   fill: var(--text);
 }
+
+/* --- peer chat -----------------------------------------------------------
+ * The thread mailbox as one group conversation: day dividers, a sender
+ * header per run, bubbles underneath. Static rules only — no per-message
+ * animation, rows are memoized by content. */
+.pc-stream {
+  max-width: 860px;
+  margin: 0 auto;
+}
+.pc-day {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 10px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pc-day::before,
+.pc-day::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border-soft);
+}
+.pc-msg {
+  margin: 2px 0;
+}
+.pc-msg.first {
+  margin-top: 12px;
+}
+.pc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 4px 3px;
+  min-width: 0;
+}
+.pc-ava {
+  align-self: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  background: var(--panel-2);
+}
+/* Same pastel washes as graph nodes, scoped to the avatar dot. */
+.pc-ava.h-claude {
+  background: rgba(250, 179, 135, 0.18);
+  border-color: rgba(250, 179, 135, 0.5);
+}
+.pc-ava.h-opencode {
+  background: rgba(140, 169, 238, 0.18);
+  border-color: rgba(140, 169, 238, 0.5);
+}
+.pc-ava.h-codex {
+  background: rgba(166, 209, 137, 0.18);
+  border-color: rgba(166, 209, 137, 0.5);
+}
+.pc-ava.h-cursor {
+  background: rgba(237, 135, 150, 0.18);
+  border-color: rgba(237, 135, 150, 0.5);
+}
+.pc-ava.h-pi {
+  background: rgba(244, 231, 148, 0.18);
+  border-color: rgba(244, 231, 148, 0.5);
+}
+.pc-ava.h-commandcode {
+  background: rgba(227, 196, 113, 0.2);
+  border-color: rgba(227, 196, 113, 0.55);
+}
+.pc-ava.h-grok {
+  background: rgba(171, 178, 196, 0.18);
+  border-color: rgba(171, 178, 196, 0.5);
+}
+.pc-name {
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.pc-lead {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--agent-line);
+  background: var(--agent-soft);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pc-role {
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.pc-to {
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.pc-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--warn);
+  background: rgba(229, 181, 103, 0.1);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.pc-time {
+  margin-left: auto;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.pc-bubble {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  border-top-left-radius: 3px;
+  padding: 9px 12px;
+  font-size: 13px;
+  max-width: 76ch;
+}
+.pc-msg.first .pc-bubble {
+  border-top-left-radius: 10px;
+}
+.pc-bubble > :first-child {
+  margin-top: 0;
+}
+.pc-bubble > :last-child {
+  margin-bottom: 0;
+}
+.pc-bubble pre {
+  margin: 8px 0;
+}
+/* Peer chat's off state: centered card with the same switch the header has. */
+.pc-off {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pc-off-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 400px;
+  text-align: center;
+}
+.pc-off-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.pc-off-sub {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
