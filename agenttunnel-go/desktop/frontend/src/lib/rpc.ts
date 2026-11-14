@@ -194,6 +194,20 @@ export async function fetchImageBlob(
 
 /** discover asks the desktop shell for the daemon's loopback address + token. */
 export function discover(): Promise<Conn> {
+  // Served as the daemon's web UI, /conn describes the same connection
+  // same-origin; anything but the desktop shell reads it there. The
+  // at:connection event can never fire in a plain browser, so a failed
+  // handoff rejects with a reason the UI can show instead of falling back
+  // to a wait that never settles.
+  if (!inDesktopShell())
+    return discoverOverHttp().catch((e) => {
+      throw new Error(`web UI handoff failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  return discoverViaShell();
+}
+
+/** discoverViaShell is the desktop shell path: ask for an at:connection push. */
+function discoverViaShell(): Promise<Conn> {
   return new Promise((resolve) => {
     Events.On("at:connection", (event: { data: Conn }) => resolve(event.data));
     try {
@@ -204,8 +218,19 @@ export function discover(): Promise<Conn> {
   });
 }
 
+/** discoverOverHttp reads the same-origin /conn the daemon web UI is served with. */
+async function discoverOverHttp(): Promise<Conn> {
+  const res = await fetch("/conn", { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`/conn replied ${res.status}`);
+  const conn = (await res.json()) as Conn;
+  if (typeof conn.wsUrl !== "string" || typeof conn.token !== "string") {
+    throw new Error("/conn is not a connection object");
+  }
+  return conn;
+}
+
 /** inDesktopShell mirrors the Wails runtime's own transport check: outside the shell there is no native bridge. */
-function inDesktopShell(): boolean {
+export function inDesktopShell(): boolean {
   const w = window as Window & {
     chrome?: { webview?: unknown };
     webkit?: { messageHandlers?: { external?: unknown } };
@@ -251,6 +276,7 @@ export function installExternalLinks(): void {
  * is a no-op.
  */
 export function setKeepRunning(enabled: boolean): void {
+  if (!inDesktopShell()) return;
   try {
     Events.Emit("at:keep-running", { enabled });
   } catch {
@@ -263,6 +289,9 @@ export function setKeepRunning(enabled: boolean): void {
  * the chosen path, or null when cancelled or when not running in the shell.
  */
 export function pickFolder(): Promise<string | null> {
+  // Outside the shell the emit is a no-op and the at:folder event never
+  // comes; settle null at once instead of leaving the caller pending.
+  if (!inDesktopShell()) return Promise.resolve(null);
   return new Promise((resolve) => {
     let done = false;
     const off = Events.On("at:folder", (event: { data?: { path?: string } }) => {

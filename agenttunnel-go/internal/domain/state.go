@@ -86,14 +86,22 @@ type ThreadState struct {
 	Archived  bool   `json:"archived"`
 	Title     string `json:"title"`
 	ProjectID string `json:"projectId,omitempty"`
+	// LastSeenAt is when a user last saw the thread (opened it, or had it open
+	// when a turn ended). A pointer so "never" is key-absent on the wire, the
+	// same sentinel thread.list's summary uses; the unseen derivation
+	// compares it against the last turn end.
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
 	// Draft is a thread that has not run yet: it has a title and description,
 	// no worktree, and no turns. Its first turn clears the flag.
-	Draft       bool                     `json:"draft,omitempty"`
-	Description string                   `json:"description,omitempty"`
-	Issue       *contracts.IssueRef      `json:"issue,omitempty"`
-	UpdatedAt   time.Time                `json:"updatedAt"`
-	Model       contracts.ModelSelection `json:"model"`
-	AutoMode    bool                     `json:"autoMode"`
+	Draft       bool                `json:"draft,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Issue       *contracts.IssueRef `json:"issue,omitempty"`
+	// CreatedAt is when the thread was created: the ThreadCreated event's
+	// envelope time. It never moves; UpdatedAt advances with every event.
+	CreatedAt time.Time                `json:"createdAt"`
+	UpdatedAt time.Time                `json:"updatedAt"`
+	Model     contracts.ModelSelection `json:"model"`
+	AutoMode  bool                     `json:"autoMode"`
 	// StatusPeriodSeconds is how often a running turn posts a workflow status
 	// report into the thread. Zero means off.
 	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`
@@ -105,6 +113,9 @@ type ThreadState struct {
 	// entry means the lead inherits the orchestrator role. Read through
 	// LeadRuntimeFor.
 	LeadRuntimes []contracts.LeadRuntime `json:"leadRuntimes,omitempty"`
+	// SoloRuntime is the thread's solo override: one agent on one harness, no
+	// orchestrator team. Nil means orchestrator mode. Read through Solo.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
 	// RoleRuntimes holds thread-scoped runtime overrides keyed by role id. They
 	// win over the daemon-wide settings.RoleConfig for this thread only, so two
 	// concurrent turns can run different runtimes. Read through RoleRuntimeFor.
@@ -121,14 +132,26 @@ type ThreadState struct {
 	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
 	// Subthreads lists the threads this one started, in start order.
 	Subthreads []contracts.ThreadID `json:"subthreads,omitempty"`
-	Messages   []Message            `json:"messages"`
+	// Waiting is the thread's armed schedule: the prompt to run once its
+	// dependencies finish. Nil while no schedule is set, or once it has fired
+	// or been cancelled.
+	Waiting *contracts.ScheduleSpec `json:"waiting,omitempty"`
+	// TriggeredFrom records the dependencies that fired the thread's last
+	// scheduled turn. It stays readable after the turn ends; a later trigger
+	// overwrites it.
+	TriggeredFrom []contracts.ThreadID `json:"triggeredFrom,omitempty"`
+	// ControlledBy names the thread that controls this one — it relaunches the
+	// thread while it stays in charge. Empty means the user runs it.
+	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
+	Messages     []Message          `json:"messages"`
 	// Tasks is the agreed task list, in the order the leads added them.
 	Tasks []TaskItem `json:"tasks"`
 	// PullRequests lists the pull requests this thread opened, in the order they
 	// were first seen. Keyed by URL.
 	PullRequests []contracts.PullRequestRef `json:"pullRequests,omitempty"`
 
-	// Turn counts user messages: the turn spend currently accrues to.
+	// Turn counts turn-opening messages — the user's own and the
+	// controller's relaunches: the turn spend currently accrues to.
 	Turn  int         `json:"turn"`
 	Turns []TurnUsage `json:"turns"`
 
@@ -225,6 +248,22 @@ func (s *ThreadState) LeadCount() int {
 	return s.Leads
 }
 
+// LastTurnEndedAt is when a lead last reached a terminal status: the
+// thread's newest completed turn. Zero for drafts and pre-tracking logs.
+func (s *ThreadState) LastTurnEndedAt() time.Time {
+	var last time.Time
+	for _, t := range s.Turns {
+		if !t.EndedAt.IsZero() && t.EndedAt.After(last) {
+			last = t.EndedAt
+		}
+	}
+	return last
+}
+
+// Solo reports whether the thread runs in solo mode: one agent on one
+// harness, no orchestrator team.
+func (s *ThreadState) Solo() bool { return s.SoloRuntime != nil }
+
 // NewThreadState returns an empty read model for a thread.
 func NewThreadState(id contracts.ThreadID) *ThreadState {
 	return &ThreadState{
@@ -280,6 +319,10 @@ func (s *ThreadState) HasPullRequest(url string) bool {
 // Clone returns a deep copy so readers cannot race the engine's worker.
 func (s *ThreadState) Clone() *ThreadState {
 	c := *s
+	if s.LastSeenAt != nil {
+		at := *s.LastSeenAt
+		c.LastSeenAt = &at
+	}
 	c.Messages = append([]Message(nil), s.Messages...)
 	for i, m := range c.Messages {
 		if len(m.Images) > 0 {
@@ -297,8 +340,18 @@ func (s *ThreadState) Clone() *ThreadState {
 	}
 	c.Questions = append([]Question(nil), s.Questions...)
 	c.Subthreads = append([]contracts.ThreadID(nil), s.Subthreads...)
+	if s.Waiting != nil {
+		waiting := *s.Waiting
+		waiting.DependsOn = append([]contracts.ThreadID(nil), s.Waiting.DependsOn...)
+		c.Waiting = &waiting
+	}
+	c.TriggeredFrom = append([]contracts.ThreadID(nil), s.TriggeredFrom...)
 	c.PullRequests = append([]contracts.PullRequestRef(nil), s.PullRequests...)
 	c.LeadRuntimes = append([]contracts.LeadRuntime(nil), s.LeadRuntimes...)
+	if s.SoloRuntime != nil {
+		rt := *s.SoloRuntime
+		c.SoloRuntime = &rt
+	}
 	c.RoleRuntimes = make(map[string]contracts.LeadRuntime, len(s.RoleRuntimes))
 	for k, v := range s.RoleRuntimes {
 		c.RoleRuntimes[k] = v

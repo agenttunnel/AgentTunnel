@@ -46,6 +46,10 @@ type Store struct {
 	projects      []Project
 	staleAfterMin int
 	relay         Relay
+	// masterRuntime overrides the master chat's harness/model/variant,
+	// separately from the Orchestrator role's runtime that thread leads use.
+	masterRuntime  *RoleConfig
+	masterReporter bool
 }
 
 // Relay is the outbound relay configuration. The zero value is off: the daemon
@@ -73,12 +77,21 @@ type fileConfig struct {
 	Projects          []Project                 `json:"projects"`
 	StaleAfterMinutes int                       `json:"staleAfterMinutes"`
 	Relay             Relay                     `json:"relay"`
+	MasterRuntime     *fileMasterRuntimeConfig  `json:"masterRuntime,omitempty"`
+	MasterReporter    bool                      `json:"masterReporter,omitempty"`
 }
 
 type fileRoleConfig struct {
 	Harness string `json:"harness"`
 	Model   string `json:"model"`
 	Variant string `json:"variant"`
+}
+
+// fileMasterRuntimeConfig is settings.json's persisted master runtime override.
+type fileMasterRuntimeConfig struct {
+	Harness string `json:"harness,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Variant string `json:"variant,omitempty"`
 }
 
 // New returns an in-memory store seeded with a default working directory. It does
@@ -167,6 +180,15 @@ func (s *Store) apply(fc fileConfig) {
 
 	s.projects = append([]Project(nil), fc.Projects...)
 	s.relay = fc.Relay
+	if fc.MasterRuntime != nil {
+		rc := RoleConfig{
+			Harness: contracts.Harness(fc.MasterRuntime.Harness),
+			Model:   fc.MasterRuntime.Model,
+			Variant: fc.MasterRuntime.Variant,
+		}
+		s.masterRuntime = &rc
+	}
+	s.masterReporter = fc.MasterReporter
 }
 
 // --- reads ---
@@ -423,6 +445,49 @@ func (s *Store) RemoveProject(id string) {
 	s.persistLocked()
 }
 
+// --- master chat ---
+
+// MasterRuntime returns the master chat's runtime override, if one is set.
+// Empty fields inherit the Orchestrator role's runtime.
+func (s *Store) MasterRuntime() (RoleConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.masterRuntime == nil {
+		return RoleConfig{}, false
+	}
+	return *s.masterRuntime, true
+}
+
+// SetMasterRuntime replaces the master chat's runtime override. A zero config
+// removes it, so the master runs on the Orchestrator role's default.
+func (s *Store) SetMasterRuntime(rc RoleConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rc == (RoleConfig{}) {
+		s.masterRuntime = nil
+	} else {
+		copy := rc
+		s.masterRuntime = &copy
+	}
+	s.persistLocked()
+}
+
+// MasterReporter reports whether reporter mode is on: the master sends a status
+// report over WhatsApp whenever connectivity is established.
+func (s *Store) MasterReporter() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.masterReporter
+}
+
+// SetMasterReporter turns reporter mode on or off.
+func (s *Store) SetMasterReporter(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.masterReporter = enabled
+	s.persistLocked()
+}
+
 // --- persistence ---
 
 func (s *Store) snapshotLocked() fileConfig {
@@ -454,6 +519,14 @@ func (s *Store) snapshotLocked() fileConfig {
 	for h, list := range s.custom {
 		fc.CustomModels[string(h)] = append([]string(nil), list...)
 	}
+	if s.masterRuntime != nil {
+		fc.MasterRuntime = &fileMasterRuntimeConfig{
+			Harness: string(s.masterRuntime.Harness),
+			Model:   s.masterRuntime.Model,
+			Variant: s.masterRuntime.Variant,
+		}
+	}
+	fc.MasterReporter = s.masterReporter
 	return fc
 }
 

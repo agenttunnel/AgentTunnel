@@ -23,6 +23,11 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Draft = p.Draft
 		s.Description = p.Description
 		s.Issue = p.Issue
+		// Submission time is stamped from the envelope, unconditionally: a
+		// provisional thread's in-memory preview gives way to the durable
+		// event time, so the live read model and a replay of the same log
+		// agree.
+		s.CreatedAt = e.At
 
 	case contracts.ThreadDescribed:
 		s.Description = p.Description
@@ -48,14 +53,30 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.Exists = false
 		s.Deleted = true
 
+	case contracts.ThreadScheduled:
+		spec := contracts.ScheduleSpec{Prompt: p.Prompt, DependsOn: append([]contracts.ThreadID(nil), p.DependsOn...)}
+		s.Waiting = &spec
+
+	case contracts.ThreadTriggered:
+		s.Waiting = nil
+		s.TriggeredFrom = append([]contracts.ThreadID(nil), p.DependsOn...)
+
+	case contracts.ThreadScheduleCancelled:
+		s.Waiting = nil
+
+	case contracts.ThreadControlled:
+		s.ControlledBy = p.Controller
+
 	case contracts.MessageSent:
 		msg := Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At}
 		if len(p.Images) > 0 {
 			msg.Images = append([]contracts.ImageRef(nil), p.Images...)
 		}
 		s.Messages = append(s.Messages, msg)
-		// A user message opens a turn; steering and reports stay in the current one.
-		if p.Author == "user" {
+		// A user message opens a turn, and so does a message authored by the
+		// thread's controller — a relaunch is a real turn, with its own prompt
+		// and its own spend. Steering and reports stay in the current one.
+		if p.Author == "user" || (s.ControlledBy != "" && p.Author == string(s.ControlledBy)) {
 			s.Turn++
 			s.turnFor(s.Turn).At = e.At
 		}
@@ -83,6 +104,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
 
+	case contracts.ThreadSeen:
+		// Copy the stamp to a local before taking its address: e.At belongs to
+		// the shared event envelope and must not be aliased into the state.
+		if s.LastSeenAt == nil || e.At.After(*s.LastSeenAt) {
+			at := e.At
+			s.LastSeenAt = &at
+		}
+
 	case contracts.StatusPeriodSet:
 		s.StatusPeriodSeconds = p.PeriodSeconds
 
@@ -102,6 +131,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 			s.LeadRuntimes = append(s.LeadRuntimes, contracts.LeadRuntime{})
 		}
 		s.LeadRuntimes[p.Index] = p.Runtime
+
+	case contracts.SoloRuntimeSet:
+		if p.Runtime.Harness == "" {
+			s.SoloRuntime = nil
+		} else {
+			rt := p.Runtime
+			s.SoloRuntime = &rt
+		}
 
 	case contracts.RoleRuntimeSet:
 		if s.RoleRuntimes == nil {
@@ -262,7 +299,12 @@ func Project(s *ThreadState, e contracts.Event) error {
 	default:
 		return fmt.Errorf("project: unknown event payload %T", e.Payload)
 	}
-	s.UpdatedAt = e.At
+	// A view is not activity: recording it must not reshuffle the recency list,
+	// so ThreadSeen leaves UpdatedAt alone. Version still advances — that is
+	// why the bump sits after the switch instead of an early return.
+	if _, isSeen := e.Payload.(contracts.ThreadSeen); !isSeen {
+		s.UpdatedAt = e.At
+	}
 	s.Version = e.Seq
 	return nil
 }

@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,6 +17,10 @@ func TestOpenRequiresOneThreadRef(t *testing.T) {
 		if !errors.As(err, &ee) || ee.code != 2 {
 			t.Fatalf("runOpen(%q) = %v, want a usage error", args, err)
 		}
+	}
+	err := runOpen(context.Background(), env, []string{"a", "b"})
+	if err == nil || !strings.Contains(err.Error(), "agenttunnel open <thread | dir>") {
+		t.Fatalf("runOpen(two args) = %v, want the usage text to mention the dir form", err)
 	}
 }
 
@@ -62,5 +68,90 @@ func TestOpenThreadInDesktopUnknownThreadLaunchesNothing(t *testing.T) {
 	}
 	if _, err := openThreadInDesktop(context.Background(), fake, "th_missing", "/bin/x", start); err == nil {
 		t.Fatal("unknown thread resolved")
+	}
+}
+
+func TestOpenDirectoryLaunchesDesktopWithoutDaemon(t *testing.T) {
+	// An unroutable daemon URL makes any Connect fail fast: a nil error here
+	// proves dir mode never contacts a daemon.
+	launches := stubDesktop(t)
+	env, out := newUsageTestEnv()
+	env.DaemonURL = "ws://127.0.0.1:1/ws"
+	dir := t.TempDir()
+	if err := runOpen(context.Background(), env, []string{dir}); err != nil {
+		t.Fatalf("runOpen(dir): %v", err)
+	}
+	if len(*launches) != 1 {
+		t.Fatalf("launches = %+v, want exactly one", *launches)
+	}
+	launch := (*launches)[0]
+	if len(launch.args) != 1 || launch.args[0] != dir {
+		t.Fatalf("launched %q, want the absolutized dir as the only argument (%q)", launch.args, dir)
+	}
+	if !strings.Contains(out.String(), "Opening "+dir+" in AgentTunnel desktop") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestOpenDirectoryAbsolutizesRelativeArg(t *testing.T) {
+	launches := stubDesktop(t)
+	env, _ := newUsageTestEnv()
+	env.DaemonURL = "ws://127.0.0.1:1/ws"
+	t.Chdir(t.TempDir())
+	want, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runOpen(context.Background(), env, []string{"."}); err != nil {
+		t.Fatalf("runOpen(.): %v", err)
+	}
+	if len(*launches) != 1 || len((*launches)[0].args) != 1 || (*launches)[0].args[0] != want {
+		t.Fatalf("launches = %+v, want a launch on %q", *launches, want)
+	}
+}
+
+func TestOpenNonexistentArgFallsThroughToThreadResolution(t *testing.T) {
+	launches := stubDesktop(t)
+	// The scripted daemon answers thread.list with nothing, so a
+	// nonexistent path resolves against threads and fails there.
+	s := newScriptedServer()
+	s.results["thread.list"] = []map[string]any{}
+	s.results["project.list"] = []map[string]any{} // the Connect ping
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+	env, _ := newUsageTestEnv()
+	env.DaemonURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	err := runOpen(context.Background(), env, []string{"no-such-dir-or-thread"})
+	if err == nil || !strings.Contains(err.Error(), "no thread matches") {
+		t.Fatalf("runOpen(nonexistent) = %v, want the no-thread-matches error", err)
+	}
+	if len(*launches) != 0 {
+		t.Fatalf("desktop launched for a nonexistent arg: %+v", *launches)
+	}
+}
+
+func TestOpenThreadRefStillPassesThreadFlag(t *testing.T) {
+	launches := stubDesktop(t)
+	s := newScriptedServer()
+	s.results["thread.list"] = []map[string]any{
+		{"id": "th_abc123456789", "title": "nightly audit", "projectId": "p1"},
+	}
+	s.results["project.list"] = []map[string]any{} // the Connect ping
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+	env, out := newUsageTestEnv()
+	env.DaemonURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	if err := runOpen(context.Background(), env, []string{"th_abc"}); err != nil {
+		t.Fatalf("runOpen(thread ref): %v", err)
+	}
+	if len(*launches) != 1 {
+		t.Fatalf("launches = %+v, want exactly one", *launches)
+	}
+	launch := (*launches)[0]
+	if strings.Join(launch.args, " ") != "--thread th_abc123456789" {
+		t.Fatalf("launched %q, want --thread with the full id", launch.args)
+	}
+	if !strings.Contains(out.String(), "th_abc123456789") {
+		t.Fatalf("output = %q", out.String())
 	}
 }

@@ -26,7 +26,14 @@ import (
 // one non-git project, so master.send can dispatch without cutting a worktree.
 func newMasterRPCFixture(t *testing.T, script string) (*domain.Engine, *Dispatcher) {
 	t.Helper()
-	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
+	return newMasterRPCFixtureStore(t, script, domain.NewMemoryStore())
+}
+
+// newMasterRPCFixtureStore is newMasterRPCFixture over a caller-chosen event
+// store, for tests that need to fail or inspect a specific append.
+func newMasterRPCFixtureStore(t *testing.T, script string, events domain.EventStore) (*domain.Engine, *Dispatcher) {
+	t.Helper()
+	eng := domain.NewEngine(events, nil)
 	eng.Start(context.Background())
 	t.Cleanup(eng.Close)
 
@@ -185,9 +192,10 @@ func TestMasterSendStartsThreadWithoutAwaitingTheTurn(t *testing.T) {
 	}
 }
 
-// waitAfterRelease creates the park-release file and waits for the turn's final
-// report message. The lead's status turns terminal just before RunTurn appends
-// that message, so the message is the real completion signal.
+// waitAfterRelease creates the park-release file and waits for the turn's
+// final report message and its lead settling. The report is recorded before
+// the lead is marked terminal, so both must be seen before the turn counts
+// as finished.
 func waitAfterRelease(t *testing.T, eng *domain.Engine, id contracts.ThreadID, releaseFile string) *domain.ThreadState {
 	t.Helper()
 	if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
@@ -203,9 +211,10 @@ func waitAfterRelease(t *testing.T, eng *domain.Engine, id contracts.ThreadID, r
 			t.Fatalf("state %s: %v", id, err)
 		}
 		if hasMessage(st, "turn finished") {
-			return st
-		}
-		if s := st.Agents[orchestratorAgentID()].Status; s.Terminal() && s != contracts.AgentSucceeded {
+			if s := st.Agents[orchestratorAgentID()].Status; s.Terminal() {
+				return st
+			}
+		} else if s := st.Agents[orchestratorAgentID()].Status; s.Terminal() && s != contracts.AgentSucceeded {
 			t.Fatalf("turn ended as %s before reporting: %+v", s, st.Messages)
 		}
 		select {

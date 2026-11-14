@@ -110,7 +110,8 @@ export function CheatSheet({
             <ul className="cheat-list">
               <li>
                 <code>/btw &lt;question&gt;</code> asks a side question without interrupting the
-                running turn.
+                running turn; follow-ups continue the same side conversation until the panel is
+                dismissed or the thread moves to the next turn.
               </li>
               <li>
                 <code>/auto</code> toggles auto mode; <code>/peers</code> toggles agent-to-agent

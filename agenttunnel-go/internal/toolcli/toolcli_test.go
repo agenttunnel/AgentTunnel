@@ -28,15 +28,19 @@ func newCLIServer(t *testing.T) (*domain.Engine, *orchestrator.Runner) {
 	eng.Start(ctx)
 	t.Cleanup(eng.Close)
 
+	// The server and the runner share one inbox, as the daemon wires them, so
+	// a queued call posted over HTTP is the one the runner drains.
+	box := toolbox.New()
 	runner := orchestrator.NewRunner(orchestrator.Deps{
 		Engine:  eng,
 		Logs:    logstore.New(t.TempDir()),
 		Mailbox: contextstore.NewMailbox(),
+		Tools:   box,
 	})
 	runner.Mailbox().SetEnabled(true)
 	// The settings workdir is where a thread's files and shell run.
 	disp := transport.NewDispatcher(transport.DispatcherDeps{Engine: eng, Runner: runner, Settings: settings.New(t.TempDir())})
-	srv := transport.NewServer(disp, eng, runner, "secret", toolbox.New(), nil)
+	srv := transport.NewServer(disp, eng, runner, "secret", box, nil)
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
@@ -205,5 +209,30 @@ func TestToolSubthreadPrintsTheThreadID(t *testing.T) {
 	}
 	if out != "thread-sub-7\n" {
 		t.Fatalf("stdout = %q, want the subthread's thread id", out)
+	}
+}
+
+// A wildcard dispatch's --brief reaches the queued call field for field. The
+// transport forwards queued calls by enumerating their fields, so a dropped
+// field would surface here and nowhere in the lead-side tests.
+func TestToolDispatchBriefCLI(t *testing.T) {
+	eng, runner := newCLIServer(t)
+	ctx := context.Background()
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c", Type: contracts.CmdThreadCreate, ThreadID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const brief = "Count the Go files and report only the number."
+	if code := Run([]string{"dispatch", "--role", "wildcard", "--name", "counter", "--brief", brief, "--task", "count the files"}); code != 0 {
+		t.Fatalf("dispatch exit = %d, want 0", code)
+	}
+	calls := runner.DrainTools("t1")
+	if len(calls) != 1 {
+		t.Fatalf("queued calls = %+v, want one", calls)
+	}
+	got := calls[0]
+	if got.Kind != toolbox.KindDispatch || got.Role != contracts.RoleWildcard || got.Name != "counter" ||
+		got.Task != "count the files" || got.Brief != brief {
+		t.Fatalf("queued call = %+v", got)
 	}
 }

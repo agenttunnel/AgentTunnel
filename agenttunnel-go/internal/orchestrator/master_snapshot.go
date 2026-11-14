@@ -320,6 +320,117 @@ func masterThreadRead(id contracts.ThreadID, st *domain.ThreadState) string {
 	return b.String()
 }
 
+// masterReportMax bounds the reporter-mode report. It rides the WhatsApp
+// bridge, whose single messages are about this size.
+const masterReportMax = 1200
+
+// masterReportThreads bounds how many threads a report lists. The newest and
+// running ones matter most; older activity is summarized by omission.
+const masterReportThreads = 12
+
+// masterReportRow is one thread row of the reporter report.
+type masterReportRow struct {
+	Project string
+	Title   string
+	Status  string
+	Last    string
+	Waiting string
+	Updated time.Time
+}
+
+// Report renders the reporter-mode status message: a plain-text summary of what
+// is happening across threads, for the user rather than the model. It reads
+// the same snapshot machinery the master prompt does (threads, statuses,
+// pending questions), so the report and the master's own picture never differ.
+func (m *Master) Report(ctx context.Context) string {
+	if m.engine == nil {
+		return ""
+	}
+	ids, err := m.engine.Threads(ctx)
+	if err != nil {
+		return ""
+	}
+	projects := map[string]settings.Project{}
+	for _, p := range m.projects() {
+		projects[p.ID] = p
+	}
+	var rows []masterReportRow
+	for _, id := range ids {
+		st, err := m.engine.State(ctx, id)
+		if err != nil || st == nil || !st.Exists || st.Deleted || st.ProjectID == "" {
+			continue
+		}
+		row := masterReportRow{
+			Project: st.ProjectID,
+			Title:   clipTitle(oneLine(st.Title), masterThreadTitleClip),
+			Status:  masterThreadStatus(st),
+			Updated: st.UpdatedAt,
+		}
+		if p, ok := projects[st.ProjectID]; ok && p.Name != "" {
+			row.Project = p.Name
+		}
+		if n := len(st.Messages); n > 0 {
+			msg := st.Messages[n-1]
+			row.Last = fmt.Sprintf("%s: %s", msg.Author, clipTitle(oneLine(msg.Text), masterMessageClip))
+		}
+		if waiting := masterThreadWaiting(st); waiting != "" {
+			row.Waiting = waiting
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return "AgentTunnel status: no threads yet. Start one from the home screen or the desktop app."
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		ri, rj := rows[i].Status == "running", rows[j].Status == "running"
+		if ri != rj {
+			return ri
+		}
+		if rows[i].Updated.Equal(rows[j].Updated) {
+			return rows[i].Title < rows[j].Title
+		}
+		return rows[i].Updated.After(rows[j].Updated)
+	})
+
+	var b strings.Builder
+	b.WriteString("AgentTunnel status\n")
+	for i, r := range rows {
+		if i == masterReportThreads {
+			fmt.Fprintf(&b, "(%d more threads omitted)\n", len(rows)-i)
+			break
+		}
+		fmt.Fprintf(&b, "\n%s — %s: %s\n", r.Project, r.Title, r.Status)
+		if r.Last != "" {
+			fmt.Fprintf(&b, "  last: %s\n", r.Last)
+		}
+		if r.Waiting != "" {
+			fmt.Fprintf(&b, "  waiting on you: %s\n", r.Waiting)
+		}
+	}
+	return clipHead(b.String(), masterReportMax)
+}
+
+// masterThreadWaiting names what the thread needs from the user, or "".
+func masterThreadWaiting(st *domain.ThreadState) string {
+	var waiting []string
+	for i := range st.Questions {
+		q := st.Questions[i]
+		if q.Status == domain.QuestionPending {
+			waiting = append(waiting, fmt.Sprintf("question %s", clipTitle(oneLine(q.Question), 80)))
+		}
+	}
+	openReviews := 0
+	for i := range st.ReviewThreads {
+		if st.ReviewThreads[i].Status == contracts.ReviewStatusOpen {
+			openReviews++
+		}
+	}
+	if openReviews > 0 {
+		waiting = append(waiting, fmt.Sprintf("%d open review comments", openReviews))
+	}
+	return strings.Join(waiting, "; ")
+}
+
 // oneLine collapses whitespace so a multi-line value stays on one snapshot line.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
@@ -360,9 +471,13 @@ func masterThreadStatus(st *domain.ThreadState) string {
 	return "new"
 }
 
-// masterThreadRuntime is the thread's lead runtime when it is already recorded,
-// falling back to whatever the thread itself carries.
+// masterThreadRuntime is the thread's solo runtime when it runs solo, else its
+// lead runtime when it is already recorded, falling back to whatever the
+// thread itself carries.
 func masterThreadRuntime(st *domain.ThreadState) (string, string) {
+	if rt := st.SoloRuntime; rt != nil {
+		return string(rt.Harness), rt.Model
+	}
 	if a, ok := st.Agents[leadAgentID(0)]; ok {
 		return string(a.Harness), a.Model
 	}

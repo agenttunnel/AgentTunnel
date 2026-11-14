@@ -72,3 +72,8 @@ jobs:
         run: |
           npm ci
           npm run build
+          # Mirror the SPA into the daemon's embed dir so the go:embed dist
+          # tree cannot drift from the frontend build. Runs here only; the
+          # go job compiles against the committed placeholder by design.
+          mkdir -p ../../internal/webui/dist
+          cp -R dist/. ../../internal/webui/dist/

@@ -71,6 +71,15 @@ const (
 	// once, not queued: the reply tells the lead whether the steer was queued
 	// for that agent's next run. See Runner.Steer.
 	KindSteer Kind = "steer"
+	// KindAgentLogs reads a dispatched subagent's full output log, for when a
+	// result summary is missing detail. Answered at once, and only leads may
+	// call it; see transport's handleAgentLogsCall.
+	KindAgentLogs Kind = "agent-logs"
+	// KindRevive re-dispatches a finished subagent under its own name and role
+	// with its prior output log plus a follow-up question. Like dispatch it is
+	// queued in the tool inbox and drained by the orchestrator's toolTasks
+	// after the pass, not answered at once.
+	KindRevive Kind = "revive"
 )
 
 // IsReview reports whether a kind is a review-thread call.
@@ -94,8 +103,10 @@ type Call struct {
 	Harness   string            `json:"harness,omitempty"`
 	Model     string            `json:"model,omitempty"`
 	DependsOn []string          `json:"dependsOn,omitempty"`
-	Text      string            `json:"text,omitempty"`
-	To        string            `json:"to,omitempty"`
+	// Brief is the agent definition a wildcard dispatch runs under.
+	Brief string `json:"brief,omitempty"`
+	Text  string `json:"text,omitempty"`
+	To    string `json:"to,omitempty"`
 	// File, Line, EndLine and Side anchor a review comment; Thread names the
 	// review thread a reply or resolution answers; Reopen moves it back to open.
 	File    string `json:"file,omitempty"`
