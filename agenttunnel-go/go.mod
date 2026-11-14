@@ -5,9 +5,11 @@ go 1.26.0
 require (
 	github.com/coder/websocket v1.8.15
 	go.mau.fi/whatsmeow v0.0.0-20261110152934-c88388f983b4
+	golang.org/x/term v0.47.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.62.0
+	rsc.io/qr v0.2.0
 )
 
 require (

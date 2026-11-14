@@ -301,7 +301,9 @@ export type MarkerKind = "turn" | "spawn" | "message" | "done" | "steer-queued" 
  * log; applying it means a cursor of index + 1. */
 export type Marker = { index: number; kind: MarkerKind; label: string };
 
-const TERMINAL = new Set<string>(["succeeded", "failed", "cancelled"]);
+/** Agent statuses that end an agent's run: a turn is over once its agents are
+ * all in one of these. Shared by the graph fold and App's turn-end handling. */
+export const TERMINAL = new Set<string>(["succeeded", "failed", "cancelled"]);
 
 export function markersOf(events: readonly GraphEvent[]): Marker[] {
   const out: Marker[] = [];

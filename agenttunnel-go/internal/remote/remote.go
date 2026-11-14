@@ -94,6 +94,13 @@ type Options struct {
 	// returns the reply to send back. It is the daemon's command router. Nil
 	// disables inbound control entirely.
 	Control func(ctx context.Context, text string) string
+	// Reporter renders reporter mode's status report: what is happening across
+	// threads. It is called once when connectivity is established, and only
+	// when ReporterEnabled reports the user turned reporter mode on, so the
+	// disabled path does no work at all. Nil disables the feature.
+	Reporter func(ctx context.Context) string
+	// ReporterEnabled reports whether reporter mode is on.
+	ReporterEnabled func() bool
 	// OnChange fires whenever the item's state changes, outside the bridge lock.
 	OnChange func()
 	Logf     func(format string, args ...any)
@@ -400,6 +407,7 @@ func (b *Bridge) linked(gen int, detail string) {
 	b.mu.Unlock()
 	b.saveState()
 	b.changed()
+	b.maybeReport()
 }
 
 // Control reports the persisted inbound-control setting. It is independent of
@@ -532,6 +540,22 @@ func (b *Bridge) updateFor(ev contracts.Event) string {
 		return text
 	}
 	return ""
+}
+
+// maybeReport sends reporter mode's status report now that connectivity is
+// established. The disabled path is a flag read and nothing else; the report
+// itself is derived only after that check, runs on the connect transition only
+// (no engine event is touched), and its delivery rides the same ordered worker
+// as every other outbound update.
+func (b *Bridge) maybeReport() {
+	if b.opts.ReporterEnabled == nil || b.opts.Reporter == nil || !b.opts.ReporterEnabled() {
+		return
+	}
+	text := strings.TrimSpace(b.opts.Reporter(b.controlContext()))
+	if text == "" {
+		return
+	}
+	b.enqueue(text)
 }
 
 // send delivers one update when the device is linked. The text is remembered

@@ -84,15 +84,21 @@ type MasterActionResult struct {
 // proposal first, then one per executed action. Action is the first validated
 // action, kept for clients that read a single action. ThreadID and ProjectID
 // are the first thread a start_thread created, filled by the transport only
-// after it was actually created.
+// after it was actually created. MasterThreadID is the durable master
+// conversation the exchange was recorded into, set when the caller opened one.
+// Warning carries a non-fatal follow-up problem — the exchange ran, but an
+// incidental step (like saving the reply into the conversation) failed — so
+// the reply is never discarded for one.
 type MasterResult struct {
-	Reply     string               `json:"reply"`
-	Action    *MasterAction        `json:"action"`
-	Actions   []MasterAction       `json:"actions,omitempty"`
-	Results   []MasterActionResult `json:"results,omitempty"`
-	ThreadID  contracts.ThreadID   `json:"threadId,omitempty"`
-	ProjectID string               `json:"projectId,omitempty"`
-	Error     string               `json:"error,omitempty"`
+	Reply          string               `json:"reply"`
+	Action         *MasterAction        `json:"action"`
+	Actions        []MasterAction       `json:"actions,omitempty"`
+	Results        []MasterActionResult `json:"results,omitempty"`
+	ThreadID       contracts.ThreadID   `json:"threadId,omitempty"`
+	ProjectID      string               `json:"projectId,omitempty"`
+	MasterThreadID contracts.ThreadID   `json:"masterThreadId,omitempty"`
+	Warning        string               `json:"warning,omitempty"`
+	Error          string               `json:"error,omitempty"`
 }
 
 // MasterDeps are the services the home-screen orchestrator reads.
@@ -222,7 +228,7 @@ func (m *Master) ask(ctx context.Context, prompt string) (string, error) {
 	if !ok {
 		return "", errors.New("orchestrator role is missing")
 	}
-	harness, model, variant := r.roleRuntime(role)
+	harness, model, variant := m.Runtime()
 	if !r.harnessAllowed(harness) {
 		return "", fmt.Errorf("harness %s is disabled", harness)
 	}
@@ -390,6 +396,72 @@ func (m *Master) role() (contracts.Role, bool) {
 		return contracts.Role{}, false
 	}
 	return m.runner.roles.Get(contracts.RoleOrchestrator)
+}
+
+// Runtime resolves the harness/model/variant a master chat runs on: the
+// persisted master override over the Orchestrator role's runtime. Overriding the
+// harness drops the inherited model and variant, which belong to the harness
+// they were configured for (the same rule a thread's lead override follows).
+func (m *Master) Runtime() (contracts.Harness, string, string) {
+	role, ok := m.role()
+	if !ok {
+		return "", "", ""
+	}
+	harness, model, variant := m.runner.roleRuntime(role)
+	if m.settings == nil {
+		return harness, model, variant
+	}
+	ov, ok := m.settings.MasterRuntime()
+	if !ok {
+		return harness, model, variant
+	}
+	if ov.Harness.Valid() && ov.Harness != harness {
+		harness, model, variant = ov.Harness, "", ""
+	}
+	if ov.Model != "" {
+		model = ov.Model
+	}
+	if ov.Variant != "" {
+		variant = ov.Variant
+	}
+	return harness, model, variant
+}
+
+// RuntimeOverride returns the persisted master runtime override, if one is set.
+func (m *Master) RuntimeOverride() (settings.RoleConfig, bool) {
+	if m.settings == nil {
+		return settings.RoleConfig{}, false
+	}
+	return m.settings.MasterRuntime()
+}
+
+// SetRuntime validates and persists the master chat's runtime override. A zero
+// config removes the override; each field set to an empty string inherits the
+// Orchestrator role's runtime. The harness must be valid and enabled, and the
+// model must be one the harness reports (a harness that reports no models
+// cannot be checked).
+func (m *Master) SetRuntime(h contracts.Harness, model, variant string) error {
+	if m.settings == nil {
+		return errors.New("settings are unavailable")
+	}
+	h = contracts.Harness(strings.TrimSpace(string(h)))
+	model = strings.TrimSpace(model)
+	variant = strings.TrimSpace(variant)
+	if h != "" {
+		if !h.Valid() {
+			return fmt.Errorf("unknown harness %q", h)
+		}
+		if !m.harnessEnabled(h) {
+			return fmt.Errorf("harness %q is not enabled", h)
+		}
+	}
+	if model != "" {
+		if reason := m.modelProblem(h, model); reason != "" {
+			return errors.New(reason)
+		}
+	}
+	m.settings.SetMasterRuntime(settings.RoleConfig{Harness: h, Model: model, Variant: variant})
+	return nil
 }
 
 func (m *Master) projects() []settings.Project {
