@@ -3706,6 +3706,9 @@ export default function App() {
           <MasterChat
             rpc={rpcRef.current}
             projects={projects}
+            harnessOptionsFor={harnessOptionsFor}
+            modelOptions={modelOptions}
+            refreshModels={refreshModels}
             onOpenThread={(projectId, threadId) => {
               openProject(projectId);
               lastThreadByProject.current[projectId] = threadId;
