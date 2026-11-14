@@ -18,6 +18,11 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ThreadCreated{Title: "draft", ProjectID: "proj_1", Draft: true, Description: "fix the login",
 			Issue: &IssueRef{Provider: "gitlab", IID: 7, Title: "Login fails", URL: "https://gitlab.example/g/p/-/issues/7"}},
 		SubthreadSpawned{ThreadID: "t2"},
+		ThreadScheduled{DependsOn: []ThreadID{"t2", "t3"}, Prompt: "after them"},
+		ThreadTriggered{DependsOn: []ThreadID{"t2"}},
+		ThreadScheduleCancelled{DependsOn: []ThreadID{"t2"}},
+		ThreadControlled{Controller: "t9"},
+		ThreadControlled{},
 		ThreadRenamed{Title: "renamed thread"},
 		ThreadDescribed{Description: "more detail"},
 		DraftStarted{},
@@ -42,6 +47,7 @@ func TestEventPayloadsRoundTrip(t *testing.T) {
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusResolved, Body: "looks good", CreatedAt: at},
 		ReviewThreadStatusChanged{ThreadID: "rt1", AuthorID: "rev", Status: ReviewStatusOpen, CreatedAt: at},
 		RoleRuntimeSet{ThreadID: "t1", Role: RoleExecutor, Runtime: LeadRuntime{Harness: HarnessCodex, Model: "gpt-x", Variant: "high"}},
+		SoloRuntimeSet{Runtime: LeadRuntime{Harness: HarnessClaude, Model: "m", Variant: "v"}},
 	}
 
 	for _, payload := range payloads {

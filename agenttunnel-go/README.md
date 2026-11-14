@@ -189,7 +189,7 @@ Agents coordinate beyond the turn loop:
 
 Threads: `thread.create`, `thread.list`, `thread.get`, `thread.rename`,
 `thread.delete`, `thread.subscribe`, `thread.turn.start`, `thread.turn.stop`,
-`thread.steer`, `thread.btw` (side question: answered from a snapshot, never recorded or steering),
+`thread.steer`, `thread.btw` (side question: answered from a snapshot, never recorded or steering; follow-ups on the same thread carry the previous exchanges in memory, reset when the thread advances to the next turn),
 `thread.setAutoMode`, `thread.setPeerMailbox`, `thread.setLeads`, `thread.setLeadRuntime`,
 `thread.council.start`.
 

@@ -80,6 +80,45 @@ func TestClientBearerHeaderAndReplyCorrelation(t *testing.T) {
 	}
 }
 
+// A daemon reply bigger than websocket's 32768-byte default (thread.list on a
+// machine with real history) must still be read and decoded, so Dial raises
+// the connection's read limit.
+func TestClientReadsReplyOverDefaultLimit(t *testing.T) {
+	const payload = 128 * 1024
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		_, data, _ := ws.Read(r.Context())
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(data, &req)
+		frame := fmt.Sprintf(`{"id":%q,"result":["%s"]}`, req.ID, strings.Repeat("x", payload))
+		_ = ws.Write(r.Context(), websocket.MessageText, []byte(frame))
+		_, _, _ = ws.Read(context.Background())
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), "")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	var out []string
+	if err := c.Call(ctx, "thread.list", nil, &out); err != nil {
+		t.Fatalf("call over the default read limit: %v", err)
+	}
+	if len(out) != 1 || len(out[0]) != payload {
+		t.Fatalf("reply = %d elems (first %d bytes), want one %d-byte element", len(out), len(out[0]), payload)
+	}
+}
+
 func TestClientCallReportsRPCError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)

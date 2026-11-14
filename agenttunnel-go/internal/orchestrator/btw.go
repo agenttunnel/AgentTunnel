@@ -13,10 +13,13 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
-// A /btw side question is a one-shot, read-only model call over a snapshot of
-// the thread. Its answer is returned to the caller and never recorded: it writes
+// A /btw side question is a read-only model call over a snapshot of the
+// thread. Its answer is returned to the caller and never recorded: it writes
 // no events or messages, takes no turn slot, and cannot interrupt the turn that
-// may be running beside it.
+// may be running beside it. Follow-ups on the same thread form a conversation:
+// the previous exchanges are kept in per-thread memory — never recorded as
+// events or messages — and dropped once the thread advances to the next turn,
+// because the snapshot context they belonged to has moved on.
 const (
 	btwTimeout        = 2 * time.Minute
 	btwMaxQuestion    = 4000
@@ -25,7 +28,52 @@ const (
 	btwMessagesBudget = 12 << 10
 	btwAgentClip      = 2 << 10
 	btwAgentsBudget   = 8 << 10
+	btwMaxExchanges   = 6
+	btwHistoryBudget  = 8 << 10
 )
+
+// btwExchange is one answered side question.
+type btwExchange struct {
+	question string
+	answer   string
+}
+
+// btwSession is a thread's remembered side conversation. turn is the thread
+// turn the exchanges were recorded in; when the thread has advanced to another
+// turn, the snapshot context moved on and the exchanges are dropped.
+type btwSession struct {
+	turn      int
+	exchanges []btwExchange
+}
+
+// btwSnapshot returns the thread's side-conversation session plus a copy of
+// its exchanges for prompt building, dropping them when the recorded turn
+// differs from the thread's current one. The copy keeps callers from reading
+// the live slice while the lock is not held.
+func (r *Runner) btwSnapshot(threadID contracts.ThreadID, turn int) (*btwSession, []btwExchange) {
+	r.btwMu.Lock()
+	defer r.btwMu.Unlock()
+	sess := r.btwSessions[threadID]
+	if sess == nil {
+		sess = &btwSession{}
+		r.btwSessions[threadID] = sess
+	}
+	if sess.turn != turn {
+		sess.turn = turn
+		sess.exchanges = nil
+	}
+	return sess, append([]btwExchange(nil), sess.exchanges...)
+}
+
+// btwRecord appends a completed exchange to the session and stamps the turn it
+// was answered in. It runs after the model call returns; the lock is never held
+// across an adapter or harness call.
+func (r *Runner) btwRecord(sess *btwSession, turn int, question, answer string) {
+	r.btwMu.Lock()
+	defer r.btwMu.Unlock()
+	sess.exchanges = append(sess.exchanges, btwExchange{question: question, answer: answer})
+	sess.turn = turn
+}
 
 // Btw answers a side question about a thread. The agent it runs under is fresh
 // and carries no tool environment, so the model cannot dispatch work or message
@@ -45,6 +93,7 @@ func (r *Runner) Btw(ctx context.Context, threadID contracts.ThreadID, question 
 	if !st.Exists {
 		return "", fmt.Errorf("thread %q does not exist", threadID)
 	}
+	sess, history := r.btwSnapshot(threadID, st.Turn)
 
 	if r.roles == nil || r.registry == nil {
 		return "", errors.New("side questions are unavailable")
@@ -69,7 +118,7 @@ func (r *Runner) Btw(ctx context.Context, threadID contracts.ThreadID, question 
 		Harness:  harness,
 		Model:    model,
 		Variant:  variant,
-		Prompt:   r.buildBtwPrompt(st, question),
+		Prompt:   r.buildBtwPrompt(st, history, question),
 		Workdir:  r.workdirFor(ctx, threadID),
 	}
 
@@ -105,13 +154,14 @@ func (r *Runner) Btw(ctx context.Context, threadID contracts.ThreadID, question 
 	if answer == "" {
 		return "", errors.New("the side question got no answer")
 	}
+	r.btwRecord(sess, st.Turn, question, answer)
 	return answer, nil
 }
 
-// buildBtwPrompt snapshots the thread: its title, roster, recent messages and
-// each agent's recent output. The sections are clipped so a long thread keeps
-// the prompt bounded.
-func (r *Runner) buildBtwPrompt(st *domain.ThreadState, question string) string {
+// buildBtwPrompt snapshots the thread: its title, roster, recent messages,
+// each agent's recent output, and the previous side conversation. The sections
+// are clipped so a long thread keeps the prompt bounded.
+func (r *Runner) buildBtwPrompt(st *domain.ThreadState, exchanges []btwExchange, question string) string {
 	var b strings.Builder
 	b.WriteString("You are answering a side question about a thread while its agents keep working. ")
 	b.WriteString("Answer from the thread context below. You cannot run tools, edit files, message agents, or dispatch work, so say so if the answer needs any of that. Be brief.\n\n")
@@ -159,6 +209,20 @@ func (r *Runner) buildBtwPrompt(st *domain.ThreadState, question string) string 
 			b.WriteString("\nRecent agent output:\n")
 			b.WriteString(clipTail(output.String(), btwAgentsBudget))
 		}
+	}
+
+	if len(exchanges) > 0 {
+		recent := exchanges
+		if len(recent) > btwMaxExchanges {
+			recent = recent[len(recent)-btwMaxExchanges:]
+		}
+		var prev strings.Builder
+		for _, x := range recent {
+			fmt.Fprintf(&prev, "Q: %s\nA: %s\n\n", x.question, x.answer)
+		}
+		b.WriteString("\nPrevious side conversation:\n")
+		// clipTail keeps the most recent exchanges when the history is long.
+		b.WriteString(clipTail(prev.String(), btwHistoryBudget))
 	}
 
 	b.WriteString("\nSide question:\n")
