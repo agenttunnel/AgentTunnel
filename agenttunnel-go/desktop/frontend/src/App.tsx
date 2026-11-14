@@ -3723,6 +3723,26 @@ export default function App() {
         </svg>
         Stats
       </div>
+      <div
+        className="ptab pt-home"
+        {...tabProps(false, () => setSuperViewOpen(true))}
+        title="All threads across projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+        </svg>
+        All threads
+      </div>
       <div className="pt-scroll" role="tablist" aria-label="Open projects">
         {openProjects.map((p) => {
           const busy = runningByProject[p.id] ?? 0;
