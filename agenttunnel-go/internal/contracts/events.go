@@ -333,6 +333,15 @@ func (SteeringConsumed) eventType() EventType { return EvtSteeringConsumed }
 // message, so recording one never opens a turn.
 const AuthorStatus = "status"
 
+// AuthorMasterUser and AuthorMaster mark the two sides of a durable master
+// conversation. Neither is the plain "user" author, so recording one never
+// opens a turn: a master chat exchange is not a work turn, and the projector's
+// per-turn bookkeeping must stay untouched by it.
+const (
+	AuthorMasterUser = "master-user"
+	AuthorMaster     = "master"
+)
+
 type ModelSet struct{ Selection ModelSelection }
 
 func (ModelSet) eventType() EventType { return EvtModelSet }
