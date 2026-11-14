@@ -197,11 +197,9 @@ func startWebOwned(ctx context.Context, env *Env, resolved string, lock *daemonl
 	}
 	mux.Handle("/", webui.Handler())
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: loopbackHostGate(mux), ReadHeaderTimeout: 10 * time.Second}
 	w := &webServer{
 		url:       origin,
-		stateDir:  stateDir,
-		conn:      conn,
 		cancel:    cancel,
 		serveDone: make(chan struct{}),
 	}
@@ -301,11 +299,9 @@ func startWebAttached(ctx context.Context, env *Env, info discovery.Info, resolv
 	}
 	mux.Handle("/", webui.Handler())
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: loopbackHostGate(mux), ReadHeaderTimeout: 10 * time.Second}
 	w := &webServer{
 		url:       origin,
-		stateDir:  env.StateDir(),
-		conn:      conn,
 		cancel:    cancel,
 		serveDone: make(chan struct{}),
 	}
@@ -324,6 +320,39 @@ func startWebAttached(ctx context.Context, env *Env, info discovery.Info, resolv
 		close(w.serveDone)
 	}()
 	return w, nil
+}
+
+// loopbackHostGate wraps the whole web mux in both modes and rejects requests
+// whose Host header does not name a loopback host. DNS rebinding lets a page
+// at evil.com point its own hostname at 127.0.0.1: the browser then considers
+// its fetch same-origin, so the Sec-Fetch-Site gate passes — but the request
+// still carries evil.com in Host, which is what this gate checks.
+func loopbackHostGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackHostHeader(r.Host) {
+			http.Error(w, "refused: unknown host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loopbackHostHeader reports whether a Host header value names this loopback
+// server: 127.0.0.1, localhost, or [::1], each optionally with a port,
+// case-insensitive. An empty value (an HTTP/1.0 request without a Host
+// header) carries no hostname to forge.
+func loopbackHostHeader(host string) bool {
+	if host == "" {
+		return true
+	}
+	if strings.HasPrefix(host, "[") {
+		end := strings.Index(host, "]")
+		return end != -1 && strings.EqualFold(host[:end+1], "[::1]")
+	}
+	if i := strings.LastIndex(host, ":"); i != -1 {
+		host = host[:i]
+	}
+	return strings.EqualFold(host, "127.0.0.1") || strings.EqualFold(host, "localhost")
 }
 
 // webServer is a running web mode server: the web UI plus, in owned mode, the

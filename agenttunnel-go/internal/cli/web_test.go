@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -384,6 +385,133 @@ func TestStartWebConnFetchSiteGate(t *testing.T) {
 			if strings.HasPrefix(strings.ToLower(k), "access-control-") {
 				t.Fatalf("/conn emitted %s; it never sends CORS headers", k)
 			}
+		}
+	}
+}
+
+// TestWebLoopbackHostHeader pins the Host spellings the web surface answers.
+func TestWebLoopbackHostHeader(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{"", true}, // HTTP/1.0 with no Host header: nothing to forge
+		{"127.0.0.1", true},
+		{"127.0.0.1:8080", true},
+		{"localhost", true},
+		{"localhost:8080", true},
+		{"LOCALHOST:8080", true},
+		{"[::1]", true},
+		{"[::1]:8080", true},
+		{"evil.com", false},
+		{"evil.com:8080", false},
+		{"127.0.0.2:8080", false},
+		{"localhost.evil.com", false},
+		{"[::2]:8080", false},
+		{"[::1", false},
+	} {
+		if got := loopbackHostHeader(tc.host); got != tc.want {
+			t.Errorf("loopbackHostHeader(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+// TestStartWebLoopbackHostGate: a request whose Host header names a rebound
+// hostname is refused on every path of the web surface — DNS rebinding makes
+// the fetch look same-origin to the browser, so the Sec-Fetch-Site gate
+// cannot catch it; the Host header still carries the attacker's name.
+func TestStartWebLoopbackHostGate(t *testing.T) {
+	w, _ := bootWeb(t, t.TempDir())
+	u, err := url.Parse(w.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := u.Port()
+
+	// Host overrides on the live server: an http client sends the override
+	// verbatim, exactly like a rebound browser fetch would.
+	for _, tc := range []struct {
+		host string
+		want int
+	}{
+		{"evil.com:" + port, http.StatusForbidden},
+		{"evil.com", http.StatusForbidden},
+		{"127.0.0.1:" + port, http.StatusOK},
+		{"localhost:" + port, http.StatusOK},
+		{"LOCALHOST:" + port, http.StatusOK},
+		{"[::1]:" + port, http.StatusOK},
+	} {
+		for _, path := range []string{"/conn", "/"} {
+			req, err := http.NewRequest(http.MethodGet, w.URL()+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tc.host
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET %s (Host %q): %v", path, tc.host, err)
+			}
+			res.Body.Close()
+			if res.StatusCode != tc.want {
+				t.Fatalf("GET %s with Host %q = %d, want %d", path, tc.host, res.StatusCode, tc.want)
+			}
+		}
+	}
+
+	// An absent Host header (HTTP/1.0) carries no hostname to forge.
+	c, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := io.WriteString(c, "GET /conn HTTP/1.0\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, " 200 ") {
+		t.Fatalf("HTTP/1.0 /conn without a Host header = %q, want 200", status)
+	}
+}
+
+// The attach-mode surface answers the same loopback-host gate.
+func TestStartWebAttachedLoopbackHostGate(t *testing.T) {
+	stateDir := t.TempDir()
+	newWebTestDaemon(t, stateDir)
+
+	env := &Env{Out: io.Discard, Err: io.Discard, HomeDir: stateDir, Version: "webtest"}
+	w, err := startWeb(context.Background(), env, t.TempDir())
+	if err != nil {
+		t.Fatalf("startWeb: %v", err)
+	}
+	t.Cleanup(w.Close)
+
+	u, err := url.Parse(w.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		host string
+		want int
+	}{
+		{"evil.com:" + u.Port(), http.StatusForbidden},
+		{"evil.com", http.StatusForbidden},
+		{"localhost:" + u.Port(), http.StatusOK},
+	} {
+		req, err := http.NewRequest(http.MethodGet, w.URL()+"/conn", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = tc.host
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /conn (Host %q): %v", tc.host, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tc.want {
+			t.Fatalf("GET /conn with Host %q = %d, want %d", tc.host, res.StatusCode, tc.want)
 		}
 	}
 }
