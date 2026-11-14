@@ -65,23 +65,34 @@ func tuiPROf(m *tuiModel) *tuiPRState {
 	return tuiStateOf[tuiPRState](m, tuiViewPR)
 }
 
-// fetch reads the focused thread's request and the branch's open requests.
-func (st *tuiPRState) fetch() error {
-	if st.threadID == "" {
-		st.snap, st.listing = tuiPRSnapshot{}, nil
-		return nil
+// fetchJob reads the focused thread's request and the branch's open requests
+// in the background: pr.status and pr.list shell out to git and the forge CLIs,
+// so running them on the session loop would freeze keys, events, and paint.
+// The fold applies on the loop, where the view's data is safe to write.
+func (st *tuiPRState) fetchJob() tuiJob {
+	id := st.threadID
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		if id == "" {
+			return func(m *tuiModel) {
+				st := tuiPROf(m)
+				st.snap, st.listing = tuiPRSnapshot{}, nil
+			}
+		}
+		params := map[string]string{"threadId": id}
+		var snap tuiPRSnapshot
+		if err := c.Call(ctx, "pr.status", params, &snap); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var list tuiPRListing
+		if err := c.Call(ctx, "pr.list", params, &list); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiPROf(m)
+			st.snap, st.listing = snap, list.Requests
+		}
 	}
-	params := map[string]string{"threadId": st.threadID}
-	var snap tuiPRSnapshot
-	if err := st.call("pr.status", params, &snap); err != nil {
-		return err
-	}
-	var list tuiPRListing
-	if err := st.call("pr.list", params, &list); err != nil {
-		return err
-	}
-	st.snap, st.listing = snap, list.Requests
-	return nil
 }
 
 // action runs one forge action for the focused thread in the background.
@@ -154,7 +165,7 @@ func (st *tuiPRState) render(cols, rows int) []tuiRow {
 	return tuiViewFrame(cols, rows, "Pull request", lines[off:], -1, status)
 }
 
-func (st *tuiPRState) key(k tuiKey) bool {
+func (st *tuiPRState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.ed.on {
 		if st.ed.key(k) {
@@ -203,7 +214,7 @@ func (st *tuiPRState) key(k tuiKey) bool {
 		}
 		st.action("merging", "pr.merge", map[string]any{"threadId": st.threadID}, "merged")
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -230,18 +241,20 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewPR,
 		Title: "PR",
+		Order: 40,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiPROf(m)
+			st.bind(ctx, c)
 			st.focus(m)
-			// Forge CLIs cost a network round trip; the 30s ttl keeps the tab from
-			// running them on every poll tick.
-			tuiLoadView(ctx, c, &st.tuiBase, 30*time.Second, st.fetch)
+			// Forge CLIs cost a network round trip, so the fetch runs as a
+			// background job: Load only queues it.
+			tuiLoadJob(m, &st.tuiBase, 30*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiPROf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiPROf(m).key(k)
+			return tuiPROf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"c", "commit"}, {"p", "push"}, {"l", "pull"}, {"n", "open request"},

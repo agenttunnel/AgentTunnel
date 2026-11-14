@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"sort"
 	"strings"
 )
 
@@ -16,8 +17,13 @@ type tuiView struct {
 	// ID is the stable key the tab bar and the palette switch to.
 	ID    string
 	Title string
+	// Order places the tab in the bar: lower comes first, after the thread
+	// list, so the tab order is deliberate instead of file-init luck.
+	Order int
 	// Load refreshes the view's data over the daemon. The session calls it on
-	// open and on every poll tick while the view is active.
+	// open and on every poll tick while the view is active. It runs on the
+	// session loop, so it must stay cache-only: anything slow (a forge or
+	// network call) queues a background job instead.
 	Load func(ctx context.Context, c cliCaller, m *tuiModel)
 	// Render paints the body: any number of rows, which render fits to the
 	// body height.
@@ -73,13 +79,31 @@ func tuiViewByID(id string) (tuiView, bool) {
 	return tuiView{}, false
 }
 
-// tuiViewOrder is the tab order: the thread list first, then registered views.
+// tuiViewOrder is the tab order: the thread list first, then registered views
+// by their Order field, so the bar reads deliberately (Threads, Master, Files,
+// Review, PR, Usage, Settings, Remote, …) instead of by file-init luck.
 func tuiViewOrder() []string {
+	views := make([]tuiView, len(tuiViewRegistry))
+	copy(views, tuiViewRegistry)
+	sort.SliceStable(views, func(i, j int) bool { return views[i].Order < views[j].Order })
 	order := []string{tuiThreadsViewID}
-	for _, v := range tuiViewRegistry {
+	for _, v := range views {
 		order = append(order, v.ID)
 	}
 	return order
+}
+
+// takeOpenID is the loop's deferred-open handoff: a background job asked to
+// open a thread by id, usually a freshly created draft. A tab that became
+// active while the job ran never hides the opener — the request switches
+// back to the thread surface first.
+func (m *tuiModel) takeOpenID() string {
+	id := m.openID
+	m.openID = ""
+	if id != "" && m.view != tuiThreadsViewID {
+		m.switchView(tuiThreadsViewID)
+	}
+	return id
 }
 
 // tabTitle is the label a tab shows for view id.
@@ -139,15 +163,20 @@ func (m *tuiModel) allActions() []tuiAction {
 		{Title: "Threads: refresh", Hint: "r", Run: func(m *tuiModel) { m.refresh = true }},
 		{Title: "Quit", Hint: "q", Run: func(m *tuiModel) { m.quit = true }},
 	}
-	for _, v := range tuiViewRegistry {
-		id := v.ID
+	for _, id := range tuiViewOrder()[1:] {
+		v, ok := tuiViewByID(id)
+		if !ok {
+			continue
+		}
 		actions = append(actions, tuiAction{
 			Title: "Show " + v.Title,
 			Run:   func(m *tuiModel) { m.switchView(id) },
 		})
 	}
-	for _, v := range tuiViewRegistry {
-		actions = append(actions, v.Actions...)
+	for _, id := range tuiViewOrder()[1:] {
+		if v, ok := tuiViewByID(id); ok {
+			actions = append(actions, v.Actions...)
+		}
 	}
 	actions = append(actions, tuiPaletteActions()...)
 	var shown []tuiAction

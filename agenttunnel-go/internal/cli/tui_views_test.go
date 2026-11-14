@@ -298,3 +298,41 @@ func TestTUISessionTabsViewsAndPalette(t *testing.T) {
 		t.Fatal("palette Quit did not leave the session")
 	}
 }
+
+// The tab order is deliberate, not file-init luck: Threads first, then the
+// app views by their Order field.
+func TestTUIViewOrderIsDeliberate(t *testing.T) {
+	want := "" // the thread list
+	for _, id := range []string{"master", "files", "review", "pr", "usage", "settings", "remote", "projects", "issues", "worktrees"} {
+		want += "," + id
+	}
+	if got := strings.Join(tuiViewOrder(), ","); got != want {
+		t.Fatalf("tab order = %q, want %q", got, want)
+	}
+}
+
+// A thread a background job asked to open (a fresh draft) lands on the thread
+// surface even when a registered tab is active, never behind it.
+func TestTUIOpenRequestSwitchesBackFromAViewTab(t *testing.T) {
+	tuiTestRegistry(t, notesView())
+	m := newTuiModel(tuiTestClock())
+	m.setList([]psRow{{thread: threadListRow{ID: "th_new0000001"}, project: "demo"}})
+	m.switchView("notes")
+	m.openID = "th_new0000001"
+
+	if id := m.takeOpenID(); id != "th_new0000001" {
+		t.Fatalf("takeOpenID = %q, want the pending id", id)
+	}
+	if m.openID != "" {
+		t.Fatal("takeOpenID left the request pending")
+	}
+	if m.view != tuiThreadsViewID {
+		t.Fatalf("view = %q after taking the open request, want the threads list", m.view)
+	}
+	// A thread that opens normally, with no tab active, must not close one.
+	m.view = tuiThreadsViewID
+	m.openID = "th_2"
+	if id := m.takeOpenID(); id != "th_2" || m.view != tuiThreadsViewID {
+		t.Fatalf("a plain open request disturbed the surface: id=%q view=%q", id, m.view)
+	}
+}

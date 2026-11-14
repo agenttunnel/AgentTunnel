@@ -380,6 +380,26 @@ func TestTUIScreenTruncateAndWrap(t *testing.T) {
 	if joined.String() != line.text {
 		t.Fatalf("wrapped rows lost text: %q", joined.String())
 	}
+
+	// Frame level: the wrapped rows must reach the rendered box. The width
+	// loop above only pins the box outline; this proves each wrapped chunk of
+	// the stored entry really renders, at the box's 16-column content width.
+	chunks := tuiWrap(line.text, 16)
+	if len(chunks) != len(rows) {
+		t.Fatalf("tuiWrap and rows disagree on the chunk count: %d vs %d", len(chunks), len(rows))
+	}
+	for _, chunk := range chunks {
+		found := false
+		for _, row := range got {
+			if pane := tuiPane(tuiPlain(row)); pane == chunk {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("wrapped chunk %q missing from the rendered box:\n%s", chunk, tuiPlain(strings.Join(got, "\n")))
+		}
+	}
 }
 
 func TestTUIScreenBacklogRendersThroughWriteLogEntry(t *testing.T) {
@@ -418,5 +438,107 @@ func TestTUIScreenCloseThreadResets(t *testing.T) {
 	}
 	if frame := tuiPlain(render(m, 60, 8)); !strings.Contains(frame, "Threads") {
 		t.Fatalf("list not rendered after close:\n%s", frame)
+	}
+}
+
+// A typed line wider than the screen keeps its tail: the user types at the
+// caret side, so the head is cut to an ellipsis — the same rule the dialog
+// prompt follows.
+func TestTUIScreenInputKeepsTheTailVisible(t *testing.T) {
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	m.openThread(threadListRow{ID: "th_1"}, "demo", nil, nil)
+	for _, r := range strings.Repeat("word ", 20) + "END" {
+		m.typeRune(r)
+	}
+	got := tuiFrameLines(t, m, 30, 8)
+	input := tuiPlain(got[len(got)-2])
+	if !strings.HasPrefix(input, "…") || !strings.HasSuffix(input, "END") {
+		t.Fatalf("input row = %q, want an ellipsis head and the typed tail", input)
+	}
+	if w := stringCells(input); w > 30 {
+		t.Fatalf("input row is %d cells wide, over 30", w)
+	}
+	// The scrolled note stays visible even on a full line: the cut takes the
+	// typed head, never the note at the caret-side end.
+	m.appendLog(tuiEntry(now, "lead", "one"), tuiEntry(now, "lead", "two"))
+	m.scrollUp(1)
+	input = tuiPlain(strings.Split(render(m, 30, 8), "\n")[len(got)-2])
+	if !strings.Contains(input, "END") || !strings.Contains(input, "(scrolled 1 up)") {
+		t.Fatalf("scrolled note lost on a full input row: %q", input)
+	}
+}
+
+// Agent output is untrusted: ESC and other control bytes must never reach
+// the terminal raw, where they would move the cursor or clear the frame. Tab
+// stays, since logs indent with it.
+func TestTUIScreenStripsControlBytesFromLogText(t *testing.T) {
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	m.openThread(threadListRow{ID: "th_1"}, "demo", []contracts.LogEntry{
+		tuiEntry(now, "lead", "a\x1b[2Jb\rc\x07"),
+	}, nil)
+	m.appendLog(tuiEntry(now, "lead", "x\ty"))
+	frame := render(m, 60, 8)
+	if strings.Contains(frame, "\x1b") {
+		t.Fatalf("an ESC byte reached the frame:\n%q", frame)
+	}
+	plain := tuiPlain(frame)
+	if !strings.Contains(plain, "a[2Jbc") {
+		t.Fatalf("the log line lost its non-control runes:\n%s", plain)
+	}
+	if !strings.Contains(plain, "x\ty") {
+		t.Fatalf("tab was stripped from the log line:\n%q", plain)
+	}
+}
+
+// A stored line wraps once per width: the wrapped rows are memoized on the
+// line, so a repaint — or the pane the same line feeds — reuses them instead
+// of re-splitting up to the log cap every frame.
+func TestTUILogLineWrapsOncePerWidth(t *testing.T) {
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	m.openThread(threadListRow{ID: "th_1"}, "demo", []contracts.LogEntry{
+		tuiEntry(now, "lead", strings.Repeat("z", 60)),
+	}, nil)
+	render(m, 60, 8)
+	m.log[0].wrapped[0] = tuiText("CACHED", tuiInk{})
+	if got := m.log[0].rows(56)[0].plain(); got != "CACHED" {
+		t.Fatalf("rows at the same width re-wrapped instead of reusing the cache: %q", got)
+	}
+	after := m.log[0].rows(20)
+	if len(after) == 0 || after[0].plain() == "CACHED" {
+		t.Fatal("a new width did not re-wrap the line")
+	}
+	if m.log[0].wrapW != 20 {
+		t.Fatalf("cache width = %d, want 20", m.log[0].wrapW)
+	}
+}
+
+// paneRows is pure: rendering settles an out-of-range offset in view without
+// writing it back, and two renders of the same model paint the same bytes.
+func TestTUIPaneRenderIsPureAndSettlesTop(t *testing.T) {
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	m.openThread(threadListRow{ID: "th_1"}, "demo", nil, nil)
+	m.openPane("agent log", tuiLogLines(
+		tuiEntry(now, "lead", "one"),
+		tuiEntry(now, "lead", "two"),
+	), true)
+	first := render(m, 60, 8)
+	if second := render(m, 60, 8); second != first {
+		t.Fatalf("two renders of one pane differ:\n%s\n---\n%s", first, second)
+	}
+
+	// A top scrolled far past the end settles at the newest row in view, but
+	// the pane's own offset is never rewritten by the render.
+	m.pane.follow = false
+	m.pane.top = 1 << 20
+	clamped := render(m, 60, 8)
+	if m.pane.top != 1<<20 {
+		t.Fatal("paneRows wrote the clamped offset back into the pane")
+	}
+	if clamped != first {
+		t.Fatalf("a pane clamped in view shows different rows than the follow view:\n%s\n---\n%s", clamped, first)
 	}
 }

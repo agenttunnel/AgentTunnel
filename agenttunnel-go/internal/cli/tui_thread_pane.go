@@ -14,27 +14,19 @@ type tuiDetail struct {
 	title string
 	lines []tuiLogLine
 	// top is the first display row shown. follow pins the view to the newest
-	// rows, which suits logs; a reader who scrolls up stops following.
+	// rows, which suits logs; a reader who scrolls up stops following. The
+	// wrapped rows are memoized per stored line (tuiLogLine cache).
 	top    int
 	follow bool
-
-	// rows caches the wrapped lines for the width they were built at, so a
-	// repaint does not rewrap a long agent log every frame.
-	rows   []tuiRow
-	cacheW int
-	cached bool
 }
 
 // rowsFor wraps the pane's lines to width, reusing the cache when it fits.
+// Each line memoizes its own wrap, so an unchanged pane repaints for free.
 func (p *tuiDetail) rowsFor(width int) []tuiRow {
-	if p.cached && p.cacheW == width {
-		return p.rows
+	var rows []tuiRow
+	for i := range p.lines {
+		rows = append(rows, p.lines[i].rows(width)...)
 	}
-	rows := []tuiRow{}
-	for _, l := range p.lines {
-		rows = append(rows, l.rows(width)...)
-	}
-	p.rows, p.cacheW, p.cached = rows, width, true
 	return rows
 }
 
@@ -44,19 +36,21 @@ func (m *tuiModel) openPane(title string, lines []tuiLogLine, follow bool) {
 }
 
 // paneRows draws the open pane: a title row, then as many wrapped rows as fit.
-// The offset is clamped here because only the render knows the wrapped length;
-// the key handler moves it freely and the render settles it.
+// It is pure: the offset is settled here because only the render knows the
+// wrapped length, but it is never written back — the key handler moves top
+// freely and each render clamps it into view.
 func (m *tuiModel) paneRows(cols, rows int) []tuiRow {
 	p := m.pane
 	all := p.rowsFor(cols)
 	page := max(rows-1, 0)
 	maxTop := max(len(all)-page, 0)
+	top := p.top
 	if p.follow {
-		p.top = maxTop
+		top = maxTop
 	}
-	p.top = min(max(p.top, 0), maxTop)
-	end := min(p.top+page, len(all))
-	out := append([]tuiRow{tuiText(p.title, tuiInk{fg: tuiColAccent, bold: true})}, all[p.top:end]...)
+	top = min(max(top, 0), maxTop)
+	end := min(top+page, len(all))
+	out := append([]tuiRow{tuiText(p.title, tuiInk{fg: tuiColAccent, bold: true})}, all[top:end]...)
 	return fitRows(out, rows)
 }
 

@@ -118,6 +118,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewProjects,
 		Title: "Projects",
+		Order: 80,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiProjectsOf(m)
 			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, st.fetch)
@@ -148,18 +149,28 @@ func tuiIssuesOf(m *tuiModel) *tuiIssuesState {
 	return tuiStateOf[tuiIssuesState](m, tuiViewIssues)
 }
 
-func (st *tuiIssuesState) fetch() error {
-	if st.projectID == "" {
-		st.list = tuiIssueListWire{}
-		return nil
+// fetchJob reads the focused project's issues in the background: the list
+// shells out to a forge CLI, so it must never run on the session loop.
+func (st *tuiIssuesState) fetchJob() tuiJob {
+	id := st.projectID
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		if id == "" {
+			return func(m *tuiModel) {
+				st := tuiIssuesOf(m)
+				st.list = tuiIssueListWire{}
+			}
+		}
+		var list tuiIssueListWire
+		if err := c.Call(ctx, "issues.list", map[string]string{"projectId": id}, &list); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiIssuesOf(m)
+			st.list = list
+			st.cursor = tuiMoveCursor(st.cursor, 0, len(list.Issues))
+		}
 	}
-	var list tuiIssueListWire
-	if err := st.call("issues.list", map[string]string{"projectId": st.projectID}, &list); err != nil {
-		return err
-	}
-	st.list = list
-	st.cursor = tuiMoveCursor(st.cursor, 0, len(list.Issues))
-	return nil
 }
 
 func (st *tuiIssuesState) render(cols, rows int) []tuiRow {
@@ -196,7 +207,7 @@ func (st *tuiIssuesState) render(cols, rows int) []tuiRow {
 	return tuiViewFrame(cols, rows, title, lines, min(st.cursor, len(lines)-1), status)
 }
 
-func (st *tuiIssuesState) key(k tuiKey) bool {
+func (st *tuiIssuesState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if step := tuiNav(k, 8); step != 0 {
 		st.cursor = tuiMoveCursor(st.cursor, step, len(st.list.Issues))
@@ -206,7 +217,7 @@ func (st *tuiIssuesState) key(k tuiKey) bool {
 	case k.Kind == keyEnter || (k.Kind == keyRune && k.Rune == 'd'):
 		st.detail = !st.detail
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -232,18 +243,19 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewIssues,
 		Title: "Issues",
-		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
+		Order: 90,
+		Load: func(_ context.Context, _ cliCaller, m *tuiModel) {
 			st := tuiIssuesOf(m)
 			st.focus(m)
-			// Forge issue lists cost a network round trip, so they refresh on a
-			// minute's ttl instead of every poll tick.
-			tuiLoadView(ctx, c, &st.tuiBase, time.Minute, st.fetch)
+			// Forge issue lists cost a network round trip, so the fetch runs
+			// as a background job on a minute's ttl: Load only queues it.
+			tuiLoadJob(m, &st.tuiBase, time.Minute, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiIssuesOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiIssuesOf(m).key(k)
+			return tuiIssuesOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "select"}, {"enter", "details"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},

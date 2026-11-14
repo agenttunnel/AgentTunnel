@@ -33,16 +33,31 @@ type tuiLogLine struct {
 	text  string
 	kind  string
 	stamp int
+	// wrapW/wrapped memoize rows(width): a stored line never changes, so a
+	// repaint reuses the wrapped rows instead of re-splitting up to the
+	// tuiLogCap lines every frame.
+	wrapW   int
+	wrapped []tuiRow
 }
 
 // rows wraps the line to width and styles each wrapped row. Hard wrapping
-// makes row i start at offset i*width, which is how the stamp boundary is found.
-func (l tuiLogLine) rows(width int) []tuiRow {
-	wrapped := tuiWrap(l.text, width)
-	out := make([]tuiRow, len(wrapped))
-	for i, part := range wrapped {
-		out[i] = styleLogRow(part, i*width, l.stamp, tuiKindInk(l.kind))
+// makes row i start at cell offset i*width, which is how the stamp boundary
+// is found; the stamp prefix itself is always narrow. Text is stripped of
+// control bytes first: agent output is not trusted to be printable, and a
+// raw ESC or CSI would break the frame geometry.
+func (l *tuiLogLine) rows(width int) []tuiRow {
+	if l.wrapped != nil && l.wrapW == width {
+		return l.wrapped
 	}
+	text := tuiSanitize(l.text)
+	wrapped := tuiWrap(text, width)
+	out := make([]tuiRow, len(wrapped))
+	off := 0
+	for i, part := range wrapped {
+		out[i] = styleLogRow(part, off, l.stamp, tuiKindInk(l.kind))
+		off += stringCells(part)
+	}
+	l.wrapped, l.wrapW = out, width
 	return out
 }
 
@@ -469,28 +484,123 @@ func (m *tuiModel) bodyRows(cols, rows int) []tuiRow {
 }
 
 // headerRow is the top bar: the AgentTunnel wordmark, the tabs with the
-// active one lit, and the daemon and build on the right.
+// active one lit, and the daemon and build on the right. The daemon label
+// is reserved first; the tabs share whatever is left, windowed around the
+// active one with ellipsis markers when they cannot all fit. A bar too
+// narrow for everything gives up the build first, then the wordmark — the
+// host itself stays on screen at any width that can hold it.
 func (m *tuiModel) headerRow(cols int) tuiRow {
 	bar := tuiInk{bg: tuiColBar}
-	row := tuiText(" ◆ AgentTunnel ", tuiInk{fg: tuiColAccent, bg: tuiColBar, bold: true})
-	for _, id := range tuiViewOrder() {
+	mark := tuiText(" ◆ AgentTunnel ", tuiInk{fg: tuiColAccent, bg: tuiColBar, bold: true})
+	labels := []tuiRow{m.daemonRow(true)}
+	if m.info.version != "" {
+		labels = append(labels, m.daemonRow(false))
+	}
+	for _, right := range labels {
+		if row := m.headerTabs(mark, right, cols); row != nil {
+			return row
+		}
+	}
+	// Too narrow for the wordmark beside the bare host: keep the host on the
+	// right edge and cut the wordmark to whatever room is left.
+	right := labels[len(labels)-1]
+	if cols <= right.width() {
+		return right.fit(cols).padTo(cols, bar)
+	}
+	cut := cols - right.width()
+	return mark.fit(cut).padTo(cut, bar).join(right)
+}
+
+// daemonRow is the header's right-hand label: the connection dot, the daemon
+// host, and the build — the build only when withVersion is set.
+func (m *tuiModel) daemonRow(withVersion bool) tuiRow {
+	info := m.info.daemon
+	if withVersion && m.info.version != "" {
+		info += "  v" + m.info.version
+	}
+	return tuiText("● ", tuiInk{fg: tuiColOK, bg: tuiColBar}).
+		join(tuiText(info+" ", tuiInk{fg: tuiColFaint, bg: tuiColBar}))
+}
+
+// headerTabs builds one header attempt for the given right-hand label: the
+// wordmark, the windowed tab bar, and the label right-aligned. It returns nil
+// when the row cannot hold all three with at least one blank before the label.
+func (m *tuiModel) headerTabs(mark, right tuiRow, cols int) tuiRow {
+	bar := tuiInk{bg: tuiColBar}
+	ids, leftCut, rightCut := tuiWindowTabs(tuiViewOrder(), m.view, cols-mark.width()-right.width()-1)
+	row := mark
+	if leftCut {
+		row = row.join(tuiText("…", tuiInk{fg: tuiColFaint, bg: tuiColBar}), tuiText(" ", bar))
+	}
+	for _, id := range ids {
 		ink := tuiInk{fg: tuiColDim, bg: tuiColBar}
 		if id == m.view {
 			ink = tuiInk{fg: tuiColText, bg: tuiColSelect, bold: true}
 		}
 		row = row.join(tuiText(" "+tuiTabTitle(id)+" ", ink), tuiText(" ", bar))
 	}
-	info := m.info.daemon
-	if m.info.version != "" {
-		info += "  v" + m.info.version
+	if rightCut {
+		row = row.join(tuiText("…", tuiInk{fg: tuiColFaint, bg: tuiColBar}), tuiText(" ", bar))
 	}
-	right := tuiText("● ", tuiInk{fg: tuiColOK, bg: tuiColBar}).
-		join(tuiText(info+" ", tuiInk{fg: tuiColFaint, bg: tuiColBar}))
 	gap := cols - row.width() - right.width()
 	if gap < 1 {
-		return row.fit(cols).padTo(cols, bar)
+		return nil
 	}
 	return row.join(tuiText(strings.Repeat(" ", gap), bar), right)
+}
+
+// tuiTabCells is one tab's width in the header: a space of padding each side
+// of the title plus the separator space after it.
+func tuiTabCells(id string) int {
+	return stringCells(tuiTabTitle(id)) + 3
+}
+
+// tuiWindowTabs picks the tabs the header shows when they cannot all fit:
+// a window around the active one, with an ellipsis standing for each hidden
+// run. Two cells per possible ellipsis are reserved before fitting tabs, so
+// the markers never steal the daemon label's space.
+func tuiWindowTabs(order []string, active string, budget int) (ids []string, leftCut, rightCut bool) {
+	widths := make([]int, len(order))
+	total := 0
+	for i, id := range order {
+		widths[i] = tuiTabCells(id)
+		total += widths[i]
+	}
+	if total <= budget {
+		return order, false, false
+	}
+	idx := 0
+	for i, id := range order {
+		if id == active {
+			idx = i
+			break
+		}
+	}
+	room := budget - 4 // the two possible ellipsis markers
+	if room < widths[idx] {
+		if budget >= widths[idx] {
+			return order[idx : idx+1], idx > 0, idx < len(order)-1
+		}
+		return nil, false, false
+	}
+	lo, hi, used := idx, idx+1, widths[idx]
+	for {
+		grew := false
+		if lo > 0 && used+widths[lo-1] <= room {
+			lo--
+			used += widths[lo]
+			grew = true
+		}
+		if hi < len(order) && used+widths[hi] <= room {
+			used += widths[hi]
+			hi++
+			grew = true
+		}
+		if !grew {
+			break
+		}
+	}
+	return order[lo:hi], lo > 0, hi < len(order)
 }
 
 // hints are the footer's key hints for the current surface.
@@ -665,7 +775,9 @@ func (m *tuiModel) threadStatus() tuiRow {
 }
 
 // inputRow is the prompt line: "> " for a turn or steer, "? " when a question
-// owns the line, plus a note when the log is scrolled.
+// owns the line, plus a note when the log is scrolled. A line past the width
+// keeps its tail — the user types at the end — so the command's head is cut
+// to an ellipsis instead.
 func (m *tuiModel) inputRow(cols int) tuiRow {
 	prompt, ink := "> ", tuiInk{fg: tuiColAccent, bold: true}
 	if m.pending != nil {
@@ -675,7 +787,7 @@ func (m *tuiModel) inputRow(cols int) tuiRow {
 	if !m.following() {
 		row = row.join(tuiText(fmt.Sprintf("  (scrolled %d up)", m.scroll), tuiInk{fg: tuiColDim}))
 	}
-	return row.fit(cols)
+	return row.tail(cols)
 }
 
 // logPane picks the displayed log rows. Stored lines wrap to the pane width;
@@ -751,24 +863,61 @@ func (m *tuiModel) rosterRow(width int) tuiRow {
 	return row.fit(width)
 }
 
-// tuiWrap hard-wraps a plain line at width runes. Entry-internal continuation
+// tuiWrap hard-wraps a plain line at width cells; a wide rune that would
+// straddle the boundary starts the next row. Entry-internal continuation
 // lines (already indented by writeLogEntry to the prefix column) wrap flat;
-// only a line longer than the pane width wraps at all.
+// only a line wider than the pane width wraps at all.
 func tuiWrap(s string, width int) []string {
 	if width < 1 {
 		return []string{""}
 	}
-	r := []rune(s)
-	if len(r) <= width {
+	if stringCells(s) <= width {
 		return []string{s}
 	}
+	r := []rune(s)
 	var out []string
-	for len(r) > width {
-		out = append(out, string(r[:width]))
-		r = r[width:]
+	start, cells := 0, 0
+	for i, rn := range r {
+		w := runeCells(rn)
+		if cells+w > width {
+			out = append(out, string(r[start:i]))
+			start, cells = i, 0
+		}
+		cells += w
 	}
-	if len(r) > 0 {
-		out = append(out, string(r))
-	}
+	out = append(out, string(r[start:]))
 	return out
+}
+
+// tuiSanitize strips control characters the TUI never prints: C0 and C1
+// codes and DEL, except tab. ESC or CSI bytes in agent output would move the
+// cursor or clear the frame, so no stored text renders raw.
+func tuiSanitize(s string) string {
+	clean := true
+	for _, r := range s {
+		if tuiControlRune(r) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if !tuiControlRune(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// tuiControlRune reports whether r is a control rune: the C0 range, DEL, or
+// the C1 range — except tab, which logs use for indentation.
+func tuiControlRune(r rune) bool {
+	if r == '\t' {
+		return false
+	}
+	return r < 0x20 || (r >= 0x7f && r <= 0x9f)
 }

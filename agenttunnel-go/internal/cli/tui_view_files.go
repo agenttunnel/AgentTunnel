@@ -350,6 +350,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewFiles,
 		Title: "Files",
+		Order: 20,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiFilesOf(m)
 			st.focus(m)

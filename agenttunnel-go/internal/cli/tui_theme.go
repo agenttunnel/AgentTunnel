@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 )
 
 // The TUI's look mirrors the desktop app: the same palette as the :root
@@ -226,8 +225,8 @@ type tuiSpan struct {
 	ink  tuiInk
 }
 
-// tuiRow is one display line as styled spans. Widths count runes, so layout
-// math never sees ANSI codes.
+// tuiRow is one display line as styled spans. Widths count terminal cells, so
+// layout math never sees ANSI codes and never undercounts wide runes.
 type tuiRow []tuiSpan
 
 // tuiText is a single-ink row; the empty string gives an empty row.
@@ -247,34 +246,72 @@ func (r tuiRow) join(parts ...tuiRow) tuiRow {
 	return out
 }
 
-// width is the row's length in runes.
-func (r tuiRow) width() int {
+// runeCells is how many terminal cells r occupies: wide runes — CJK,
+// fullwidth forms, emoji — take two, everything else one.
+func runeCells(r rune) int {
+	switch {
+	case r >= 0x1100 && r <= 0x115F, // Hangul Jamo
+		r >= 0x2E80 && r <= 0x303E,   // CJK radicals and symbols
+		r >= 0x3041 && r <= 0x33FF,   // kana, CJK compatibility
+		r >= 0x3400 && r <= 0x4DBF,   // CJK extension A
+		r >= 0x4E00 && r <= 0x9FFF,   // CJK unified ideographs
+		r >= 0xA000 && r <= 0xA4CF,   // Yi
+		r >= 0xAC00 && r <= 0xD7A3,   // Hangul syllables
+		r >= 0xF900 && r <= 0xFAFF,   // CJK compatibility ideographs
+		r >= 0xFE30 && r <= 0xFE4F,   // CJK compatibility forms
+		r >= 0xFF00 && r <= 0xFF60,   // fullwidth forms
+		r >= 0xFFE0 && r <= 0xFFE6,   // fullwidth signs
+		r >= 0x1F300 && r <= 0x1F64F, // emoji: pictographs, emoticons
+		r >= 0x1F680 && r <= 0x1F6FF, // emoji: transport and map
+		r >= 0x1F900 && r <= 0x1F9FF, // emoji: supplemental
+		r >= 0x1FA70 && r <= 0x1FAFF: // emoji: symbols and pictographs extended
+		return 2
+	}
+	return 1
+}
+
+// stringCells is s's width in terminal cells.
+func stringCells(s string) int {
 	n := 0
-	for _, s := range r {
-		n += utf8.RuneCountInString(s.text)
+	for _, r := range s {
+		n += runeCells(r)
 	}
 	return n
 }
 
-// cut returns the runes in [from, to) with their inks intact.
+// width is the row's length in terminal cells.
+func (r tuiRow) width() int {
+	n := 0
+	for _, s := range r {
+		n += stringCells(s.text)
+	}
+	return n
+}
+
+// cut returns the cells in [from, to) with their inks intact. A rune that
+// straddles a boundary is kept, so text is never silently dropped.
 func (r tuiRow) cut(from, to int) tuiRow {
 	var out tuiRow
 	pos := 0
 	for _, s := range r {
-		runes := []rune(s.text)
-		lo, hi := pos, pos+len(runes)
-		pos = hi
-		a, b := max(from, lo), min(to, hi)
-		if a >= b {
-			continue
+		var b strings.Builder
+		for _, rn := range s.text {
+			w := runeCells(rn)
+			if pos < to && pos+w > from {
+				b.WriteRune(rn)
+			}
+			pos += w
 		}
-		out = append(out, tuiSpan{text: string(runes[a-lo : b-lo]), ink: s.ink})
+		if b.Len() > 0 {
+			out = append(out, tuiSpan{text: b.String(), ink: s.ink})
+		}
 	}
 	return out
 }
 
-// fit cuts the row to width runes. A cut row ends in an ellipsis, the same
-// rule tuiTruncate applies to plain lines.
+// fit cuts the row to width cells. A cut row ends in an ellipsis, the same
+// rule tuiTruncate applies to plain lines; a wide rune that would straddle
+// the cut is dropped whole.
 func (r tuiRow) fit(width int) tuiRow {
 	if width < 1 {
 		return nil
@@ -285,7 +322,62 @@ func (r tuiRow) fit(width int) tuiRow {
 	if width == 1 {
 		return tuiRow{{text: "…"}}
 	}
-	return r.cut(0, width-1).join(tuiRow{{text: "…"}})
+	out := make(tuiRow, 0, len(r)+1)
+	cells := 0
+	full := false
+	for _, s := range r {
+		if full {
+			break
+		}
+		var b strings.Builder
+		for _, rn := range s.text {
+			w := runeCells(rn)
+			if cells+w > width-1 {
+				full = true
+				break
+			}
+			b.WriteRune(rn)
+			cells += w
+		}
+		if b.Len() > 0 {
+			out = append(out, tuiSpan{text: b.String(), ink: s.ink})
+		}
+	}
+	return append(out, tuiSpan{text: "…"})
+}
+
+// tail keeps the row's end visible: when it is wider than width cells, the
+// head is cut to an ellipsis so the caret side of a long typed line stays on
+// screen.
+func (r tuiRow) tail(width int) tuiRow {
+	if width < 1 {
+		return nil
+	}
+	if r.width() <= width {
+		return r
+	}
+	if width == 1 {
+		return tuiRow{{text: "…"}}
+	}
+	// Collect the spans of the last width-1 cells, then lead with an ellipsis.
+	var spans tuiRow
+	cells := 0
+	for i := len(r) - 1; i >= 0 && cells < width-1; i-- {
+		runes := []rune(r[i].text)
+		var kept []rune
+		for j := len(runes) - 1; j >= 0; j-- {
+			w := runeCells(runes[j])
+			if cells+w > width-1 {
+				break
+			}
+			kept = append([]rune{runes[j]}, kept...)
+			cells += w
+		}
+		if len(kept) > 0 {
+			spans = append(tuiRow{{text: string(kept), ink: r[i].ink}}, spans...)
+		}
+	}
+	return tuiRow{{text: "…"}}.join(spans)
 }
 
 // padTo extends the row to width with ink-colored spaces, so a bar or a

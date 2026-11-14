@@ -252,6 +252,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewMaster,
 		Title: "Master",
+		Order: 10,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiMasterOf(m)
 			// The transcript changes when a reply lands, so the forced reload from

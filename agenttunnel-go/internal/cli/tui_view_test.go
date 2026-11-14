@@ -119,6 +119,18 @@ func tuiWaitIdle(t *testing.T, b *tuiBase) {
 	}
 }
 
+// tuiDrainJobs runs the model's queued jobs the way the session loop would:
+// each runs off the loop and its fold applies back on it. It makes a
+// Load-queued fetch deterministic in tests, with no sleeps.
+func tuiDrainJobs(t *testing.T, m *tuiModel, c cliCaller) {
+	t.Helper()
+	for _, job := range m.takeJobs() {
+		if apply := job(context.Background(), c); apply != nil {
+			apply(m)
+		}
+	}
+}
+
 // tuiKeys feeds a sequence of keys through a view's Key hook, one by one.
 func tuiKeys(t *testing.T, m *tuiModel, id string, keys ...tuiKey) {
 	t.Helper()
@@ -161,6 +173,7 @@ func TestTUIViewsRenderEverySizeAndTheme(t *testing.T) {
 		c := &tuiFakeCaller{replies: tuiViewReplies()}
 		m.view = v.ID
 		v.Load(context.Background(), c, m)
+		tuiDrainJobs(t, m, c)
 		for _, sz := range sizes {
 			cols, rows := sz[0], sz[1]
 			out := render(m, cols, rows)
@@ -227,6 +240,7 @@ func TestTUIViewPRMergeNeedsASecondPress(t *testing.T) {
 	m.view = tuiViewPR
 	v := tuiViewOf(t, tuiViewPR)
 	v.Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiPROf(m)
 
 	tuiKeys(t, m, tuiViewPR, tuiKey{Kind: keyRune, Rune: 'M'})
@@ -376,6 +390,7 @@ func TestTUIViewUpdateApplyNeedsASecondPress(t *testing.T) {
 	c := &tuiFakeCaller{replies: replies}
 	m.view = tuiViewRemote
 	tuiViewOf(t, tuiViewRemote).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiRemoteOf(m)
 
 	tuiKeys(t, m, tuiViewRemote, tuiRunes("A")...)
@@ -431,6 +446,7 @@ func TestTUIViewIssuesDetailsToggle(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewIssues
 	tuiViewOf(t, tuiViewIssues).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 
 	if out := render(m, 80, 24); strings.Contains(out, "it breaks") {
 		t.Fatal("the description should be closed until enter opens it")
@@ -452,10 +468,12 @@ func TestTUIViewReloadOnTheFocusedThreadChange(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewPR
 	tuiViewOf(t, tuiViewPR).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	before := len(c.calls)
 
 	m.cursor = 1
 	tuiViewOf(t, tuiViewPR).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	if len(c.calls) == before || !c.sent("pr.status", `"threadId":"t2"`) {
 		t.Fatalf("moving to thread t2 did not reload its request; calls: %+v", c.calls)
 	}
@@ -470,5 +488,77 @@ func TestTUIViewEditorTakesTextAndSubmits(t *testing.T) {
 	}
 	if !e.key(tuiEnter) || e.on {
 		t.Fatal("enter should submit and close the editor")
+	}
+}
+
+// The views whose reads shell out to forge CLIs or hit the network never run
+// them on the session loop: their Load makes no synchronous call at all and
+// only queues the fetch, whose fold lands on the loop.
+func TestTUIViewLoadQueuesSlowFetches(t *testing.T) {
+	views := []struct {
+		id     string
+		method string
+		data   func(*testing.T, *tuiModel)
+	}{
+		{tuiViewPR, "pr.status", func(t *testing.T, m *tuiModel) {
+			if got := tuiPROf(m).snap.Status; got != "ready" {
+				t.Fatalf("the fold never landed the request snapshot: %q", got)
+			}
+		}},
+		{tuiViewIssues, "issues.list", func(t *testing.T, m *tuiModel) {
+			if got := len(tuiIssuesOf(m).list.Issues); got != 1 {
+				t.Fatalf("the fold never landed the issue list: %d rows", got)
+			}
+		}},
+	}
+	for _, v := range views {
+		m := tuiViewModel()
+		m.view = v.id
+		c := &tuiFakeCaller{replies: tuiViewReplies()}
+		tuiViewOf(t, v.id).Load(context.Background(), c, m)
+		if len(c.calls) != 0 {
+			t.Fatalf("%s Load made %d synchronous calls: %+v", v.id, len(c.calls), c.calls)
+		}
+		tuiDrainJobs(t, m, c)
+		if !c.sent(v.method) {
+			t.Fatalf("%s fetch never ran %s; calls: %+v", v.id, v.method, c.calls)
+		}
+		v.data(t, m)
+	}
+}
+
+// The update check is a network call to the release feed, so it runs as a
+// background job on first open — never inline in Load.
+func TestTUIViewUpdateCheckRunsInTheBackground(t *testing.T) {
+	replies := tuiViewReplies()
+	delete(replies, "remote.status")
+	replies["remote.status"] = `{}`
+	m := tuiViewModel()
+	m.view = tuiViewRemote
+	c := &tuiFakeCaller{replies: replies}
+	tuiViewOf(t, tuiViewRemote).Load(context.Background(), c, m)
+	for _, call := range c.calls {
+		if call.method == "update.check" {
+			t.Fatal("update.check ran synchronously inside Load")
+		}
+	}
+	tuiDrainJobs(t, m, c)
+	if !c.sent("update.check") {
+		t.Fatalf("the first open never queued an update check; calls: %+v", c.calls)
+	}
+	if got := tuiRemoteOf(m).updateStatus().Current; got != "1.0.0" {
+		t.Fatalf("checked version = %q, want 1.0.0", got)
+	}
+
+	// The refresh key runs the check again, on demand, in the background too.
+	before := len(c.calls)
+	m.view = tuiViewRemote
+	tuiKeys(t, m, tuiViewRemote, tuiKey{Kind: keyRune, Rune: 'u'})
+	if len(c.calls) != before {
+		t.Fatal("pressing u made a synchronous call")
+	}
+	tuiDrainJobs(t, m, c)
+	if len(c.calls) == before {
+		t.Fatal("pressing u did not re-run the update check")
 	}
 }

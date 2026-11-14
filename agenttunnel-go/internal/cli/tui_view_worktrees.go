@@ -156,6 +156,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewWorktrees,
 		Title: "Worktrees",
+		Order: 100,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiWorktreesOf(m)
 			st.focus(m)

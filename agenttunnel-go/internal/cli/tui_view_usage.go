@@ -173,6 +173,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewUsage,
 		Title: "Usage",
+		Order: 50,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiUsageOf(m)
 			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, func() error { return st.fetch(false) })

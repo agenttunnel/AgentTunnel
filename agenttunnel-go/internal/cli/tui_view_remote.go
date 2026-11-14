@@ -44,19 +44,22 @@ type tuiUpdateStatus struct {
 
 type tuiRemoteState struct {
 	tuiBase
-	items  []tuiRemoteItem
-	relay  tuiRelayStatus
-	update tuiUpdateStatus
-	// checked is when update.check last ran, so the status line can say how fresh it is.
-	checked time.Time
+	items []tuiRemoteItem
+	relay tuiRelayStatus
+	// update is the last check's result; checked is when update.check last
+	// ran, so the status line can say how fresh it is. checkBusy is a check
+	// in flight.
+	update    tuiUpdateStatus
+	checked   time.Time
+	checkBusy bool
 }
 
 func tuiRemoteOf(m *tuiModel) *tuiRemoteState {
 	return tuiStateOf[tuiRemoteState](m, tuiViewRemote)
 }
 
-// fetch reads the remote and relay status. The update check is a network call
-// to the release feed, so it runs only on open, on r, or on u.
+// fetch reads the remote and relay status: local daemon reads the session
+// loop can make directly.
 func (st *tuiRemoteState) fetch() error {
 	var remote struct {
 		Items []tuiRemoteItem `json:"items"`
@@ -72,17 +75,36 @@ func (st *tuiRemoteState) fetch() error {
 	return nil
 }
 
-// checkUpdate asks the release feed for the latest build. It is synchronous on
-// purpose: the result is the view's data, and the view reads it on this goroutine.
-func (st *tuiRemoteState) checkUpdate() error {
-	var up tuiUpdateStatus
-	if err := st.call("update.check", nil, &up); err != nil {
-		return err
-	}
+// startUpdateCheck asks the release feed for the latest build as a background
+// job: it is a network call, so it must never block the session loop. It runs
+// on first open and on u; a check already in flight is not stacked behind.
+func (st *tuiRemoteState) startUpdateCheck(m *tuiModel, force bool) {
 	st.mu.Lock()
-	st.update, st.checked = up, time.Now()
+	if st.checkBusy || (!force && !st.checked.IsZero()) {
+		st.mu.Unlock()
+		return
+	}
+	st.checkBusy = true
 	st.mu.Unlock()
-	return nil
+	base := &st.tuiBase
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var up tuiUpdateStatus
+		err := c.Call(ctx, "update.check", nil, &up)
+		return func(m *tuiModel) {
+			st := tuiRemoteOf(m)
+			st.mu.Lock()
+			st.checkBusy = false
+			if err == nil {
+				st.update, st.checked = up, time.Now()
+			}
+			st.mu.Unlock()
+			if err != nil {
+				base.setErr(err)
+				return
+			}
+			base.say("checked for updates")
+		}
+	})
 }
 
 // updateStatus reads the update status under the lock: an install running in the
@@ -182,7 +204,7 @@ func (st *tuiRemoteState) render(cols, rows int) []tuiRow {
 	return tuiViewFrame(cols, rows, "Remote & updates", st.lines(), -1, status)
 }
 
-func (st *tuiRemoteState) key(k tuiKey) bool {
+func (st *tuiRemoteState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	switch {
 	case k.Kind == keyRune && k.Rune == 'w':
@@ -214,11 +236,8 @@ func (st *tuiRemoteState) key(k tuiKey) bool {
 			return "WhatsApp control " + remoteOnOff(enable), err
 		})
 	case k.Kind == keyRune && k.Rune == 'u':
-		if err := st.checkUpdate(); err != nil {
-			st.setErr(err)
-		} else {
-			st.say("checked for updates")
-		}
+		st.startUpdateCheck(m, true)
+		st.say("checking for updates")
 	case k.Kind == keyRune && k.Rune == 'A':
 		if u := st.updateStatus(); u.Available && u.Installed == "" {
 			if !st.confirm("apply", "press A again to install "+u.Latest+" (replaces this binary)", k) {
@@ -249,23 +268,19 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewRemote,
 		Title: "Remote",
+		Order: 70,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiRemoteOf(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 10*time.Second, func() error {
-				if err := st.fetch(); err != nil {
-					return err
-				}
-				if st.checked.IsZero() {
-					return st.checkUpdate()
-				}
-				return nil
-			})
+			tuiLoadView(ctx, c, &st.tuiBase, 10*time.Second, st.fetch)
+			// The update check is a network call to the release feed, so it
+			// runs in the background, once on first open.
+			st.startUpdateCheck(m, false)
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiRemoteOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiRemoteOf(m).key(k)
+			return tuiRemoteOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"w", "WhatsApp"}, {"o", "control"}, {"u", "check updates"}, {"A", "install update"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},

@@ -247,6 +247,26 @@ func TestTUIHeaderBarCarriesWordmarkTabsAndDaemon(t *testing.T) {
 			t.Fatalf("header %q missing %q", first, want)
 		}
 	}
+
+	// The bar reserves the wordmark and the daemon label first: with every
+	// tab active in turn, one buried deep in the window never pushes the
+	// label off the row, down to widths where the label itself barely fits.
+	for _, id := range tuiViewOrder() {
+		m.view = id
+		for _, cols := range []int{80, 60, 46, 30} {
+			header := strings.Split(tuiPlain(render(m, cols, 4)), "\n")[0]
+			if !strings.Contains(header, "127.0.0.1:7777") {
+				t.Fatalf("active tab %q at %d cols hid the daemon label: %q", id, cols, header)
+			}
+		}
+		// The window keeps the active tab itself on screen too.
+		for _, cols := range []int{80, 60} {
+			header := strings.Split(tuiPlain(render(m, cols, 4)), "\n")[0]
+			if !strings.Contains(header, tuiTabTitle(id)) {
+				t.Fatalf("active tab %q not visible at %d cols: %q", id, cols, header)
+			}
+		}
+	}
 }
 
 // Every surface renders at every size down to nothing without panicking, and
@@ -279,6 +299,80 @@ func TestTUIRenderSurvivesEverySize(t *testing.T) {
 					t.Fatalf("%dx%d frame has %d rows", cols, rows, n+1)
 				}
 			}
+		}
+	}
+}
+
+// Widths are counted in terminal cells: CJK, fullwidth, and emoji runes take
+// two, so truncation, padding, and wrapping all treat them as the room they
+// really occupy and a box never overflows its border.
+func TestTUIRowWidthIsCellAware(t *testing.T) {
+	if got := tuiText("中文", tuiInk{fg: tuiColText}).width(); got != 4 {
+		t.Fatalf("width of two CJK runes = %d, want 4", got)
+	}
+	if got := tuiText("a😀", tuiInk{}).width(); got != 3 {
+		t.Fatalf("width of a + emoji = %d, want 3", got)
+	}
+	full := tuiText("中文ab", tuiInk{})
+	if got, plain := full.fit(3).width(), full.fit(3).plain(); got != 3 || plain != "中…" {
+		t.Fatalf("fit(3) of 中文ab = %q (%d cells), want 中… (3)", plain, got)
+	}
+	if got := tuiText("中", tuiInk{}).padTo(5, tuiInk{}).width(); got != 5 {
+		t.Fatalf("padTo(5) of 中 = %d cells", got)
+	}
+	if got := tuiText("abc中def", tuiInk{}).tail(4).plain(); got != "…def" {
+		t.Fatalf("tail(4) of abc中def = %q, want …def", got)
+	}
+	wrapped := tuiWrap("中文中文中", 4)
+	if got := strings.Join(wrapped, "|"); got != "中文|中文|中" {
+		t.Fatalf("tuiWrap of wide runes = %q, want 中文|中文|中", got)
+	}
+	if len(tuiWrap("中中", 6)) != 1 {
+		t.Fatalf("a line that fits its width must not wrap: %v", tuiWrap("中中", 6))
+	}
+
+	// The whole frame keeps its cell width with wide runes in the content: a
+	// title and a log line of CJK must not push any boxed row past its border.
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	m.openThread(threadListRow{ID: "th_wide00000001", Title: strings.Repeat("中", 30)}, "demo", []contracts.LogEntry{
+		tuiEntry(now, "lead", strings.Repeat("文", 40)),
+	}, map[string]contracts.AgentStatus{"lead": contracts.AgentRunning})
+	const cols = 40
+	for i, line := range tuiFrameLines(t, m, cols, 12) {
+		plain := tuiPlain(line)
+		if i == len(line)-1 {
+			continue
+		}
+		if w := stringCells(plain); w > cols {
+			t.Fatalf("row %d is %d cells wide with wide runes, over %d: %q", i, w, cols, plain)
+		}
+	}
+}
+
+// The windowed tab bar carries its ellipsis markers and never exceeds the
+// row, at either end of the tab order.
+func TestTUIHeaderBarWindowsTabsAtBothEnds(t *testing.T) {
+	order := tuiViewOrder()
+	if len(order) < 3 {
+		t.Fatalf("the real tab set is not registered (order %v); this test needs it", order)
+	}
+	for _, active := range []string{order[0], order[len(order)-1], order[len(order)/2]} {
+		m := newTuiModel(time.Now())
+		m.info = tuiInfo{daemon: "127.0.0.1:7777", version: "9.9.9"}
+		m.view = active
+		header := tuiPlain(strings.Split(render(m, 80, 4), "\n")[0])
+		if !strings.Contains(header, " "+tuiTabTitle(active)+" ") {
+			t.Fatalf("active tab %q missing from windowed header %q", active, header)
+		}
+		if !strings.Contains(header, "127.0.0.1:7777") {
+			t.Fatalf("daemon label missing from windowed header %q", header)
+		}
+		if !strings.Contains(header, "…") {
+			t.Fatalf("windowed header has no ellipsis marker: %q", header)
+		}
+		if w := stringCells(header); w > 80 {
+			t.Fatalf("windowed header is %d cells wide, over 80:\n%q", w, header)
 		}
 	}
 }

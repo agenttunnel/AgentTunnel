@@ -63,6 +63,12 @@ func runTui(ctx context.Context, env *Env, args []string) error {
 
 	m := newTuiModel(time.Now())
 	m.theme = detectTuiTheme(env.Out, os.Getenv)
+	// Windows: legacy conhost needs VT processing switched on or every escape
+	// prints as literal text. When it cannot be enabled, the plain theme
+	// keeps the frame readable. Elsewhere it is a no-op that always succeeds.
+	if !tuiEnableVT(env.Out) {
+		m.theme = tuiTheme{}
+	}
 	m.info = tuiInfo{daemon: tuiDaemonLabel(env.DaemonURL), version: env.Version}
 	return tuiSession(ctx, c, m, ref, keys, term)
 }
@@ -279,8 +285,7 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				dirty = true
 			}
 		}
-		if id := m.openID; id != "" {
-			m.openID = ""
+		if id := m.takeOpenID(); id != "" {
 			opened, err := tuiOpenByID(ctx, c, m, id)
 			if err != nil {
 				if ctx.Err() != nil {

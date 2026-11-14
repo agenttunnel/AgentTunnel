@@ -43,8 +43,11 @@ type tuiBase struct {
 	ed     tuiEditor
 	armed  tuiArm
 	busy   string
-	notice string
-	err    string
+	// loading is a queued fetch still in flight, so a poll tick never
+	// stacks a second one behind it.
+	loading bool
+	notice  string
+	err     string
 	// idle is closed when the latest run finishes, so a test can wait for its
 	// outcome instead of sleeping.
 	idle chan struct{}
@@ -52,18 +55,29 @@ type tuiBase struct {
 
 // bind records the session context and client on every load.
 func (b *tuiBase) bind(ctx context.Context, c cliCaller) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.ctx, b.c = ctx, c
 }
 
+// bound is the recorded context and client, set by Load.
+func (b *tuiBase) bound() (context.Context, cliCaller) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ctx, b.c
+}
+
 // call makes one synchronous daemon request. Use it for reads the local daemon
-// answers at once; anything that shells out to a forge or a model goes to run.
+// answers at once; anything that shells out to a forge or a model goes to run
+// or a queued load job.
 func (b *tuiBase) call(method string, params, out any) error {
-	if b.c == nil || b.ctx == nil {
+	ctx, c := b.bound()
+	if c == nil || ctx == nil {
 		return errors.New("not connected yet")
 	}
-	ctx, cancel := context.WithTimeout(b.ctx, tuiCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, tuiCallTimeout)
 	defer cancel()
-	return b.c.Call(ctx, method, params, out)
+	return c.Call(ctx, method, params, out)
 }
 
 // run starts a slow daemon action in the background so the screen keeps
@@ -123,16 +137,20 @@ func (b *tuiBase) say(msg string) {
 	b.notice, b.err = msg, ""
 }
 
-// status is the one-line feedback row: a running action, else an error, else
-// the last result. It is read under the lock because run writes it.
+// status is the one-line feedback row: a running action, a fetch in flight,
+// else an error, else the last result. It is read under the lock because run
+// and the queued load write it.
 func (b *tuiBase) status() tuiRow {
 	b.mu.Lock()
-	busy, notice, errText := b.busy, b.notice, b.err
+	busy, loading := b.busy, b.loading
+	notice, errText := b.notice, b.err
 	armed := b.armed.prompt
 	b.mu.Unlock()
 	switch {
 	case busy != "":
 		return tuiText("… "+busy, tuiInk{fg: tuiColWarn})
+	case loading:
+		return tuiText("… refreshing", tuiInk{fg: tuiColWarn})
 	case errText != "":
 		return tuiText("✗ "+errText, tuiInk{fg: tuiColErr})
 	case armed != "":
@@ -157,6 +175,52 @@ func tuiLoadView(ctx context.Context, c cliCaller, b *tuiBase, ttl time.Duration
 		return
 	}
 	b.setErr(fetch())
+}
+
+// tuiLoadJob queues a view's slow fetch as a background job the session loop
+// runs, so Load stays cache-only: the loop never blocks on a forge or network
+// call. The job's fold applies on the loop, where the view's data is safe to
+// write. The gate closes at queue time, so a failed fetch retries only after
+// the ttl, and a fetch already in flight is not stacked behind.
+func tuiLoadJob(m *tuiModel, b *tuiBase, ttl time.Duration, job tuiJob) bool {
+	b.mu.Lock()
+	if b.loading || !b.gate.due(time.Now(), ttl) {
+		b.mu.Unlock()
+		return false
+	}
+	b.gate.finish(time.Now())
+	b.loading = true
+	b.mu.Unlock()
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		apply := job(ctx, c)
+		return func(m *tuiModel) {
+			b.mu.Lock()
+			b.loading = false
+			b.mu.Unlock()
+			if apply != nil {
+				apply(m)
+			}
+		}
+	})
+	return true
+}
+
+// tuiReloadJob queues a fetch now, for a view's refresh key: the gate is
+// forced first so the ttl cannot delay it.
+func tuiReloadJob(m *tuiModel, b *tuiBase, job tuiJob) {
+	b.mu.Lock()
+	b.gate.force = true
+	b.mu.Unlock()
+	tuiLoadJob(m, b, 0, job)
+}
+
+// tuiViewErrJob reports a failed background fetch on its view's status row,
+// keeping the last good data. The base is captured when the job is queued and
+// outlives the fetch.
+func tuiViewErrJob(b *tuiBase, err error) func(*tuiModel) {
+	return func(*tuiModel) {
+		b.setErr(err)
+	}
 }
 
 // reload forces the next load and runs it now, for the view's refresh key.
@@ -364,11 +428,13 @@ func (m *tuiModel) focusRow() (psRow, bool) {
 	return m.selected()
 }
 
-// wrapRows wraps text to width, one dim or ink row per wrapped line.
+// wrapRows wraps text to width, one dim or ink row per wrapped line. The text
+// is sanitized first: forge and agent bodies are not trusted to be printable,
+// and a raw ESC in them would break the frame.
 func wrapRows(text string, width int, ink tuiInk) []tuiRow {
 	var out []tuiRow
 	for _, line := range strings.Split(text, "\n") {
-		for _, part := range tuiWrap(line, max(width, 1)) {
+		for _, part := range tuiWrap(tuiSanitize(line), max(width, 1)) {
 			out = append(out, tuiText(part, ink))
 		}
 	}

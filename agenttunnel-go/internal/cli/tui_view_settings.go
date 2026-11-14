@@ -306,6 +306,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewSettings,
 		Title: "Settings",
+		Order: 60,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiSettingsOf(m)
 			tuiLoadView(ctx, c, &st.tuiBase, 10*time.Second, st.fetch)

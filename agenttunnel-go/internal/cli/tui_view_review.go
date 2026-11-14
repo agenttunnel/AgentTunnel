@@ -264,6 +264,7 @@ func init() {
 	registerTuiView(tuiView{
 		ID:    tuiViewReview,
 		Title: "Review",
+		Order: 30,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiReviewOf(m)
 			st.focus(m)
