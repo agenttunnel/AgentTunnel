@@ -36,6 +36,8 @@ type Command struct {
 // Env is the shared configuration every command receives: global flags, the
 // output streams, and the release version.
 type Env struct {
+	// In is the input stream; `remote add --token-stdin` reads the token from it.
+	In        io.Reader
 	JSON      bool
 	DaemonURL string
 	HomeDir   string
@@ -120,7 +122,7 @@ func Main(args []string, version string) int {
 // success, 2 usage error, 1 command failure. version is the build's release
 // version.
 func Run(args []string, version string, out, errOut io.Writer) int {
-	env := &Env{Out: out, Err: errOut, Version: version}
+	env := &Env{In: os.Stdin, Out: out, Err: errOut, Version: version}
 
 	// A bare --version is the one global flag that is itself a command.
 	if len(args) == 1 && args[0] == "--version" {
