@@ -103,6 +103,13 @@ shows a PARENT column; `attach` names the parent in its header.
   steering text (`/stop`, `/detach`, `/help`). It leaves when the turn it
   watches ends, or on Ctrl-C (which detaches and leaves the turn running).
 
+## WhatsApp
+
+- `whatsapp connect`: pair WhatsApp as a linked device. The QR code is drawn in
+  the terminal; scan it with WhatsApp > Linked devices. The command returns once
+  the device is linked, pairing fails, or you press Ctrl-C (pairing keeps going
+  in the daemon). On a terminal the code redraws in place as WhatsApp rotates it.
+
 ## Desktop
 
 - `--desktop [dir]`: start the desktop app. With a directory, it opens that
