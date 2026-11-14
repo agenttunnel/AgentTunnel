@@ -3724,13 +3724,13 @@ export default function App() {
             placeholder="/path/to/your/repo"
             onChange={(e) => setNewProjectPath(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") createProjectAt(newProjectPath.trim()).catch(() => undefined);
+              if (e.key === "Enter") createProjectAt(newProjectPath.trim());
             }}
           />
           <div className="sheet-actions">
             <button
               className="primary"
-              onClick={() => createProjectAt(newProjectPath.trim()).catch(() => undefined)}
+              onClick={() => createProjectAt(newProjectPath.trim())}
             >
               Add
             </button>
