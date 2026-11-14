@@ -17,6 +17,14 @@ func tuiPlain(line string) string {
 	return tuiANSI.ReplaceAllString(line, "")
 }
 
+// tuiPane is the content of one boxed row: the border and its one-column
+// padding stripped, trailing fill dropped, leading indentation kept.
+func tuiPane(plain string) string {
+	s := strings.TrimPrefix(plain, "│ ")
+	s = strings.TrimSuffix(s, " │")
+	return strings.TrimRight(s, " ")
+}
+
 // tuiFrameLines renders and returns one plain line per screen row.
 func tuiFrameLines(t *testing.T, m *tuiModel, cols, rows int) []string {
 	t.Helper()
@@ -58,9 +66,9 @@ func TestTUIScreenListRender(t *testing.T) {
 			},
 			cursor: 0,
 			want: []string{
-				"> th_parent000  fix the bug  demo  running  1/2  5m ago",
-				"  th_child0000  └ sub-thread  demo  idle  0/1  30s ago",
-				"2 threads · ↑/↓ select · enter open · r refresh · q quit",
+				"> ● th_parent000  fix the bug  demo  running  1/2  5m ago",
+				"  ● th_child0000  └ sub-thread  demo  idle  0/1  30s ago",
+				"Threads 2",
 			},
 		},
 		{
@@ -71,8 +79,8 @@ func TestTUIScreenListRender(t *testing.T) {
 			},
 			cursor: 1,
 			want: []string{
-				"  th_parent000  fix the bug  demo  idle  0/2  5m ago",
-				"> th_child0000  └ (untitled)  demo  running  1/1  30s ago",
+				"  ● th_parent000  fix the bug  demo  idle  0/2  5m ago",
+				"> ● th_child0000  └ (untitled)  demo  running  1/1  30s ago",
 			},
 		},
 		{
@@ -103,7 +111,7 @@ func TestTUIScreenListRender(t *testing.T) {
 			for _, want := range tt.want {
 				found := false
 				for _, line := range got {
-					if tuiPlain(line) == want {
+					if strings.Contains(tuiPlain(line), want) {
 						found = true
 						break
 					}
@@ -135,7 +143,7 @@ func TestTUIScreenListCursorWindow(t *testing.T) {
 		t.Fatalf("frame lines = %d, want 3:\n%s", len(got), strings.Join(got, "\n"))
 	}
 	// The one visible body row must be the selected one.
-	if plain := tuiPlain(got[1]); !strings.HasPrefix(plain, "> th_row5") {
+	if plain := tuiPlain(got[1]); !strings.HasPrefix(plain, "> ● th_row5") {
 		t.Fatalf("visible row = %q, want the selected th_row5", plain)
 	}
 }
@@ -157,28 +165,31 @@ func TestTUIScreenThreadRender(t *testing.T) {
 		m.typeRune(r)
 	}
 
-	got := tuiFrameLines(t, m, 60, 6)
-	want := []string{
-		`th_thread000 "job" · demo · running (1/2 agents)`,
-		"10:00:00 lead text hello world",
-		"10:00:01 lead text line1",
-		"                   line2",
-		"agents lead:running  worker-1:succeeded",
-		"> hi there",
+	// 10 rows: header, box top, four log rows, roster, box bottom, input, footer.
+	got := tuiFrameLines(t, m, 60, 10)
+	if len(got) != 10 {
+		t.Fatalf("frame has %d lines, want 10:\n%s", len(got), strings.Join(got, "\n"))
 	}
-	if len(got) != len(want) {
-		t.Fatalf("frame has %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	if top := tuiPlain(got[1]); !strings.Contains(top, `th_thread000 "job" · demo`) || !strings.Contains(top, "running (1/2 agents)") {
+		t.Fatalf("box title = %q", top)
 	}
-	for i, line := range got {
-		if plain := tuiPlain(line); plain != want[i] {
-			t.Fatalf("line %d = %q, want %q", i, plain, want[i])
+	want := map[int]string{
+		2: "10:00:00 lead text hello world",
+		3: "10:00:01 lead text line1",
+		4: "                   line2", // continuation rows keep the prefix column
+		5: "",
+		6: "agents lead:running  worker-1:succeeded",
+	}
+	for i, text := range want {
+		if pane := tuiPane(tuiPlain(got[i])); pane != text {
+			t.Fatalf("line %d pane = %q, want %q", i, pane, text)
 		}
 	}
-	if !strings.Contains(got[0], tuiBold) {
-		t.Fatalf("header line %q carries no bold styling", got[0])
+	if input := tuiPlain(got[8]); input != "> hi there" {
+		t.Fatalf("input line = %q, want %q", input, "> hi there")
 	}
-	if !strings.Contains(got[4], tuiDim) {
-		t.Fatalf("roster line %q carries no dim styling", got[4])
+	if footer := tuiPlain(got[9]); !strings.Contains(footer, "enter send") || !strings.Contains(footer, "esc back") {
+		t.Fatalf("footer = %q, want the thread key hints", footer)
 	}
 }
 
@@ -216,8 +227,10 @@ func TestTUIScreenInputAndQuestion(t *testing.T) {
 		"? ok":                              false,
 	}
 	for _, line := range got {
-		if _, ok := found[tuiPlain(line)]; ok {
-			found[tuiPlain(line)] = true
+		for want := range found {
+			if strings.Contains(tuiPlain(line), want) {
+				found[want] = true
+			}
 		}
 	}
 	for want, seen := range found {
@@ -247,26 +260,26 @@ func TestTUIScreenScrollPinning(t *testing.T) {
 	m := newTuiModel(now)
 	m.openThread(threadListRow{ID: "th_1"}, "demo", six, nil)
 
-	// A 5-row terminal leaves 2 rows of log; following shows the newest lines.
-	follow := tuiFrameLines(t, m, 60, 5)
-	if plain := tuiPlain(follow[1]); plain != "10:00:04 lead text line 4" {
+	// An 8-row terminal leaves 2 rows of log inside the box; following shows the newest lines.
+	follow := tuiFrameLines(t, m, 60, 8)
+	if plain := tuiPane(tuiPlain(follow[2])); plain != "10:00:04 lead text line 4" {
 		t.Fatalf("follow pane top = %q", plain)
 	}
-	if plain := tuiPlain(follow[2]); plain != "10:00:05 lead text line 5" {
+	if plain := tuiPane(tuiPlain(follow[3])); plain != "10:00:05 lead text line 5" {
 		t.Fatalf("follow pane bottom = %q", plain)
 	}
 
 	// Scroll up two: the window now ends at line 3.
 	m.scrollUp(2)
-	scrolled := tuiFrameLines(t, m, 60, 5)
-	if plain := tuiPlain(scrolled[2]); plain != "10:00:03 lead text line 3" {
+	scrolled := tuiFrameLines(t, m, 60, 8)
+	if plain := tuiPane(tuiPlain(scrolled[3])); plain != "10:00:03 lead text line 3" {
 		t.Fatalf("scrolled pane bottom = %q", plain)
 	}
 
 	// New output while scrolled must not move the viewport: pinning.
 	m.appendLog(tuiEntry(at(6), "lead", "line 6"), tuiEntry(at(7), "lead", "line 7"))
-	pinned := tuiFrameLines(t, m, 60, 5)
-	if plain := tuiPlain(pinned[2]); plain != "10:00:03 lead text line 3" {
+	pinned := tuiFrameLines(t, m, 60, 8)
+	if plain := tuiPane(tuiPlain(pinned[3])); plain != "10:00:03 lead text line 3" {
 		t.Fatalf("pinned pane bottom moved to %q", plain)
 	}
 
@@ -275,13 +288,13 @@ func TestTUIScreenScrollPinning(t *testing.T) {
 	if !m.following() {
 		t.Fatalf("scroll = %d, want 0 (following)", m.scroll)
 	}
-	resumed := tuiFrameLines(t, m, 60, 5)
-	if plain := tuiPlain(resumed[2]); plain != "10:00:07 lead text line 7" {
+	resumed := tuiFrameLines(t, m, 60, 8)
+	if plain := tuiPane(tuiPlain(resumed[3])); plain != "10:00:07 lead text line 7" {
 		t.Fatalf("resumed pane bottom = %q", plain)
 	}
 	m.appendLog(tuiEntry(at(8), "lead", "line 8"))
-	live := tuiFrameLines(t, m, 60, 5)
-	if plain := tuiPlain(live[2]); plain != "10:00:08 lead text line 8" {
+	live := tuiFrameLines(t, m, 60, 8)
+	if plain := tuiPane(tuiPlain(live[3])); plain != "10:00:08 lead text line 8" {
 		t.Fatalf("follow pane after append = %q", plain)
 	}
 }
@@ -301,7 +314,7 @@ func TestTUIScreenScrollClampAndIndicator(t *testing.T) {
 	if m.scroll != 2 { // len-1
 		t.Fatalf("scroll = %d, want 2", m.scroll)
 	}
-	frame := tuiPlain(render(m, 60, 6))
+	frame := tuiPlain(render(m, 60, 8))
 	if !strings.Contains(frame, "(scrolled 2 up)") {
 		t.Fatalf("no scroll indicator in the input line:\n%s", frame)
 	}
@@ -326,11 +339,11 @@ func TestTUIScreenLogCap(t *testing.T) {
 	if len(m.log) != tuiLogCap {
 		t.Fatalf("buffer holds %d lines, want the cap %d", len(m.log), tuiLogCap)
 	}
-	if m.log[0] != "10:30:00 lead text entry 007" {
-		t.Fatalf("oldest kept line = %q, want entry 007", m.log[0])
+	if m.log[0].text != "10:30:00 lead text entry 007" {
+		t.Fatalf("oldest kept line = %q, want entry 007", m.log[0].text)
 	}
-	if m.log[tuiLogCap-1] != "10:30:00 lead text entry 406" {
-		t.Fatalf("newest line = %q, want entry 406", m.log[tuiLogCap-1])
+	if m.log[tuiLogCap-1].text != "10:30:00 lead text entry 406" {
+		t.Fatalf("newest line = %q, want entry 406", m.log[tuiLogCap-1].text)
 	}
 }
 
@@ -341,29 +354,31 @@ func TestTUIScreenTruncateAndWrap(t *testing.T) {
 		tuiEntry(now, "lead", strings.Repeat("y", 50)),
 	}, nil)
 
-	// 20 columns: the header truncates with an ellipsis, the long log line
-	// wraps at the column width.
-	got := tuiFrameLines(t, m, 20, 8)
-	if header := tuiPlain(got[0]); header != `th_123456789 "wwwww…` {
-		t.Fatalf("header = %q", header)
-	}
-	var pane []string
-	for _, line := range got[1:] {
-		switch plain := tuiPlain(line); {
-		case strings.Contains(plain, "lead text"), strings.HasPrefix(plain, "yyy"), strings.HasPrefix(plain, "yy"):
-			pane = append(pane, plain)
+	// 20 columns: every row is exactly 20 wide, the long title is cut, and the
+	// 69-rune log line wraps at the box's 16-column content width.
+	got := tuiFrameLines(t, m, 20, 12)
+	for i, line := range got {
+		if i == len(got)-2 { // the prompt line is unpadded by design
+			continue
+		}
+		if w := len([]rune(tuiPlain(line))); w != 20 {
+			t.Fatalf("row %d is %d wide, want 20: %q", i, w, tuiPlain(line))
 		}
 	}
-	if len(pane) != 4 {
-		t.Fatalf("expected the 69-rune line to wrap to 4 rows, got %d: %q", len(pane), pane)
+	line := tuiLogLine{text: "10:30:00 lead text " + strings.Repeat("y", 50), kind: "text", stamp: 9}
+	rows := line.rows(16)
+	if len(rows) != 5 {
+		t.Fatalf("expected the 69-rune line to wrap to 5 rows, got %d", len(rows))
 	}
-	if pane[0] != "10:30:00 lead text y" {
-		t.Fatalf("first wrap row = %q", pane[0])
-	}
-	for _, line := range pane {
-		if len([]rune(line)) > 20 {
-			t.Fatalf("wrapped line exceeds the pane width: %q", line)
+	var joined strings.Builder
+	for _, row := range rows {
+		if w := row.width(); w > 16 {
+			t.Fatalf("wrapped row exceeds the pane width: %d", w)
 		}
+		joined.WriteString(row.plain())
+	}
+	if joined.String() != line.text {
+		t.Fatalf("wrapped rows lost text: %q", joined.String())
 	}
 }
 
@@ -374,7 +389,7 @@ func TestTUIScreenBacklogRendersThroughWriteLogEntry(t *testing.T) {
 
 	m := newTuiModel(tuiTestClock())
 	m.openThread(threadListRow{ID: "th_1"}, "demo", []contracts.LogEntry{entry}, nil)
-	frame := tuiPlain(render(m, 60, 6))
+	frame := tuiPlain(render(m, 60, 8))
 	if !strings.Contains(frame, strings.TrimRight(want.String(), "\n")) {
 		t.Fatalf("log pane line differs from writeLogEntry:\n%s", frame)
 	}

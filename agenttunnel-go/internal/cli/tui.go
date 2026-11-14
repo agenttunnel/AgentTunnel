@@ -61,7 +61,10 @@ func runTui(ctx context.Context, env *Env, args []string) error {
 	keys := make(chan tuiKey, 8)
 	go pumpKeys(ctx, os.Stdin, &keyDecoder{}, keys)
 
-	return tuiSession(ctx, c, newTuiModel(time.Now()), ref, keys, term)
+	m := newTuiModel(time.Now())
+	m.theme = detectTuiTheme(env.Out, os.Getenv)
+	m.info = tuiInfo{daemon: tuiDaemonLabel(env.DaemonURL), version: env.Version}
+	return tuiSession(ctx, c, m, ref, keys, term)
 }
 
 // parseTuiArgs accepts at most one thread reference.
@@ -171,7 +174,16 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 	// racing a second start against a thread that has not recorded its agents.
 	starts := make(chan error, 1)
 	starting := false
+	// results carries folds from background jobs (thread commands, panes);
+	// the loop applies each one, so the model stays single-threaded.
+	results := make(chan func(*tuiModel), 16)
 	submit := func(line string) {
+		// A known /command runs its thread operation; anything else is the
+		// attach grammar below (steer text, or an answer to an open question).
+		if run, arg, ok := tuiSlashCommand(line); ok {
+			run(m, arg)
+			return
+		}
 		parsed := parseAttachCommand(line)
 		if parsed.action == attachSteer && parsed.text == "" {
 			return
@@ -199,7 +211,7 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			m.closeThread()
 			tracker = nil
 		case attachHelp:
-			m.appendLogLines(strings.Split(attachHelpText, "\n")...)
+			m.appendLogLines(tuiHelpLines()...)
 		case attachSteer:
 			if tracker != nil && (tracker.anyActive() || starting) {
 				if err := c.Call(ctx, "thread.steer", map[string]string{"threadId": m.thread.ID, "text": parsed.text}, nil); err != nil {
@@ -244,7 +256,46 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 	resize, stopResize := tuiResizeSignals()
 	defer stopResize()
 
+	lastView := m.view
 	for {
+		// Requests the palette or a key raised, and tab changes, act here:
+		// the loop's one place for daemon work the key handler cannot do.
+		if m.quit {
+			return nil
+		}
+		if m.screen != tuiScreenThread {
+			tracker = nil
+		}
+		if m.view != lastView {
+			lastView = m.view
+			dirty = true
+			if v, ok := m.activeView(); ok && v.Load != nil {
+				v.Load(ctx, c, m)
+			}
+		}
+		if m.refresh {
+			m.refresh = false
+			if err := tuiRefreshList(ctx, c, m); err == nil {
+				dirty = true
+			}
+		}
+		if id := m.openID; id != "" {
+			m.openID = ""
+			opened, err := tuiOpenByID(ctx, c, m, id)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				m.notify("open " + shortThreadID(id) + ": " + err.Error())
+			} else {
+				tracker = opened
+			}
+			dirty = true
+		}
+		for _, job := range m.takeJobs() {
+			go runTuiJob(ctx, c, job, results)
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil
@@ -259,12 +310,53 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			if k.Kind == keyCtrlC {
 				return nil
 			}
+			m.flash = ""
+			if m.dialog != nil {
+				tuiDialogKey(m, k)
+				dirty = true
+				continue
+			}
+			if m.palette != nil {
+				tuiPaletteKey(m, k)
+				dirty = true
+				continue
+			}
+			if v, ok := m.activeView(); ok && v.Key != nil && v.Key(m, k) {
+				dirty = true
+				continue
+			}
+			if k.Kind == keyCtrlK || (k.Kind == keyRune && k.Rune == ':' && (m.screen == tuiScreenList || len(m.input) == 0)) {
+				m.openPalette()
+				dirty = true
+				continue
+			}
+			if m.pane != nil {
+				tuiPaneKey(m, k, rows)
+				dirty = true
+				continue
+			}
+			if m.view != tuiThreadsViewID {
+				// A registered tab owns its keys; the global ones are below.
+				switch {
+				case k.Kind == keyTab:
+					m.cycleView(1)
+				case k.Kind == keyEsc:
+					m.switchView(tuiThreadsViewID)
+				case k.Kind == keyRune && k.Rune == 'q':
+					return nil
+				}
+				dirty = true
+				continue
+			}
 			if m.screen == tuiScreenThread {
 				tuiThreadKey(m, &tracker, k, rows, submit)
 				dirty = true
 				continue
 			}
 			switch {
+			case k.Kind == keyTab:
+				m.cycleView(1)
+				dirty = true
 			case k.Kind == keyUp || (k.Kind == keyRune && k.Rune == 'k'):
 				m.moveCursor(-1)
 				dirty = true
@@ -299,6 +391,10 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				dirty = true
 			}
 
+		case apply := <-results:
+			apply(m)
+			dirty = true
+
 		case ev, ok := <-c.Events():
 			if !ok {
 				if err := c.Err(); err != nil && ctx.Err() == nil {
@@ -311,6 +407,13 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			}
 
 		case <-poll.C:
+			if v, ok := m.activeView(); ok {
+				if v.Load != nil {
+					v.Load(ctx, c, m)
+				}
+				dirty = true
+				continue
+			}
 			if m.screen == tuiScreenList {
 				if err := tuiRefreshList(ctx, c, m); err == nil {
 					dirty = true
@@ -318,9 +421,9 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				continue
 			}
 			if tracker != nil {
-				if fresh, err := fetchAgentStatuses(ctx, c, m.thread.ID); err == nil {
+				if fresh, harness, err := fetchTuiRoster(ctx, c, m.thread.ID); err == nil {
 					tracker.update(fresh)
-					m.setRoster(fresh)
+					m.setRoster(fresh, harness)
 					dirty = true
 				}
 			}
@@ -399,17 +502,29 @@ func tuiOpenThread(ctx context.Context, c *Client, m *tuiModel, row threadListRo
 		return nil, err
 	}
 	early := bufferedFrames(c, row.ID, backlog)
-	statuses, err := fetchAgentStatuses(ctx, c, row.ID)
+	statuses, harness, err := fetchTuiRoster(ctx, c, row.ID)
 	if err != nil {
 		// A missing roster only blinds the any-active check, not the view.
 		statuses = map[string]contracts.AgentStatus{}
 	}
 	m.openThread(row, project, backlog, statuses)
+	m.setRoster(statuses, harness)
 	tracker := newTurnTracker(statuses, false)
 	for _, ev := range early {
 		tuiApplyEvent(m, tracker, ev)
 	}
+	// Opening is reading: the daemon's unread state clears with the view.
+	m.startJob(tuiMarkReadJob(row.ID))
 	return tracker, nil
+}
+
+// tuiOpenByID opens a thread the loop was asked to open, by its full id.
+func tuiOpenByID(ctx context.Context, c *Client, m *tuiModel, id string) (*turnTracker, error) {
+	row, err := resolveThreadRow(ctx, c, id)
+	if err != nil {
+		return nil, err
+	}
+	return tuiOpenThread(ctx, c, m, row, tuiProjectLabel(ctx, c, row))
 }
 
 // tuiProjectLabel resolves the project label for a thread opened by reference
@@ -448,7 +563,7 @@ func tuiApplyEvent(m *tuiModel, tracker *turnTracker, ev Event) bool {
 		m.observeAgent(string(status.AgentID), status.Status)
 		var b strings.Builder
 		writeStatusLine(&b, status)
-		m.appendLogLines(strings.TrimRight(b.String(), "\n"))
+		m.appendStatusLines(strings.TrimRight(b.String(), "\n"))
 	case contracts.EvtTaskDispatched:
 		var dispatch contracts.TaskDispatched
 		if json.Unmarshal(frame.Payload, &dispatch) != nil {
@@ -456,7 +571,8 @@ func tuiApplyEvent(m *tuiModel, tracker *turnTracker, ev Event) bool {
 		}
 		tracker.note(string(dispatch.AgentID), contracts.AgentPending)
 		m.observeAgent(string(dispatch.AgentID), contracts.AgentPending)
-		m.appendLogLines(fmt.Sprintf("%s dispatched %s (%s)",
+		m.observeHarness(string(dispatch.AgentID), string(dispatch.Harness))
+		m.appendStatusLines(fmt.Sprintf("%s dispatched %s (%s)",
 			dispatch.AgentID, dispatch.Role, truncateText(dispatch.Task, 80)))
 	case contracts.EvtQuestionAsked:
 		var q contracts.QuestionAsked
@@ -474,4 +590,32 @@ func tuiApplyEvent(m *tuiModel, tracker *turnTracker, ev Event) bool {
 		return false
 	}
 	return true
+}
+
+// tuiRosterEntry is one agents.list row, with the harness the tint needs.
+type tuiRosterEntry struct {
+	Agent struct {
+		ID      string `json:"id"`
+		Status  string `json:"status"`
+		Harness string `json:"harness"`
+	} `json:"agent"`
+}
+
+// fetchTuiRoster reads a thread's agents: their statuses and, where the daemon
+// reports one, their harnesses. It is the TUI's one agents.list read, so the
+// harness tint costs no extra call.
+func fetchTuiRoster(ctx context.Context, c cliCaller, threadID string) (map[string]contracts.AgentStatus, map[string]string, error) {
+	var entries []tuiRosterEntry
+	if err := c.Call(ctx, "agents.list", map[string]string{"threadId": threadID}, &entries); err != nil {
+		return nil, nil, err
+	}
+	statuses := make(map[string]contracts.AgentStatus, len(entries))
+	harness := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		statuses[entry.Agent.ID] = contracts.AgentStatus(entry.Agent.Status)
+		if entry.Agent.Harness != "" {
+			harness[entry.Agent.ID] = entry.Agent.Harness
+		}
+	}
+	return statuses, harness, nil
 }
