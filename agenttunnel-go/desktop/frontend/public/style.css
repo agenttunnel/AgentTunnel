@@ -658,7 +658,8 @@ body.is-resizing * {
   padding: 24px 28px 8px;
   min-height: 0;
 }
-/* Sits at the end of the stream; sticky keeps it on screen while scrolled up. */
+/* Sits at the end of the scroll area; sticky keeps it on screen while the
+   user reads history. Used by the transcript and the combined log box. */
 .scroll-bottom {
   position: sticky;
   bottom: 12px;
@@ -672,6 +673,7 @@ body.is-resizing * {
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
+  font-family: var(--sans);
   font-size: 15px;
   line-height: 30px;
   text-align: center;
@@ -683,10 +685,10 @@ body.is-resizing * {
   background: var(--panel-2);
 }
 /* Jump-to-top pill: same 32px shape as the bottom one, anchored to the
-   stream's top. The sticky wrapper is zero-height so the pill overlays the
-   transcript instead of reserving space — a plain sticky element at the top
+   scroll area's top. The sticky wrapper is zero-height so the pill overlays
+   the content instead of reserving space — a plain sticky element at the top
    would shove the content down whenever it mounts. */
-.stream-top-anchor {
+.scroll-top-anchor {
   position: sticky;
   top: 0;
   height: 0;
@@ -705,6 +707,7 @@ body.is-resizing * {
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
+  font-family: var(--sans);
   font-size: 15px;
   line-height: 30px;
   text-align: center;
