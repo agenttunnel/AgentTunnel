@@ -31,7 +31,11 @@ type cliCaller interface {
 // never autostarts one: an empty ledger from a daemon this command just spawned
 // would claim the environment used nothing.
 func connectReadOnly(ctx context.Context, env *Env) (*Client, error) {
-	if env.DaemonURL != "" {
+	_, remote, err := env.remoteTarget()
+	if err != nil {
+		return nil, err
+	}
+	if remote {
 		c, _, err := env.Connect(ctx)
 		return c, err
 	}

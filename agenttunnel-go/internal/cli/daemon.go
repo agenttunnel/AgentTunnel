@@ -102,27 +102,18 @@ func (e *Env) connectExisting(ctx context.Context) (*Client, discovery.Info, err
 }
 
 // Connect returns a live client, starting a detached daemon when none answers.
-// An explicit --daemon never autostarts: a URL the user gave is the only place
-// to talk to.
+//
+// Resolution order: --daemon, AT_DAEMON_URL, the active saved remote, then the
+// local daemon (autostarted when none answers). Any remote target never
+// autostarts.
 func (e *Env) Connect(ctx context.Context) (*Client, discovery.Info, error) {
-	if e.DaemonURL != "" {
-		token := os.Getenv("AT_TOKEN")
-		if token == "" {
-			if info, err := discovery.Read(e.StateDir()); err == nil && info.WSURL == e.DaemonURL {
-				token = info.Token
-			}
-		}
-		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		c, err := Dial(dctx, e.DaemonURL, token)
-		if err != nil {
-			return nil, discovery.Info{WSURL: e.DaemonURL, Token: token}, fmt.Errorf("connect to %s: %w", e.DaemonURL, err)
-		}
-		if err := c.Ping(dctx); err != nil {
-			c.Close()
-			return nil, discovery.Info{WSURL: e.DaemonURL, Token: token}, fmt.Errorf("%s did not answer: %w", e.DaemonURL, err)
-		}
-		return c, discovery.Info{WSURL: e.DaemonURL, Token: token}, nil
+	target, remote, err := e.remoteTarget()
+	if err != nil {
+		return nil, discovery.Info{}, err
+	}
+	if remote {
+		c, err := dialTarget(ctx, target)
+		return c, target, err
 	}
 
 	// One process at a time decides whether a daemon must start. The winner

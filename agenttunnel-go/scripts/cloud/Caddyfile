@@ -1,0 +1,29 @@
+# Sample Caddyfile: TLS reverse proxy in front of atd.
+#
+# Copy this into your Caddy config (usually /etc/caddy/Caddyfile), replace the
+# host name, and reload Caddy. Caddy obtains the TLS certificate itself.
+#
+# atd listens on 127.0.0.1:7331 only. Caddy connects from loopback, which is
+# what lets clients pass the token as ?token= (browser clients cannot set an
+# Authorization header on a WebSocket). CLI clients should send
+# "Authorization: Bearer <token>" instead.
+#
+# Caddy logs the request URI by default, and that includes ?token=. Redact it
+# in the log block below (unverified against a Caddy binary; check it with
+# `caddy validate` before relying on it).
+
+atd.example.com {
+	reverse_proxy 127.0.0.1:7331
+
+	# log {
+	# 	output file /var/log/caddy/atd-access.log
+	# 	format filter {
+	# 		wrap json
+	# 		fields {
+	# 			request>uri query {
+	# 				replace token REDACTED
+	# 			}
+	# 		}
+	# 	}
+	# }
+}

@@ -7,8 +7,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,7 +51,8 @@ func main() {
 	host := flag.String("host", "127.0.0.1", "interface to bind")
 	port := flag.Int("port", 7331, "port to bind")
 	homeDir := flag.String("home-dir", defaultStateDir(), "state directory")
-	token := flag.String("token", "", "auth token (generated when empty)")
+	token := flag.String("token", "", "auth token (prefer --token-file or AT_DAEMON_TOKEN: argv is visible to ps)")
+	tokenFile := flag.String("token-file", "", "file holding the auth token; created 0600 when missing (default: <state dir>/token)")
 	workdir := flag.String("workdir", ".", "working directory handed to agents")
 	maxPasses := flag.Int("max-passes", 3, "orchestrator passes per turn")
 	concurrency := flag.Int("concurrency", 4, "max concurrent subagents")
@@ -63,10 +62,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	tok := *token
-	if tok == "" {
-		tok = mustToken()
+	src, err := resolveToken(*token, *tokenFile, os.Getenv("AT_DAEMON_TOKEN"), *homeDir)
+	if err != nil {
+		log.Fatalf("atd: %v", err)
 	}
+	tok := src.Value
 
 	// Serialize "no daemon here yet, so I may bind" across processes sharing
 	// this state dir. A daemon spawned by `agenttunnel` is told (AT_AUTOSTART) that its
@@ -146,12 +146,14 @@ func main() {
 	}
 
 	log.Printf("atd listening on http://%s", ln.Addr())
-	if isLoopbackListener(ln) {
-		log.Printf("pairing URL: http://%s/?token=%s", ln.Addr(), tok)
+	// The token itself never goes to logs: point at where it lives instead.
+	if src.Path != "" {
+		log.Printf("atd token file: %s (the token is not logged)", src.Path)
 	} else {
-		// The token stays out of logs off loopback. Set --token and send it as
-		// an Authorization: Bearer header.
-		log.Printf("atd is bound off loopback; pairing URL omitted so the token stays out of logs (set --token and send Authorization: Bearer)")
+		log.Printf("atd token from %s (the token is not logged)", src.Origin)
+	}
+	if !isLoopbackListener(ln) {
+		log.Printf("atd is bound off loopback: clients must send Authorization: Bearer <token>")
 	}
 
 	go func() {
@@ -180,12 +182,4 @@ func defaultStateDir() string {
 func isLoopbackListener(ln net.Listener) bool {
 	addr, ok := ln.Addr().(*net.TCPAddr)
 	return ok && addr.IP.IsLoopback()
-}
-
-func mustToken() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		log.Fatalf("atd: generate token: %v", err)
-	}
-	return hex.EncodeToString(b[:])
 }

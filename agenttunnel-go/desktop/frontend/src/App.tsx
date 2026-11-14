@@ -18,7 +18,9 @@ import {
 } from "react";
 import { Window } from "@wailsio/runtime";
 import {
+  connectRemote,
   discover,
+  disconnectRemote,
   inDesktopShell,
   pickFolder,
   Rpc,
@@ -1219,6 +1221,13 @@ export default function App() {
   const [staleAfterInput, setStaleAfterInput] = useState("30");
   const [saved, setSaved] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<string | null>(null);
+  // Settings > Daemon connection: the form for a remote daemon, and its last answer.
+  const [remoteForm, setRemoteForm] = useState({ name: "", url: "", token: "" });
+  const [remoteBusy, setRemoteBusy] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [remoteRestart, setRemoteRestart] = useState(false);
+  // The window launched against a saved remote daemon that did not answer.
+  const [offlineRemote, setOfflineRemote] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [deps, setDeps] = useState<DependencyView[] | null>(null);
   const [depsBusy, setDepsBusy] = useState(false);
@@ -1965,6 +1974,7 @@ export default function App() {
       } catch (e) {
         setStatus("offline");
         setError(e instanceof Error ? e.message : String(e));
+        setOfflineRemote(!!conn.remote);
         return;
       }
       if (cancelled) return;
@@ -3484,6 +3494,36 @@ export default function App() {
     if (enabled) setRunInBackground(true);
   };
 
+  /** Verifies and saves a remote daemon, then reloads so the window re-reads its connection. */
+  const submitRemote = async () => {
+    setRemoteBusy(true);
+    setRemoteError(null);
+    const res = await connectRemote(remoteForm);
+    setRemoteBusy(false);
+    if (!res.ok) {
+      setRemoteError(res.error ?? "Could not connect to the daemon.");
+      return;
+    }
+    window.location.reload();
+  };
+
+  /** Forgets the remote daemon. Reloads when the local daemon takes over; otherwise asks for a restart. */
+  const leaveRemote = async () => {
+    setRemoteBusy(true);
+    setRemoteError(null);
+    const res = await disconnectRemote();
+    setRemoteBusy(false);
+    if (!res.ok) {
+      setRemoteError(res.error ?? "Could not disconnect.");
+      return;
+    }
+    if (res.restart) {
+      setRemoteRestart(true);
+      return;
+    }
+    window.location.reload();
+  };
+
   const flashSaved = () => {
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
@@ -3577,6 +3617,16 @@ export default function App() {
           {status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}
         </div>
         {error && <div className="err-text">{error}</div>}
+        {offlineRemote && (
+          // No Settings are reachable while offline, so the way out lives here.
+          <div className="sheet-actions">
+            <button onClick={leaveRemote} disabled={remoteBusy}>
+              Forget this remote daemon
+            </button>
+            {remoteRestart && <div className="splash-sub">Restart AgentTunnel to use the local daemon.</div>}
+            {remoteError && <div className="err-text">{remoteError}</div>}
+          </div>
+        )}
       </div>
     );
   }
@@ -4106,6 +4156,70 @@ export default function App() {
               </div>
             </section>
           )}
+          <section className="set-section">
+            <h4>Daemon connection</h4>
+            {conn?.remote ? (
+              <>
+                <p className="hint">
+                  <span className="dot clean" /> Connected to <strong>{conn.remote.name}</strong>{" "}
+                  <code>{conn.remote.url}</code>. Projects, threads, and agents run on that daemon.
+                </p>
+                <div className="sheet-actions">
+                  <button onClick={leaveRemote} disabled={remoteBusy}>
+                    Disconnect
+                  </button>
+                </div>
+                {remoteRestart && (
+                  <p className="hint">
+                    Disconnected. Restart AgentTunnel to use the local daemon.
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="hint">
+                  Drive a daemon on another machine. Use an https address. The token is stored
+                  only on this computer and is never shown again.
+                </p>
+                <label className="field">
+                  <span>Name (optional)</span>
+                  <input
+                    value={remoteForm.name}
+                    onChange={(e) => setRemoteForm({ ...remoteForm, name: e.target.value })}
+                    placeholder="my-server"
+                  />
+                </label>
+                <label className="field">
+                  <span>Address</span>
+                  <input
+                    value={remoteForm.url}
+                    onChange={(e) => setRemoteForm({ ...remoteForm, url: e.target.value })}
+                    placeholder="https://my-server:7331"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
+                  <span>Token</span>
+                  <input
+                    type="password"
+                    value={remoteForm.token}
+                    onChange={(e) => setRemoteForm({ ...remoteForm, token: e.target.value })}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <div className="sheet-actions">
+                  <button
+                    onClick={submitRemote}
+                    disabled={remoteBusy || !remoteForm.url.trim() || !remoteForm.token.trim()}
+                  >
+                    {remoteBusy ? "Connecting…" : "Connect"}
+                  </button>
+                </div>
+              </>
+            )}
+            {remoteError && <div className="err-text">{remoteError}</div>}
+          </section>
           <section className="set-section">
             <h4>Environment</h4>
             <label className="field">
