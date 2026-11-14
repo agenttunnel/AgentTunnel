@@ -761,6 +761,14 @@ body.is-resizing * {
   font-size: 11px;
   background: var(--surface-2);
 }
+/* The copy button's click result, held briefly by MessageBlock. Colour plus the
+   label swap, so the feedback reads without relying on colour alone. */
+.msg-actions .msg-copy-btn.copied {
+  color: var(--ok);
+}
+.msg-actions .msg-copy-btn.failed {
+  color: var(--err);
+}
 /* Icon-only buttons in the cluster (fork, message nav arrows): keeps the
    one-row cluster compact. The cluster is absolutely positioned, so
    revealing it on hover shifts nothing. */

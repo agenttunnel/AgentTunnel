@@ -37,6 +37,7 @@ import {
   type UsageEntry,
   type UsageStep,
 } from "./lib/usage";
+import { copyText as writeClipboard } from "./lib/clipboard";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
 import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
@@ -481,10 +482,11 @@ function groupTurns(messages: Message[]): Message[][] {
 
 /** Per-message actions App supplies through a context, so a memoized message
  * row never re-renders because a handler's identity changed. `copyText` writes
- * to the clipboard; `forkFromMessage` branches the thread off one message;
- * `scrollToMessage` scrolls to the next (1) or previous (-1) message. */
+ * to the clipboard and resolves whether the write landed; `forkFromMessage`
+ * branches the thread off one message; `scrollToMessage` scrolls to the next
+ * (1) or previous (-1) message. */
 type MessageActions = {
-  copyText: (text: string) => void;
+  copyText: (text: string) => Promise<boolean>;
   forkFromMessage: (messageId: string) => void;
   scrollToMessage: (messageId: string, dir: -1 | 1) => void;
 };
@@ -553,6 +555,17 @@ const MessageBlock = memo(function MessageBlock({
 }) {
   const actions = useContext(MessageActionsContext);
   const imageConn = useContext(MessageImageContext);
+  // Copy feedback lives on the row: the button reports "Copied" or "Copy
+  // failed" for a moment, so a click always has a visible result.
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+  const copy = async () => {
+    const ok = (await actions?.copyText(m.text)) ?? false;
+    window.clearTimeout(copyTimer.current);
+    setCopyState(ok ? "copied" : "failed");
+    copyTimer.current = window.setTimeout(() => setCopyState("idle"), ok ? 1400 : 2500);
+  };
   return (
     <div
       data-mid={m.id}
@@ -602,8 +615,15 @@ const MessageBlock = memo(function MessageBlock({
             <ChevronIcon up={false} />
           </button>
         )}
-        <button onClick={() => actions?.copyText(m.text)} title="Copy this block">
-          Copy
+        <button
+          type="button"
+          className={`msg-copy-btn${copyState === "idle" ? "" : ` ${copyState}`}`}
+          onClick={copy}
+          title={copyState === "failed" ? "Could not copy" : "Copy this block"}
+          aria-label="Copy this block"
+          aria-live="polite"
+        >
+          {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
         </button>
         <button
           className="msg-icon-btn"
@@ -1385,13 +1405,11 @@ export default function App() {
   );
   const messageActions = useMemo<MessageActions>(
     () => ({
-      copyText: (text) => {
-        navigator.clipboard.writeText(text).catch(() => setError("Could not copy"));
-      },
+      copyText: (text) => writeClipboard(text),
       forkFromMessage,
       scrollToMessage,
     }),
-    [forkFromMessage, scrollToMessage, setError],
+    [forkFromMessage, scrollToMessage],
   );
 
   // Flat DOM position and total of the rendered messages, so each row knows
