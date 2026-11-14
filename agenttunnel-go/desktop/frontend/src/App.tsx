@@ -98,6 +98,7 @@ import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import { fuzzyScore } from "./lib/fuzzy";
+import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
   buildCommands,
   matchCommands,
@@ -1165,6 +1166,9 @@ export default function App() {
   const [showWorktrees, setShowWorktrees] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Appearance is a device preference: saved in localStorage, not daemon state.
+  const [theme, setTheme] = useState<ThemeId>(loadTheme);
+  useEffect(() => applyTheme(theme), [theme]);
   // The how-to sheet opens on every launch unless the user opted out (persisted).
   const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
   const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
@@ -4050,6 +4054,32 @@ export default function App() {
           </div>
         </div>
         <div className="sheet-body">
+          <section className="set-section">
+            <h4>Appearance</h4>
+            <p className="hint">
+              Color theme for this device. It applies everywhere and is saved locally, not in
+              the daemon config.
+            </p>
+            <div className="theme-grid">
+              {THEMES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`theme-card ${theme === t.id ? "on" : ""}`}
+                  aria-pressed={theme === t.id}
+                  onClick={() => setTheme(t.id)}
+                >
+                  <span className="theme-swatch" aria-hidden="true">
+                    {t.swatches.map((c, i) => (
+                      <span key={`${t.id}-${i}`} style={{ background: c }} />
+                    ))}
+                  </span>
+                  <span className="theme-name">{t.name}</span>
+                  <span className="theme-note">{t.note}</span>
+                </button>
+              ))}
+            </div>
+          </section>
           <section className="set-section">
             <h4>New thread defaults</h4>
             <p className="hint">
