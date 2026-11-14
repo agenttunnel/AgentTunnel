@@ -37,6 +37,7 @@ export type PaletteActions<P extends string> = {
   newThread: () => void;
   createProject: () => void;
   openSettings: () => void;
+  openSuperView: () => void;
   refresh: () => void;
   stopTurn: () => void;
   toggleAutoMode: () => void;
@@ -48,6 +49,7 @@ const CENTER_TABS: { tab: CenterTab; label: string }[] = [
   { tab: "review", label: "Show review" },
   { tab: "graph", label: "Show agent graph" },
   { tab: "board", label: "Show task board" },
+  { tab: "p2p", label: "Show agent chat" },
 ];
 
 /** Generic over the aside panel ids, like commands.ts buildCommands. Callers
@@ -78,6 +80,7 @@ export function buildCommands<P extends string>(a: PaletteActions<P>): PaletteIt
     cmd("thread:new", "Thread", "Create thread", a.newThread);
   }
 
+  cmd("view:super", "Navigate", "All threads across projects", a.openSuperView);
   cmd("project:new", "Project", "Create project", a.createProject);
   cmd("app:refresh", "App", "Refresh", a.refresh);
   cmd("app:settings", "App", "Open settings", a.openSettings);

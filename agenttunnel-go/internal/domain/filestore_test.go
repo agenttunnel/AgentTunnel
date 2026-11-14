@@ -127,6 +127,38 @@ func TestDropEmptyThreadsKeepsDrafts(t *testing.T) {
 	}
 }
 
+// Master conversations are threads too: a fresh one is only its creation
+// events plus what the decider co-emits for every thread, so the boot sweep
+// must keep it. This unit pins DropEmptyThreads directly; the daemon-level
+// restart (pkg/daemon's TestDaemonMasterConversationSurvivesRestart) proves
+// the same path end to end through master.history.new/list/open.
+func TestDropEmptyThreadsKeepsMasterConversations(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewFileStore(filepath.Join(t.TempDir(), "threads"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	clock := func() time.Time { return testClock() }
+	if _, err := s.Append(ctx, "conv", []contracts.EventPayload{
+		contracts.ThreadCreated{Title: "Home chat", Owner: contracts.ThreadOwnerMaster},
+		contracts.PeerMailboxSet{Enabled: true},
+		contracts.StatusPeriodSet{PeriodSeconds: contracts.DefaultStatusPeriodSeconds},
+	}, clock); err != nil {
+		t.Fatalf("append conversation: %v", err)
+	}
+
+	removed, err := s.DropEmptyThreads()
+	if err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want nothing", removed)
+	}
+	if evs, err := s.Load(ctx, "conv"); err != nil || len(evs) != 3 {
+		t.Fatalf("conversation log after sweep: %d events, err %v", len(evs), err)
+	}
+}
+
 // A thread switched to solo mode with no turn yet is not empty: the sweep's
 // default branch treats the runtime event as content, so the thread survives
 // a restart sweep (a prior incident swept draft-like threads).

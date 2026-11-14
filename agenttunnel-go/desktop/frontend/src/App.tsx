@@ -19,6 +19,7 @@ import {
 import { Window } from "@wailsio/runtime";
 import {
   discover,
+  inDesktopShell,
   pickFolder,
   Rpc,
   setKeepRunning as emitKeepRunning,
@@ -39,6 +40,7 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
+import { ThreadWizard } from "./components/ThreadWizard";
 import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
 import { switchProps } from "./lib/switchProps";
 import {
@@ -48,6 +50,7 @@ import {
   clampWidth,
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
+import { PeerChat } from "./components/PeerChat";
 import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
 import { VoiceRecorder } from "./components/VoiceRecorder";
 import { useRotatingPlaceholder } from "./lib/placeholder";
@@ -95,6 +98,7 @@ import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import { fuzzyScore } from "./lib/fuzzy";
+import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
   buildCommands,
   matchCommands,
@@ -114,6 +118,8 @@ import {
   type PaletteSection,
 } from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import { SuperView } from "./components/SuperView";
+import { TERMINAL } from "./lib/graphEvents";
 import { ThreadImage } from "./components/ThreadImage";
 import { MasterChat } from "./components/MasterChat";
 
@@ -243,12 +249,18 @@ export type ThreadSummary = {
   updatedAt?: string;
   messages: number;
   agents: number;
+  /** The only agent's harness on a solo thread; drives the row's tint. */
+  harness?: string;
   autoMode: boolean;
   /** Filed by the user; shown in the board's Archived column. */
   archived?: boolean;
   runningAgents?: number;
   staleAfterSeconds?: number;
   stale?: boolean;
+  /** When the user last opened the thread; absent means never. */
+  lastSeenAt?: string;
+  /** A finished turn ended after the last view (derived by the daemon). */
+  unseen?: boolean;
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
   /** A draft has not had its first turn yet. */
@@ -1121,11 +1133,9 @@ export default function App() {
     }
   };
 
-  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board" | "doc">(
-    activeId,
-    "chat",
-    "at.tab",
-  );
+  const [tab, setTab, setTabDefault] = useThreadScoped<
+    "chat" | "review" | "graph" | "board" | "doc" | "p2p"
+  >(activeId, "chat", "at.tab");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
@@ -1156,6 +1166,9 @@ export default function App() {
   const [showWorktrees, setShowWorktrees] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Appearance is a device preference: saved in localStorage, not daemon state.
+  const [theme, setTheme] = useState<ThemeId>(loadTheme);
+  useEffect(() => applyTheme(theme), [theme]);
   // The how-to sheet opens on every launch unless the user opted out (persisted).
   const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
   const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
@@ -1244,6 +1257,10 @@ export default function App() {
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ThreadSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // Browser fallback for the Add Project flow: no native folder picker there,
+  // so the path is typed into a small sheet instead.
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectPath, setNewProjectPath] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
   const [infoTarget, setInfoTarget] = useState<{ id: string; tab: "usage" | "agents" } | null>(
     null,
@@ -1558,16 +1575,34 @@ export default function App() {
 
   /** Adding a project is the native folder picker; the folder's name is the project name. */
   const addProject = async () => {
-    const rpc = rpcRef.current;
+    // Browsers have no native picker: open the typed-path sheet instead.
+    if (!inDesktopShell()) {
+      setNewProjectOpen(true);
+      return;
+    }
     const path = await pickFolder();
+    if (!path) return;
+    await createProjectAt(path);
+  };
+
+  /** Creates a project for a user-supplied path, shared by the picker and the
+   * browser's typed-path sheet. */
+  const createProjectAt = async (path: string) => {
+    const rpc = rpcRef.current;
     if (!rpc || !path) return;
     const name = path.split("/").filter(Boolean).pop() ?? path;
-    const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
-      name,
-      path,
-    });
-    setProjects(res.projects);
-    openProject(res.project.id);
+    try {
+      const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
+        name,
+        path,
+      });
+      setProjects(res.projects);
+      setNewProjectOpen(false);
+      setNewProjectPath("");
+      openProject(res.project.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const deleteProject = async (id: string) => {
@@ -2005,6 +2040,11 @@ export default function App() {
         }
         Window.Focus().catch(() => undefined);
       });
+    }).catch((e) => {
+      // The daemon never handed us a connection (e.g. the web UI's /conn is
+      // unreachable): fail loudly instead of booting forever.
+      setStatus("offline");
+      setError(e instanceof Error ? e.message : String(e));
     });
     return () => {
       cancelled = true;
@@ -2044,6 +2084,10 @@ export default function App() {
     let buffered: LiveLine[] | null = [];
     setLive([]);
     rpc.call("thread.subscribe", { threadId: activeId }).catch(() => undefined);
+    // Opening a thread clears its "finished but unseen" state server-side. The
+    // resulting event and the 4s thread.list poll refresh the badge; the call
+    // is fire-and-forget, so a refused mark never blocks the view.
+    rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
     // Snapshot and buffered frames are both raw chunks, so overlap is compared
     // before the chunks are merged into display lines.
     const applyBuffered = (snapshot: LiveLine[]) => {
@@ -2065,7 +2109,7 @@ export default function App() {
       const ev = raw as {
         type?: string;
         threadId?: string;
-        payload?: { agentId?: string; kind?: string; text?: string };
+        payload?: { agentId?: string; kind?: string; status?: string; text?: string };
       };
       if (ev?.type === "agent.output" && ev.payload) {
         // Output from another thread belongs to that thread's log; it is
@@ -2079,6 +2123,19 @@ export default function App() {
         if (buffered) buffered.push(line);
         else setLive((prev) => pushLiveLine(prev, line));
         return;
+      }
+      // A turn that ends while the user is watching counts as seen the moment
+      // its agents go terminal: the open-time markSeen above only fires on
+      // thread switches, so without this the thread would flip to "not seen
+      // yet" the instant it finishes. The server drops the call when nothing
+      // finished after the last view, so extra calls stay free.
+      if (
+        ev?.type === "agent.status-changed" &&
+        !stale &&
+        ev.threadId === activeId &&
+        TERMINAL.has(String(ev.payload?.status ?? ""))
+      ) {
+        rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
       }
       if (threadViewRef.current === "board") scheduleBoardReload();
       scheduleRefresh(activeId);
@@ -2968,6 +3025,9 @@ export default function App() {
     paletteReturn.current = null;
     if (el?.isConnected) el.focus();
   }, []);
+  // The super view: every project's threads in one overlay, grouped running /
+  // finished-but-unseen / quiet. Rides the existing 4s thread.list poll.
+  const [superViewOpen, setSuperViewOpen] = useState(false);
 
   /** Asks the daemon a side question. It runs beside any running turn: no turn
    * slot, no steer, no message. Only the newest ask on a thread may settle. */
@@ -3657,6 +3717,26 @@ export default function App() {
         </svg>
         Stats
       </div>
+      <div
+        className="ptab pt-home"
+        {...tabProps(false, () => setSuperViewOpen(true))}
+        title="All threads across projects"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+        </svg>
+        All threads
+      </div>
       <div className="pt-scroll" role="tablist" aria-label="Open projects">
         {openProjects.map((p) => {
           const busy = runningByProject[p.id] ?? 0;
@@ -3874,6 +3954,7 @@ export default function App() {
         newThread: () => newThread(),
         createProject: () => addProject(),
         openSettings: () => openSettings(),
+        openSuperView: () => setSuperViewOpen(true),
         refresh: () => refreshAll(),
         stopTurn: () => stopTurn(),
         toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
@@ -3919,6 +4000,60 @@ export default function App() {
       onClose={closePalette}
     />
   );
+  // The super view reads the same thread.list data the views poll; a row opens
+  // the thread the way the palette does, including across projects.
+  const superViewDialog = superViewOpen && (
+    <SuperView
+      threads={threads}
+      projects={projects}
+      onOpen={(t) => {
+        setSuperViewOpen(false);
+        // A row click always clears the unseen badge, even for the thread
+        // already open: switching to the same activeId does not re-run the
+        // open-time markSeen in the subscription effect.
+        const rpc = rpcRef.current;
+        if (rpc) rpc.call("thread.markSeen", { threadId: t.id }).catch(() => undefined);
+        goToThread(t);
+      }}
+      onClose={() => setSuperViewOpen(false)}
+    />
+  );
+
+  // Typed-path fallback for Add Project in a plain browser, where the native
+  // folder picker does not exist. Rendered beside the palette on every screen
+  // the palette's create-project command can run from.
+  const newProjectDialog = newProjectOpen && (
+    <div className="overlay" onClick={() => setNewProjectOpen(false)}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <strong>Add project</strong>
+          <button onClick={() => setNewProjectOpen(false)}>Cancel</button>
+        </div>
+        <div className="sheet-body">
+          <p className="hint">
+            Browsers cannot open a folder picker — type the project folder's path.
+          </p>
+          <input
+            autoFocus
+            value={newProjectPath}
+            placeholder="/path/to/your/repo"
+            onChange={(e) => setNewProjectPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createProjectAt(newProjectPath.trim());
+            }}
+          />
+          <div className="sheet-actions">
+            <button
+              className="primary"
+              onClick={() => createProjectAt(newProjectPath.trim())}
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   // Rendered on every screen: settings are app-global, so the titlebar gear
   // must open the sheet wherever the user is.
@@ -3933,6 +4068,32 @@ export default function App() {
           </div>
         </div>
         <div className="sheet-body">
+          <section className="set-section">
+            <h4>Appearance</h4>
+            <p className="hint">
+              Color theme for this device. It applies everywhere and is saved locally, not in
+              the daemon config.
+            </p>
+            <div className="theme-grid">
+              {THEMES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`theme-card ${theme === t.id ? "on" : ""}`}
+                  aria-pressed={theme === t.id}
+                  onClick={() => setTheme(t.id)}
+                >
+                  <span className="theme-swatch" aria-hidden="true">
+                    {t.swatches.map((c, i) => (
+                      <span key={`${t.id}-${i}`} style={{ background: c }} />
+                    ))}
+                  </span>
+                  <span className="theme-name">{t.name}</span>
+                  <span className="theme-note">{t.note}</span>
+                </button>
+              ))}
+            </div>
+          </section>
           <section className="set-section">
             <h4>New thread defaults</h4>
             <p className="hint">
@@ -4213,6 +4374,8 @@ export default function App() {
           </div>
           <StatsPage rpc={rpcRef.current} />
         </div>
+        {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
       </div>
@@ -4229,6 +4392,9 @@ export default function App() {
           <MasterChat
             rpc={rpcRef.current}
             projects={projects}
+            harnessOptionsFor={harnessOptionsFor}
+            modelOptions={modelOptions}
+            refreshModels={refreshModels}
             onOpenThread={(projectId, threadId) => {
               openProject(projectId);
               lastThreadByProject.current[projectId] = threadId;
@@ -4236,6 +4402,8 @@ export default function App() {
             }}
           />
         </div>
+        {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
       </div>
@@ -4305,6 +4473,8 @@ export default function App() {
             ))}
           </div>
         </div>
+        {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
       </div>
@@ -4441,6 +4611,8 @@ export default function App() {
           </div>
           )}
           {threadOverlays}
+          {superViewDialog}
+          {newProjectDialog}
           {paletteDialog}
           {settingsSheet}
         </div>
@@ -4500,7 +4672,7 @@ export default function App() {
           {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""}`}
+              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""} ${harnessTint(t.harness ?? "")}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
               {...clickable(() => {
                 if (t.subthreads > 0) toggleSubthreads(t.id);
@@ -4508,6 +4680,11 @@ export default function App() {
               })}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
+              {t.waiting && (
+                <svg className="row-sched-ring" aria-hidden="true" focusable="false">
+                  <rect x="1" y="1" rx="9" pathLength="100" />
+                </svg>
+              )}
               <div className="t" title={t.title}>
                 {t.title}
                 {t.waiting && (
@@ -4588,6 +4765,15 @@ export default function App() {
               {...tabProps(tab === "graph", () => setTab("graph"))}
             >
               Graph
+              {(thread?.mailbox?.length ?? 0) > 0 && (
+                <span className="pill">{thread?.mailbox?.length}</span>
+              )}
+            </div>
+            <div
+              className={`tab ${tab === "p2p" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
+              {...tabProps(tab === "p2p", () => setTab("p2p"))}
+            >
+              P2P
               {(thread?.mailbox?.length ?? 0) > 0 && (
                 <span className="pill">{thread?.mailbox?.length}</span>
               )}
@@ -4727,7 +4913,8 @@ export default function App() {
               )}
               {setupMode && thread && (
                 <div className="setup-view">
-                  <ThreadSetup
+                  <ThreadWizard
+                    key={activeId}
                     settings={settings}
                     thread={thread}
                     toggle={toggle}
@@ -4748,16 +4935,9 @@ export default function App() {
                     threadTitle={threadTitle}
                     schedule={scheduleThread}
                     unschedule={unscheduleThread}
+                    onStart={() => setSetupReadyId(activeId)}
+                    startLabel={`Start ${startVerb}...`}
                   />
-                  {composerHidden && (
-                    <button
-                      type="button"
-                      className="setup-continue"
-                      onClick={() => setSetupReadyId(activeId)}
-                    >
-                      Start {startVerb}...
-                    </button>
-                  )}
                 </div>
               )}
               {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
@@ -5026,6 +5206,17 @@ export default function App() {
               onClose={closeDoc}
             />
           </Suspense>
+        ) : tab === "p2p" ? (
+          <PeerChat
+            key={activeId ?? ""}
+            agents={agents}
+            roleNames={rolesById}
+            mailbox={thread?.mailbox ?? null}
+            peerMailbox={!!thread?.peerMailbox}
+            onTogglePeerMailbox={() =>
+              thread && toggle("peerMailbox", !thread.peerMailbox)
+            }
+          />
         ) : (
           <AgentGraph
             key={activeId ?? ""}
@@ -5750,6 +5941,8 @@ export default function App() {
       {settingsSheet}
 
       {threadOverlays}
+      {superViewDialog}
+      {newProjectDialog}
       {paletteDialog}
     </div>
     </DocLinkContext.Provider>
