@@ -479,6 +479,110 @@ func TestTUIViewReloadOnTheFocusedThreadChange(t *testing.T) {
 	}
 }
 
+// TestTUIViewPRDropsStaleFoldWhenThreadFocusMoved pins the focus guard in the
+// PR fetch's fold: a fetch queued for one thread must not land its data after
+// the user focused another thread, or the view would render the old thread's
+// request and the merge prompt would quote a stale request number. The fetch's
+// RPCs run before the fold, so the guard is the only thing that can drop it.
+func TestTUIViewPRDropsStaleFoldWhenThreadFocusMoved(t *testing.T) {
+	m := tuiViewModel()
+	m.setList([]psRow{
+		{thread: threadListRow{ID: "t1", ProjectID: "p1", Title: "one"}, project: "proj"},
+		{thread: threadListRow{ID: "t2", ProjectID: "p2", Title: "two"}, project: "other"},
+	})
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewPR
+	v := tuiViewOf(t, tuiViewPR)
+	v.Load(context.Background(), c, m) // queues a fetch for t1
+	jobs := m.takeJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("the first load queued %d jobs, want 1", len(jobs))
+	}
+
+	// The user focuses t2 before the fold lands; the in-flight fetch keeps
+	// loading=true, so no second one is queued behind it.
+	m.cursor = 1
+	v.Load(context.Background(), c, m)
+	st := tuiPROf(m)
+	if st.threadID != "t2" {
+		t.Fatalf("focus did not move to t2: %q", st.threadID)
+	}
+
+	// The fetch for t1 runs and its fold applies with focus on t2.
+	apply := jobs[0](context.Background(), c)
+	if !c.sent("pr.status", `"threadId":"t1"`) {
+		t.Fatalf("the in-flight fetch did not call pr.status for t1; calls: %+v", c.calls)
+	}
+	apply(m)
+
+	if st.snap.Status != "" || st.snap.Request != nil || len(st.listing) != 0 {
+		t.Fatalf("t1's fold landed after focus moved to t2: snap=%+v listing=%v", st.snap, st.listing)
+	}
+	if out := render(m, 80, 24); strings.Contains(out, "#7") || strings.Contains(out, "Add thing") {
+		t.Fatalf("stale request rendered under t2's focus:\n%s", out)
+	}
+
+	// A fold for the focused thread still applies.
+	v.Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
+	if st.snap.Status != "ready" || st.snap.Request == nil || st.snap.Request.Number != 7 {
+		t.Fatalf("the matching fold for t2's fetch did not land: snap=%+v", st.snap)
+	}
+	if !c.sent("pr.status", `"threadId":"t2"`) {
+		t.Fatalf("t2 never got its own fetch; calls: %+v", c.calls)
+	}
+}
+
+// TestTUIViewIssuesDropsStaleFoldWhenProjectFocusMoved is the Issues twin: a
+// slow issues.list resolved after the focus moved to another project must be
+// dropped, so the old project's issues never render under the new title.
+func TestTUIViewIssuesDropsStaleFoldWhenProjectFocusMoved(t *testing.T) {
+	m := tuiViewModel()
+	m.setList([]psRow{
+		{thread: threadListRow{ID: "t1", ProjectID: "p1", Title: "one"}, project: "proj"},
+		{thread: threadListRow{ID: "t2", ProjectID: "p2", Title: "two"}, project: "other"},
+	})
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewIssues
+	v := tuiViewOf(t, tuiViewIssues)
+	v.Load(context.Background(), c, m) // queues a fetch for p1
+	jobs := m.takeJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("the first load queued %d jobs, want 1", len(jobs))
+	}
+
+	// The user focuses t2 (project p2, "other") before the fold lands.
+	m.cursor = 1
+	v.Load(context.Background(), c, m)
+	st := tuiIssuesOf(m)
+	if st.projectID != "p2" {
+		t.Fatalf("focus did not move to p2: %q", st.projectID)
+	}
+
+	apply := jobs[0](context.Background(), c)
+	if !c.sent("issues.list", `"projectId":"p1"`) {
+		t.Fatalf("the in-flight fetch did not call issues.list for p1; calls: %+v", c.calls)
+	}
+	apply(m)
+
+	if len(st.list.Issues) != 0 {
+		t.Fatalf("p1's fold landed after focus moved to p2: %+v", st.list)
+	}
+	if out := render(m, 80, 24); strings.Contains(out, "Bug") {
+		t.Fatalf("p1's issues rendered under p2's focus:\n%s", out)
+	}
+
+	// A fold for the focused project still applies.
+	v.Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
+	if len(st.list.Issues) != 1 {
+		t.Fatalf("the matching fold for p2's fetch did not land: %+v", st.list)
+	}
+	if !c.sent("issues.list", `"projectId":"p2"`) {
+		t.Fatalf("p2 never got its own fetch; calls: %+v", c.calls)
+	}
+}
+
 func TestTUIViewEditorTakesTextAndSubmits(t *testing.T) {
 	var e tuiEditor
 	e.open("name", "")

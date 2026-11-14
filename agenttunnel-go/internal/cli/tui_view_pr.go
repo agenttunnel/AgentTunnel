@@ -76,6 +76,9 @@ func (st *tuiPRState) fetchJob() tuiJob {
 		if id == "" {
 			return func(m *tuiModel) {
 				st := tuiPROf(m)
+				if st.threadID != "" {
+					return // the user focused another thread meanwhile
+				}
 				st.snap, st.listing = tuiPRSnapshot{}, nil
 			}
 		}
@@ -90,6 +93,9 @@ func (st *tuiPRState) fetchJob() tuiJob {
 		}
 		return func(m *tuiModel) {
 			st := tuiPROf(m)
+			if st.threadID != id {
+				return // the user focused another thread meanwhile
+			}
 			st.snap, st.listing = snap, list.Requests
 		}
 	}

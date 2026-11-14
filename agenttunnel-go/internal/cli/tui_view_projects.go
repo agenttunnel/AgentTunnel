@@ -158,6 +158,9 @@ func (st *tuiIssuesState) fetchJob() tuiJob {
 		if id == "" {
 			return func(m *tuiModel) {
 				st := tuiIssuesOf(m)
+				if st.projectID != "" {
+					return // the user focused another project meanwhile
+				}
 				st.list = tuiIssueListWire{}
 			}
 		}
@@ -167,6 +170,9 @@ func (st *tuiIssuesState) fetchJob() tuiJob {
 		}
 		return func(m *tuiModel) {
 			st := tuiIssuesOf(m)
+			if st.projectID != id {
+				return // the user focused another project meanwhile
+			}
 			st.list = list
 			st.cursor = tuiMoveCursor(st.cursor, 0, len(list.Issues))
 		}
