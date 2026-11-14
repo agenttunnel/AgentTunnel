@@ -48,6 +48,7 @@ const CENTER_TABS: { tab: CenterTab; label: string }[] = [
   { tab: "review", label: "Show review" },
   { tab: "graph", label: "Show agent graph" },
   { tab: "board", label: "Show task board" },
+  { tab: "p2p", label: "Show agent chat" },
 ];
 
 /** Generic over the aside panel ids, like commands.ts buildCommands. Callers

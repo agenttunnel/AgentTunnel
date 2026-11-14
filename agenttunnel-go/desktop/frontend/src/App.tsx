@@ -50,6 +50,7 @@ import {
   clampWidth,
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
+import { PeerChat } from "./components/PeerChat";
 import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
 import { VoiceRecorder } from "./components/VoiceRecorder";
 import { useRotatingPlaceholder } from "./lib/placeholder";
@@ -1123,11 +1124,9 @@ export default function App() {
     }
   };
 
-  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board" | "doc">(
-    activeId,
-    "chat",
-    "at.tab",
-  );
+  const [tab, setTab, setTabDefault] = useThreadScoped<
+    "chat" | "review" | "graph" | "board" | "doc" | "p2p"
+  >(activeId, "chat", "at.tab");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
@@ -4673,6 +4672,15 @@ export default function App() {
               )}
             </div>
             <div
+              className={`tab ${tab === "p2p" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
+              {...tabProps(tab === "p2p", () => setTab("p2p"))}
+            >
+              P2P
+              {(thread?.mailbox?.length ?? 0) > 0 && (
+                <span className="pill">{thread?.mailbox?.length}</span>
+              )}
+            </div>
+            <div
               className={`tab ${tab === "board" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "board", () => setTab("board"))}
             >
@@ -5119,6 +5127,17 @@ export default function App() {
               onClose={closeDoc}
             />
           </Suspense>
+        ) : tab === "p2p" ? (
+          <PeerChat
+            key={activeId ?? ""}
+            agents={agents}
+            roleNames={rolesById}
+            mailbox={thread?.mailbox ?? null}
+            peerMailbox={!!thread?.peerMailbox}
+            onTogglePeerMailbox={() =>
+              thread && toggle("peerMailbox", !thread.peerMailbox)
+            }
+          />
         ) : (
           <AgentGraph
             key={activeId ?? ""}
