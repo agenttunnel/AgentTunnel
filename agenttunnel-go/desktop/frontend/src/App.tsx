@@ -1195,9 +1195,6 @@ export default function App() {
   // daemon WebSocket.
   const [conn, setConn] = useState<Conn | null>(null);
   const [keepRunning, setKeepRunningState] = useState(false);
-  // Send turns detached (daemon-scoped) so closing the window cannot cancel
-  // them. Defaults on when the daemon already outlives this window.
-  const [runInBackground, setRunInBackground] = useState(false);
 
   // Council of agents: convene several perspectives on one question and let
   // them debate to a synthesized outcome.
@@ -1973,9 +1970,6 @@ export default function App() {
       setStatus("online");
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
-      // A daemon that outlives this window (external, or kept running) makes
-      // detached turns the sane default.
-      if (conn.attached || conn.keepRunning) setRunInBackground(true);
       // Not awaited: a slow GitHub lookup must not hold up startup.
       checkForUpdate();
       // Read-and-clear on the daemon: a null answer means nothing is pending.
@@ -2720,7 +2714,9 @@ export default function App() {
         return rest;
       });
     }
-    const detached = !command && !steer && (runInBackground || !!conn?.attached);
+    // Every turn belongs to the daemon, not to the socket that started it:
+    // closing the window or dropping the connection must not cancel work.
+    const detached = !command && !steer;
     sendingRef.current.add(sendKey);
     if (!steer) setTurnBusy(threadId, true);
     if (detached) noteDetachedTurn(threadId);
@@ -2748,9 +2744,9 @@ export default function App() {
             .map((img) => img.ref?.id)
             .filter((id): id is string => id !== undefined);
         }
-        // Detached turns run on the daemon's lifetime context: closing the
-        // window cannot cancel them. An external daemon always detaches.
-        if (runInBackground || conn?.attached) params.detach = true;
+        // Detached turns run on the daemon's lifetime context, so they keep
+        // going when this client goes away.
+        params.detach = true;
         await rpc.call("thread.turn.start", params);
       }
     } catch (e) {
@@ -2788,7 +2784,7 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     const steer = running.length > 0 || busy;
-    const detached = !steer && (runInBackground || !!conn?.attached);
+    const detached = !steer;
     if (!steer) setTurnBusy(threadId, true);
     if (detached) noteDetachedTurn(threadId);
     setTab("chat");
@@ -3476,12 +3472,10 @@ export default function App() {
     })();
   };
 
-  /** Persists the shell's keep-running preference; a background daemon makes
-   * detached turns the right default. */
+  /** Persists the shell's keep-running preference. */
   const toggleKeepRunning = (enabled: boolean) => {
     setKeepRunningState(enabled);
     emitKeepRunning(enabled);
-    if (enabled) setRunInBackground(true);
   };
 
   const flashSaved = () => {
@@ -5147,25 +5141,6 @@ export default function App() {
                   <span className="ctx-chip" title={selectedProject.path}>
                     {selectedProject.name}
                   </span>
-                )}
-                {(conn?.attached || keepRunning) && (
-                  <label
-                    className={`bg-turn${runInBackground || conn?.attached ? " on" : ""}`}
-                    title={
-                      conn?.attached
-                        ? "Attached to an external daemon: turns always run in the background"
-                        : "The turn keeps running after you close the window"
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      checked={runInBackground || !!conn?.attached}
-                      disabled={!!conn?.attached}
-                      onChange={(e) => setRunInBackground(e.target.checked)}
-                    />
-                    Run in background
-                    <span className="bg-hint">keeps running after you close the window</span>
-                  </label>
                 )}
                 <button
                   className={`model-btn${modelsOpen ? " open" : ""}`}
