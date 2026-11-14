@@ -191,10 +191,14 @@ export async function fetchImageBlob(
 /** discover asks the desktop shell for the daemon's loopback address + token. */
 export function discover(): Promise<Conn> {
   // Served as the daemon's web UI, /conn describes the same connection
-  // same-origin; anything but the desktop shell reads it there. A failed
-  // fetch falls back to the event flow, so dev-mode odd origins never
-  // hard-fail the app.
-  if (!inDesktopShell()) return discoverOverHttp().catch(() => discoverViaShell());
+  // same-origin; anything but the desktop shell reads it there. The
+  // at:connection event can never fire in a plain browser, so a failed
+  // handoff rejects with a reason the UI can show instead of falling back
+  // to a wait that never settles.
+  if (!inDesktopShell())
+    return discoverOverHttp().catch((e) => {
+      throw new Error(`web UI handoff failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
   return discoverViaShell();
 }
 

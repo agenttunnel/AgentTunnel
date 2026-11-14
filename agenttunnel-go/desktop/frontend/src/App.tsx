@@ -1861,6 +1861,11 @@ export default function App() {
         }
         Window.Focus().catch(() => undefined);
       });
+    }).catch((e) => {
+      // The daemon never handed us a connection (e.g. the web UI's /conn is
+      // unreachable): fail loudly instead of booting forever.
+      setStatus("offline");
+      setError(e instanceof Error ? e.message : String(e));
     });
     return () => {
       cancelled = true;
