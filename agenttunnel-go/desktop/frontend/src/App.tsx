@@ -19,6 +19,7 @@ import {
 import { Window } from "@wailsio/runtime";
 import {
   discover,
+  inDesktopShell,
   pickFolder,
   Rpc,
   setKeepRunning as emitKeepRunning,
@@ -1247,6 +1248,10 @@ export default function App() {
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ThreadSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // Browser fallback for the Add Project flow: no native folder picker there,
+  // so the path is typed into a small sheet instead.
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectPath, setNewProjectPath] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
   const [infoTarget, setInfoTarget] = useState<{ id: string; tab: "usage" | "agents" } | null>(
     null,
@@ -1561,16 +1566,34 @@ export default function App() {
 
   /** Adding a project is the native folder picker; the folder's name is the project name. */
   const addProject = async () => {
-    const rpc = rpcRef.current;
+    // Browsers have no native picker: open the typed-path sheet instead.
+    if (!inDesktopShell()) {
+      setNewProjectOpen(true);
+      return;
+    }
     const path = await pickFolder();
+    if (!path) return;
+    await createProjectAt(path);
+  };
+
+  /** Creates a project for a user-supplied path, shared by the picker and the
+   * browser's typed-path sheet. */
+  const createProjectAt = async (path: string) => {
+    const rpc = rpcRef.current;
     if (!rpc || !path) return;
     const name = path.split("/").filter(Boolean).pop() ?? path;
-    const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
-      name,
-      path,
-    });
-    setProjects(res.projects);
-    openProject(res.project.id);
+    try {
+      const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
+        name,
+        path,
+      });
+      setProjects(res.projects);
+      setNewProjectOpen(false);
+      setNewProjectPath("");
+      openProject(res.project.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const deleteProject = async (id: string) => {
@@ -2011,6 +2034,11 @@ export default function App() {
         }
         Window.Focus().catch(() => undefined);
       });
+    }).catch((e) => {
+      // The daemon never handed us a connection (e.g. the web UI's /conn is
+      // unreachable): fail loudly instead of booting forever.
+      setStatus("offline");
+      setError(e instanceof Error ? e.message : String(e));
     });
     return () => {
       cancelled = true;
@@ -3926,6 +3954,42 @@ export default function App() {
     />
   );
 
+  // Typed-path fallback for Add Project in a plain browser, where the native
+  // folder picker does not exist. Rendered beside the palette on every screen
+  // the palette's create-project command can run from.
+  const newProjectDialog = newProjectOpen && (
+    <div className="overlay" onClick={() => setNewProjectOpen(false)}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <strong>Add project</strong>
+          <button onClick={() => setNewProjectOpen(false)}>Cancel</button>
+        </div>
+        <div className="sheet-body">
+          <p className="hint">
+            Browsers cannot open a folder picker — type the project folder's path.
+          </p>
+          <input
+            autoFocus
+            value={newProjectPath}
+            placeholder="/path/to/your/repo"
+            onChange={(e) => setNewProjectPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createProjectAt(newProjectPath.trim());
+            }}
+          />
+          <div className="sheet-actions">
+            <button
+              className="primary"
+              onClick={() => createProjectAt(newProjectPath.trim())}
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   // Rendered on every screen: settings are app-global, so the titlebar gear
   // must open the sheet wherever the user is.
   const settingsSheet = settingsOpen && settings && (
@@ -4219,6 +4283,7 @@ export default function App() {
           </div>
           <StatsPage rpc={rpcRef.current} />
         </div>
+        {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
       </div>
@@ -4242,6 +4307,7 @@ export default function App() {
             }}
           />
         </div>
+        {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
       </div>
@@ -4311,6 +4377,7 @@ export default function App() {
             ))}
           </div>
         </div>
+        {newProjectDialog}
         {paletteDialog}
         {settingsSheet}
       </div>
@@ -4447,6 +4514,7 @@ export default function App() {
           </div>
           )}
           {threadOverlays}
+          {newProjectDialog}
           {paletteDialog}
           {settingsSheet}
         </div>
@@ -5775,6 +5843,7 @@ export default function App() {
       {settingsSheet}
 
       {threadOverlays}
+      {newProjectDialog}
       {paletteDialog}
     </div>
     </DocLinkContext.Provider>
