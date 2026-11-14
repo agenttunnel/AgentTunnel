@@ -40,6 +40,7 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
+import { ThreadWizard } from "./components/ThreadWizard";
 import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
 import { switchProps } from "./lib/switchProps";
 import {
@@ -4582,6 +4583,11 @@ export default function App() {
               })}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
+              {t.waiting && (
+                <svg className="row-sched-ring" aria-hidden="true" focusable="false">
+                  <rect x="1" y="1" rx="9" pathLength="100" />
+                </svg>
+              )}
               <div className="t" title={t.title}>
                 {t.title}
                 {t.waiting && (
@@ -4801,7 +4807,8 @@ export default function App() {
               )}
               {setupMode && thread && (
                 <div className="setup-view">
-                  <ThreadSetup
+                  <ThreadWizard
+                    key={activeId}
                     settings={settings}
                     thread={thread}
                     toggle={toggle}
@@ -4822,16 +4829,9 @@ export default function App() {
                     threadTitle={threadTitle}
                     schedule={scheduleThread}
                     unschedule={unscheduleThread}
+                    onStart={() => setSetupReadyId(activeId)}
+                    startLabel={`Start ${startVerb}...`}
                   />
-                  {composerHidden && (
-                    <button
-                      type="button"
-                      className="setup-continue"
-                      onClick={() => setSetupReadyId(activeId)}
-                    >
-                      Start {startVerb}...
-                    </button>
-                  )}
                 </div>
               )}
               {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
