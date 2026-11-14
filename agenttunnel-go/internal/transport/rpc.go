@@ -342,8 +342,11 @@ type ThreadSummary struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 	Messages    int       `json:"messages"`
 	Agents      int       `json:"agents"`
-	AutoMode    bool      `json:"autoMode"`
-	Archived    bool      `json:"archived"`
+	// Harness is the provider of a solo thread's only agent, so the sidebar
+	// row can carry the same harness tint as the graph node. Empty otherwise.
+	Harness  contracts.Harness `json:"harness,omitempty"`
+	AutoMode bool              `json:"autoMode"`
+	Archived bool              `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
 	// Owner records who started the thread; absent means user (pre-change logs).
@@ -356,6 +359,18 @@ type ThreadSummary struct {
 	RunningAgents     int  `json:"runningAgents"`
 	StaleAfterSeconds int  `json:"staleAfterSeconds"`
 	Stale             bool `json:"stale"`
+}
+
+// soleHarness names the harness of a thread's only agent, or "" when the
+// thread has zero or several agents.
+func soleHarness(st *domain.ThreadState) contracts.Harness {
+	if len(st.Agents) != 1 {
+		return ""
+	}
+	for _, a := range st.Agents {
+		return a.Harness
+	}
+	return ""
 }
 
 // AgentView pairs an agent with its accumulated usage.
@@ -1072,7 +1087,8 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			out = append(out, ThreadSummary{
 				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 				FirstPrompt: firstUserPrompt(st),
-				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
+				Messages:    len(st.Messages), Agents: len(st.Agents), Harness: soleHarness(st),
+				AutoMode: st.AutoMode, Archived: st.Archived,
 				ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
 				Draft: st.Draft, Issue: st.Issue,
 				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,

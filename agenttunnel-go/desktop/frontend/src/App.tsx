@@ -93,6 +93,7 @@ import type {
 } from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
 import type { MailboxMessage } from "./lib/graph";
+import { harnessTint } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import { fuzzyScore } from "./lib/fuzzy";
 import {
@@ -241,6 +242,8 @@ type ThreadSummary = {
   updatedAt?: string;
   messages: number;
   agents: number;
+  /** The only agent's harness on a solo thread; drives the row's tint. */
+  harness?: string;
   autoMode: boolean;
   /** Filed by the user; shown in the board's Archived column. */
   archived?: boolean;
@@ -3968,7 +3971,7 @@ export default function App() {
           {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
+              className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""} ${harnessTint(t.harness ?? "")}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
               {...clickable(() => {
                 if (t.subthreads > 0) toggleSubthreads(t.id);
