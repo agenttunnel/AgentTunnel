@@ -195,6 +195,18 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 			}
 			return router.Handle(ctx, text)
 		},
+		// Reporter mode's status report comes from the master's snapshot of
+		// every thread; the dispatcher is read lazily because the bridge is
+		// built before it exists.
+		Reporter: func(ctx context.Context) string {
+			if disp == nil {
+				return ""
+			}
+			return disp.MasterReport(ctx)
+		},
+		ReporterEnabled: func() bool {
+			return disp != nil && disp.MasterReporterEnabled()
+		},
 		OnChange: func() {
 			if disp != nil {
 				disp.BroadcastRemoteStatus()
