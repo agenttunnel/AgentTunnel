@@ -4631,10 +4631,10 @@ button.danger-text {
   background: var(--panel-3);
   border-color: transparent;
 }
-.ctx-item.danger {
+.ctx-item.ctx-danger {
   color: var(--err);
 }
-.ctx-item.danger:hover:not(:disabled) {
+.ctx-item.ctx-danger:hover:not(:disabled) {
   background: rgba(240, 133, 133, 0.09);
 }
 .ctx-hint {
