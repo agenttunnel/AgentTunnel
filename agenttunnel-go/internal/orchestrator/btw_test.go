@@ -2,9 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -19,6 +21,20 @@ func newBtwHarness(t *testing.T, script string) (*Runner, *domain.Engine, contex
 	t.Helper()
 	r, eng, ctx := newHarness(t, "")
 	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", func(spec providers.SessionSpec) (providers.CommandSpec, error) {
+		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", script, spec.Prompt}, PromptVia: "arg"}, nil
+	}, providers.JSONLineTranslator{})
+	r.registry = providers.NewRegistry(driver)
+	return r, eng, ctx
+}
+
+// newBtwHarnessPerThread is newBtwHarness with each call's prompt written to a
+// file named after the thread it ran under, so concurrent Btw calls on
+// different threads can each be inspected without racing on one file.
+func newBtwHarnessPerThread(t *testing.T, dir string) (*Runner, *domain.Engine, context.Context) {
+	t.Helper()
+	r, eng, ctx := newHarness(t, "")
+	driver := providers.NewGenericDriver(contracts.HarnessOpenCode, "sh", func(spec providers.SessionSpec) (providers.CommandSpec, error) {
+		script := fmt.Sprintf(`printf '%%s' "$0" > %s; printf '{"type":"text","text":"ANSWER"}\n'`, filepath.Join(dir, string(spec.ThreadID)))
 		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", script, spec.Prompt}, PromptVia: "arg"}, nil
 	}, providers.JSONLineTranslator{})
 	r.registry = providers.NewRegistry(driver)
@@ -145,5 +161,156 @@ func TestBtwRejectsBlankQuestionAndUnknownThread(t *testing.T) {
 	}
 	if _, err := r.Btw(ctx, "missing", "hi"); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("unknown thread err = %v", err)
+	}
+}
+
+func TestBtwFollowUpCarriesPreviousExchanges(t *testing.T) {
+	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
+	r, _, ctx := newBtwHarness(t, btwScript(promptFile))
+	appendUserMessage(t, r, "t1", "build the parser")
+
+	if _, err := r.Btw(ctx, "t1", "what is the parser doing?"); err != nil {
+		t.Fatalf("first Btw: %v", err)
+	}
+	if _, err := r.Btw(ctx, "t1", "and the tests?"); err != nil {
+		t.Fatalf("second Btw: %v", err)
+	}
+	// The script truncates the file per call, so it holds the second prompt.
+	prompt, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Previous side conversation", "Q: what is the parser doing?", "A: ANSWER", "and the tests?"} {
+		if !strings.Contains(string(prompt), want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBtwTurnBoundaryDropsHistory(t *testing.T) {
+	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
+	r, _, ctx := newBtwHarness(t, btwScript(promptFile))
+	appendUserMessage(t, r, "t1", "build the parser")
+
+	if _, err := r.Btw(ctx, "t1", "what is the parser doing?"); err != nil {
+		t.Fatalf("first Btw: %v", err)
+	}
+	// A user-authored message opens a new turn, so the snapshot moved on and
+	// the remembered exchanges belong to a stale context.
+	appendUserMessage(t, r, "t1", "start the next turn")
+	if _, err := r.Btw(ctx, "t1", "still there?"); err != nil {
+		t.Fatalf("second Btw: %v", err)
+	}
+	prompt, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prompt), "start the next turn") {
+		t.Fatalf("prompt lacks the new turn's message:\n%s", prompt)
+	}
+	if strings.Contains(string(prompt), "Previous side conversation") {
+		t.Fatalf("prompt kept the previous turn's side conversation:\n%s", prompt)
+	}
+	if strings.Contains(string(prompt), "what is the parser doing?") {
+		t.Fatalf("prompt kept the previous turn's question:\n%s", prompt)
+	}
+}
+
+func TestBtwFollowUpsStayPerThread(t *testing.T) {
+	dir := t.TempDir()
+	r, eng, ctx := newBtwHarnessPerThread(t, dir)
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c2", Type: contracts.CmdThreadCreate, ThreadID: "t2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Btw(ctx, "t1", "thread one question"); err != nil {
+		t.Fatalf("t1 Btw: %v", err)
+	}
+	if _, err := r.Btw(ctx, "t2", "thread two question"); err != nil {
+		t.Fatalf("t2 Btw: %v", err)
+	}
+	if _, err := r.Btw(ctx, "t2", "thread two follow-up"); err != nil {
+		t.Fatalf("t2 follow-up: %v", err)
+	}
+
+	// The per-thread file holds the latest prompt for that thread.
+	p2, err := os.ReadFile(filepath.Join(dir, "t2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Previous side conversation", "Q: thread two question", "A: ANSWER"} {
+		if !strings.Contains(string(p2), want) {
+			t.Fatalf("t2 prompt missing %q:\n%s", want, p2)
+		}
+	}
+	if strings.Contains(string(p2), "thread one question") {
+		t.Fatalf("t2 prompt leaked another thread's side conversation:\n%s", p2)
+	}
+}
+
+func TestBtwSessionsSurviveConcurrentQuestions(t *testing.T) {
+	dir := t.TempDir()
+	r, eng, ctx := newBtwHarnessPerThread(t, dir)
+	if err := eng.Dispatch(ctx, contracts.Command{ID: "c2", Type: contracts.CmdThreadCreate, ThreadID: "t2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, id := range []contracts.ThreadID{"t1", "t2"} {
+		wg.Add(1)
+		go func(id contracts.ThreadID) {
+			defer wg.Done()
+			if _, err := r.Btw(ctx, id, "concurrent question about "+string(id)); err != nil {
+				errs <- fmt.Errorf("%s: %w", id, err)
+			}
+		}(id)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	p1, err := os.ReadFile(filepath.Join(dir, "t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := os.ReadFile(filepath.Join(dir, "t2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(p1), "concurrent question about t1") {
+		t.Fatalf("t1 prompt missing its own question:\n%s", p1)
+	}
+	if strings.Contains(string(p2), "concurrent question about t1") {
+		t.Fatalf("t2 prompt leaked t1's question:\n%s", p2)
+	}
+}
+
+func TestBtwFailedAnswerLeavesHistoryUnchanged(t *testing.T) {
+	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
+	script := `printf '%s' "$0" > ` + promptFile + `; case "$0" in *"go silent"*) exit 0;; esac; printf '{"type":"text","text":"ANSWER"}\n'`
+	r, _, ctx := newBtwHarness(t, script)
+	appendUserMessage(t, r, "t1", "build the parser")
+
+	if _, err := r.Btw(ctx, "t1", "first question"); err != nil {
+		t.Fatalf("first Btw: %v", err)
+	}
+	if _, err := r.Btw(ctx, "t1", "go silent please"); err == nil || !strings.Contains(err.Error(), "no answer") {
+		t.Fatalf("failed Btw err = %v, want no answer", err)
+	}
+	if _, err := r.Btw(ctx, "t1", "third question"); err != nil {
+		t.Fatalf("third Btw: %v", err)
+	}
+	prompt, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prompt), "Q: first question") {
+		t.Fatalf("prompt dropped the successful exchange:\n%s", prompt)
+	}
+	if strings.Contains(string(prompt), "go silent please") {
+		t.Fatalf("prompt recorded the failed exchange:\n%s", prompt)
 	}
 }

@@ -360,9 +360,13 @@ func masterThreadStatus(st *domain.ThreadState) string {
 	return "new"
 }
 
-// masterThreadRuntime is the thread's lead runtime when it is already recorded,
-// falling back to whatever the thread itself carries.
+// masterThreadRuntime is the thread's solo runtime when it runs solo, else its
+// lead runtime when it is already recorded, falling back to whatever the
+// thread itself carries.
 func masterThreadRuntime(st *domain.ThreadState) (string, string) {
+	if rt := st.SoloRuntime; rt != nil {
+		return string(rt.Harness), rt.Model
+	}
 	if a, ok := st.Agents[leadAgentID(0)]; ok {
 		return string(a.Harness), a.Model
 	}
