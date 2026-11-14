@@ -20,6 +20,7 @@ type ToolCall struct {
 	Name      string   `json:"name"`
 	TaskID    string   `json:"taskId,omitempty"`
 	Task      string   `json:"task,omitempty"`
+	Brief     string   `json:"brief,omitempty"`
 	Role      string   `json:"role,omitempty"`
 	Harness   string   `json:"harness,omitempty"`
 	Model     string   `json:"model,omitempty"`
@@ -90,6 +91,7 @@ func ToDispatchTasks(parentID contracts.AgentID, calls []ToolCall, taken func(st
 			Name:          name,
 			Role:          contracts.RoleID(c.Role),
 			Task:          c.Task,
+			Brief:         c.Brief,
 			Harness:       contracts.Harness(c.Harness),
 			Model:         c.Model,
 			Pipeline:      contracts.PipelineID(c.Lane),
@@ -110,6 +112,7 @@ func frameCall(c *ToolCall) (toolbox.Call, bool) {
 		Name:      c.TaskID,
 		Role:      contracts.RoleID(c.Role),
 		Task:      c.Task,
+		Brief:     c.Brief,
 		Harness:   c.Harness,
 		Model:     c.Model,
 		Lane:      c.Lane,

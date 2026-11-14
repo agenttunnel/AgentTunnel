@@ -31,7 +31,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|read-file|write-file|shell> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|thread-relaunch|thread-results|read-file|write-file|shell|agent-logs|revive> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -41,12 +41,13 @@ func Run(args []string) int {
 	name := fs.String("name", "", "short task name, used by --depends-on")
 	lane := fs.String("lane", "", "pipeline this task belongs to (for the agents view)")
 	task := fs.String("task", "", "task description (for dispatch, spawn, task-create and subthread)")
+	brief := fs.String("brief", "", "agent definition for a wildcard dispatch; it becomes the agent's instructions (for dispatch)")
 	harness := fs.String("harness", "", "harness override (for dispatch and spawn)")
 	model := fs.String("model", "", "model override (for dispatch and spawn)")
 	dependsOn := fs.String("depends-on", "", "comma separated task names this depends on")
 	text := fs.String("text", "", "text for a note or progress update")
 	summary := fs.String("summary", "", "summary for done")
-	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message); the subagent to steer (for steer)")
+	to := fs.String("to", "", "recipient agent name, or 'orchestrator' (for message); the subagent to steer (for steer) or to revive (for revive)")
 	status := fs.String("status", "", "todo|doing|done (for task-update)")
 	question := fs.String("question", "", "the question to ask the human (for ask)")
 	questionKind := fs.String("kind", "", "choice|multi|text: the shape of the answer (for ask)")
@@ -58,7 +59,7 @@ func Run(args []string) int {
 	line := fs.Int("line", 0, "line a review comment is anchored to (for review-comment)")
 	endLine := fs.Int("end-line", 0, "last line of a review comment's range (for review-comment)")
 	side := fs.String("side", "", "old or new: which side of the diff a review comment is on (for review-comment)")
-	thread := fs.String("thread", "", "review thread id (for review-reply and review-resolve)")
+	thread := fs.String("thread", "", "review thread id (for review-reply and review-resolve); the target thread (for thread-relaunch and thread-results)")
 	reopen := fs.Bool("reopen", false, "move a resolved review thread back to open (for review-resolve)")
 	threadID := fs.String("id", "", "thread to delete (for thread-delete)")
 	removeWorktree := fs.Bool("remove-worktree", false, "also remove the deleted thread's worktree (for thread-delete)")
@@ -78,6 +79,7 @@ func Run(args []string) int {
 		"lane":           *lane,
 		"role":           *role,
 		"task":           *task,
+		"brief":          *brief,
 		"harness":        *harness,
 		"model":          *model,
 		"text":           *text,
@@ -201,6 +203,9 @@ func Run(args []string) int {
 	if kind == "read-file" {
 		return printFile(resp.Body)
 	}
+	if kind == "agent-logs" {
+		return printAgentLogs(resp.Body)
+	}
 	if kind == "shell" {
 		return printShell(resp.Body)
 	}
@@ -235,6 +240,38 @@ func printFile(body io.Reader) int {
 	fmt.Print(res.Text)
 	if res.Truncated {
 		fmt.Fprintf(os.Stderr, "tool read-file: %s is %d bytes; only the first %d were shown\n", res.Path, res.Size, files.MaxReadBytes)
+	}
+	return 0
+}
+
+// agentLogsReply is the daemon's answer to `tool agent-logs`.
+type agentLogsReply struct {
+	Agent     string `json:"agent"`
+	Name      string `json:"name"`
+	Lines     int    `json:"lines"`
+	Truncated bool   `json:"truncated"`
+	Text      string `json:"text"`
+}
+
+// printAgentLogs writes a subagent's log as it is, so the lead reads the full
+// history. A log cut at the read cap kept only its newest bytes; that is noted
+// on stderr.
+func printAgentLogs(body io.Reader) int {
+	var reply agentLogsReply
+	if err := json.NewDecoder(body).Decode(&reply); err != nil {
+		fmt.Fprintf(os.Stderr, "tool agent-logs: %v\n", err)
+		return 1
+	}
+	fmt.Print(reply.Text)
+	if reply.Text != "" && !strings.HasSuffix(reply.Text, "\n") {
+		fmt.Println()
+	}
+	if reply.Truncated {
+		agent := reply.Name
+		if agent == "" {
+			agent = reply.Agent
+		}
+		fmt.Fprintf(os.Stderr, "tool agent-logs: %s log shows only the newest %d bytes\n", agent, files.MaxReadBytes)
 	}
 	return 0
 }

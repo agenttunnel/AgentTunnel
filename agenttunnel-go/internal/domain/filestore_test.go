@@ -126,3 +126,31 @@ func TestDropEmptyThreadsKeepsDrafts(t *testing.T) {
 		t.Fatalf("draft log after sweep: %d events, err %v", len(evs), err)
 	}
 }
+
+// A thread switched to solo mode with no turn yet is not empty: the sweep's
+// default branch treats the runtime event as content, so the thread survives
+// a restart sweep (a prior incident swept draft-like threads).
+func TestDropEmptyThreadsKeepsSoloThreads(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewFileStore(filepath.Join(t.TempDir(), "threads"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	clock := func() time.Time { return testClock() }
+	if _, err := s.Append(ctx, "solo", []contracts.EventPayload{
+		contracts.ThreadCreated{Title: "just solo"},
+		contracts.PeerMailboxSet{Enabled: true},
+		contracts.SoloRuntimeSet{Runtime: contracts.LeadRuntime{Harness: contracts.HarnessClaude}},
+	}, clock); err != nil {
+		t.Fatalf("append solo: %v", err)
+	}
+
+	if removed, err := s.DropEmptyThreads(); err != nil {
+		t.Fatalf("drop: %v", err)
+	} else if len(removed) != 0 {
+		t.Fatalf("removed = %v, want nothing", removed)
+	}
+	if evs, err := s.Load(ctx, "solo"); err != nil || len(evs) != 3 {
+		t.Fatalf("solo log after sweep: %d events, err %v", len(evs), err)
+	}
+}

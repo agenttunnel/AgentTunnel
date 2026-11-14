@@ -19,6 +19,7 @@ import {
 import { Window } from "@wailsio/runtime";
 import {
   discover,
+  inDesktopShell,
   pickFolder,
   Rpc,
   setKeepRunning as emitKeepRunning,
@@ -39,6 +40,7 @@ import {
 } from "./lib/usage";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
+import { ThreadWizard } from "./components/ThreadWizard";
 import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
 import { switchProps } from "./lib/switchProps";
 import {
@@ -48,6 +50,7 @@ import {
   clampWidth,
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
+import { PeerChat } from "./components/PeerChat";
 import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
 import { VoiceRecorder } from "./components/VoiceRecorder";
 import { useRotatingPlaceholder } from "./lib/placeholder";
@@ -92,7 +95,7 @@ import type {
   HarnessUpdateResult,
 } from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
-import type { MailboxMessage } from "./lib/graph";
+import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, visibleThreadRows } from "./lib/threads";
 import { fuzzyScore } from "./lib/fuzzy";
 import {
@@ -211,6 +214,8 @@ export type ThreadState = {
   leads?: number;
   /** Per-lead runtime overrides by lead index; an empty harness inherits the Orchestrator role. */
   leadRuntimes?: LeadRuntimeView[];
+  /** Solo override: one agent on one harness, no orchestrator team. Absent means orchestrator mode. */
+  soloRuntime?: LeadRuntimeView;
   messages: Message[] | null;
   mailbox: MailboxMessage[] | null;
   agents: Record<string, Agent> | null;
@@ -243,6 +248,8 @@ export type ThreadSummary = {
   updatedAt?: string;
   messages: number;
   agents: number;
+  /** The only agent's harness on a solo thread; drives the row's tint. */
+  harness?: string;
   autoMode: boolean;
   /** Filed by the user; shown in the board's Archived column. */
   archived?: boolean;
@@ -259,6 +266,14 @@ export type ThreadSummary = {
   draft?: boolean;
   /** The GitLab issue the thread was started from, if any. */
   issue?: { provider: string; iid: number; title: string; url: string } | null;
+  /** Solo override: one agent on one harness, no orchestrator team. Absent means orchestrator mode. */
+  soloRuntime?: LeadRuntimeView;
+  /** Set while the thread is scheduled: it starts once these threads finish. */
+  waiting?: { dependsOn: string[]; prompt: string };
+  /** Thread ids whose completion has triggered relaunches of this one. */
+  triggeredFrom?: string[];
+  /** The thread that relaunched this one, when another thread controls it. */
+  controlledBy?: string;
 };
 
 // A prompt hit must be stronger than a title hit to win, so a thread whose
@@ -477,10 +492,12 @@ function groupTurns(messages: Message[]): Message[][] {
 
 /** Per-message actions App supplies through a context, so a memoized message
  * row never re-renders because a handler's identity changed. `copyText` writes
- * to the clipboard; `forkFromMessage` branches the thread off one message. */
+ * to the clipboard; `forkFromMessage` branches the thread off one message;
+ * `scrollToMessage` scrolls to the next (1) or previous (-1) message. */
 type MessageActions = {
   copyText: (text: string) => void;
   forkFromMessage: (messageId: string) => void;
+  scrollToMessage: (messageId: string, dir: -1 | 1) => void;
 };
 const MessageActionsContext = createContext<MessageActions | null>(null);
 
@@ -513,14 +530,43 @@ function BranchIcon() {
   );
 }
 
-/** One chat message. Memoized on its message: refreshing a busy thread
- * re-renders only the blocks whose own message changed, and the action
- * handlers arrive via MessageActionsContext so their identity is free. */
-const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
+/** The up/down glyph the message nav arrows carry; inherits currentColor. */
+function ChevronIcon({ up }: { up: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="11"
+      height="11"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {up ? <polyline points="6 15 12 9 18 15" /> : <polyline points="6 9 12 15 18 9" />}
+    </svg>
+  );
+}
+
+/** One chat message. Memoized on its message plus its nav edge flags:
+ * refreshing a busy thread re-renders only the blocks whose own message (or
+ * first/last position) changed, and the action handlers arrive via
+ * MessageActionsContext so their identity is free. */
+const MessageBlock = memo(function MessageBlock({
+  m,
+  hasPrev,
+  hasNext,
+}: {
+  m: Message;
+  hasPrev: boolean;
+  hasNext: boolean;
+}) {
   const actions = useContext(MessageActionsContext);
   const imageConn = useContext(MessageImageContext);
   return (
     <div
+      data-mid={m.id}
       className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
     >
       <div className="who">
@@ -539,15 +585,39 @@ const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
                     ? "Subthread"
                     : m.author === "status"
                       ? "Status"
-                      : "Orchestrator"}
+                      : m.author === "solo"
+                        ? "Solo"
+                        : "Orchestrator"}
         </span>
       </div>
       <div className="msg-actions">
+        {hasPrev && (
+          <button
+            type="button"
+            className="msg-icon-btn"
+            onClick={() => actions?.scrollToMessage(m.id, -1)}
+            aria-label="Previous message"
+            title="Previous message"
+          >
+            <ChevronIcon up />
+          </button>
+        )}
+        {hasNext && (
+          <button
+            type="button"
+            className="msg-icon-btn"
+            onClick={() => actions?.scrollToMessage(m.id, 1)}
+            aria-label="Next message"
+            title="Next message"
+          >
+            <ChevronIcon up={false} />
+          </button>
+        )}
         <button onClick={() => actions?.copyText(m.text)} title="Copy this block">
           Copy
         </button>
         <button
-          className="msg-fork"
+          className="msg-icon-btn"
           onClick={() => actions?.forkFromMessage(m.id)}
           title="Branch from here — new thread with the transcript up to this message"
           aria-label="Branch from here"
@@ -572,6 +642,72 @@ const MessageBlock = memo(function MessageBlock({ m }: { m: Message }) {
         )}
       </div>
     </div>
+  );
+});
+
+/** One turn: the user's prompt heads it, the team's response stacks under it.
+ *  The response can be collapsed to a single summary row; collapsed state is
+ *  per turn (keyed by the prompt message's instance), so streamed messages
+ *  arriving in a collapsed turn never expand it. */
+const TurnBlock = memo(function TurnBlock({
+  turn,
+  index,
+  total,
+}: {
+  turn: Message[];
+  index: Map<string, number>;
+  total: number;
+}) {
+  const position = (m: Message) => {
+    const i = index.get(m.id) ?? 0;
+    return { hasPrev: i > 0, hasNext: i < total - 1 };
+  };
+  const [expanded, setExpanded] = useState(true);
+  // An opening block with no prompt (transcript that starts mid-run) has
+  // nothing to toggle: it renders flat, exactly as before.
+  if (turn[0].author !== "user") {
+    return (
+      <section className="turn">
+        {turn.map((m) => {
+          const { hasPrev, hasNext } = position(m);
+          return <MessageBlock key={m.id} m={m} hasPrev={hasPrev} hasNext={hasNext} />;
+        })}
+      </section>
+    );
+  }
+  const response = turn.slice(1);
+  return (
+    <section className="turn">
+      <MessageBlock m={turn[0]} {...position(turn[0])} />
+      {response.length > 0 &&
+        (expanded ? (
+          <button
+            type="button"
+            className="turn-toggle"
+            onClick={() => setExpanded(false)}
+            aria-expanded="true"
+            aria-label="Hide response"
+            title="Hide response"
+          >
+            ▾ Response
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="turn-hidden"
+            onClick={() => setExpanded(true)}
+            aria-expanded="false"
+            aria-label="Show response"
+            title="Show response"
+          >
+            ▸ Response hidden — {response.length} {response.length === 1 ? "message" : "messages"}
+          </button>
+        ))}
+      {expanded &&
+        response.map((m) => (
+          <MessageBlock key={m.id} m={m} {...position(m)} />
+        ))}
+    </section>
   );
 });
 
@@ -845,6 +981,9 @@ const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } 
   ],
 });
 
+// The jump-to-top pill appears once the stream is scrolled this far down.
+const TOP_SHOW = 240;
+
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
   // Errors are kept per thread (key = thread id; "" = environment-wide), so a
@@ -993,11 +1132,9 @@ export default function App() {
     }
   };
 
-  const [tab, setTab, setTabDefault] = useThreadScoped<"chat" | "review" | "graph" | "board" | "doc">(
-    activeId,
-    "chat",
-    "at.tab",
-  );
+  const [tab, setTab, setTabDefault] = useThreadScoped<
+    "chat" | "review" | "graph" | "board" | "doc" | "p2p"
+  >(activeId, "chat", "at.tab");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
@@ -1119,6 +1256,10 @@ export default function App() {
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ThreadSummary | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // Browser fallback for the Add Project flow: no native folder picker there,
+  // so the path is typed into a small sheet instead.
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectPath, setNewProjectPath] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
   const [infoTarget, setInfoTarget] = useState<{ id: string; tab: "usage" | "agents" } | null>(
     null,
@@ -1138,6 +1279,8 @@ export default function App() {
   // Only the edge is stored, so scrolling re-renders when the user crosses it.
   const [atBottom, setAtBottom] = useState(true);
   const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  // Jump-to-top pill shows once the stream is scrolled this far down.
+  const [atTop, setAtTop] = useState(false);
 
   useEffect(() => {
     const el = streamRef.current;
@@ -1158,6 +1301,27 @@ export default function App() {
     const el = streamRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
+
+  const scrollToTop = () => {
+    const el = streamRef.current;
+    if (el) el.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  /** Scrolls the previous (-1) or next (1) message into view. Rows carry
+   * data-mid so the DOM can be walked at click time only; navigating never
+   * re-renders the transcript. */
+  const scrollToMessage = useCallback(
+    (messageId: string, dir: -1 | 1) => {
+      const el = streamRef.current;
+      if (!el) return;
+      const nodes = Array.from(el.querySelectorAll<HTMLElement>(".msg[data-mid]"));
+      const idx = nodes.findIndex((n) => n.dataset.mid === messageId);
+      if (idx < 0) return;
+      const target = nodes[idx + dir];
+      if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
+    },
+    [streamRef],
+  );
 
   // Live log follows the newest output, unless the user scrolled up to read.
   // Reopening a collapsed box jumps back to the newest output.
@@ -1238,9 +1402,20 @@ export default function App() {
         navigator.clipboard.writeText(text).catch(() => setError("Could not copy"));
       },
       forkFromMessage,
+      scrollToMessage,
     }),
-    [forkFromMessage, setError],
+    [forkFromMessage, scrollToMessage, setError],
   );
+
+  // Flat DOM position and total of the rendered messages, so each row knows
+  // whether a prev/next neighbor exists. Props only — a position map in a
+  // context would re-render every row each refresh.
+  const messageIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    (thread?.messages ?? []).forEach((m, i) => map.set(m.id, i));
+    return map;
+  }, [thread?.messages]);
+  const messageTotal = messageIndex.size;
 
   // The connection details transcript images fetch with, memoized so memoized
   // message rows only re-render when the connection or thread changes.
@@ -1251,6 +1426,11 @@ export default function App() {
         : null,
     [conn, activeId],
   );
+
+  // Turn groupings memoized on the message list: App re-renders on keystrokes
+  // and live log lines, but only a changed transcript regroups, so memoized
+  // turns and their message rows stay untouched.
+  const turnBlocks = useMemo(() => groupTurns(thread?.messages ?? []), [thread?.messages]);
 
   const installUpdate = useCallback(async () => {
     const rpc = rpcRef.current;
@@ -1394,16 +1574,34 @@ export default function App() {
 
   /** Adding a project is the native folder picker; the folder's name is the project name. */
   const addProject = async () => {
-    const rpc = rpcRef.current;
+    // Browsers have no native picker: open the typed-path sheet instead.
+    if (!inDesktopShell()) {
+      setNewProjectOpen(true);
+      return;
+    }
     const path = await pickFolder();
+    if (!path) return;
+    await createProjectAt(path);
+  };
+
+  /** Creates a project for a user-supplied path, shared by the picker and the
+   * browser's typed-path sheet. */
+  const createProjectAt = async (path: string) => {
+    const rpc = rpcRef.current;
     if (!rpc || !path) return;
     const name = path.split("/").filter(Boolean).pop() ?? path;
-    const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
-      name,
-      path,
-    });
-    setProjects(res.projects);
-    openProject(res.project.id);
+    try {
+      const res = await rpc.call<{ project: Project; projects: Project[] }>("project.create", {
+        name,
+        path,
+      });
+      setProjects(res.projects);
+      setNewProjectOpen(false);
+      setNewProjectPath("");
+      openProject(res.project.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const deleteProject = async (id: string) => {
@@ -1844,6 +2042,11 @@ export default function App() {
         }
         Window.Focus().catch(() => undefined);
       });
+    }).catch((e) => {
+      // The daemon never handed us a connection (e.g. the web UI's /conn is
+      // unreachable): fail loudly instead of booting forever.
+      setStatus("offline");
+      setError(e instanceof Error ? e.message : String(e));
     });
     return () => {
       cancelled = true;
@@ -2013,7 +2216,7 @@ export default function App() {
   }, [projects]);
 
   // Other projects keep working while their tab is in the background. Poll the
-  // recency list so their tabs stay honest about running agents and activity.
+  // thread list so their tabs stay honest about running agents and activity.
   useEffect(() => {
     if (status !== "online") return;
     const timer = window.setInterval(() => {
@@ -2178,6 +2381,20 @@ export default function App() {
   const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
+  /** The active thread's list row, where waiting/controlledBy announce
+   * themselves; null while the list has not loaded it yet. */
+  const activeSummary = activeId ? threads.find((t) => t.id === activeId) ?? null : null;
+  /** The environment's other top-level threads this thread may wait on. */
+  const scheduleCandidates = useMemo(
+    () => threads.filter((t) => t.id !== activeId && !t.parentThreadId && !t.archived),
+    [threads, activeId],
+  );
+  /** A thread id to its title, falling back to the raw id when the thread is
+   * gone (deleted or from another environment). */
+  const threadTitle = useCallback(
+    (id: string) => threads.find((t) => t.id === id)?.title ?? id,
+    [threads],
+  );
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
   const [threadFilter, setThreadFilter] = useState("");
   // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
@@ -2199,7 +2416,7 @@ export default function App() {
       const score = threadSearchScore(thread, query);
       if (score !== null) ranked.push({ thread, score });
     }
-    // Array.sort is stable, so equal scores keep the daemon's recency order.
+    // Array.sort is stable, so equal scores keep the daemon's submission order.
     ranked.sort((a, b) => b.score - a.score);
     return arrangeThreads(ranked.map((r) => r.thread));
   }, [threads, projectId, query]);
@@ -2609,6 +2826,22 @@ export default function App() {
 
   const [addingLead, setAddingLead] = useState(false);
 
+  /** Schedules the active thread: it starts once every listed thread finishes. */
+  const scheduleThread = useCallback(async (dependsOn: string[], prompt: string) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    await rpc.call("thread.schedule", { threadId: activeId, dependsOn, prompt });
+    refresh(activeId).catch(() => undefined);
+  }, [activeId, refresh]);
+
+  /** Cancels the active thread's schedule, back to a plain thread. */
+  const unscheduleThread = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    await rpc.call("thread.unschedule", { threadId: activeId });
+    refresh(activeId).catch(() => undefined);
+  }, [activeId, refresh]);
+
   /** Grows the lead team by one from the next turn on. */
   const addLead = async (count: number) => {
     const rpc = rpcRef.current;
@@ -2635,6 +2868,24 @@ export default function App() {
         harness: rt.harness ?? "",
         model: rt.model ?? "",
         variant: rt.variant ?? "",
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    refresh(activeId).catch(() => undefined);
+  };
+
+  /** Turns solo mode on (a non-empty harness) or off (an empty harness);
+   * from the next turn the thread runs one agent with no orchestrator team. */
+  const setSolo = async (rt: LeadRuntimeView | null) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setSolo", {
+        threadId: activeId,
+        harness: rt?.harness ?? "",
+        model: rt?.model ?? "",
+        variant: rt?.variant ?? "",
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -2756,8 +3007,9 @@ export default function App() {
     })();
   }, [modelsOpen, settings]);
 
-  // /btw side answers, one per thread (ephemeral: never a thread event or message).
-  const [btw, setBtw] = useState<Record<string, BtwEntry>>({});
+  // /btw side answers, a per-thread conversation (ephemeral: never a thread
+  // event or message). Each ask appends an entry; closing clears the list.
+  const [btw, setBtw] = useState<Record<string, BtwEntry[]>>({});
   const btwSeq = useRef(0);
   // Slash popup: highlighted row, and the input it was dismissed on with Esc.
   const [slashIdx, setSlashIdx] = useState(0);
@@ -2792,10 +3044,16 @@ export default function App() {
     const settle = (patch: Partial<BtwEntry>) =>
       setBtw((prev) => {
         const cur = prev[threadId];
-        if (!cur || cur.id !== id) return prev;
-        return { ...prev, [threadId]: { ...cur, ...patch } };
+        if (!cur || cur[cur.length - 1]?.id !== id) return prev;
+        return {
+          ...prev,
+          [threadId]: cur.map((e, i) => (i === cur.length - 1 ? { ...e, ...patch } : e)),
+        };
       });
-    setBtw((prev) => ({ ...prev, [threadId]: { id, question: q, answer: null, error: null } }));
+    setBtw((prev) => ({
+      ...prev,
+      [threadId]: [...(prev[threadId] ?? []), { id, question: q, answer: null, error: null }],
+    }));
     rpc
       .call<{ answer: string }>("thread.btw", { threadId, question: q })
       .then((r) => settle({ answer: r.answer }))
@@ -2833,7 +3091,7 @@ export default function App() {
     slashQ !== null && slashClosed !== input ? matchCommands(slashCommands(), slashQ) : [];
   const slashOpen = slashMatches.length > 0;
   const slashSel = Math.min(slashIdx, slashMatches.length - 1);
-  const btwEntry = activeId ? (btw[activeId] ?? null) : null;
+  const btwList = activeId ? (btw[activeId] ?? null) : null;
 
   /** Tab and Enter on a command that takes text complete its name; a bare
    * command runs at once (Enter or click). */
@@ -3367,6 +3625,28 @@ export default function App() {
         error={harnessUpdateError}
         onUpdate={updateHarnesses}
       />
+      <button
+        type="button"
+        className="title-gear"
+        onClick={openSettings}
+        aria-label="Settings"
+        title="Settings"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="16"
+          height="16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
     </div>
   );
 
@@ -3721,6 +4001,320 @@ export default function App() {
     />
   );
 
+  // Typed-path fallback for Add Project in a plain browser, where the native
+  // folder picker does not exist. Rendered beside the palette on every screen
+  // the palette's create-project command can run from.
+  const newProjectDialog = newProjectOpen && (
+    <div className="overlay" onClick={() => setNewProjectOpen(false)}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <strong>Add project</strong>
+          <button onClick={() => setNewProjectOpen(false)}>Cancel</button>
+        </div>
+        <div className="sheet-body">
+          <p className="hint">
+            Browsers cannot open a folder picker — type the project folder's path.
+          </p>
+          <input
+            autoFocus
+            value={newProjectPath}
+            placeholder="/path/to/your/repo"
+            onChange={(e) => setNewProjectPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createProjectAt(newProjectPath.trim());
+            }}
+          />
+          <div className="sheet-actions">
+            <button
+              className="primary"
+              onClick={() => createProjectAt(newProjectPath.trim())}
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Rendered on every screen: settings are app-global, so the titlebar gear
+  // must open the sheet wherever the user is.
+  const settingsSheet = settingsOpen && settings && (
+    <div className="overlay" onClick={() => setSettingsOpen(false)}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <strong>Settings</strong>
+          <div className="sheet-head-right">
+            {saved && <span className="saved">Saved</span>}
+            <button onClick={() => setSettingsOpen(false)}>Close</button>
+          </div>
+        </div>
+        <div className="sheet-body">
+          <section className="set-section">
+            <h4>New thread defaults</h4>
+            <p className="hint">
+              New threads open with the tab, panels, layout, and council setup saved here. A
+              thread you change keeps its own view.
+            </p>
+            <div className="sheet-actions">
+              <button onClick={saveThreadDefaults}>Save this view as default</button>
+            </div>
+          </section>
+          {!conn?.attached && (
+            <section className="set-section">
+              <h4>Desktop</h4>
+              <p className="hint">
+                When this is on, closing the window leaves the daemon (and any running
+                turns) alive in the background so <code>at</code> can still reach it.
+                Turn it off to stop the daemon with the window.
+              </p>
+              <div
+                className={`toggle ${keepRunning ? "on" : ""}`}
+                {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
+              >
+                <span className="sw" /> Keep daemon running after the window closes
+              </div>
+            </section>
+          )}
+          <section className="set-section">
+            <h4>Environment</h4>
+            <label className="field">
+              <span>Fallback working directory (used when a thread has no project)</span>
+              <input
+                value={workdirInput}
+                onChange={(e) => setWorkdirInput(e.target.value)}
+                placeholder="/path/to/your/repo"
+              />
+            </label>
+            <div
+              className={`toggle ${settings.autoMode ? "on" : ""}`}
+              {...switchProps(settings.autoMode, () =>
+                setSettings({ ...settings, autoMode: !settings.autoMode }),
+              )}
+              style={{ marginTop: 10 }}
+            >
+              <span className="sw" /> Auto mode — orchestrator picks each task's model
+            </div>
+            <div className="field" style={{ marginTop: 12 }}>
+              <span>Approved models for auto mode</span>
+              <ApprovedModelsPicker
+                value={approvedModels}
+                onChange={setApprovedModels}
+                models={harnesses.models}
+                harnessOrder={harnesses.all}
+              />
+            </div>
+            <label className="field" style={{ marginTop: 12 }}>
+              <span>Mark threads stale after this many minutes of inactivity</span>
+              <input
+                value={staleAfterInput}
+                onChange={(e) => setStaleAfterInput(e.target.value)}
+                inputMode="numeric"
+                placeholder="30"
+                style={{ maxWidth: 120 }}
+              />
+            </label>
+            {settings.configPath && (
+              <p className="hint">
+                Config file: <code>{settings.configPath}</code>
+              </p>
+            )}
+            <div className="sheet-actions">
+              <button className="primary" onClick={saveEnv}>
+                Save environment
+              </button>
+            </div>
+          </section>
+
+          <section className="set-section">
+            <h4>Harnesses</h4>
+            <p className="hint">Disable a harness to remove it from every role.</p>
+            {harnesses.all.map((h) => (
+              <div className="harness-row" key={h}>
+                <span className="hn">{h}</span>
+                <span className={`avail ${harnesses.available.includes(h) ? "detected" : ""}`}>
+                  {harnesses.available.includes(h) ? "detected" : "not on PATH"}
+                </span>
+                <div
+                  className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
+                  {...switchProps(isHarnessEnabled(h), () =>
+                    toggleHarness(h, !isHarnessEnabled(h)),
+                  )}
+                  aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
+                >
+                  <span className="sw" />
+                </div>
+              </div>
+            ))}
+          </section>
+
+          <section className="set-section">
+            <h4>Master orchestrator</h4>
+            <p className="hint">
+              The team lead runs on this harness and model. Leave it on the Orchestrator role
+              to inherit that role's default; each thread can still override its own leads.
+            </p>
+            <div className="role-edit">
+              <span className="rn">Lead agent</span>
+              <Dropdown
+                value={leadSettings.harness ?? ""}
+                options={[
+                  {
+                    value: "",
+                    label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
+                  },
+                  ...harnessOptionsFor(leadSettings.harness ?? ""),
+                ]}
+                onChange={(v) => {
+                  persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
+                    () => undefined,
+                  );
+                  if (v) refreshModels(v).catch(() => undefined);
+                }}
+              />
+              <Dropdown
+                value={leadSettings.model ?? ""}
+                options={modelOptions(leadHarness, leadSettings.model ?? "")}
+                searchable
+                align="end"
+                placeholder="model (default)"
+                footNote="Discovered from the harness CLI"
+                onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
+                addLabel="Add model"
+                onAdd={(m) => {
+                  addModel(leadHarness, m)
+                    .then(() =>
+                      persistLeadRuntime({
+                        harness: leadSettings.harness ?? "",
+                        model: m,
+                        variant: leadSettings.variant ?? "",
+                      }),
+                    )
+                    .catch(() => undefined);
+                }}
+                onChange={(v) =>
+                  persistLeadRuntime({
+                    harness: leadSettings.harness ?? "",
+                    model: v,
+                    variant: leadSettings.variant ?? "",
+                  }).catch(() => undefined)
+                }
+              />
+            </div>
+          </section>
+
+          <section className="set-section">
+            <h4>Dependencies</h4>
+            <p className="hint">
+              The forge CLIs the Pull request tab shells out to. Versions are read from the
+              tools on PATH.
+            </p>
+            {depsError && <p className="hint warn">{depsError}</p>}
+            {deps === null && !depsError && <p className="hint">Checking…</p>}
+            {(deps ?? []).map((d) => (
+              <div className="dep-row" key={d.name}>
+                <span className="dn">{d.name}</span>
+                <span className={`dv ${d.status}`}>
+                  {d.status === "missing"
+                    ? "not installed"
+                    : `${d.version || "unknown version"}${
+                        d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
+                      }`}
+                </span>
+                <span
+                  className={`dot ${
+                    d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
+                  }`}
+                  title={d.status}
+                />
+              </div>
+            ))}
+            <div className="sheet-actions">
+              <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
+                {depsBusy ? "Checking…" : "Recheck"}
+              </button>
+            </div>
+          </section>
+
+          <section className="set-section">
+            <h4>Roles</h4>
+            <p className="hint">
+              Each subagent role runs on its own harness and model; the Orchestrator role is the
+              master orchestrator above. Changes apply to the next turn.
+            </p>
+            <div
+              className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
+              {...switchProps(settings.experimentalRoles, () =>
+                toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
+              )}
+              style={{ marginBottom: 10 }}
+            >
+              <span className="sw" /> Experimental roles
+            </div>
+            <p className="hint">
+              Experimental roles are off by default. Turn this on to dispatch them.
+            </p>
+            {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
+            {settings.roles
+              .filter((r) => r.id !== "orchestrator")
+              .map((r) => (
+                <div className="role-edit" key={r.id}>
+                  <span className="rn">
+                    {r.name}
+                    {r.experimental && <span className="badge experimental">Experimental</span>}
+                  </span>
+                  <Dropdown
+                    value={r.harness}
+                    options={harnessOptionsFor(r.harness)}
+                    onChange={(v) => {
+                      const row = { ...r, harness: v };
+                      updateRole(r.id, { harness: v });
+                      persistRole(row).catch(() => undefined);
+                      refreshModels(v).catch(() => undefined);
+                    }}
+                  />
+                  <Dropdown
+                    value={r.model}
+                    options={modelOptions(r.harness, r.model)}
+                    searchable
+                    align="end"
+                    placeholder="model (default)"
+                    footNote="Discovered from the harness CLI"
+                    onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
+                    addLabel="Add model"
+                    onAdd={(m) => {
+                      addModel(r.harness, m)
+                        .then(() => {
+                          const row = { ...r, model: m };
+                          updateRole(r.id, { model: m });
+                          persistRole(row).catch(() => undefined);
+                        })
+                        .catch(() => undefined);
+                    }}
+                    onChange={(v) => {
+                      const row = { ...r, model: v };
+                      updateRole(r.id, { model: v });
+                      persistRole(row).catch(() => undefined);
+                    }}
+                  />
+                </div>
+              ))}
+          </section>
+
+          <section className="set-section about-section">
+            <h4>About</h4>
+            <p className="hint">
+              AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
+            </p>
+            <p className="hint">
+              <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
+            </p>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+
   // Stats are their own page, not part of the projects grid.
   if (!projectId && homePage === "stats") {
     return (
@@ -3737,7 +4331,9 @@ export default function App() {
           <StatsPage rpc={rpcRef.current} />
         </div>
         {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
+        {settingsSheet}
       </div>
     );
   }
@@ -3760,7 +4356,9 @@ export default function App() {
           />
         </div>
         {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
+        {settingsSheet}
       </div>
     );
   }
@@ -3829,7 +4427,9 @@ export default function App() {
           </div>
         </div>
         {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
+        {settingsSheet}
       </div>
     );
   }
@@ -3929,40 +4529,45 @@ export default function App() {
                 +
               </span>
             </div>
-            {projectThreads.map((t) => (
-              <div
-                className={`thread-card${t.stale ? " is-stale" : ""}`}
-                key={t.id}
-                style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-                {...clickable(() => selectThread(t.id))}
-                onContextMenu={(e) => openThreadMenu(t, e)}
-              >
-                <div className="tc-head">
-                  <div className="tc-title" title={t.title}>
-                    {t.title}
+            {projectThreads.map((t) => {
+              const tint = t.soloRuntime ? harnessTint(t.soloRuntime.harness ?? "") : "";
+              return (
+                <div
+                  className={`thread-card${t.stale ? " is-stale" : ""}${tint ? ` ${tint}` : ""}`}
+                  key={t.id}
+                  style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
+                  {...clickable(() => selectThread(t.id))}
+                  onContextMenu={(e) => openThreadMenu(t, e)}
+                >
+                  <div className="tc-head">
+                    <div className="tc-title" title={t.title}>
+                      {t.title}
+                    </div>
+                    {t.owner === "orchestrator" && (
+                      <span className="tc-owner" title="Started by the orchestrator">
+                        Orchestrator
+                      </span>
+                    )}
                   </div>
-                  {t.owner === "orchestrator" && (
-                    <span className="tc-owner" title="Started by the orchestrator">
-                      Orchestrator
-                    </span>
-                  )}
+                  <div className="tc-meta">
+                    {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
+                  </div>
+                  <div className="tc-foot">
+                    <ThreadClock t={t} />
+                    {fmtUpdated(t.updatedAt) && (
+                      <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
+                    )}
+                  </div>
                 </div>
-                <div className="tc-meta">
-                  {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
-                </div>
-                <div className="tc-foot">
-                  <ThreadClock t={t} />
-                  {fmtUpdated(t.updatedAt) && (
-                    <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           )}
           {threadOverlays}
           {superViewDialog}
+          {newProjectDialog}
           {paletteDialog}
+          {settingsSheet}
         </div>
       </div>
     );
@@ -3975,6 +4580,9 @@ export default function App() {
   const setupMode = setupPending && setupReadyId !== activeId;
   const composerHidden = setupMode;
   const asideCollapsed = !layout.asideOpen || setupMode;
+  // Solo threads tint the chat-head tabs with their harness color, like the
+  // thread card and the graph node do.
+  const soloTint = thread?.soloRuntime ? harnessTint(thread.soloRuntime.harness ?? "") : "";
 
   return (
     <DocLinkContext.Provider value={openChatDoc}>
@@ -4017,7 +4625,7 @@ export default function App() {
           {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
             <div
               key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""} ${t.stale ? "stale" : ""}`}
+              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""} ${harnessTint(t.harness ?? "")}`}
               style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
               {...clickable(() => {
                 if (t.subthreads > 0) toggleSubthreads(t.id);
@@ -4025,8 +4633,18 @@ export default function App() {
               })}
               onContextMenu={(e) => openThreadMenu(t, e)}
             >
+              {t.waiting && (
+                <svg className="row-sched-ring" aria-hidden="true" focusable="false">
+                  <rect x="1" y="1" rx="9" pathLength="100" />
+                </svg>
+              )}
               <div className="t" title={t.title}>
                 {t.title}
+                {t.waiting && (
+                  <span className="row-scheduled" title={`Scheduled — waiting on ${t.waiting.dependsOn.length} thread${t.waiting.dependsOn.length === 1 ? "" : "s"}`}>
+                    ◷ {t.waiting.dependsOn.length}
+                  </span>
+                )}
                 {t.subthreads > 0 && (
                   <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
                     {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
@@ -4038,6 +4656,26 @@ export default function App() {
               </div>
               <div className="thread-row-foot">
                 <ThreadClock t={t} />
+                {t.controlledBy && (
+                  <button
+                    type="button"
+                    className="controlled-chip"
+                    title={`Relaunched by ${threads.find((c) => c.id === t.controlledBy)?.title ?? t.controlledBy}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (t.controlledBy) selectThread(t.controlledBy);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (t.controlledBy) selectThread(t.controlledBy);
+                      }
+                    }}
+                  >
+                    ⌁ controlled
+                  </button>
+                )}
                 {fmtUpdated(t.updatedAt) && <span className="u">{fmtUpdated(t.updatedAt)}</span>}
               </div>
             </div>
@@ -4046,23 +4684,6 @@ export default function App() {
         <div className="sidebar-foot">
           <LimitsMeter rpc={rpcRef.current} />
           <RemoteSection rpc={rpcRef.current} />
-          <button className="foot-btn" onClick={openSettings}>
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-            Settings
-          </button>
         </div>
       </div>
 
@@ -4080,20 +4701,20 @@ export default function App() {
         <div className="chat-head">
           <div className="tabs" role="tablist" aria-label="Thread view">
             <div
-              className={`tab ${tab === "chat" ? "on" : ""}`}
+              className={`tab ${tab === "chat" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "chat", () => setTab("chat"))}
             >
               Chat
             </div>
             <div
-              className={`tab ${tab === "review" ? "on" : ""}`}
+              className={`tab ${tab === "review" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "review", () => setTab("review"))}
             >
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
             </div>
             <div
-              className={`tab ${tab === "graph" ? "on" : ""}`}
+              className={`tab ${tab === "graph" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "graph", () => setTab("graph"))}
             >
               Graph
@@ -4102,7 +4723,16 @@ export default function App() {
               )}
             </div>
             <div
-              className={`tab ${tab === "board" ? "on" : ""}`}
+              className={`tab ${tab === "p2p" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
+              {...tabProps(tab === "p2p", () => setTab("p2p"))}
+            >
+              P2P
+              {(thread?.mailbox?.length ?? 0) > 0 && (
+                <span className="pill">{thread?.mailbox?.length}</span>
+              )}
+            </div>
+            <div
+              className={`tab ${tab === "board" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "board", () => setTab("board"))}
             >
               Board
@@ -4170,17 +4800,81 @@ export default function App() {
             <div
               className="stream"
               ref={streamRef}
-              onScroll={(e) => setAtBottom(nearBottom(e.currentTarget))}
+              onScroll={(e) => {
+                setAtBottom(nearBottom(e.currentTarget));
+                setAtTop(e.currentTarget.scrollTop > TOP_SHOW);
+              }}
             >
+              {/* Zero-height sticky anchor: mounting the jump-to-top pill
+                  never shifts the transcript (it overlays, unlike a plain
+                  sticky sibling, which would push content down). */}
+              <div className="stream-top-anchor">
+                {atTop && (
+                  <button
+                    type="button"
+                    className="scroll-top"
+                    onClick={scrollToTop}
+                    aria-label="Jump to top of thread"
+                    title="Jump to top of thread"
+                  >
+                    ↑
+                  </button>
+                )}
+              </div>
+              {activeSummary?.waiting && (
+                <div className="schedule-banner">
+                  <div className="schedule-banner-main">
+                    <div className="schedule-banner-title">
+                      <span className="pill wait">◷ Scheduled</span>
+                      <span className="schedule-waiting">
+                        waiting on{" "}
+                        {activeSummary.waiting.dependsOn
+                          .map((id) => threads.find((t) => t.id === id)?.title ?? id)
+                          .join(", ")}
+                      </span>
+                    </div>
+                    <div className="schedule-prompt" title={activeSummary.waiting.prompt}>
+                      {activeSummary.waiting.prompt}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="schedule-cancel"
+                    onClick={() => {
+                      unscheduleThread().catch((e) =>
+                        setError(e instanceof Error ? e.message : String(e)),
+                      );
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              {activeSummary?.controlledBy && (
+                <button
+                  type="button"
+                  className="controlled-link"
+                  title="Open the thread that relaunched this one"
+                  onClick={() => {
+                    if (activeSummary.controlledBy) selectThread(activeSummary.controlledBy);
+                  }}
+                >
+                  ⌁ Controlled by{" "}
+                  {threads.find((t) => t.id === activeSummary.controlledBy)?.title ??
+                    activeSummary.controlledBy}
+                </button>
+              )}
               {setupMode && thread && (
                 <div className="setup-view">
-                  <ThreadSetup
+                  <ThreadWizard
+                    key={activeId}
                     settings={settings}
                     thread={thread}
                     toggle={toggle}
                     addLead={addLead}
                     addingLead={addingLead}
                     setLeadRuntime={setLeadRuntime}
+                    setSolo={setSolo}
                     updateRole={updateRole}
                     persistRole={persistRole}
                     refreshModels={refreshModels}
@@ -4189,16 +4883,14 @@ export default function App() {
                     harnessOptionsFor={harnessOptionsFor}
                     toggleRoleEnabled={toggleRoleEnabled}
                     setStatusPeriod={setStatusPeriod}
+                    summary={activeSummary}
+                    scheduleCandidates={scheduleCandidates}
+                    threadTitle={threadTitle}
+                    schedule={scheduleThread}
+                    unschedule={unscheduleThread}
+                    onStart={() => setSetupReadyId(activeId)}
+                    startLabel={`Start ${startVerb}...`}
                   />
-                  {composerHidden && (
-                    <button
-                      type="button"
-                      className="setup-continue"
-                      onClick={() => setSetupReadyId(activeId)}
-                    >
-                      Start {startVerb}...
-                    </button>
-                  )}
                 </div>
               )}
               {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
@@ -4212,12 +4904,13 @@ export default function App() {
               )}
               <MessageActionsContext.Provider value={messageActions}>
                 <MessageImageContext.Provider value={messageImages}>
-                  {groupTurns(thread?.messages ?? []).map((turn) => (
-                    <section className="turn" key={turn[0].id}>
-                      {turn.map((m) => (
-                        <MessageBlock key={m.id} m={m} />
-                      ))}
-                    </section>
+                  {turnBlocks.map((turn) => (
+                    <TurnBlock
+                      key={turn[0].id}
+                      turn={turn}
+                      index={messageIndex}
+                      total={messageTotal}
+                    />
                   ))}
                 </MessageImageContext.Provider>
               </MessageActionsContext.Provider>
@@ -4305,7 +4998,7 @@ export default function App() {
               onDrop={onComposerDrop}
               hidden={composerHidden}
             >
-              {btwEntry && <BtwPanel entry={btwEntry} onClose={closeBtw} />}
+              {btwList && <BtwPanel entries={btwList} onClose={closeBtw} />}
               {slashOpen && (
                 <SlashMenu
                   items={slashMatches}
@@ -4485,6 +5178,17 @@ export default function App() {
               onClose={closeDoc}
             />
           </Suspense>
+        ) : tab === "p2p" ? (
+          <PeerChat
+            key={activeId ?? ""}
+            agents={agents}
+            roleNames={rolesById}
+            mailbox={thread?.mailbox ?? null}
+            peerMailbox={!!thread?.peerMailbox}
+            onTogglePeerMailbox={() =>
+              thread && toggle("peerMailbox", !thread.peerMailbox)
+            }
+          />
         ) : (
           <AgentGraph
             key={activeId ?? ""}
@@ -4612,6 +5316,7 @@ export default function App() {
                 addLead={addLead}
                 addingLead={addingLead}
                 setLeadRuntime={setLeadRuntime}
+                setSolo={setSolo}
                 updateRole={updateRole}
                 persistRole={persistRole}
                 refreshModels={refreshModels}
@@ -4620,6 +5325,11 @@ export default function App() {
                 harnessOptionsFor={harnessOptionsFor}
                 toggleRoleEnabled={toggleRoleEnabled}
                 setStatusPeriod={setStatusPeriod}
+                summary={activeSummary}
+                scheduleCandidates={scheduleCandidates}
+                threadTitle={threadTitle}
+                schedule={scheduleThread}
+                unschedule={unscheduleThread}
               />
             </div>
           ) : asideActive === "agents" ? (
@@ -5200,284 +5910,11 @@ export default function App() {
         </div>
       )}
 
-      {settingsOpen && settings && (
-        <div className="overlay" onClick={() => setSettingsOpen(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-head">
-              <strong>Settings</strong>
-              <div className="sheet-head-right">
-                {saved && <span className="saved">Saved</span>}
-                <button onClick={() => setSettingsOpen(false)}>Close</button>
-              </div>
-            </div>
-            <div className="sheet-body">
-              <section className="set-section">
-                <h4>New thread defaults</h4>
-                <p className="hint">
-                  New threads open with the tab, panels, layout, and council setup saved here. A
-                  thread you change keeps its own view.
-                </p>
-                <div className="sheet-actions">
-                  <button onClick={saveThreadDefaults}>Save this view as default</button>
-                </div>
-              </section>
-              {!conn?.attached && (
-                <section className="set-section">
-                  <h4>Desktop</h4>
-                  <p className="hint">
-                    When this is on, closing the window leaves the daemon (and any running
-                    turns) alive in the background so <code>at</code> can still reach it.
-                    Turn it off to stop the daemon with the window.
-                  </p>
-                  <div
-                    className={`toggle ${keepRunning ? "on" : ""}`}
-                    {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
-                  >
-                    <span className="sw" /> Keep daemon running after the window closes
-                  </div>
-                </section>
-              )}
-              <section className="set-section">
-                <h4>Environment</h4>
-                <label className="field">
-                  <span>Fallback working directory (used when a thread has no project)</span>
-                  <input
-                    value={workdirInput}
-                    onChange={(e) => setWorkdirInput(e.target.value)}
-                    placeholder="/path/to/your/repo"
-                  />
-                </label>
-                <div
-                  className={`toggle ${settings.autoMode ? "on" : ""}`}
-                  {...switchProps(settings.autoMode, () =>
-                    setSettings({ ...settings, autoMode: !settings.autoMode }),
-                  )}
-                  style={{ marginTop: 10 }}
-                >
-                  <span className="sw" /> Auto mode — orchestrator picks each task's model
-                </div>
-                <div className="field" style={{ marginTop: 12 }}>
-                  <span>Approved models for auto mode</span>
-                  <ApprovedModelsPicker
-                    value={approvedModels}
-                    onChange={setApprovedModels}
-                    models={harnesses.models}
-                    harnessOrder={harnesses.all}
-                  />
-                </div>
-                <label className="field" style={{ marginTop: 12 }}>
-                  <span>Mark threads stale after this many minutes of inactivity</span>
-                  <input
-                    value={staleAfterInput}
-                    onChange={(e) => setStaleAfterInput(e.target.value)}
-                    inputMode="numeric"
-                    placeholder="30"
-                    style={{ maxWidth: 120 }}
-                  />
-                </label>
-                {settings.configPath && (
-                  <p className="hint">
-                    Config file: <code>{settings.configPath}</code>
-                  </p>
-                )}
-                <div className="sheet-actions">
-                  <button className="primary" onClick={saveEnv}>
-                    Save environment
-                  </button>
-                </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Harnesses</h4>
-                <p className="hint">Disable a harness to remove it from every role.</p>
-                {harnesses.all.map((h) => (
-                  <div className="harness-row" key={h}>
-                    <span className="hn">{h}</span>
-                    <span className={`avail ${harnesses.available.includes(h) ? "detected" : ""}`}>
-                      {harnesses.available.includes(h) ? "detected" : "not on PATH"}
-                    </span>
-                    <div
-                      className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
-                      {...switchProps(isHarnessEnabled(h), () =>
-                        toggleHarness(h, !isHarnessEnabled(h)),
-                      )}
-                      aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
-                    >
-                      <span className="sw" />
-                    </div>
-                  </div>
-                ))}
-              </section>
-
-              <section className="set-section">
-                <h4>Master orchestrator</h4>
-                <p className="hint">
-                  The team lead runs on this harness and model. Leave it on the Orchestrator role
-                  to inherit that role's default; each thread can still override its own leads.
-                </p>
-                <div className="role-edit">
-                  <span className="rn">Lead agent</span>
-                  <Dropdown
-                    value={leadSettings.harness ?? ""}
-                    options={[
-                      {
-                        value: "",
-                        label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
-                      },
-                      ...harnessOptionsFor(leadSettings.harness ?? ""),
-                    ]}
-                    onChange={(v) => {
-                      persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
-                        () => undefined,
-                      );
-                      if (v) refreshModels(v).catch(() => undefined);
-                    }}
-                  />
-                  <Dropdown
-                    value={leadSettings.model ?? ""}
-                    options={modelOptions(leadHarness, leadSettings.model ?? "")}
-                    searchable
-                    align="end"
-                    placeholder="model (default)"
-                    footNote="Discovered from the harness CLI"
-                    onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
-                    addLabel="Add model"
-                    onAdd={(m) => {
-                      addModel(leadHarness, m)
-                        .then(() =>
-                          persistLeadRuntime({
-                            harness: leadSettings.harness ?? "",
-                            model: m,
-                            variant: leadSettings.variant ?? "",
-                          }),
-                        )
-                        .catch(() => undefined);
-                    }}
-                    onChange={(v) =>
-                      persistLeadRuntime({
-                        harness: leadSettings.harness ?? "",
-                        model: v,
-                        variant: leadSettings.variant ?? "",
-                      }).catch(() => undefined)
-                    }
-                  />
-                </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Dependencies</h4>
-                <p className="hint">
-                  The forge CLIs the Pull request tab shells out to. Versions are read from the
-                  tools on PATH.
-                </p>
-                {depsError && <p className="hint warn">{depsError}</p>}
-                {deps === null && !depsError && <p className="hint">Checking…</p>}
-                {(deps ?? []).map((d) => (
-                  <div className="dep-row" key={d.name}>
-                    <span className="dn">{d.name}</span>
-                    <span className={`dv ${d.status}`}>
-                      {d.status === "missing"
-                        ? "not installed"
-                        : `${d.version || "unknown version"}${
-                            d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
-                          }`}
-                    </span>
-                    <span
-                      className={`dot ${
-                        d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
-                      }`}
-                      title={d.status}
-                    />
-                  </div>
-                ))}
-                <div className="sheet-actions">
-                  <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
-                    {depsBusy ? "Checking…" : "Recheck"}
-                  </button>
-                </div>
-              </section>
-
-              <section className="set-section">
-                <h4>Roles</h4>
-                <p className="hint">
-                  Each subagent role runs on its own harness and model; the Orchestrator role is the
-                  master orchestrator above. Changes apply to the next turn.
-                </p>
-                <div
-                  className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
-                  {...switchProps(settings.experimentalRoles, () =>
-                    toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
-                  )}
-                  style={{ marginBottom: 10 }}
-                >
-                  <span className="sw" /> Experimental roles
-                </div>
-                <p className="hint">
-                  Experimental roles are off by default. Turn this on to dispatch them.
-                </p>
-                {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
-                {settings.roles
-                  .filter((r) => r.id !== "orchestrator")
-                  .map((r) => (
-                    <div className="role-edit" key={r.id}>
-                      <span className="rn">
-                        {r.name}
-                        {r.experimental && <span className="badge experimental">Experimental</span>}
-                      </span>
-                      <Dropdown
-                        value={r.harness}
-                        options={harnessOptionsFor(r.harness)}
-                        onChange={(v) => {
-                          const row = { ...r, harness: v };
-                          updateRole(r.id, { harness: v });
-                          persistRole(row).catch(() => undefined);
-                          refreshModels(v).catch(() => undefined);
-                        }}
-                      />
-                      <Dropdown
-                        value={r.model}
-                        options={modelOptions(r.harness, r.model)}
-                        searchable
-                        align="end"
-                        placeholder="model (default)"
-                        footNote="Discovered from the harness CLI"
-                        onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                        addLabel="Add model"
-                        onAdd={(m) => {
-                          addModel(r.harness, m)
-                            .then(() => {
-                              const row = { ...r, model: m };
-                              updateRole(r.id, { model: m });
-                              persistRole(row).catch(() => undefined);
-                            })
-                            .catch(() => undefined);
-                        }}
-                        onChange={(v) => {
-                          const row = { ...r, model: v };
-                          updateRole(r.id, { model: v });
-                          persistRole(row).catch(() => undefined);
-                        }}
-                      />
-                    </div>
-                  ))}
-              </section>
-
-              <section className="set-section about-section">
-                <h4>About</h4>
-                <p className="hint">
-                  AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
-                </p>
-                <p className="hint">
-                  <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
-                </p>
-              </section>
-            </div>
-          </div>
-        </div>
-      )}
+      {settingsSheet}
 
       {threadOverlays}
       {superViewDialog}
+      {newProjectDialog}
       {paletteDialog}
     </div>
     </DocLinkContext.Provider>

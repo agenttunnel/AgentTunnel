@@ -8,6 +8,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
+	"github.com/agenttunnel/agenttunnel-go/internal/files"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 )
 
@@ -118,12 +119,31 @@ type OrchestratorPrompt struct {
 	PeerMailbox   bool
 	// Subthreads offers the subthread tool: the thread may start one.
 	Subthreads bool
-	Team       string
-	Pass       int
-	Steering   []string
+	// DependencyThreads lists the threads this one was triggered by, rendered
+	// for the scheduling tool offer. Empty renders no section.
+	DependencyThreads string
+	Team              string
+	Pass              int
+	Steering          []string
 	// Steer offers the steer tool: the thread has subagents to steer.
-	Steer          bool
+	Steer bool
+	// AgentLogs offers the agent-logs tool: the thread has subagents whose
+	// output the lead can read.
+	AgentLogs bool
+	// Revive offers the revive tool: the thread has finished subagents the
+	// lead can bring back with a follow-up question.
+	Revive         bool
 	RuntimeChoices string
+	// RoleChoices lists the roles the lead may dispatch, joined with "|" for the
+	// --role flag. Empty falls back to executor, which is required and so always
+	// dispatchable.
+	RoleChoices string
+	// DisabledRoles lists the non-required roles that are off for this thread,
+	// joined with ", ". Empty renders no line.
+	DisabledRoles string
+	// Wildcard offers the experimental wildcard role: the lead defines the
+	// agent in a brief. Set only when experimental roles are on.
+	Wildcard bool
 }
 
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including
@@ -181,11 +201,23 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
 	b.WriteString("The task runs as its own agent in this project, and its result comes back to you. ")
-	b.WriteString("Use --depends-on <name> to order tasks, --role planner|executor|tester|reviewer to pick the role, ")
+	roleChoices := in.RoleChoices
+	if roleChoices == "" {
+		roleChoices = string(contracts.RoleExecutor)
+	}
+	b.WriteString("Use --depends-on <name> to order tasks, --role " + roleChoices + " to pick the role, ")
 	b.WriteString("--model <id> to override the model, and --harness <id> to override the harness. ")
-	b.WriteString("Model and harness overrides apply when auto mode is on for the thread. Report findings with:\n\n")
+	b.WriteString("Model and harness overrides apply when auto mode is on for the thread.")
+	if in.DisabledRoles != "" {
+		b.WriteString("\n\nDisabled roles (do not dispatch): " + in.DisabledRoles + ".")
+	}
+	b.WriteString(" Report findings with:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+	if in.Wildcard {
+		b.WriteString("\n\nYou can also define a custom agent when no builtin role fits. Pass --role wildcard with --brief; the brief becomes that agent's instructions:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool dispatch --role wildcard --name <short-name> --brief \"<agent definition>\" --task \"<what to do>\"")
+	}
 	if peerMailbox {
 		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
@@ -197,6 +229,19 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("  \"$AT_TOOL\" tool steer --to <agent name> --text \"<adjustment>\"\n\n")
 		b.WriteString("The reply says whether the steer was queued for that agent's next run.")
 	}
+	if in.AgentLogs {
+		b.WriteString("\n\n## Subagent logs\n")
+		b.WriteString("A result summary can be missing detail the full run had. Read a dispatched agent's whole output log — its text, tool lines and errors — capped at the newest ")
+		b.WriteString(strconv.Itoa(files.MaxReadBytes / 1024))
+		b.WriteString(" KB:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool agent-logs --to <agent name or id>\n")
+	}
+	if in.Revive {
+		b.WriteString("\n\n## Reviving subagents\n")
+		b.WriteString("A finished subagent's result can be missing something you needed, and its next run knows nothing of the last one. Revive it: a follow-up question re-dispatches the subagent under its own name and role, with its prior output log and your question:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool revive --to <agent name or id> --text \"<question>\"\n\n")
+		b.WriteString("The revived run sees its original task, its previous log, and your question, so ask as if continuing the same conversation. Only finished agents can be revived; a running one reads a message instead.")
+	}
 	b.WriteString("\n\n## Tracking the plan\n")
 	b.WriteString("Keep the thread's task list in step with the plan you agreed. Add each task once, then move it as it progresses:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool task-create --name <short-name> --task \"<task title>\"\n")
@@ -207,6 +252,16 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("  \"$AT_TOOL\" tool thread-list\n")
 	b.WriteString("  \"$AT_TOOL\" tool thread-delete --id <thread id> [--remove-worktree]\n\n")
 	b.WriteString("You cannot delete this thread, and a thread with work still running cannot be deleted. --remove-worktree also removes that thread's worktree, and is refused if it has uncommitted changes.")
+	if strings.TrimSpace(in.DependencyThreads) != "" {
+		b.WriteString("\n\n## Threads you were triggered by\n")
+		b.WriteString("These threads triggered this thread, and you may also drive any you already relaunched:\n")
+		b.WriteString(in.DependencyThreads)
+		b.WriteString("\nRead one's state and its final messages with:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool thread-results --thread <thread id>\n\n")
+		b.WriteString("When a dependency's result is not enough or it did not reach its goal, relaunch it with a new prompt instead of redoing its work yourself:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool thread-relaunch --thread <thread id> --text \"<what to do next>\"\n\n")
+		b.WriteString("A relaunch marks the thread controlled by this one and starts your prompt as its next turn, so say exactly what you need from it. A busy thread refuses the relaunch until its current turn ends.")
+	}
 	b.WriteString("\n\n## Files and shell\n")
 	b.WriteString("You can read and write files in this thread's worktree, and run a shell command there. Relative paths resolve against the worktree, and a file path cannot leave it:\n\n")
 	b.WriteString("  \"$AT_TOOL\" tool read-file --path <path>\n")

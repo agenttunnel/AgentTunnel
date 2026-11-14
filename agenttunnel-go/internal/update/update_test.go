@@ -203,11 +203,11 @@ func TestLocate(t *testing.T) {
 		goos, exe string
 		want      Install
 	}{
-		{"darwin", "/Applications/AgentTunnel.app/Contents/MacOS/agenttunnel",
+		{"darwin", "/Applications/AgentTunnel.app/Contents/MacOS/agenttunnel-desktop",
 			Install{Kind: KindApp, Path: "/Applications/AgentTunnel.app"}},
 		{"darwin", "/Users/me/.local/bin/atd", Install{Kind: KindBin, Path: "/Users/me/.local/bin"}},
 		{"linux", "/opt/at/atd", Install{Kind: KindBin, Path: "/opt/at"}},
-		{"linux", "/opt/x.app/Contents/MacOS/agenttunnel", Install{Kind: KindBin, Path: "/opt/x.app/Contents/MacOS"}},
+		{"linux", "/opt/x.app/Contents/MacOS/agenttunnel-desktop", Install{Kind: KindBin, Path: "/opt/x.app/Contents/MacOS"}},
 	}
 	for _, tc := range tests {
 		if got := Locate(tc.goos, tc.exe); !reflect.DeepEqual(got, tc.want) {
@@ -299,7 +299,7 @@ func TestApplyRefusesAssetWithoutDigest(t *testing.T) {
 func TestApplyReplacesAppBundle(t *testing.T) {
 	archive := makeArchive(t,
 		entry{name: "AgentTunnel.app/", dir: true},
-		entry{name: "AgentTunnel.app/Contents/MacOS/agenttunnel", body: "app-new", mode: 0o755},
+		entry{name: "AgentTunnel.app/Contents/MacOS/agenttunnel-desktop", body: "app-new", mode: 0o755},
 		entry{name: "AgentTunnel.app/Contents/Info.plist", body: "plist-new"},
 	)
 	name := "AgentTunnel-darwin-arm64.app.tar.gz"
@@ -308,7 +308,7 @@ func TestApplyReplacesAppBundle(t *testing.T) {
 
 	root := t.TempDir()
 	bundle := filepath.Join(root, "AgentTunnel.app")
-	writeTestFile(t, filepath.Join(bundle, "Contents", "MacOS", "agenttunnel"), "app-old")
+	writeTestFile(t, filepath.Join(bundle, "Contents", "MacOS", "agenttunnel-desktop"), "app-old")
 	writeTestFile(t, filepath.Join(bundle, "Contents", "Info.plist"), "plist-old")
 	writeTestFile(t, filepath.Join(bundle, "Contents", "Resources", "stale.txt"), "gone")
 
@@ -316,7 +316,7 @@ func TestApplyReplacesAppBundle(t *testing.T) {
 	if _, err := u.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := readFile(t, filepath.Join(bundle, "Contents", "MacOS", "agenttunnel")); got != "app-new" {
+	if got := readFile(t, filepath.Join(bundle, "Contents", "MacOS", "agenttunnel-desktop")); got != "app-new" {
 		t.Fatalf("binary = %q, want app-new", got)
 	}
 	if _, err := os.Stat(filepath.Join(bundle, "Contents", "Resources", "stale.txt")); !os.IsNotExist(err) {

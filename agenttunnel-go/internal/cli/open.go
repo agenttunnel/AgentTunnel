@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
 func init() {
 	Register(Command{
 		Name:    "open",
-		Summary: "Open a thread in the AgentTunnel desktop app",
-		Usage:   "agenttunnel open <thread>",
+		Summary: "Open a thread or project directory in the AgentTunnel desktop app",
+		Usage:   "agenttunnel open <thread | dir>",
 		Run:     runOpen,
 	})
 }
@@ -49,19 +51,37 @@ func runOpen(ctx context.Context, env *Env, args []string) error {
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "-"):
-			return usageError("unknown flag %q (usage: agenttunnel open <thread>)", arg)
+			return usageError("unknown flag %q (usage: agenttunnel open <thread | dir>)", arg)
 		case ref != "":
-			return usageError("usage: agenttunnel open <thread>")
+			return usageError("usage: agenttunnel open <thread | dir>")
 		default:
 			ref = arg
 		}
 	}
 	if ref == "" {
-		return usageError("usage: agenttunnel open <thread>")
+		return usageError("usage: agenttunnel open <thread | dir>")
 	}
 	path, err := lookDesktop()
 	if err != nil {
 		return err
+	}
+	// A directory opens that project in the desktop app with no daemon
+	// contact: the desktop binary itself forwards to a running app
+	// (thread.open) or boots onto the project. A thread ref is never an
+	// existing directory, so the directory check is unambiguous.
+	if info, statErr := os.Stat(ref); statErr == nil && info.IsDir() {
+		abs, absErr := filepath.Abs(ref)
+		if absErr != nil {
+			return absErr
+		}
+		if err := startDesktop(path, abs); err != nil {
+			return fmt.Errorf("start %s: %w", desktopBinary, err)
+		}
+		if env.JSON {
+			return env.PrintJSON(map[string]string{"dir": abs})
+		}
+		fmt.Fprintf(env.Out, "Opening %s in AgentTunnel desktop\n", abs)
+		return nil
 	}
 	c, _, err := env.Connect(ctx)
 	if err != nil {

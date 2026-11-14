@@ -206,6 +206,12 @@ type Dispatcher struct {
 
 	// questions holds the blocked `tool ask` calls, keyed by thread and question.
 	questions *questionBroker
+
+	// schedMu guards the thread scheduler's index: which threads are waiting
+	// on which dependencies, and which have a trigger turn being started.
+	schedMu     sync.Mutex
+	schedArmed  map[contracts.ThreadID]map[contracts.ThreadID]bool
+	schedFiring map[contracts.ThreadID]bool
 }
 
 // NewDispatcher constructs a dispatcher.
@@ -308,7 +314,7 @@ func threadStates(
 }
 
 // maxSummaryPromptRunes bounds the searchable prompt in the thread list: the
-// openers are short, and the list is shipped whole on every recency change.
+// openers are short, and the list is shipped whole on every state change.
 const maxSummaryPromptRunes = 200
 
 // firstUserPrompt returns the thread's first human message, truncated to the
@@ -342,8 +348,11 @@ type ThreadSummary struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 	Messages    int       `json:"messages"`
 	Agents      int       `json:"agents"`
-	AutoMode    bool      `json:"autoMode"`
-	Archived    bool      `json:"archived"`
+	// Harness is the provider of a solo thread's only agent, so the sidebar
+	// row can carry the same harness tint as the graph node. Empty otherwise.
+	Harness  contracts.Harness `json:"harness,omitempty"`
+	AutoMode bool              `json:"autoMode"`
+	Archived bool              `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
 	// Owner records who started the thread; absent means user (pre-change logs).
@@ -351,17 +360,38 @@ type ThreadSummary struct {
 	Worktree *contracts.WorktreeRef `json:"worktree,omitempty"`
 	Draft    bool                   `json:"draft,omitempty"`
 	Issue    *contracts.IssueRef    `json:"issue,omitempty"`
+	// SoloRuntime is the thread's solo override; nil means orchestrator mode.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
 
 	// Staleness is derived: a thread with running agents never goes stale.
 	RunningAgents     int  `json:"runningAgents"`
 	StaleAfterSeconds int  `json:"staleAfterSeconds"`
 	Stale             bool `json:"stale"`
 
+	// Waiting is the thread's armed schedule, nil once it fired or was
+	// cancelled; TriggeredFrom records what fired the last scheduled turn.
+	Waiting       *contracts.ScheduleSpec `json:"waiting,omitempty"`
+	TriggeredFrom []contracts.ThreadID    `json:"triggeredFrom,omitempty"`
+	// ControlledBy names the thread that controls this one; empty means the
+	// user runs it.
+	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
 	// LastSeenAt is when a user last opened the thread; nil is never. A pointer
 	// keeps the zero time off the wire for never-viewed threads.
 	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
 	// Unseen is derived: the newest completed turn ended after the last view.
 	Unseen bool `json:"unseen"`
+}
+
+// soleHarness names the harness of a thread's only agent, or "" when the
+// thread has zero or several agents.
+func soleHarness(st *domain.ThreadState) contracts.Harness {
+	if len(st.Agents) != 1 {
+		return ""
+	}
+	for _, a := range st.Agents {
+		return a.Harness
+	}
+	return ""
 }
 
 // AgentView pairs an agent with its accumulated usage.
@@ -414,6 +444,14 @@ type (
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
+		Harness  contracts.Harness  `json:"harness,omitempty"`
+		Model    string             `json:"model,omitempty"`
+		Variant  string             `json:"variant,omitempty"`
+	}
+	// setSoloParams sets or clears a thread's solo runtime. An empty Harness
+	// clears it: the decider and projector define that semantics.
+	setSoloParams struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
 		Harness  contracts.Harness  `json:"harness,omitempty"`
 		Model    string             `json:"model,omitempty"`
 		Variant  string             `json:"variant,omitempty"`
@@ -1054,7 +1092,6 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := make([]ThreadSummary, 0, len(ids))
 		staleAfter := defaultStaleAfterSeconds
 		if d.settings != nil {
 			staleAfter = d.settings.StaleAfterMinutes() * 60
@@ -1063,6 +1100,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.engine != nil {
 			now = d.engine.Now()
 		}
+		type summaryRow struct {
+			summary   ThreadSummary
+			createdAt time.Time
+		}
+		rows := make([]summaryRow, 0, len(ids))
 		for _, id := range ids {
 			st, err := d.engine.State(ctx, id)
 			if err != nil {
@@ -1081,24 +1123,34 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ended := st.LastTurnEndedAt()
 			unseen := running == 0 && !ended.IsZero() &&
 				(st.LastSeenAt == nil || ended.After(*st.LastSeenAt))
-			out = append(out, ThreadSummary{
-				ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
-				FirstPrompt: firstUserPrompt(st),
-				Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
-				ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
-				Draft: st.Draft, Issue: st.Issue,
-				RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
-				LastSeenAt: st.LastSeenAt, Unseen: unseen,
+			rows = append(rows, summaryRow{
+				summary: ThreadSummary{
+					ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
+					FirstPrompt: firstUserPrompt(st),
+					Messages:    len(st.Messages), Agents: len(st.Agents), Harness: soleHarness(st),
+					AutoMode: st.AutoMode, Archived: st.Archived,
+					ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
+					Draft: st.Draft, Issue: st.Issue, SoloRuntime: st.SoloRuntime,
+					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
+					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+					LastSeenAt: st.LastSeenAt, Unseen: unseen,
+				},
+				createdAt: st.CreatedAt,
 			})
 		}
-		// The thread list is a recency list: newest activity first. Event stores
-		// may enumerate files in any order, so sort explicitly.
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
-				return out[i].ID < out[j].ID
+		// The thread list is ordered by submission time, newest first: a
+		// thread keeps its slot while it runs. Event stores may enumerate files
+		// in any order, so it sorts explicitly.
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].createdAt.Equal(rows[j].createdAt) {
+				return rows[i].summary.ID < rows[j].summary.ID
 			}
-			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+			return rows[i].createdAt.After(rows[j].createdAt)
 		})
+		out := make([]ThreadSummary, len(rows))
+		for i, r := range rows {
+			out[i] = r.summary
+		}
 		return out, nil
 
 	case "thread.get":
@@ -1204,6 +1256,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+		}
+		if st.SoloRuntime != nil {
+			return nil, errors.New("turn solo mode off to submit review comments")
 		}
 		var pending []contracts.ReviewCommentAdded
 		var ids []string
@@ -1479,9 +1534,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: p.ThreadID, Archived: &p.Enabled,
-		}); err != nil {
+		if err := d.setArchived(ctx, p.ThreadID, p.Enabled); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -1537,6 +1590,21 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			ID: d.nextID(), Type: contracts.CmdLeadRuntimeSet, ThreadID: p.ThreadID,
 			LeadRuntime: &contracts.LeadRuntimeSet{
 				Index:   p.Index,
+				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
+			},
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setSolo":
+		var p setSoloParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdSoloRuntimeSet, ThreadID: p.ThreadID,
+			SoloRuntime: &contracts.SoloRuntimeSet{
 				Runtime: contracts.LeadRuntime{Harness: p.Harness, Model: p.Model, Variant: p.Variant},
 			},
 		}); err != nil {
@@ -1605,6 +1673,35 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}); err != nil {
 			return nil, err
 		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.schedule":
+		var p struct {
+			ThreadID  contracts.ThreadID   `json:"threadId"`
+			DependsOn []contracts.ThreadID `json:"dependsOn"`
+			Prompt    string               `json:"prompt"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.armSchedule(ctx, p.ThreadID, p.DependsOn, p.Prompt); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.unschedule":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadScheduleCancel, ThreadID: p.ThreadID,
+		}); err != nil {
+			return nil, err
+		}
+		// The disarmed thread leaves the scheduler's index now rather than on
+		// the event, which a busy channel could drop.
+		d.scheduleForget(p.ThreadID)
 		return map[string]any{"ok": true}, nil
 
 	case "agents.list":
@@ -2399,6 +2496,24 @@ func (d *Dispatcher) threadBusy(id contracts.ThreadID, st *domain.ThreadState) b
 // check and the dispatch can still get the delete refused, leaving the thread
 // with its worktree already gone. The window is one engine round-trip. Closing it
 // would need worktree removal inside the decider, which the engine does not do.
+// setArchived archives or restores a thread. Archiving a busy thread is refused
+// with the same message delete uses, so the user sees what to do. The decider
+// still enforces the rule for races that land after this check.
+func (d *Dispatcher) setArchived(ctx context.Context, id contracts.ThreadID, archived bool) error {
+	if archived {
+		st, err := d.engine.State(ctx, id)
+		if err != nil {
+			return err
+		}
+		if st.Exists && d.threadBusy(id, st) {
+			return fmt.Errorf("%w: thread %q is running; stop it first", domain.ErrInvalidCommand, id)
+		}
+	}
+	return d.engine.Dispatch(ctx, contracts.Command{
+		ID: d.nextID(), Type: contracts.CmdArchiveSet, ThreadID: id, Archived: &archived,
+	})
+}
+
 func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, removeWorktree bool) error {
 	st, err := d.engine.State(ctx, id)
 	if err != nil {
@@ -2415,9 +2530,17 @@ func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, re
 			return err
 		}
 	}
-	return d.engine.Dispatch(ctx, contracts.Command{
+	if err := d.engine.Dispatch(ctx, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
-	})
+	}); err != nil {
+		return err
+	}
+	// The tombstone landed, so its claim on the threads it controlled cannot
+	// be honest anymore: release them. The scan is engine-wide, like the
+	// scheduler's index maintenance — the decider, which sees one thread at
+	// a time, has no way to notice the controller is gone.
+	d.releaseControlledThreads(ctx, id)
+	return nil
 }
 
 func (d *Dispatcher) projectList(ctx context.Context) []ProjectView {

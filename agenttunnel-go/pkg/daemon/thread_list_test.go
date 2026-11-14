@@ -8,23 +8,31 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
-func TestThreadListSortsByLastUpdated(t *testing.T) {
+func TestThreadListSortsBySubmissionTime(t *testing.T) {
 	d := newTestDaemon(t)
 	c, _ := dialWS(t, d)
 
 	now := time.Unix(1_700_000_000, 0).UTC()
 	d.Engine.SetClock(func() time.Time { return now })
 
-	var older, newer struct {
+	var older, newer, draft struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 	}
 	json.Unmarshal(call(t, c, "1", "thread.create", map[string]any{"title": "older"}), &older)
+	// The first durable command materializes "older" right away, as when a
+	// user starts a thread and prompts it immediately: its submission time is
+	// pinned at its creation.
+	call(t, c, "2", "thread.rename", map[string]any{
+		"threadId": older.ThreadID, "title": "older",
+	})
 	now = now.Add(time.Minute)
-	json.Unmarshal(call(t, c, "2", "thread.create", map[string]any{"title": "newer"}), &newer)
+	json.Unmarshal(call(t, c, "3", "thread.create", map[string]any{"title": "newer"}), &newer)
+	now = now.Add(time.Minute)
+	json.Unmarshal(call(t, c, "4", "thread.create", map[string]any{"title": "draft", "draft": true}), &draft)
 
-	// Touching the older thread makes it the most recently updated one.
+	// Touching the older thread bumps its activity without moving its slot.
 	now = now.Add(time.Minute)
-	call(t, c, "3", "thread.rename", map[string]any{
+	call(t, c, "5", "thread.rename", map[string]any{
 		"threadId": older.ThreadID, "title": "older updated",
 	})
 
@@ -33,17 +41,23 @@ func TestThreadListSortsByLastUpdated(t *testing.T) {
 		Title     string             `json:"title"`
 		UpdatedAt time.Time          `json:"updatedAt"`
 	}
-	json.Unmarshal(call(t, c, "4", "thread.list", nil), &list)
-	if len(list) != 2 {
-		t.Fatalf("threads = %+v, want 2", list)
+	json.Unmarshal(call(t, c, "6", "thread.list", nil), &list)
+	if len(list) != 3 {
+		t.Fatalf("threads = %+v, want 3", list)
 	}
-	if list[0].ID != older.ThreadID || list[1].ID != newer.ThreadID {
-		t.Fatalf("thread order = [%s, %s], want older updated first", list[0].Title, list[1].Title)
+	// Submission order, newest first: the rename must not move "older".
+	wantOrder := []string{"draft", "newer", "older updated"}
+	for i, title := range wantOrder {
+		if list[i].Title != title {
+			t.Fatalf("thread order = [%s, %s, %s], want %v", list[0].Title, list[1].Title, list[2].Title, wantOrder)
+		}
 	}
-	if !list[0].UpdatedAt.Equal(now) {
-		t.Fatalf("older updatedAt = %s, want %s", list[0].UpdatedAt, now)
+	// Staleness still reflects activity: the renamed thread's updatedAt is
+	// the touch, the untouched one's stays at its creation.
+	if !list[2].UpdatedAt.Equal(now) {
+		t.Fatalf("older updatedAt = %s, want %s", list[2].UpdatedAt, now)
 	}
-	if want := now.Add(-time.Minute); !list[1].UpdatedAt.Equal(want) {
+	if want := now.Add(-2 * time.Minute); !list[1].UpdatedAt.Equal(want) {
 		t.Fatalf("newer updatedAt = %s, want %s", list[1].UpdatedAt, want)
 	}
 }

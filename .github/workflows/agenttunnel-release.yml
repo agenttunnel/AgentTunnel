@@ -124,9 +124,14 @@ jobs:
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev
       - name: Build frontend
         working-directory: agenttunnel-go/desktop/frontend
+        shell: bash
         run: |
           npm ci
           npm run build
+          # Mirror the SPA into the daemon's embed dir so the "Build Go
+          # binaries" step below embeds the real assets.
+          mkdir -p ../../internal/webui/dist
+          cp -R dist/. ../../internal/webui/dist/
       - name: Build Go binaries
         working-directory: agenttunnel-go
         shell: bash

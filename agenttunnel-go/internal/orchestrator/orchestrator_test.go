@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -307,5 +308,28 @@ func TestOrchestratorPromptCarriesPeerMessages(t *testing.T) {
 	}
 	if plain := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "do the thing", Pass: 1}); strings.Contains(plain, "Peer messages") {
 		t.Fatalf("empty peer messages should render no section:\n%s", plain)
+	}
+}
+
+// A lead's wildcard dispatch mints a task that carries its brief. Calls that
+// differ only in brief are distinct work, so both survive the pass's dedupe.
+func TestWildcardDispatchMintsTaskWithBrief(t *testing.T) {
+	r, _, _ := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	r.settings.SetExperimentalRoles(true)
+	for _, brief := range []string{"Count the Go files.", "Count the Markdown files."} {
+		r.tools.Post("t1", toolbox.Call{
+			Kind: toolbox.KindDispatch, AgentID: "agent-orchestrator",
+			Role: contracts.RoleWildcard, Name: "counter", Brief: brief, Task: "count",
+		})
+	}
+
+	tasks := New(r).toolTasks(context.Background(), "t1", "agent-orchestrator", nil, nil)
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %+v, want two distinct wildcard tasks", tasks)
+	}
+	for i, want := range []string{"Count the Go files.", "Count the Markdown files."} {
+		if tasks[i].Role != contracts.RoleWildcard || tasks[i].Brief != want || tasks[i].Task != "count" {
+			t.Fatalf("task %d = %+v, want brief %q", i, tasks[i], want)
+		}
 	}
 }
