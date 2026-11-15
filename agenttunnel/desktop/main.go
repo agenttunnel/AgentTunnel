@@ -11,6 +11,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -27,7 +28,9 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	clientprefs "github.com/agenttunnel/agenttunnel-go/internal/prefs"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolcli"
+	"github.com/agenttunnel/agenttunnel-go/internal/webui"
 	"github.com/agenttunnel/agenttunnel-go/pkg/daemon"
 )
 
@@ -118,7 +121,7 @@ func runAttached(state string, target daemonTarget, dir, thread string) {
 		attached:     true,
 	}
 	// Closing the window ends this shell; the external daemon keeps running.
-	app := newApp(conn, state, true, nil)
+	app := newApp(conn, state, true, nil, clientprefs.FetchFunc(target.httpURL, target.token))
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -191,7 +194,7 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir, thread
 			return
 		}
 		go a.Quit()
-	})
+	}, d.Prefs.Snapshot)
 	appRef.Store(app)
 	// Cmd+Q terminates the app outright; only a bare window close is the
 	// "leave it running" case, so remember the difference.
@@ -247,13 +250,32 @@ func (c shellConn) payload() map[string]any {
 	}
 }
 
+// clientAssets serves the embedded SPA. The index is seeded with the saved
+// client preferences before the app's scripts run, so the window opens with
+// the theme and layout chosen on any client. Every other asset is served by
+// Wails as before.
+func clientAssets(saved webui.PrefsFunc) http.Handler {
+	files := application.AssetFileServerFS(assets)
+	// `all:frontend/dist` guarantees the directory exists, so fs.Sub cannot fail.
+	spa, _ := fs.Sub(assets, "frontend/dist")
+	seeded := webui.HandlerFor(spa, saved)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			seeded.ServeHTTP(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
 // newApp creates the window and wires the shell's capability events. A nil
 // onWindowClosing leaves the platform's close behavior alone (attached mode).
-func newApp(conn shellConn, state string, terminateOnClose bool, onWindowClosing func(*application.App)) *application.App {
+// saved supplies the client preferences the page starts from.
+func newApp(conn shellConn, state string, terminateOnClose bool, onWindowClosing func(*application.App), saved webui.PrefsFunc) *application.App {
 	app := application.New(application.Options{
 		Name:        "AgentTunnel",
 		Description: "Multi-agent coding workflow",
-		Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
+		Assets:      application.AssetOptions{Handler: clientAssets(saved)},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: terminateOnClose,
 		},

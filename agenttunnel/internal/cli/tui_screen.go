@@ -50,15 +50,31 @@ func (l *tuiLogLine) rows(width int) []tuiRow {
 		return l.wrapped
 	}
 	text := tuiSanitize(l.text)
-	wrapped := tuiWrap(text, width)
+	gutter := tuiGutter(l.kind)
+	body := max(width-2, 1)
+	wrapped := tuiWrap(text, body)
 	out := make([]tuiRow, len(wrapped))
 	off := 0
 	for i, part := range wrapped {
-		out[i] = styleLogRow(part, off, l.stamp, tuiKindInk(l.kind))
+		out[i] = gutter.join(styleLogRow(part, off, l.stamp, tuiKindInk(l.kind))).fit(width)
 		off += stringCells(part)
 	}
 	l.wrapped, l.wrapW = out, width
 	return out
+}
+
+// tuiGutter is the two cells left of a log row: a colored bar for the kinds
+// that deserve one (tools, errors, reasoning), blank for plain output.
+func tuiGutter(kind string) tuiRow {
+	switch kind {
+	case "tool":
+		return tuiText("┃ ", tuiInk{fg: tuiColAccent2})
+	case "error":
+		return tuiText("┃ ", tuiInk{fg: tuiColErr})
+	case "reasoning":
+		return tuiText("┃ ", tuiInk{fg: tuiColAgent})
+	}
+	return tuiText("  ", tuiInk{})
 }
 
 // styleLogRow paints the stamp part of a wrapped row faint and the rest in ink.
@@ -130,6 +146,10 @@ type tuiModel struct {
 
 	// input is the single-line editor for the thread screen.
 	input []rune
+	// slashSel is the highlighted slash hint; reset whenever the input changes.
+	slashSel int
+	// side is the thread screen's right pane data.
+	side tuiSide
 }
 
 func newTuiModel(now time.Time) *tuiModel {
@@ -392,6 +412,7 @@ func (m *tuiModel) closeQuestion() {
 // typeRune edits the input line.
 func (m *tuiModel) typeRune(r rune) {
 	m.input = append(m.input, r)
+	m.slashSel = 0
 }
 
 // backspace deletes the last typed rune.
@@ -399,6 +420,7 @@ func (m *tuiModel) backspace() {
 	if len(m.input) > 0 {
 		m.input = m.input[:len(m.input)-1]
 	}
+	m.slashSel = 0
 }
 
 // takeInput returns the typed line and clears the editor. The line is what
@@ -407,6 +429,7 @@ func (m *tuiModel) backspace() {
 func (m *tuiModel) takeInput() string {
 	line := strings.TrimSpace(string(m.input))
 	m.input = nil
+	m.slashSel = 0
 	return line
 }
 
@@ -491,7 +514,9 @@ func (m *tuiModel) bodyRows(cols, rows int) []tuiRow {
 // host itself stays on screen at any width that can hold it.
 func (m *tuiModel) headerRow(cols int) tuiRow {
 	bar := tuiInk{bg: tuiColBar}
-	mark := tuiText(" ◆ AgentTunnel ", tuiInk{fg: tuiColAccent, bg: tuiColBar, bold: true})
+	mark := tuiText(" ◆ ", tuiInk{fg: tuiColAccent, bg: tuiColBar, bold: true}).join(
+		tuiText("Agent", tuiInk{fg: tuiColFaint, bg: tuiColBar}),
+		tuiText("Tunnel ", tuiInk{fg: tuiColText, bg: tuiColBar, bold: true}))
 	labels := []tuiRow{m.daemonRow(true)}
 	if m.info.version != "" {
 		labels = append(labels, m.daemonRow(false))
@@ -535,7 +560,7 @@ func (m *tuiModel) headerTabs(mark, right tuiRow, cols int) tuiRow {
 	for _, id := range ids {
 		ink := tuiInk{fg: tuiColDim, bg: tuiColBar}
 		if id == m.view {
-			ink = tuiInk{fg: tuiColText, bg: tuiColSelect, bold: true}
+			ink = tuiInk{fg: tuiColInk, bg: tuiColSelect, bold: true}
 		}
 		row = row.join(tuiText(" "+tuiTabTitle(id)+" ", ink), tuiText(" ", bar))
 	}
@@ -626,38 +651,39 @@ func (m *tuiModel) hints() []tuiHint {
 	if m.screen == tuiScreenThread {
 		return []tuiHint{{"enter", "send"}, {"esc", "back"}, {"pgup/pgdn", "scroll"}, {"ctrl+k", "commands"}, {"ctrl+c", "quit"}}
 	}
-	return []tuiHint{{"↑/↓", "select"}, {"enter", "open"}, {"tab", "views"}, {"r", "refresh"}, {"ctrl+k", "commands"}, {"q", "quit"}}
+	return []tuiHint{{"↑/↓", "select"}, {"enter", "open"}, {"n", "new"}, {"tab", "views"}, {"r", "refresh"}, {"ctrl+k", "commands"}, {"q", "quit"}}
 }
 
-// renderList draws the thread list in a box, one row per visible thread.
+// renderList draws the thread list the way opencode's session picker looks: a
+// quiet heading, then one row per thread with the selected one washed in the
+// primary color. No frame; the rows own the width.
 func (m *tuiModel) renderList(cols, rows int) []tuiRow {
-	boxed := rows >= 3 && cols >= 6
-	innerH, innerW := rows, cols
-	if boxed {
-		innerH, innerW = rows-2, cols-4
+	if rows < 1 || cols < 4 {
+		return fitRows(nil, rows)
 	}
-	var inner []tuiRow
+	innerW := cols - 4
+	heading := tuiText("Threads", tuiInk{fg: tuiColText, bold: true}).
+		join(tuiText(fmt.Sprintf("  %d", len(m.rows)), tuiInk{fg: tuiColFaint}))
+	if m.flash != "" {
+		heading = heading.join(tuiText("  "+m.flash, tuiInk{fg: tuiColAccent, bold: true}))
+	} else if n := m.unreadCount(); n > 0 {
+		heading = heading.join(tuiText(fmt.Sprintf("  %d unread", n), tuiInk{fg: tuiColAccent, bold: true}))
+	}
+	var out []tuiRow
+	if rows >= 6 { // a short terminal spends every row on threads
+		out = []tuiRow{nil, tuiText("  ", tuiInk{}).join(heading).fit(cols)}
+	}
 	switch {
 	case len(m.rows) == 0:
-		inner = []tuiRow{tuiText("no threads yet; start one with `agenttunnel run <template>`", tuiInk{fg: tuiColDim})}
-	case innerH >= 1:
-		visible, base := tuiListWindow(m.rows, m.cursor, innerH)
+		out = append(out, m.homeRows(cols, rows-len(out), "press n to start a thread")...)
+	case rows-len(out) >= 1:
+		visible, base := tuiListWindow(m.rows, m.cursor, rows-len(out))
 		for i, row := range visible {
-			inner = append(inner, m.listRow(row, innerW, base+i == m.cursor))
+			line := m.listRow(row, innerW, base+i == m.cursor)
+			out = append(out, tuiText("  ", tuiInk{}).join(line))
 		}
 	}
-	if !boxed {
-		return fitRows(inner, rows)
-	}
-	title := tuiText("Threads", tuiInk{fg: tuiColText, bold: true}).
-		join(tuiText(fmt.Sprintf(" %d", len(m.rows)), tuiInk{fg: tuiColFaint}))
-	var tail tuiRow
-	if m.flash != "" {
-		tail = tuiText(m.flash, tuiInk{fg: tuiColAccent, bold: true})
-	} else if n := m.unreadCount(); n > 0 {
-		tail = tuiText(fmt.Sprintf("%d unread", n), tuiInk{fg: tuiColAccent, bold: true})
-	}
-	return tuiBox(cols, rows, title, tail, inner)
+	return fitRows(out, rows)
 }
 
 // listRow is one thread: a cursor, a status dot, the ps columns in order, and
@@ -676,7 +702,7 @@ func (m *tuiModel) listRow(row psRow, width int, selected bool) tuiRow {
 	}
 	marker, titleInk := "  ", tuiInk{fg: tuiColText}
 	if selected {
-		marker, titleInk.bold = "> ", true
+		marker, titleInk.bold = "▌ ", true
 	}
 	countInk := tuiInk{fg: tuiColFaint}
 	if row.thread.RunningAgents > 0 {
@@ -701,7 +727,7 @@ func (m *tuiModel) listRow(row psRow, width int, selected bool) tuiRow {
 	}
 	line = line.fit(width).padTo(width, tuiInk{})
 	if selected {
-		line = line.withBG(tuiColSelect)
+		line = line.selected()
 	}
 	return line
 }
@@ -725,14 +751,26 @@ func tuiListWindow(rows []psRow, cursor, height int) ([]psRow, int) {
 	return rows[top : top+height], top
 }
 
-// renderThread draws the thread view: a boxed log pane (its inner bottom holds
-// any pending question and the roster), and the input line pinned last.
+// renderThread draws the thread view the opencode way: a panel title bar, the
+// conversation with quiet gutters instead of a frame, any pending question and
+// the roster, and a panel prompt pinned at the bottom.
 func (m *tuiModel) renderThread(cols, rows int) []tuiRow {
-	boxH := max(rows-1, 0) // the input line sits below the box
-	boxed := boxH >= 3 && cols >= 6
-	innerH, innerW := boxH, cols
-	if boxed {
-		innerH, innerW = boxH-2, cols-4
+	if !m.sideShown(cols, rows) {
+		return m.renderThreadMain(cols, rows)
+	}
+	mainCols := cols - tuiSideWidth
+	return m.withSidebar(m.renderThreadMain(mainCols, rows), mainCols, rows)
+}
+
+func (m *tuiModel) renderThreadMain(cols, rows int) []tuiRow {
+	input := m.inputBox(cols, rows)
+	innerW := max(cols-2, 1)
+	innerH := rows - len(input)
+	if rows >= 6 {
+		innerH-- // the title bar
+	}
+	if innerH < 0 {
+		innerH = 0
 	}
 
 	var tail []tuiRow
@@ -740,54 +778,117 @@ func (m *tuiModel) renderThread(cols, rows int) []tuiRow {
 		tail = questionRows(*m.pending, innerW)
 	}
 	tail = append(tail, m.rosterRow(innerW))
+	tail = append(tail, m.slashRows(innerW)...)
 	if len(tail) > innerH {
 		tail = tail[len(tail)-innerH:]
 	}
-	inner := append(m.logPane(innerW, innerH-len(tail)), tail...)
+	var pane []tuiRow
+	if len(m.log) == 0 && m.pending == nil && m.scroll == 0 {
+		pane = m.homeRows(innerW, innerH-len(tail), "type a message and press enter to start")
+	} else {
+		pane = m.logPane(innerW, innerH-len(tail))
+	}
+	inner := append(pane, tail...)
+	margin := tuiText("  ", tuiInk{})
+	for i := range inner {
+		inner[i] = margin.join(inner[i]).fit(cols).padTo(cols, tuiInk{})
+	}
 
 	var body []tuiRow
-	if boxed {
-		body = tuiBox(cols, boxH, m.threadTitle(), m.threadStatus(), inner)
-	} else {
-		body = fitRows(inner, boxH)
+	if rows >= 6 {
+		body = append(body, m.threadBar(cols))
 	}
-	return append(body, m.inputRow(cols))
+	body = append(body, fitRows(inner, innerH)...)
+	return append(body, input...)
 }
 
-// threadTitle is the box's top-left label: the thread id, its title, and its project.
+// homeRows is the empty-state home, opencode style: the wordmark centered a
+// little above the middle of the pane, with one quiet tip under it.
+func (m *tuiModel) homeRows(width, height int, tip string) []tuiRow {
+	if height < 1 {
+		return nil
+	}
+	lines := []tuiRow{
+		tuiText("◆ ", tuiInk{fg: tuiColAccent, bold: true}).join(
+			tuiText("Agent", tuiInk{fg: tuiColFaint, bold: true}),
+			tuiText("Tunnel", tuiInk{fg: tuiColText, bold: true})),
+		tuiText("bring your own subscription", tuiInk{fg: tuiColFaint}),
+		nil,
+		tuiText(tip, tuiInk{fg: tuiColDim}),
+	}
+	if height < len(lines) {
+		lines = lines[len(lines)-1:]
+	}
+	top := max((height-len(lines))/2-1, 0)
+	out := make([]tuiRow, 0, height)
+	for i := 0; i < top; i++ {
+		out = append(out, nil)
+	}
+	for _, l := range lines {
+		pad := max((width-l.width())/2, 0)
+		out = append(out, tuiText(strings.Repeat(" ", pad), tuiInk{}).join(l).fit(width))
+	}
+	return fitRows(out, height)
+}
+
+// threadBar is the panel row over the conversation: the title, the project,
+// and the status at the right edge.
+func (m *tuiModel) threadBar(cols int) tuiRow {
+	bar := tuiInk{bg: tuiColBar}
+	right := m.threadStatus().withBG(tuiColBar).join(tuiText(" ", bar))
+	left := tuiText(" ", bar).join(m.threadTitle().withBG(tuiColBar))
+	if cols <= right.width()+2 {
+		return left.fit(cols).padTo(cols, bar)
+	}
+	left = left.fit(cols - right.width() - 1)
+	return left.padTo(cols-right.width(), bar).join(right)
+}
+
+// threadTitle is the bar's left label: the title, then the project and id.
 func (m *tuiModel) threadTitle() tuiRow {
 	title := m.thread.Title
 	if title == "" {
 		title = "(untitled)"
 	}
-	return tuiText(shortThreadID(m.thread.ID), tuiInk{fg: tuiColDim}).join(
-		tuiText(fmt.Sprintf(" %q", title), tuiInk{fg: tuiColText, bold: true}),
-		tuiText(" · "+m.project, tuiInk{fg: tuiColDim}),
+	return tuiText(title, tuiInk{fg: tuiColText, bold: true}).join(
+		tuiText("  "+m.project, tuiInk{fg: tuiColDim}),
+		tuiText("  "+shortThreadID(m.thread.ID), tuiInk{fg: tuiColFaint}),
 	)
 }
 
-// threadStatus is the box's top-right label: the status word and agent count.
+// threadStatus is the bar's right label: the status word and agent count.
 func (m *tuiModel) threadStatus() tuiRow {
 	status := threadRowStatus(m.thread)
-	return tuiText(status, tuiStatusInk(status)).join(
-		tuiText(fmt.Sprintf(" (%d/%d agents)", m.thread.RunningAgents, m.thread.Agents), tuiInk{fg: tuiColDim}),
+	return tuiText("● ", tuiStatusInk(status)).join(
+		tuiText(status, tuiStatusInk(status)),
+		tuiText(fmt.Sprintf("  %d/%d agents", m.thread.RunningAgents, m.thread.Agents), tuiInk{fg: tuiColDim}),
 	)
 }
 
-// inputRow is the prompt line: "> " for a turn or steer, "? " when a question
-// owns the line, plus a note when the log is scrolled. A line past the width
-// keeps its tail — the user types at the end — so the command's head is cut
-// to an ellipsis instead.
-func (m *tuiModel) inputRow(cols int) tuiRow {
-	prompt, ink := "> ", tuiInk{fg: tuiColAccent, bold: true}
+// inputBox is the prompt: a panel block with a colored left gutter, a padding
+// row above and below, and a caret after the typed text. A question owns the
+// prompt in the warning color. Too short a screen gets the bare line.
+func (m *tuiModel) inputBox(cols, rows int) []tuiRow {
+	gutterInk, prompt := tuiInk{fg: tuiColAccent, bg: tuiColBar}, ""
 	if m.pending != nil {
-		prompt, ink = "? ", tuiInk{fg: tuiColWarn, bold: true}
+		gutterInk, prompt = tuiInk{fg: tuiColWarn, bg: tuiColBar}, "? "
 	}
-	row := tuiText(prompt, ink).join(tuiText(string(m.input), tuiInk{fg: tuiColText}))
+	bar := tuiInk{bg: tuiColBar}
+	// The caret trails the typed text, ahead of the scroll note.
+	text := tuiText(prompt, tuiInk{fg: tuiColWarn, bg: tuiColBar, bold: true}).
+		join(tuiText(string(m.input), tuiInk{fg: tuiColText, bg: tuiColBar}),
+			tuiText("▌", tuiInk{fg: tuiColAccent, bg: tuiColBar}))
 	if !m.following() {
-		row = row.join(tuiText(fmt.Sprintf("  (scrolled %d up)", m.scroll), tuiInk{fg: tuiColDim}))
+		text = text.join(tuiText(fmt.Sprintf("  (scrolled %d up)", m.scroll), tuiInk{fg: tuiColFaint, bg: tuiColBar}))
 	}
-	return row.tail(cols)
+	// tail keeps the caret side on screen when the line is long.
+	line := func(content tuiRow) tuiRow {
+		return tuiText("┃ ", gutterInk).join(content.tail(cols-2)).padTo(cols, bar)
+	}
+	if rows < 8 {
+		return []tuiRow{line(text)}
+	}
+	return []tuiRow{line(nil), line(text), line(nil)}
 }
 
 // logPane picks the displayed log rows. Stored lines wrap to the pane width;

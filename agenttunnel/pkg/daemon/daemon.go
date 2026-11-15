@@ -16,6 +16,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/prefs"
 	"github.com/agenttunnel/agenttunnel-go/internal/providers"
 	relayclient "github.com/agenttunnel/agenttunnel-go/internal/relay"
 	"github.com/agenttunnel/agenttunnel-go/internal/remote"
@@ -60,6 +61,7 @@ type Daemon struct {
 	Ledger   *usage.Ledger
 	Logs     *logstore.Store
 	Settings *settings.Store
+	Prefs    *prefs.Store
 	Actions  *actionlog.Logger
 	Relay    *relayclient.Client
 	Remote   *remote.Bridge
@@ -145,6 +147,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 
 	// Image attachments live under the state dir, one directory per thread.
 	attachStore := attachments.New(filepath.Join(opts.StateDir, "attachments"))
+	prefsStore := prefs.Open(filepath.Join(opts.StateDir, "prefs.json"))
 
 	runner := orchestrator.NewRunner(orchestrator.Deps{
 		Engine:    eng,
@@ -267,6 +270,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	srv := transport.NewServer(disp, eng, runner, opts.Token, box, attachStore)
+	srv.SetPrefs(prefsStore)
 	// Status changes are pushed to every client, so a QR that appears after the
 	// connect reply still reaches the window that asked for it.
 	disp.SetRemoteNotifier(func(st transport.RemoteStatus) {
@@ -288,6 +292,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Ledger:   ledger,
 		Logs:     logs,
 		Settings: store,
+		Prefs:    prefsStore,
 		Actions:  actions,
 		Relay:    relay,
 		Remote:   bridge,

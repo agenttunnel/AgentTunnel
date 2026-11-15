@@ -55,6 +55,37 @@ cd agenttunnel/desktop
 The version is embedded at link time (`-X main.version=…`). Check it with
 `atd --version` or `agenttunnel --version`; local builds report `dev`.
 
+### Update
+
+- **Desktop app:** when a newer release exists, an **Update to vX.Y.Z** button
+  appears in the titlebar. Click it, then restart AgentTunnel to run the new build.
+- **Daemon and CLI:** `atd update --check` reports whether a newer release is
+  available. `atd update` installs it after a prompt (`atd update -y` skips the
+  prompt). Restart `atd` to run it. A daemon that is already running keeps the
+  old build until it restarts.
+- **Re-run the installer:** the install command below installs the latest tagged
+  release over the existing one. Pin a version with `AGENTTUNNEL_VERSION=vX.Y.Z`.
+
+### Uninstall
+
+```
+curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh -s -- --uninstall
+```
+
+From a checkout, run `sh agenttunnel/scripts/install.sh --uninstall`. Quit
+AgentTunnel and any running `atd` first; deleting files does not stop them.
+
+This removes `AgentTunnel.app` (from `~/Applications`, or `/Applications` when the
+installer did not use `AGENTTUNNEL_APP_DIR`) and the `atd`, `agenttunnel`, and
+`agenttunnel-desktop` commands from `~/.local/bin` (or `AGENTTUNNEL_INSTALL_DIR`).
+
+Your threads and settings in `~/.agenttunnel` are kept. To delete them too, which
+cannot be undone:
+
+```
+rm -rf ~/.agenttunnel
+```
+
 ## Build from source
 
 Requires Go (see `agenttunnel/go.mod`) and Node for the desktop frontend.

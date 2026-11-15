@@ -74,6 +74,73 @@ func tuiSlashCommand(line string) (func(m *tuiModel, arg string), string, bool) 
 	return nil, "", false
 }
 
+// slashMatches lists the composer commands the typed "/prefix" could become.
+// It is empty once a space starts the argument, while a question owns the
+// prompt, and for text that is not a slash command.
+func (m *tuiModel) slashMatches() []tuiThreadCommand {
+	line := string(m.input)
+	if m.pending != nil || !strings.HasPrefix(line, "/") || strings.Contains(line, " ") {
+		return nil
+	}
+	var out []tuiThreadCommand
+	for _, cmd := range tuiThreadCommands() {
+		if !cmd.onList && strings.HasPrefix(cmd.name, line[1:]) {
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+// completeSlash fills in the first matching command, plus a space when it
+// takes an argument.
+func (m *tuiModel) completeSlash() {
+	matches := m.slashMatches()
+	if len(matches) == 0 {
+		return
+	}
+	sel := matches[m.slashSel%len(matches)]
+	m.input = []rune("/" + sel.name)
+	m.slashSel = 0
+	if sel.args != "" {
+		m.input = append(m.input, ' ')
+	}
+}
+
+// moveSlash shifts the highlighted hint by d, wrapping, and reports whether
+// hints were showing to take the key.
+func (m *tuiModel) moveSlash(d int) bool {
+	n := len(m.slashMatches())
+	if n == 0 {
+		return false
+	}
+	m.slashSel = ((m.slashSel+d)%n + n) % n
+	return true
+}
+
+// slashRows is the hint list above the prompt: one row per matching command
+// with its usage and description, the highlighted one marked as the tab target.
+func (m *tuiModel) slashRows(width int) []tuiRow {
+	var rows []tuiRow
+	for i, cmd := range m.slashMatches() {
+		usage := "/" + cmd.name
+		if cmd.args != "" {
+			usage += " " + cmd.args
+		}
+		nameInk, mark := tuiInk{fg: tuiColText}, "  "
+		if i == m.slashSel {
+			nameInk, mark = tuiInk{fg: tuiColAccent, bold: true}, "▸ "
+		}
+		rows = append(rows, tuiText(mark, tuiInk{fg: tuiColAccent}).join(
+			tuiText(fmt.Sprintf("%-26s", usage), nameInk),
+			tuiText(strings.TrimPrefix(cmd.title, "Thread: "), tuiInk{fg: tuiColFaint}),
+		).fit(width))
+	}
+	if len(rows) > 0 {
+		rows = append(rows, tuiText("tab complete", tuiInk{fg: tuiColFaint}))
+	}
+	return rows
+}
+
 // tuiHelpLines is the composer's command list, built from the table.
 func tuiHelpLines() []string {
 	lines := []string{"commands:", "  <text>  steer the agents with this message"}

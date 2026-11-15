@@ -1023,6 +1023,9 @@ body.is-resizing * {
   position: sticky;
   top: 0;
   height: 0;
+  /* Above positioned siblings like .msg (position: relative, z-index auto),
+     which otherwise paint over the pill and swallow its clicks. */
+  z-index: 2;
 }
 .scroll-top {
   position: absolute;
@@ -7649,4 +7652,22 @@ button.danger-text {
     transform: rotate(0deg) translateY(0);
     opacity: 1;
   }
+}
+
+/* /vim link hints: labels float over the clickable elements they name. */
+.vim-hints {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+}
+.vim-hint {
+  position: fixed;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }

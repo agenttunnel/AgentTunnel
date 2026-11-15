@@ -30,6 +30,7 @@ export type SlashActions<P extends string> = {
   newThread: () => void;
   saveDefaults: () => void;
   toggleCompact: () => void;
+  toggleVimKeys: () => void;
 };
 
 const CENTER_TABS: { tab: CenterTab; description: string }[] = [
@@ -71,6 +72,7 @@ export function buildCommands<P extends string>(a: SlashActions<P>): SlashComman
       description: "Hide the side panes and top bar for a clean composer",
       run: () => a.toggleCompact(),
     },
+    { name: "vim", description: "Turn Vimium-style keys on or off (f hints, j/k scroll, g/G)", run: () => a.toggleVimKeys() },
     { name: "defaults", description: "Save this view as the default for new threads", run: () => a.saveDefaults() },
     { name: "settings", description: "Open settings", run: () => a.openSettings() },
     { name: "help", description: "Show the how-to sheet", run: () => a.openHelp() },

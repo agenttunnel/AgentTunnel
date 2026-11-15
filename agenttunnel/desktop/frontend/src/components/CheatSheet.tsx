@@ -1,24 +1,17 @@
 import { useEffect, useRef } from "react";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
+import { getPref, removePref, setPref } from "../lib/prefs";
 
 const OPT_OUT_KEY = "at.cheatSheetOptedOut";
 
 /** Whether the user chose "Do not show this again". Private mode reads as not opted out. */
 export function loadCheatSheetOptedOut(): boolean {
-  try {
-    return window.localStorage.getItem(OPT_OUT_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return getPref(OPT_OUT_KEY) === "1";
 }
 
 export function saveCheatSheetOptedOut(optedOut: boolean) {
-  try {
-    if (optedOut) window.localStorage.setItem(OPT_OUT_KEY, "1");
-    else window.localStorage.removeItem(OPT_OUT_KEY);
-  } catch {
-    /* private mode: the opt-out lasts only for this launch */
-  }
+  if (optedOut) setPref(OPT_OUT_KEY, "1");
+  else removePref(OPT_OUT_KEY);
 }
 
 type Panel = { label: string; key: string };
@@ -132,6 +125,13 @@ export function CheatSheet({
               </li>
               <li>
                 <code>/compact</code> toggles the clean composer view.
+              </li>
+              <li>
+                <code>/vim</code> turns on Vimium-style keys outside text fields: <kbd>f</kbd> shows
+                link hints (type a label to click), <kbd>j</kbd>/<kbd>k</kbd> scroll,{" "}
+                <kbd>Ctrl</kbd>+<kbd>D</kbd>/<kbd>U</kbd> scroll half a page, <kbd>g</kbd>/
+                <kbd>G</kbd> jump to the top or bottom, and <kbd>Esc</kbd> leaves the composer. While
+                on, <kbd>F</kbd> no longer opens Files; use <code>/files</code>.
               </li>
               <li>
                 <code>/defaults</code> saves this view for new threads; <code>/settings</code>{" "}

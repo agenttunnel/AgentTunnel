@@ -91,6 +91,7 @@ import {
   loadCheatSheetOptedOut,
   saveCheatSheetOptedOut,
 } from "./components/CheatSheet";
+import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
 import type {
@@ -100,6 +101,7 @@ import type {
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, threadSearchScore, visibleThreadRows } from "./lib/threads";
+import { getPref, setLocalPref, setPref } from "./lib/prefs";
 import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
   buildCommands,
@@ -375,11 +377,7 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
 /** How the project's threads are laid out: the card list or the status board. */
 type ThreadView = "list" | "board";
 function loadThreadView(): ThreadView {
-  try {
-    if (window.localStorage.getItem("at.threadView") === "board") return "board";
-  } catch {
-    /* private mode: default to the list */
-  }
+  if (getPref("at.threadView") === "board") return "board";
   return "list";
 }
 
@@ -444,12 +442,7 @@ const START_VERBS = [
 
 /** The activity log box is shown unless the viewer collapsed it; the choice persists. */
 function loadLogsOpen(): boolean {
-  try {
-    return window.localStorage.getItem("at.logsOpen") !== "false";
-  } catch {
-    /* private mode: default to shown */
-  }
-  return true;
+  return getPref("at.logsOpen") !== "false";
 }
 
 function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
@@ -484,13 +477,13 @@ function mergeThreadStates(
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
   try {
-    const raw = window.localStorage.getItem("at.openProjects");
+    const raw = getPref("at.openProjects");
     if (raw) {
       const ids = JSON.parse(raw) as unknown;
       if (Array.isArray(ids)) return ids.filter((id): id is string => typeof id === "string");
     }
   } catch {
-    /* private mode or corrupt: start with no tabs */
+    /* corrupt: start with no tabs */
   }
   return [];
 }
@@ -765,7 +758,7 @@ function draftKeyOf(projectId: string | null, threadId: string | null): string {
 
 function loadDrafts(): Record<string, string> {
   try {
-    const raw = window.localStorage.getItem("at.drafts");
+    const raw = getPref("at.drafts");
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -775,7 +768,7 @@ function loadDrafts(): Record<string, string> {
       }
     }
   } catch {
-    /* private mode or corrupt: start with no drafts */
+    /* corrupt: start with no drafts */
   }
   return {};
 }
@@ -814,14 +807,14 @@ function dropSnapshotOverlap(snapshot: LiveLine[], buffered: LiveLine[]): LiveLi
 
 function loadAsideTabs(): AsideTabId[] {
   try {
-    const raw = window.localStorage.getItem("at.asideTabs");
+    const raw = getPref("at.asideTabs");
     if (raw) {
       const ids = (JSON.parse(raw) as string[]).filter((id): id is AsideTabId => id in ASIDE_META);
       for (const p of ASIDE_PINNED) if (!ids.includes(p)) ids.unshift(p);
       if (ids.length > 0) return ids;
     }
   } catch {
-    /* private mode or corrupt: fall through to defaults */
+    /* corrupt: fall through to defaults */
   }
   return [...ASIDE_PINNED];
 }
@@ -843,7 +836,7 @@ function loadLayout(): PanelLayout {
     asideOpen: true,
   };
   try {
-    const raw = window.localStorage.getItem("at.layout");
+    const raw = getPref("at.layout");
     if (!raw) return fallback;
     const v = JSON.parse(raw) as Partial<PanelLayout>;
     const width = (n: unknown, b: { min: number; max: number; def: number }) =>
@@ -970,10 +963,10 @@ function useThreadScoped<T>(threadId: string | null, initial: T | (() => T), sto
   const [fallback, setFallback] = useState<T>(() => {
     if (storageKey) {
       try {
-        const raw = window.localStorage.getItem(storageKey);
+        const raw = getPref(storageKey);
         if (raw !== null) return JSON.parse(raw) as T;
       } catch {
-        /* corrupt or private mode: use the built-in default */
+        /* corrupt: use the built-in default */
       }
     }
     return typeof initial === "function" ? (initial as () => T)() : initial;
@@ -985,11 +978,7 @@ function useThreadScoped<T>(threadId: string | null, initial: T | (() => T), sto
   fallbackRef.current = fallback;
   useEffect(() => {
     if (!storageKey) return;
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(fallback));
-    } catch {
-      /* private mode: the default resets next launch */
-    }
+    setPref(storageKey, JSON.stringify(fallback));
   }, [fallback, storageKey]);
   const value = threadId !== null && threadId in byThread ? byThread[threadId] : fallback;
   const set = useCallback((next: T | ((prev: T) => T)) => {
@@ -1179,11 +1168,7 @@ export default function App() {
   const toggleLogs = () => {
     const next = !logsOpen;
     setLogsOpen(next);
-    try {
-      window.localStorage.setItem("at.logsOpen", String(next));
-    } catch {
-      /* private mode: the choice lasts this session */
-    }
+    setPref("at.logsOpen", String(next));
   };
 
   const [tab, setTab, setTabDefault] = useThreadScoped<
@@ -1226,12 +1211,15 @@ export default function App() {
   const scanningWorktrees = useRef(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Appearance is a device preference: saved in localStorage, not daemon state.
+  // Appearance is shared by every client of this daemon through the prefs store.
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
   useEffect(() => applyTheme(theme), [theme]);
   // The how-to sheet opens on every launch unless the user opted out (persisted).
   const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
   const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
+  // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
+  const [vimKeys, setVimKeys] = useState(loadVimKeys);
+  useVimKeys(vimKeys);
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
   // Pasted text per draft: draftKey -> token id -> full text.
   const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
@@ -2195,6 +2183,12 @@ export default function App() {
       rpcRef.current = rpc;
       connRef.current = conn;
       setStatus("online");
+      // A dropped socket must not leave the UI claiming "online" while every
+      // call fails. Say so, and keep the state so a reconnect can resume it.
+      rpc.onClose(() => {
+        setStatus("offline");
+        setError("Lost the connection to the daemon.");
+      });
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
       // Not awaited: a slow GitHub lookup must not hold up startup.
@@ -2439,19 +2433,15 @@ export default function App() {
           .map(([k, v]) => [k, expandPastes(v, pastes[k])] as const)
           .filter(([, v]) => v !== ""),
       );
-      window.localStorage.setItem("at.drafts", JSON.stringify(kept));
+      setLocalPref("at.drafts", JSON.stringify(kept));
     } catch {
-      /* private mode: stay in memory */
+      /* stay in memory */
     }
   }, [drafts, pastes]);
 
   // Remember which projects are open as tabs.
   useEffect(() => {
-    try {
-      window.localStorage.setItem("at.openProjects", JSON.stringify(openProjectIds));
-    } catch {
-      /* private mode: stay in memory */
-    }
+    setPref("at.openProjects", JSON.stringify(openProjectIds));
   }, [openProjectIds]);
 
   // Drop tabs whose project was removed elsewhere (settings, another window).
@@ -2491,8 +2481,9 @@ export default function App() {
       }
       if (t instanceof HTMLElement && t.isContentEditable) return;
       // F opens the Files center tab; the aside letters below come from ASIDE_META.
+      // With /vim on, F is the link-hint key instead (Files stays on /files).
       if (e.key.toLowerCase() === "f") {
-        setTab("files");
+        if (!vimKeys) setTab("files");
         return;
       }
       const id = (Object.keys(ASIDE_META) as AsideTabId[]).find(
@@ -2502,7 +2493,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openPanel, cheatSheetOpen, setTab]);
+  }, [activeId, openPanel, cheatSheetOpen, setTab, vimKeys]);
 
   // While an agent is open in the detail panel, poll its log.
   useEffect(() => {
@@ -2679,11 +2670,7 @@ export default function App() {
   const [threadView, setThreadViewState] = useState<ThreadView>(loadThreadView);
   const setThreadView = (view: ThreadView) => {
     setThreadViewState(view);
-    try {
-      window.localStorage.setItem("at.threadView", view);
-    } catch {
-      /* not persisted: the choice lasts this session */
-    }
+    setPref("at.threadView", view);
   };
   const [threadStates, setThreadStates] = useState<Record<string, BoardThreadState>>({});
   // The Worktrees tab carries this count so a merged PR is visible without
@@ -3400,6 +3387,11 @@ export default function App() {
       newThread: () => newThread(),
       saveDefaults: () => saveThreadDefaults(),
       toggleCompact: () => setCompact((v) => !v),
+      toggleVimKeys: () => {
+        const next = !vimKeys;
+        saveVimKeys(next);
+        setVimKeys(next);
+      },
     });
   const slashQ = slashQuery(input);
   const slashMatches: SlashCommand[] =
