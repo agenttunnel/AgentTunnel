@@ -99,6 +99,11 @@ export function CheatSheet({
                 Hold <kbd>{HOLD_MOD_LABEL}</kbd>+
                 <kbd>T</kbd> to dictate; release to insert the text.
               </li>
+              <li>
+                <kbd>{HOLD_MOD_LABEL}</kbd>+<kbd>S</kbd> or <code>/compact</code> hides the side
+                panes and the top bar for a clean composer window; press either again to bring
+                everything back.
+              </li>
             </ul>
           </section>
 
@@ -120,6 +125,9 @@ export function CheatSheet({
               </li>
               <li>
                 <code>/stop</code> stops the running turn; <code>/new</code> starts a thread.
+              </li>
+              <li>
+                <code>/compact</code> toggles the clean composer view.
               </li>
               <li>
                 <code>/defaults</code> saves this view for new threads; <code>/settings</code>{" "}

@@ -1178,6 +1178,9 @@ export default function App() {
     loadLayout,
     "at.layout",
   );
+  // Compact mode is a focus view, not a layout choice: it lasts this session
+  // and drops the titlebar, project tabs, and side panes (Cmd/Ctrl+S).
+  const [compact, setCompact] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -3393,6 +3396,7 @@ export default function App() {
       stopTurn: () => stopTurn(),
       newThread: () => newThread(),
       saveDefaults: () => saveThreadDefaults(),
+      toggleCompact: () => setCompact((v) => !v),
     });
   const slashQ = slashQuery(input);
   const slashMatches: SlashCommand[] =
@@ -3439,6 +3443,22 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // Cmd/Ctrl+S toggles compact mode on the thread screen. The files editor
+  // claims this keystroke for saving (it calls preventDefault), so editing
+  // still saves instead of flipping the layout. Preventing the default also
+  // stops the browser's Save Page dialog in the web build, where the same
+  // keystroke belongs to the page rather than a native menu.
+  useEffect(() => {
+    if (!projectId || !activeId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return;
+      if (e.key.toLowerCase() !== "s") return;
+      e.preventDefault();
+      setCompact((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [projectId, activeId]);
   // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
   useLayoutEffect(() => {
     const el = taRef.current;
@@ -4311,6 +4331,7 @@ export default function App() {
         busy,
         autoMode: !!thread?.autoMode,
         peerMailbox: !!thread?.peerMailbox,
+        compact,
         panels: ASIDE_META,
         pinned: ASIDE_PINNED,
         isPanelOpen: (id) => asideTabs.includes(id),
@@ -4324,6 +4345,7 @@ export default function App() {
         stopTurn: () => stopTurn(),
         toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
         togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
+        toggleCompact: () => setCompact((v) => !v),
         goToWorktrees: () => showHome("worktrees"),
       }),
     );
@@ -5062,7 +5084,7 @@ export default function App() {
   return (
     <DocLinkContext.Provider value={openChatDoc}>
     <div
-      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}`}
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}`}
       ref={shellRef}
       style={
         {
