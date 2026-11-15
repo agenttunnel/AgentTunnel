@@ -99,8 +99,7 @@ import type {
 } from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
-import { arrangeThreads, visibleThreadRows } from "./lib/threads";
-import { fuzzyScore } from "./lib/fuzzy";
+import { arrangeThreads, threadSearchScore, visibleThreadRows } from "./lib/threads";
 import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
   buildCommands,
@@ -121,7 +120,7 @@ import {
   type PaletteSection,
 } from "./lib/palette";
 import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
-import { SuperView } from "./components/SuperView";
+import { SuperView, isAllThreadsShortcut } from "./components/SuperView";
 import { TERMINAL } from "./lib/graphEvents";
 import { ThreadImage } from "./components/ThreadImage";
 import { MasterChat } from "./components/MasterChat";
@@ -280,16 +279,6 @@ export type ThreadSummary = {
   controlledBy?: string;
 };
 
-// A prompt hit must be stronger than a title hit to win, so a thread whose
-// title matches leads a thread that only mentions the query in its prompt.
-const PROMPT_WEIGHT = 0.7;
-
-function threadSearchScore(t: ThreadSummary, query: string): number | null {
-  const title = fuzzyScore(query, t.title);
-  const prompt = t.firstPrompt ? fuzzyScore(query, t.firstPrompt) : null;
-  if (title === null && prompt === null) return null;
-  return Math.max(title ?? -Infinity, (prompt ?? -Infinity) * PROMPT_WEIGHT);
-}
 export type Project = { id: string; name: string; path: string; threads: number };
 
 /** The top-level pages shown when no project is open. */
@@ -3340,6 +3329,20 @@ export default function App() {
   // finished-but-unseen / quiet. Rides the existing 4s thread.list poll.
   const [superViewOpen, setSuperViewOpen] = useState(false);
 
+  // Option+Tab (Alt+Tab elsewhere) opens the all-threads view from anywhere.
+  // While it is open, SuperView owns the same chord to step through rows, and
+  // releasing the modifier leaves the overlay open.
+  useEffect(() => {
+    if (superViewOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!isAllThreadsShortcut(e)) return;
+      e.preventDefault();
+      setSuperViewOpen(true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [superViewOpen]);
+
   /** Asks the daemon a side question. It runs beside any running turn: no turn
    * slot, no steer, no message. Only the newest ask on a thread may settle. */
   const askBtw = (question: string) => {
@@ -4394,6 +4397,7 @@ export default function App() {
     <SuperView
       threads={threads}
       projects={projects}
+      initialThreadId={activeId}
       onOpen={(t) => {
         setSuperViewOpen(false);
         // A row click always clears the unseen badge, even for the thread

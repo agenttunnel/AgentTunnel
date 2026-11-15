@@ -104,6 +104,10 @@ export function CheatSheet({
                 panes and the top bar for a clean composer window; press either again to bring
                 everything back.
               </li>
+              <li>
+                <kbd>Option</kbd>/<kbd>Alt</kbd>+<kbd>Tab</kbd> opens All threads;
+                press <kbd>Tab</kbd> again to step through the list.
+              </li>
             </ul>
           </section>
 
