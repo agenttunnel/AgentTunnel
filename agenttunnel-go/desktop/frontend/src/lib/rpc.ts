@@ -35,6 +35,7 @@ export class Rpc {
   private handlers = new Set<ThreadEventHandler>();
   private appOpenHandlers = new Set<AppOpenHandler>();
   private notificationHandlers = new Set<NotificationHandler>();
+  private closeHandlers = new Set<() => void>();
 
   constructor(private readonly conn: Conn) {}
 
@@ -42,10 +43,35 @@ export class Rpc {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`${this.conn.wsUrl}?token=${encodeURIComponent(this.conn.token)}`);
       this.ws = ws;
-      ws.onopen = () => resolve();
-      ws.onerror = () => reject(new Error("Could not connect to the daemon"));
+      let opened = false;
+      ws.onopen = () => {
+        opened = true;
+        resolve();
+      };
+      ws.onerror = () => {
+        if (!opened) reject(new Error("Could not connect to the daemon"));
+      };
       ws.onmessage = (ev) => this.onMessage(String(ev.data));
+      ws.onclose = () => {
+        if (this.ws !== ws) return;
+        this.ws = undefined;
+        // Calls in flight on this socket will never get a reply; reject them
+        // so their callers settle instead of waiting forever.
+        const lost = new Error("Lost the connection to the daemon");
+        const pending = [...this.pending.values()];
+        this.pending.clear();
+        pending.forEach((p) => p.reject(lost));
+        if (opened) this.closeHandlers.forEach((h) => h());
+      };
     });
+  }
+
+  /** onClose fires once when an open connection drops, whoever closed it. */
+  onClose(handler: () => void): () => void {
+    this.closeHandlers.add(handler);
+    return () => {
+      this.closeHandlers.delete(handler);
+    };
   }
 
   private onMessage(raw: string) {

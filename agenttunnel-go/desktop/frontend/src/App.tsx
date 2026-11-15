@@ -2195,6 +2195,12 @@ export default function App() {
       rpcRef.current = rpc;
       connRef.current = conn;
       setStatus("online");
+      // A dropped socket must not leave the UI claiming "online" while every
+      // call fails. Say so, and keep the state so a reconnect can resume it.
+      rpc.onClose(() => {
+        setStatus("offline");
+        setError("Lost the connection to the daemon.");
+      });
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
       // Not awaited: a slow GitHub lookup must not hold up startup.
