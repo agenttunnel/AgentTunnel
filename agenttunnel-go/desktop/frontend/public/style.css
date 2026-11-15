@@ -1023,6 +1023,9 @@ body.is-resizing * {
   position: sticky;
   top: 0;
   height: 0;
+  /* Above positioned siblings like .msg (position: relative, z-index auto),
+     which otherwise paint over the pill and swallow its clicks. */
+  z-index: 2;
 }
 .scroll-top {
   position: absolute;
