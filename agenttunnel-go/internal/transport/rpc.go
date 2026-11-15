@@ -278,8 +278,12 @@ type ThreadPR struct {
 
 // ThreadState is what the thread board knows about one thread's worktree.
 type ThreadState struct {
-	PR    *ThreadPR `json:"pr,omitempty"`
-	Dirty bool      `json:"dirty"`
+	PR *ThreadPR `json:"pr,omitempty"`
+	// PRKnown reports whether the forge cache has answered for this worktree.
+	// An absent PR with PRKnown false means "not fetched yet", not "no PR"; the
+	// daily worktree scan waits for it before deciding a checkout has no PR.
+	PRKnown bool `json:"prKnown,omitempty"`
+	Dirty   bool `json:"dirty"`
 }
 
 // threadStates maps each thread with a worktree to its branch PR and dirty flag.
@@ -304,9 +308,12 @@ func threadStates(
 		if dirty, ok := peekDirty(wd); ok {
 			st.Dirty = dirty
 		}
-		if snap, ok := peekPR(wd); ok && snap.Request != nil {
-			r := snap.Request
-			st.PR = &ThreadPR{Number: r.Number, URL: r.URL, State: r.State, Draft: r.Draft, ReviewDecision: r.Review}
+		if snap, ok := peekPR(wd); ok {
+			st.PRKnown = true
+			if snap.Request != nil {
+				r := snap.Request
+				st.PR = &ThreadPR{Number: r.Number, URL: r.URL, State: r.State, Draft: r.Draft, ReviewDecision: r.Review}
+			}
 		}
 		out[id] = st
 	}

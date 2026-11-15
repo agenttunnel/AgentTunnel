@@ -69,7 +69,9 @@ import {
 import { DraftEditor } from "./components/DraftEditor";
 import { HarnessStatsView } from "./components/HarnessStatsPanel";
 import { StatsPage } from "./components/StatsPage";
-import { WorktreesPanel, type WorktreeInfo } from "./components/WorktreesPanel";
+import { WorktreesPage } from "./components/WorktreesPage";
+import { PrunePrompt } from "./components/PrunePrompt";
+import { pruneReady, worktreeRows, type WorktreeInfo, type WorktreeRow } from "./lib/worktrees";
 import { RemoteSection } from "./components/RemoteSection";
 import { DocLinkContext, Markdown } from "./components/Markdown";
 import type { MarkdownDocLike } from "./components/MarkdownViewer";
@@ -278,7 +280,7 @@ function threadSearchScore(t: ThreadSummary, query: string): number | null {
 export type Project = { id: string; name: string; path: string; threads: number };
 
 /** The top-level pages shown when no project is open. */
-type HomePage = "projects" | "orchestrator" | "stats";
+type HomePage = "projects" | "orchestrator" | "worktrees" | "stats";
 
 /** The environment's cross-project memory: guide, learnings log, rules. */
 type InheritedView = {
@@ -380,8 +382,44 @@ function loadThreadView(): ThreadView {
   return "list";
 }
 
+/** When the daily worktree scan last completed, or 0 when it never has. */
+function loadWorktreeScanAt(): number {
+  try {
+    const at = Number(window.localStorage.getItem(WORKTREE_SCAN_KEY));
+    return Number.isFinite(at) && at > 0 ? at : 0;
+  } catch {
+    /* private mode: scan once per launch */
+  }
+  return 0;
+}
+
+function saveWorktreeScanAt(at: number) {
+  try {
+    window.localStorage.setItem(WORKTREE_SCAN_KEY, String(at));
+  } catch {
+    /* private mode: the next launch scans again */
+  }
+}
+
 /** How often the board re-reads PR state while it is open. */
 const THREAD_PR_POLL_MS = 20_000;
+/** The Worktrees page leans on PR state for its merged highlights, so it checks
+ * sooner and more often than the board. pr.states is a cache peek; the forge
+ * refresh keeps its own TTL, so polling does not add CLI calls. */
+const WORKTREE_PR_POLL_MS = 10_000;
+const WORKTREE_PR_WARM_MS = 3_000;
+/** Worktree lists run git in every checkout, so the global page loads a few
+ * projects at a time instead of forking every project's git at once. */
+const WORKTREE_PROJECT_BATCH = 3;
+/** The daily prune scan runs in the background, once per day per client. It
+ * looks at every project's checkouts, waits for pr.states to answer (the first
+ * peek starts the forge fetch), then asks before removing anything. */
+const WORKTREE_SCAN_MS = 24 * 60 * 60_000;
+const WORKTREE_SCAN_CHECK_MS = 15 * 60_000;
+const WORKTREE_SCAN_RETRY_MS = 4_000;
+const WORKTREE_SCAN_TIMEOUT_MS = 90_000;
+const WORKTREE_SCAN_START_DELAY_MS = 2_500;
+const WORKTREE_SCAN_KEY = "at.worktreeScan";
 /** How often a connected app asks for a newer release. At this rate a client
  * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
 const UPDATE_CHECK_MS = 5 * 60_000;
@@ -414,7 +452,7 @@ function loadLogsOpen(): boolean {
 }
 
 function sameThreadState(a: BoardThreadState, b: BoardThreadState): boolean {
-  if (a.dirty !== b.dirty) return false;
+  if (a.dirty !== b.dirty || a.prKnown !== b.prKnown) return false;
   const p = a.pr;
   const q = b.pr;
   if (!p || !q) return p === q;
@@ -1147,13 +1185,20 @@ export default function App() {
   const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
-  // Worktrees: per open project, live git facts from worktree.list. Every thread
-  // in a git project gets one, so the UI offers no choice about it. Shown in the
-  // threads view (no thread open), not the aside.
+  // Worktrees: per project, live git facts from worktree.list. They own the
+  // global Worktrees page; loaded on demand and after each action, never on a
+  // timer, because every refresh runs git in each worktree.
   const [worktrees, setWorktrees] = useState<Record<string, WorktreeInfo[] | undefined>>({});
   const [worktreesLoading, setWorktreesLoading] = useState(false);
   const [worktreesError, setWorktreesError] = useState<string | null>(null);
-  const [showWorktrees, setShowWorktrees] = useState(false);
+  // The daily scan's answer, shown as a prompt rather than removed silently.
+  const [prunePrompt, setPrunePrompt] = useState<{
+    candidates: WorktreeRow[];
+    dirtyCount: number;
+  } | null>(null);
+  const [pruneBusy, setPruneBusy] = useState(false);
+  const [pruneError, setPruneError] = useState<string | null>(null);
+  const scanningWorktrees = useRef(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The how-to sheet opens on every launch unless the user opted out (persisted).
@@ -1629,26 +1674,41 @@ export default function App() {
 
   // --- worktree panel actions --------------------------------------------
 
-  /** Loads the worktrees of the given projects. A failing project does not hide
-   * the others; the first failure is shown in the panel. */
+  /** Loads the worktrees of the given projects. Each batch lands as it finishes,
+   * so the page fills in instead of waiting on every project; a failing project
+   * does not hide the others, and the first failure is reported once. It returns
+   * what it loaded so a caller (the daily scan) can act without waiting for
+   * React state to settle. */
   const loadWorktrees = useCallback(async (ids: string[]) => {
     const rpc = rpcRef.current;
-    if (!rpc) return;
+    const loaded: Record<string, WorktreeInfo[]> = {};
+    if (!rpc) return loaded;
     setWorktreesLoading(true);
     setWorktreesError(null);
-    const results = await Promise.allSettled(
-      ids.map((id) => rpc.call<WorktreeInfo[]>("worktree.list", { projectId: id })),
-    );
-    setWorktrees((prev) => {
-      const next = { ...prev };
-      results.forEach((r, i) => {
-        if (r.status === "fulfilled") next[ids[i]] = r.value;
+    let failure: string | null = null;
+    // Projects load in small batches: each list runs git in every one of its
+    // worktrees, and the environment-wide page can have many projects.
+    for (let i = 0; i < ids.length; i += WORKTREE_PROJECT_BATCH) {
+      const batch = ids.slice(i, i + WORKTREE_PROJECT_BATCH);
+      const results = await Promise.allSettled(
+        batch.map((id) => rpc.call<WorktreeInfo[]>("worktree.list", { projectId: id })),
+      );
+      results.forEach((r, j) => {
+        if (r.status === "fulfilled") loaded[batch[j]] = r.value;
       });
-      return next;
-    });
-    const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-    if (failed) setWorktreesError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason));
+      setWorktrees((prev) => {
+        const next = { ...prev };
+        for (const [id, list] of Object.entries(loaded)) next[id] = list;
+        return next;
+      });
+      const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failed && !failure) {
+        failure = failed.reason instanceof Error ? failed.reason.message : String(failed.reason);
+      }
+    }
+    if (failure) setWorktreesError(failure);
     setWorktreesLoading(false);
+    return loaded;
   }, []);
 
   /** Runs one worktree mutation, then reloads that project's list. A refused
@@ -1664,6 +1724,107 @@ export default function App() {
     }
     await loadWorktrees([projectId]);
     if (failure) setWorktreesError(failure);
+  };
+
+  /** Removes every merged, clean checkout in one pass, then reloads each
+   * affected project once. Dirty worktrees never reach here: they need the
+   * per-card discard confirmation, and the daemon refuses them unforced. */
+  const pruneMergedWorktrees = async (targets: { projectId: string; path: string }[]) => {
+    const rpc = rpcRef.current;
+    if (!rpc || targets.length === 0) return { failure: null, failed: [] as string[] };
+    let failure: string | null = null;
+    const failed: string[] = [];
+    for (const target of targets) {
+      try {
+        await rpc.call("worktree.remove", { projectId: target.projectId, path: target.path, force: false });
+      } catch (e) {
+        failed.push(target.path);
+        if (!failure) failure = e instanceof Error ? e.message : String(e);
+      }
+    }
+    await loadWorktrees([...new Set(targets.map((t) => t.projectId))]);
+    if (failure) setWorktreesError(failure);
+    return { failure, failed };
+  };
+
+  /** The once-a-day background pass behind the prune prompt. It reads every
+   * project's worktrees, asks the daemon for each owner's cached PR state, and
+   * waits for the first forge answer so a cold cache does not look like "no
+   * PRs". Nothing is removed here: the prompt asks first. */
+  const scanWorktrees = useCallback(async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || projects.length === 0 || scanningWorktrees.current) return;
+    scanningWorktrees.current = true;
+    try {
+      const loaded = await loadWorktrees(projects.map((p) => p.id));
+      if (Object.keys(loaded).length === 0) return;
+      const ids = [
+        ...new Set(
+          Object.values(loaded)
+            .flatMap((list) => list ?? [])
+            .flatMap((w) => w.threadIds),
+        ),
+      ];
+      let states: Record<string, BoardThreadState> = {};
+      let forgeAnswered = ids.length === 0;
+      if (ids.length > 0) {
+        const deadline = Date.now() + WORKTREE_SCAN_TIMEOUT_MS;
+        for (;;) {
+          states = await rpc.call<Record<string, BoardThreadState>>("pr.states", { threadIds: ids });
+          setThreadStates((prev) => mergeThreadStates(prev, states));
+          const waiting = ids.some((id) => states[id] && !states[id].prKnown);
+          if (!waiting) {
+            forgeAnswered = true;
+            break;
+          }
+          if (Date.now() >= deadline) break;
+          await new Promise((resolve) => window.setTimeout(resolve, WORKTREE_SCAN_RETRY_MS));
+        }
+      }
+      // A cold or slow forge is not "no merged PRs": leave the day unmarked so
+      // the next background check asks again.
+      if (!forgeAnswered) return;
+      const rows = worktreeRows(projects, loaded, states);
+      const candidates = pruneReady(rows);
+      const dirtyCount = rows.filter((r) => r.tone === "merged-dirty").length;
+      saveWorktreeScanAt(Date.now());
+      if (candidates.length > 0) {
+        setPruneError(null);
+        setPrunePrompt({ candidates, dirtyCount });
+      }
+    } catch {
+      // A scan is opportunistic: the page still polls PRs while it is open, and
+      // the next daily check retries.
+    } finally {
+      scanningWorktrees.current = false;
+    }
+  }, [projects, loadWorktrees]);
+
+  const pruneFromPrompt = async () => {
+    if (!prunePrompt) return;
+    setPruneBusy(true);
+    setPruneError(null);
+    try {
+      const { failure, failed } = await pruneMergedWorktrees(
+        prunePrompt.candidates.map(({ project, worktree }) => ({
+          projectId: project.id,
+          path: worktree.path,
+        })),
+      );
+      if (failure) {
+        // Keep the ones that survived so a retry does not aim at paths already
+        // gone. The message is usually a running turn in that checkout.
+        const kept = new Set(failed);
+        setPrunePrompt((prev) =>
+          prev ? { ...prev, candidates: prev.candidates.filter((c) => kept.has(c.worktree.path)) } : prev,
+        );
+        setPruneError(failure);
+      } else {
+        setPrunePrompt(null);
+      }
+    } finally {
+      setPruneBusy(false);
+    }
   };
 
   const openWorktreeThread = (projectId: string, threadId: string) => {
@@ -2111,11 +2272,34 @@ export default function App() {
   }, [asideActive, activeId, loadPR]);
 
 
-  // Worktree facts come from live git runs, so they load when the section is shown
-  // and after each action, not on a timer.
+  // The Worktrees page is environment-wide: every project's list loads when the
+  // page opens, and again when a project is added. Git facts are live runs, so
+  // there is no timer; the PR poll below keeps the merged highlights current.
   useEffect(() => {
-    if (projectId && !activeId && showWorktrees) loadWorktrees([projectId]).catch(() => undefined);
-  }, [projectId, activeId, showWorktrees, loadWorktrees]);
+    if (projectId || homePage !== "worktrees" || projects.length === 0) return;
+    loadWorktrees(projects.map((p) => p.id)).catch(() => undefined);
+  }, [projectId, homePage, projects, loadWorktrees]);
+
+  // The daily prune check lives with the client because the prompt is a client
+  // surface. It stays quiet while a sheet is up, then asks only when the forge
+  // has answered for every checkout. One completed pass per 24 hours, whether
+  // or not it found anything.
+  useEffect(() => {
+    if (status !== "online" || projects.length === 0 || cheatSheetOpen || settingsOpen) return;
+    let cancelled = false;
+    const check = () => {
+      if (cancelled || scanningWorktrees.current || prunePrompt) return;
+      if (Date.now() - loadWorktreeScanAt() < WORKTREE_SCAN_MS) return;
+      scanWorktrees().catch(() => undefined);
+    };
+    const first = window.setTimeout(check, WORKTREE_SCAN_START_DELAY_MS);
+    const timer = window.setInterval(check, WORKTREE_SCAN_CHECK_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [status, projects, cheatSheetOpen, settingsOpen, prunePrompt, scanWorktrees]);
 
   // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
   // would otherwise render the diff fallback with no tab highlighted.
@@ -2380,6 +2564,12 @@ export default function App() {
     }
   };
   const [threadStates, setThreadStates] = useState<Record<string, BoardThreadState>>({});
+  // The Worktrees tab carries this count so a merged PR is visible without
+  // opening the page. The daily scan fills the lists even when it is closed.
+  const pruneReadyCount = useMemo(
+    () => pruneReady(worktreeRows(projects, worktrees, threadStates)).length,
+    [projects, worktrees, threadStates],
+  );
   useEffect(() => {
     threadViewRef.current = threadView;
   }, [threadView]);
@@ -2543,6 +2733,45 @@ export default function App() {
       clearInterval(timer);
     };
   }, [threadView, boardPRIds]);
+  // The Worktrees page reads the same cached PR snapshots as the board. Only
+  // the top-level threads that own a checkout are asked about. The poll keeps
+  // merged highlights current while the page is open; pr.states is a cache peek,
+  // so this costs no git or forge process of its own.
+  const worktreePRIds = useMemo(
+    () =>
+      projectId || homePage !== "worktrees"
+        ? ""
+        : [
+            ...new Set(
+              Object.values(worktrees)
+                .flatMap((list) => list ?? [])
+                .flatMap((w) => w.threadIds),
+            ),
+          ].join(","),
+    [projectId, homePage, worktrees],
+  );
+  useEffect(() => {
+    if (worktreePRIds === "") return;
+    let live = true;
+    const load = () => {
+      rpcRef.current
+        ?.call<Record<string, BoardThreadState>>("pr.states", { threadIds: worktreePRIds.split(",") })
+        .then((next) => {
+          if (live) setThreadStates((prev) => mergeThreadStates(prev, next));
+        })
+        .catch(() => undefined);
+    };
+    load();
+    // The first peek starts the forge fetch; a short warm check picks up a fast
+    // answer without waiting a whole interval.
+    const warm = setTimeout(load, WORKTREE_PR_WARM_MS);
+    const timer = setInterval(load, WORKTREE_PR_POLL_MS);
+    return () => {
+      live = false;
+      clearTimeout(warm);
+      clearInterval(timer);
+    };
+  }, [worktreePRIds]);
   const openProjects = useMemo(
     () =>
       openProjectIds
@@ -3644,6 +3873,34 @@ export default function App() {
         Orchestrator
       </div>
       <div
+        className={`ptab pt-home${homeTabOn("worktrees") ? " on" : ""}`}
+        {...tabProps(homeTabOn("worktrees"), () => showHome("worktrees"))}
+        title="Every project's worktrees"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="13"
+          height="13"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <line x1="6" y1="3" x2="6" y2="15" />
+          <circle cx="18" cy="6" r="3" />
+          <circle cx="6" cy="18" r="3" />
+          <path d="M18 9a9 9 0 0 1-9 9" />
+        </svg>
+        Worktrees
+        {pruneReadyCount > 0 && (
+          <span className="pt-count ok" title={`${pruneReadyCount} ready to prune`}>
+            {pruneReadyCount}
+          </span>
+        )}
+      </div>
+      <div
         className={`ptab pt-home${homeTabOn("stats") ? " on" : ""}`}
         {...tabProps(homeTabOn("stats"), () => showHome("stats"))}
         title="Harness stats across all projects"
@@ -3884,6 +4141,7 @@ export default function App() {
         stopTurn: () => stopTurn(),
         toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
         togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
+        goToWorktrees: () => showHome("worktrees"),
       }),
     );
     if (paletteFromComposer && activeId) {
@@ -4204,6 +4462,66 @@ export default function App() {
     </div>
   );
 
+  // The daily scan's question is app-global: it can arrive on any screen, so it
+  // renders beside the settings sheet rather than on the Worktrees page alone.
+  const pruneDialog = prunePrompt && (
+    <PrunePrompt
+      candidates={prunePrompt.candidates}
+      dirtyCount={prunePrompt.dirtyCount}
+      busy={pruneBusy}
+      error={pruneError}
+      onPrune={() => pruneFromPrompt().catch(() => undefined)}
+      onReview={() => {
+        setPrunePrompt(null);
+        setPruneError(null);
+        showHome("worktrees");
+      }}
+      onDismiss={() => {
+        setPrunePrompt(null);
+        setPruneError(null);
+      }}
+    />
+  );
+
+  // Worktrees are their own page, across every project: the checkouts are a
+  // shared resource, so they are visible even with no project open.
+  if (!projectId && homePage === "worktrees") {
+    return (
+      <div className="screen">
+        {titlebar}
+        {projectTabs}
+        <div className="screen-body">
+          <div className="screen-head">
+            <div className="screen-title">
+              <h2>Worktrees</h2>
+              <p className="screen-sub">
+                Every project's isolated checkouts. Merged pull requests are marked ready to prune.
+              </p>
+            </div>
+          </div>
+          <WorktreesPage
+            projects={projects}
+            worktrees={worktrees}
+            threads={threads}
+            states={threadStates}
+            loading={worktreesLoading}
+            error={worktreesError}
+            onRefresh={() => loadWorktrees(projects.map((p) => p.id)).catch(() => undefined)}
+            onOpenThread={openWorktreeThread}
+            onRemove={(projectId, path, force) =>
+              worktreeAction(projectId, "worktree.remove", { path, force })
+            }
+            onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
+            onPruneMerged={pruneMergedWorktrees}
+          />
+        </div>
+        {paletteDialog}
+        {settingsSheet}
+        {pruneDialog}
+      </div>
+    );
+  }
+
   // Stats are their own page, not part of the projects grid.
   if (!projectId && homePage === "stats") {
     return (
@@ -4221,6 +4539,7 @@ export default function App() {
         </div>
         {paletteDialog}
         {settingsSheet}
+        {pruneDialog}
       </div>
     );
   }
@@ -4244,6 +4563,7 @@ export default function App() {
         </div>
         {paletteDialog}
         {settingsSheet}
+        {pruneDialog}
       </div>
     );
   }
@@ -4313,6 +4633,7 @@ export default function App() {
         </div>
         {paletteDialog}
         {settingsSheet}
+        {pruneDialog}
       </div>
     );
   }
@@ -4357,32 +4678,8 @@ export default function App() {
               </div>
               {threadView === "board" && <button onClick={newDraft}>New draft</button>}
               {threadView === "board" && <button onClick={newThread}>New thread</button>}
-              <button
-                className={showWorktrees ? "primary" : undefined}
-                aria-pressed={showWorktrees}
-                onClick={() => setShowWorktrees((v) => !v)}
-              >
-                Worktrees
-              </button>
             </div>
           </div>
-          {showWorktrees && (
-            <div className="section worktrees-section">
-              <WorktreesPanel
-                projects={selectedProject ? [{ id: selectedProject.id, name: selectedProject.name }] : []}
-                worktrees={worktrees}
-                threads={threads}
-                loading={worktreesLoading}
-                error={worktreesError}
-                onRefresh={() => projectId && loadWorktrees([projectId]).catch(() => undefined)}
-                onOpenThread={openWorktreeThread}
-                onRemove={(projectId, path, force) =>
-                  worktreeAction(projectId, "worktree.remove", { path, force })
-                }
-                onPrune={(projectId) => worktreeAction(projectId, "worktree.prune", {})}
-              />
-            </div>
-          )}
           {threadView === "list" && projectThreads.length === 0 && query !== "" && (
             <div className="empty">No threads match that filter.</div>
           )}
@@ -4449,6 +4746,7 @@ export default function App() {
           {threadOverlays}
           {paletteDialog}
           {settingsSheet}
+          {pruneDialog}
         </div>
       </div>
     );
@@ -5773,6 +6071,7 @@ export default function App() {
       )}
 
       {settingsSheet}
+      {pruneDialog}
 
       {threadOverlays}
       {paletteDialog}
