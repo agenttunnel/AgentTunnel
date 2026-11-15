@@ -8,6 +8,11 @@
 # Usage:
 #   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
 #
+# Re-running the install updates in place. To uninstall, pass --uninstall. It
+# removes the binaries and the macOS app but keeps ~/.agenttunnel (threads and
+# settings):
+#   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh -s -- --uninstall
+#
 # Environment:
 #   AGENTTUNNEL_VERSION      Release tag to install (default: latest).
 #   AGENTTUNNEL_INSTALL_DIR  CLI directory (default: ~/.local/bin).
@@ -21,6 +26,21 @@ version="${AGENTTUNNEL_VERSION:-latest}"
 install_dir="${AGENTTUNNEL_INSTALL_DIR:-${HOME:-/tmp}/.local/bin}"
 app_dir="${AGENTTUNNEL_APP_DIR:-${HOME:-/tmp}/Applications}"
 
+mode=install
+for arg in "$@"; do
+  case "$arg" in
+    --uninstall) mode=uninstall ;;
+    -h | --help)
+      echo "usage: install.sh [--uninstall]"
+      exit 0
+      ;;
+    *)
+      echo "install: unknown option: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
 case "$(uname -s)" in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
@@ -30,6 +50,58 @@ case "$(uname -s)" in
     exit 1
     ;;
 esac
+
+# uninstall removes the files install puts on disk. It leaves the state
+# directory (~/.agenttunnel) alone: threads and settings live there.
+uninstall() {
+  echo "uninstall: quit AgentTunnel and any running atd first; deleting files does not stop them."
+  failed=0
+
+  if [ "$os" = "darwin" ]; then
+    for dir in "$app_dir" /Applications; do
+      # Skip the fallback when the user pointed the installer elsewhere.
+      if [ "$dir" = "/Applications" ] && [ -n "${AGENTTUNNEL_APP_DIR:-}" ]; then
+        continue
+      fi
+      bundle="$dir/AgentTunnel.app"
+      # Only remove a bundle that holds our desktop binary, never any app with a similar name.
+      if [ -x "$bundle/Contents/MacOS/agenttunnel-desktop" ]; then
+        if rm -rf "$bundle" 2>/dev/null; then
+          echo "uninstall: removed $bundle"
+        else
+          echo "uninstall: cannot remove $bundle; try: sudo rm -rf \"$bundle\"" >&2
+          failed=1
+        fi
+      fi
+    done
+  fi
+
+  for name in atd agenttunnel agenttunnel-desktop; do
+    for candidate in "$name" "$name.exe"; do
+      target="$install_dir/$candidate"
+      # -L catches the agenttunnel-desktop symlink into the app bundle; rm -f removes the link only.
+      if [ -e "$target" ] || [ -L "$target" ]; then
+        if rm -f "$target"; then
+          echo "uninstall: removed $target"
+        else
+          echo "uninstall: cannot remove $target" >&2
+          failed=1
+        fi
+      fi
+    done
+  done
+
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
+  echo "uninstall: AgentTunnel is removed. Threads and settings were kept in ${HOME:-/tmp}/.agenttunnel."
+  echo "uninstall: to delete them too (this cannot be undone): rm -rf \"${HOME:-/tmp}/.agenttunnel\""
+}
+
+if [ "$mode" = uninstall ]; then
+  uninstall
+  exit $?
+fi
 
 case "$(uname -m)" in
   x86_64 | amd64) arch=amd64 ;;
