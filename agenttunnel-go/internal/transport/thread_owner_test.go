@@ -21,6 +21,16 @@ import (
 func newOwnerFixture(t *testing.T) (*domain.Engine, *Dispatcher) {
 	t.Helper()
 	ctx := context.Background()
+	// The engine owns the turn's background writers, and t.Cleanup runs LIFO:
+	// create the directories those writers append to first and register the
+	// engine's shutdown last, so it closes before t.TempDir removes them.
+	// Engine.Close joins the worker loop, so no event can be appended after it
+	// returns (see domain.Engine.Close); without the ordering a late
+	// background write lands in a directory already being removed and the
+	// cleanup fails with "directory not empty".
+	logsDir := t.TempDir()
+	inheritedDir := t.TempDir()
+
 	eng := domain.NewEngine(domain.NewMemoryStore(), nil)
 	eng.Start(ctx)
 	t.Cleanup(eng.Close)
@@ -36,10 +46,10 @@ func newOwnerFixture(t *testing.T) (*domain.Engine, *Dispatcher) {
 		Engine:    eng,
 		Registry:  providers.NewRegistry(driver),
 		Roles:     contracts.NewRoleRegistry(contracts.BuiltinRoles()...),
-		Logs:      logstore.New(t.TempDir()),
+		Logs:      logstore.New(logsDir),
 		Ledger:    usage.NewLedger(),
 		Mailbox:   contextstore.NewMailbox(),
-		Inherited: contextstore.NewInheritedContext(t.TempDir()),
+		Inherited: contextstore.NewInheritedContext(inheritedDir),
 	})
 	// Production keeps the runtime mailbox always on and gates on the durable
 	// peer-mailbox flag instead (see pkg/daemon); mirror that so the
@@ -165,7 +175,10 @@ func TestSubthreadOwnerIsOrchestrator(t *testing.T) {
 	}).(map[string]any)
 	parent := created["threadId"].(contracts.ThreadID)
 
-	events, unsub := eng.Subscribe(parent)
+	// Watch every thread, not just the parent: the child id only exists in
+	// startSubthread's reply, and a child event can commit before the parent is
+	// subscribed to it.
+	events, unsub := eng.SubscribeAll()
 	defer unsub()
 
 	child, err := disp.startSubthread(context.Background(), parent, "write the release notes")
@@ -230,18 +243,40 @@ func TestSubthreadOwnerIsOrchestrator(t *testing.T) {
 		t.Fatalf(`raw child state owner = %v (present=%t), want key "owner" = "orchestrator"`, got, ok)
 	}
 
-	// Wait for the subthread's turn to finish and report back, so the test
-	// does not end while the background goroutine is still writing.
+	// Wait for the background turn to quiesce before the test ends, so no
+	// writer outlives it. Both markers are past the tool call that returned the
+	// child id:
+	//   - the parent transcript entry reportSubthread appends (author
+	//     "subthread"). It lands after PostMessage's MailboxPosted event and
+	//     after that function's logstore write, which is the write that used to
+	//     race the temp-directory cleanup;
+	//   - the child's second rename. RunTurn starts the summary-informed title
+	//     goroutine after the turn and joins nothing, so only a second
+	//     ThreadRenamed on the child proves that writer is finished. (The fake
+	//     harness always answers the title prompt with "DONE", so both
+	//     generations rename deterministically.)
+	// Either marker can commit last, so both are awaited in one loop; the
+	// deadline is a failure timeout, never a wait.
 	deadline := time.After(20 * time.Second)
-	for {
+	reported, renames := false, 0
+	for !reported || renames < 2 {
 		select {
 		case ev := <-events:
-			if m, ok := ev.Payload.(contracts.MailboxPosted); ok && string(m.From) == "subthread" {
-				return
+			switch p := ev.Payload.(type) {
+			case contracts.MessageSent:
+				if ev.ThreadID == parent && p.Author == string(subthreadSender) {
+					reported = true
+				}
+			case contracts.ThreadRenamed:
+				if ev.ThreadID == child {
+					renames++
+				}
 			}
 		case <-deadline:
 			end, _ := eng.State(context.Background(), parent)
-			t.Fatalf("no subthread report arrived; parent messages: %+v", end.Messages)
+			childEnd, _ := eng.State(context.Background(), child)
+			t.Fatalf("background turn did not settle (parent report=%t, child renames=%d); parent messages: %+v; child messages: %+v",
+				reported, renames, end.Messages, childEnd.Messages)
 		}
 	}
 }
