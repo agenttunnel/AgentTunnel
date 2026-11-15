@@ -28,6 +28,7 @@ type scriptedCall struct {
 type scriptedServer struct {
 	mu         sync.Mutex
 	results    map[string]any
+	gates      map[string]chan struct{}
 	events     []threadFrame
 	eventMu    sync.Mutex
 	conns      map[*websocket.Conn]struct{}
@@ -51,10 +52,22 @@ type threadFrame struct {
 func newScriptedServer() *scriptedServer {
 	return &scriptedServer{
 		results:    map[string]any{},
+		gates:      map[string]chan struct{}{},
 		conns:      map[*websocket.Conn]struct{}{},
 		subscribed: make(chan struct{}),
 		recorded:   make(chan struct{}, 256),
 	}
+}
+
+// gate parks method's reply until the returned channel closes. The request is
+// still recorded, so a test can watch it arrive, move a client under test
+// into some state, then release the reply — deterministically, with no sleeps.
+func (s *scriptedServer) gate(method string) chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan struct{})
+	s.gates[method] = ch
+	return ch
 }
 
 func (s *scriptedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +107,15 @@ func (s *scriptedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Lock()
 		result, ok := s.results[req.Method]
+		gate := s.gates[req.Method]
 		s.mu.Unlock()
+		if gate != nil {
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if !ok {
 			frame, _ := json.Marshal(map[string]any{
 				"id": req.ID, "error": map[string]any{"code": 1, "message": "unsupported " + req.Method},

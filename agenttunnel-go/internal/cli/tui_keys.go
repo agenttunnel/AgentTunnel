@@ -26,6 +26,8 @@ const (
 	keyPgDn
 	keyEsc
 	keyCtrlC
+	keyTab
+	keyCtrlK
 )
 
 // tuiKey is one decoded key press. Rune is set only for keyRune.
@@ -98,6 +100,10 @@ func nextKey(buf []byte) (k tuiKey, n int, ok bool) {
 		return tuiKey{Kind: keyEnter}, 1, true
 	case b == 0x7f, b == 0x08:
 		return tuiKey{Kind: keyBackspace}, 1, true
+	case b == '\t':
+		return tuiKey{Kind: keyTab}, 1, true
+	case b == 0x0b:
+		return tuiKey{Kind: keyCtrlK}, 1, true
 	case b < 0x20:
 		return tuiKey{}, 1, true // other control bytes: ignored
 	}

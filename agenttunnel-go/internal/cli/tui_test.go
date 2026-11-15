@@ -53,7 +53,8 @@ func (f *fakeTuiTerm) Draw(frame string) error {
 }
 
 // waitNextDraw blocks until a frame painted from now on matches, skipping the
-// non-matching frames in between.
+// non-matching frames in between. A timeout fails with the recent frames, so
+// a stalled drive shows where the session actually was.
 func (f *fakeTuiTerm) waitNextDraw(t *testing.T, want func(string) bool) string {
 	t.Helper()
 	for {
@@ -63,7 +64,17 @@ func (f *fakeTuiTerm) waitNextDraw(t *testing.T, want func(string) bool) string 
 				return frame
 			}
 		case <-time.After(5 * time.Second):
+			f.mu.Lock()
+			recent := f.frames
+			f.mu.Unlock()
+			if n := len(recent); n > 4 {
+				recent = recent[n-4:]
+			}
+			for i, frame := range recent {
+				t.Logf("painted before the wait gave up (%d):\n%s", i, frame)
+			}
 			t.Fatal("no matching frame was painted")
+			return ""
 		}
 	}
 }
@@ -326,5 +337,74 @@ func TestParseTUIArgs(t *testing.T) {
 		if _, err := parseTuiArgs(bad); err == nil {
 			t.Fatalf("parseTuiArgs(%v) should fail", bad)
 		}
+	}
+}
+
+// A thread created while a registered tab is active opens on the thread
+// surface: the open request switches the tab back, and the thread is never
+// opened blind behind it. The create reply parks behind a gate so the tab
+// switch happens mid-create, deterministically.
+func TestTUISessionDraftOpensOnTheThreadSurface(t *testing.T) {
+	// notesView loads without an RPC: the create reply parks the scripted
+	// daemon's one connection mid-read, so a Load that called the daemon here
+	// would itself park — the tab must stay switchable, which is the point.
+	tuiTestRegistry(t, notesView())
+	s := tuiServer("th_1", "idle")
+	s.results["thread.list"] = []threadListRow{
+		{ID: "th_1", Title: "the tui job", ProjectID: "prj_1", Agents: 1, UpdatedAt: time.Now()},
+		{ID: "th_draft1", Title: "the draft thread", ProjectID: "prj_1", UpdatedAt: time.Now()},
+	}
+	s.results["thread.create"] = map[string]any{"threadId": "th_draft1"}
+	release := s.gate("thread.create")
+
+	c := dialScripted(t, s)
+	term := newFakeTuiTerm(100, 24)
+	keys := make(chan tuiKey, 32)
+	m := newTuiModel(time.Now())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- tuiSession(context.Background(), c, m, "", keys, term)
+	}()
+	term.waitNextDraw(t, containsLine("the tui job"))
+
+	// New thread: pick the project from the picker. thread.create's request
+	// is recorded, then parks behind the gate.
+	keys <- tuiKey{Kind: keyCtrlK}
+	term.waitNextDraw(t, containsLine("Commands"))
+	for _, r := range "new thread" {
+		keys <- tuiKey{Kind: keyRune, Rune: r}
+	}
+	term.waitNextDraw(t, containsLine("Threads: new thread"))
+	keys <- tuiKey{Kind: keyEnter}
+	term.waitNextDraw(t, containsLine("new thread in"))
+	keys <- tuiKey{Kind: keyEnter} // the first project
+	s.waitCall(t, "thread.create")
+	if tuiCallCount(s, "thread.create") != 1 {
+		t.Fatal("the draft was not created through thread.create")
+	}
+
+	// While the create is in flight, tab away to the registered view.
+	keys <- tuiKey{Kind: keyTab}
+	term.waitNextDraw(t, containsLine("notes body loaded"))
+
+	// Release the reply: the draft opens, and the tab switches back with it.
+	close(release)
+	frame := term.waitNextDraw(t, containsLine(`"the draft thread"`))
+	if strings.Contains(frame, "notes body loaded") {
+		t.Fatalf("the draft opened behind the notes tab:\n%s", frame)
+	}
+	if !strings.Contains(frame, "backlog line") {
+		t.Fatalf("the draft view is missing its backlog:\n%s", frame)
+	}
+
+	keys <- tuiKey{Kind: keyCtrlC}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("tuiSession: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl-C did not leave the session")
 	}
 }

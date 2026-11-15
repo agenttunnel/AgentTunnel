@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,3 +15,6 @@ func tuiResizeSignals() (<-chan os.Signal, func()) {
 	signal.Notify(ch, syscall.SIGWINCH)
 	return ch, func() { signal.Stop(ch) }
 }
+
+// tuiEnableVT is a no-op off Windows: ANSI handling is the terminal's.
+func tuiEnableVT(io.Writer) bool { return true }

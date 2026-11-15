@@ -2,16 +2,22 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/http"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/settings"
 )
 
-// newTunnelClient builds a relay client that runs its loop, with a LAN host
-// the test controls and a port the test owns, so nothing binds 7777 here.
-func newTunnelClient(t *testing.T, lan string, port int) *Client {
+// newTunnelClientUnstarted builds a relay client whose loop is not running, so
+// a test can arrange settings and kicks before the first pass reads them.
+func newTunnelClientUnstarted(t *testing.T, lan string, port int) *Client {
 	t.Helper()
 	c, err := New(Options{StateDir: t.TempDir(), Settings: settings.New("")})
 	if err != nil {
@@ -19,6 +25,14 @@ func newTunnelClient(t *testing.T, lan string, port int) *Client {
 	}
 	c.lanHost = func() string { return lan }
 	c.tunnelPort = port
+	return c
+}
+
+// newTunnelClient builds a relay client that runs its loop, with a LAN host
+// the test controls and a port the test owns, so nothing binds 7777 here.
+func newTunnelClient(t *testing.T, lan string, port int) *Client {
+	t.Helper()
+	c := newTunnelClientUnstarted(t, lan, port)
 	c.Start(context.Background())
 	t.Cleanup(c.Close)
 	return c
@@ -46,6 +60,9 @@ func TestTunnelStartListensAndStopReleasesPort(t *testing.T) {
 	if !c.Status().Connected {
 		t.Fatal("start returns only once the daemon socket is up")
 	}
+	if got := c.Status(); got.URL != "ws://127.0.0.1:"+strconv.Itoa(st.Port) {
+		t.Fatalf("the live socket must be the tunnel's own, url = %q", got.URL)
+	}
 
 	if err := c.StopTunnel(); err != nil {
 		t.Fatalf("stop tunnel: %v", err)
@@ -58,6 +75,83 @@ func TestTunnelStartListensAndStopReleasesPort(t *testing.T) {
 		t.Fatalf("stop must release the port: %v", err)
 	}
 	_ = ln.Close()
+}
+
+// A kick queued before the loop read the settings is already satisfied by the
+// dial it causes, so it must be consumed by that read. A token that reaches the
+// dial instead aborts the socket it just brought up, which is how a successful
+// tunnel start used to report a socket that was already gone.
+func TestTunnelConsumesItsEnableKickBeforeDialing(t *testing.T) {
+	c := newTunnelClientUnstarted(t, "192.168.1.42", 0)
+	t.Cleanup(c.Close)
+
+	// The production ordering: the settings are saved and the loop kicked
+	// before the loop's first pass reads either. openTunnel needs no loop.
+	url, fresh, err := c.openTunnel()
+	if err != nil {
+		t.Fatalf("open tunnel: %v", err)
+	}
+	if !fresh {
+		t.Fatal("a first openTunnel must report a fresh tunnel")
+	}
+
+	dialing := make(chan struct{})
+	release := make(chan struct{})
+	var first sync.Once
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Close joins the loop, which is parked in the dial until released.
+	t.Cleanup(unblock)
+	c.dial = func(ctx context.Context, target string, opts *websocket.DialOptions) (*websocket.Conn, *http.Response, error) {
+		first.Do(func() { close(dialing) })
+		<-release
+		return websocket.Dial(ctx, target, opts)
+	}
+
+	c.Start(context.Background())
+	select {
+	case <-dialing:
+	case <-time.After(tunnelConnectWait):
+		t.Fatal("the loop never dialed the tunnel")
+	}
+	if n := len(c.kick); n != 0 {
+		t.Fatalf("the kick that enabled the relay reached the dial: %d still queued", n)
+	}
+	unblock()
+
+	st, err := c.StartTunnel(context.Background())
+	if err != nil {
+		t.Fatalf("start tunnel: %v", err)
+	}
+	if !st.Listening {
+		t.Fatalf("start must report the running tunnel, got %+v", st)
+	}
+	if got := c.Status(); !got.Connected || got.URL != url {
+		t.Fatalf("start returned with connected=%v url=%q, want the tunnel %q up", got.Connected, got.URL, url)
+	}
+}
+
+// A tunnel start may only count a socket dialed for its own relay. A live
+// socket to a previous URL must never satisfy the wait.
+func TestTunnelWaitConnectedMatchesTheTunnelsURL(t *testing.T) {
+	c, err := New(Options{StateDir: t.TempDir(), Settings: settings.New("")})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	c.mu.Lock()
+	c.setUplinkLocked(&uplink{}, "ws://127.0.0.1:1")
+	c.mu.Unlock()
+
+	// A cancelled context keeps the check to the predicate: a satisfied wait
+	// returns nil before it looks at the context, anything else reports it.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.WaitConnectedFor(ctx, "ws://127.0.0.1:2"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a socket to another URL satisfied the wait: %v", err)
+	}
+	if err := c.WaitConnectedFor(ctx, "ws://127.0.0.1:1"); err != nil {
+		t.Fatalf("the wait must accept the live socket for its own URL: %v", err)
+	}
 }
 
 // A second start while the tunnel runs returns the same tunnel and binds nothing new.

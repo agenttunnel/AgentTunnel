@@ -35,7 +35,8 @@ func TestTUIKeysDecode(t *testing.T) {
 		{"malformed sequence dropped", "\x1b[\x80a", []tuiKey{runeKey('a')}},
 		{"bare esc before a key", "\x1bx", []tuiKey{k(keyEsc), runeKey('x')}},
 		{"esc twice", "\x1b\x1b[A", []tuiKey{k(keyEsc), k(keyUp)}},
-		{"other control bytes ignored", "\t\x00a", []tuiKey{runeKey('a')}},
+		{"tab and ctrl-k", "\t\x0b", []tuiKey{k(keyTab), k(keyCtrlK)}},
+		{"other control bytes ignored", "\x00\x01a", []tuiKey{runeKey('a')}},
 		{"typed stream", "hi\x1b[D\x7f\n", []tuiKey{runeKey('h'), runeKey('i'), k(keyLeft), k(keyBackspace), k(keyEnter)}},
 	}
 	for _, tc := range cases {

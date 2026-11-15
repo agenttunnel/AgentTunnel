@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,10 @@ type Client struct {
 	// tests replace it so the answer does not depend on the host's interfaces.
 	lanHost func() string
 
+	// dial opens a relay socket. Tests replace it to hold a connection attempt
+	// at a chosen point, so they can prove ordering without sleeping.
+	dial func(ctx context.Context, url string, opts *websocket.DialOptions) (*websocket.Conn, *http.Response, error)
+
 	// tunnelPort is the port the in-app relay prefers. Tests move it off the
 	// default so they never bind the real one.
 	tunnelPort int
@@ -72,6 +77,7 @@ type Client struct {
 	mu      sync.Mutex
 	id      *identity
 	up      *uplink
+	upURL   string        // URL the current uplink dialed; set only while up != nil
 	upMoved chan struct{} // closed and replaced whenever up changes
 	cancel  context.CancelFunc
 	done    chan struct{}
@@ -91,6 +97,7 @@ func New(opts Options) (*Client, error) {
 		logf:       func(string, ...any) {},
 		kick:       make(chan struct{}, 1),
 		lanHost:    relaywire.LANHost,
+		dial:       websocket.Dial,
 		tunnelPort: defaultTunnelPort,
 		id:         id,
 		upMoved:    make(chan struct{}),
@@ -129,6 +136,26 @@ func (c *Client) WaitConnected(ctx context.Context) error {
 	return c.waitFor(ctx, true)
 }
 
+// WaitConnectedFor blocks until the relay socket dialed for url is up, or ctx
+// ends. A socket to another relay never satisfies it, so a caller starting a
+// tunnel cannot return while a previous URL's connection is still up.
+func (c *Client) WaitConnectedFor(ctx context.Context, url string) error {
+	for {
+		c.mu.Lock()
+		live := c.up != nil && c.upURL == url
+		moved := c.upMoved
+		c.mu.Unlock()
+		if live {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-moved:
+		}
+	}
+}
+
 // WaitDisconnected blocks until no relay socket is up, or ctx ends.
 func (c *Client) WaitDisconnected(ctx context.Context) error {
 	return c.waitFor(ctx, false)
@@ -151,10 +178,11 @@ func (c *Client) waitFor(ctx context.Context, connected bool) error {
 	}
 }
 
-// setUplinkLocked swaps the live socket and wakes anyone waiting on it.
-// Callers hold c.mu.
-func (c *Client) setUplinkLocked(up *uplink) {
+// setUplinkLocked swaps the live socket and wakes anyone waiting on it. url is
+// the relay it dialed, so a wait can be tied to one tunnel. Callers hold c.mu.
+func (c *Client) setUplinkLocked(up *uplink, url string) {
 	c.up = up
+	c.upURL = url
 	close(c.upMoved)
 	c.upMoved = make(chan struct{})
 }
@@ -177,7 +205,7 @@ func (c *Client) Close() {
 func (c *Client) run(ctx context.Context) {
 	attempt := 0
 	for {
-		cfg := c.opts.Settings.Relay()
+		cfg := c.readConfig()
 		if !cfg.Enabled || cfg.URL == "" {
 			attempt = 0
 			select {
@@ -216,6 +244,24 @@ func (c *Client) run(ctx context.Context) {
 	}
 }
 
+// readConfig reads the relay settings and consumes change signals the read
+// already satisfies. A kick only means "re-read the settings", and this pass is
+// about to dial what it just read, so a signal queued before it — the enable
+// that started the pass, or one left over from a reconnect — must not abort the
+// socket the pass opens. The settings are re-read after every token, so a real
+// change is never dropped.
+func (c *Client) readConfig() settings.Relay {
+	cfg := c.opts.Settings.Relay()
+	for {
+		select {
+		case <-c.kick:
+			cfg = c.opts.Settings.Relay()
+		default:
+			return cfg
+		}
+	}
+}
+
 // backoff is full jitter: a uniform delay up to an exponential ceiling.
 func backoff(attempt int) time.Duration {
 	ceiling := time.Second << min(attempt, 6)
@@ -234,7 +280,7 @@ func (c *Client) connectOnce(ctx context.Context, base string) error {
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
-	ws, _, err := websocket.Dial(dctx, base+"/v1/daemon", nil)
+	ws, _, err := c.dial(dctx, base+"/v1/daemon", nil)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("dial relay: %w", err)
@@ -262,12 +308,12 @@ func (c *Client) connectOnce(ctx context.Context, base string) error {
 
 	up := newUplink(ws, c.srv)
 	c.mu.Lock()
-	c.setUplinkLocked(up)
+	c.setUplinkLocked(up, base)
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		if c.up == up {
-			c.setUplinkLocked(nil)
+			c.setUplinkLocked(nil, "")
 		}
 		c.mu.Unlock()
 		up.close()
