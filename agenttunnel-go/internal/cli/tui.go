@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -47,30 +49,42 @@ func runTui(ctx context.Context, env *Env, args []string) error {
 	}
 	defer c.Close()
 
-	term := newRawTerminal(env.Out, os.Stdin)
-	if err := term.Enter(); err != nil {
-		return err
+	if !tuiStdinIsTerminal() {
+		return fmt.Errorf("tui needs a terminal")
 	}
-	// Exit restores the alternate screen and cooked mode on every path out of
-	// the session — normal return, Ctrl-C, error, and panic unwinding alike.
-	defer term.Exit()
 
 	ctx, stop := withInterrupt(ctx)
 	defer stop()
-
-	keys := make(chan tuiKey, 8)
-	go pumpKeys(ctx, os.Stdin, &keyDecoder{}, keys)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	m := newTuiModel(time.Now())
 	m.theme = detectTuiTheme(env.Out, os.Getenv)
-	// Windows: legacy conhost needs VT processing switched on or every escape
-	// prints as literal text. When it cannot be enabled, the plain theme
-	// keeps the frame readable. Elsewhere it is a no-op that always succeeds.
-	if !tuiEnableVT(env.Out) {
-		m.theme = tuiTheme{}
-	}
 	m.info = tuiInfo{daemon: tuiDaemonLabel(env.DaemonURL), version: env.Version}
-	return tuiSession(ctx, c, m, ref, keys, term)
+
+	// Bubble Tea owns the terminal (raw mode, alternate screen, key decoding,
+	// resize, frame diffing) and restores it on every way out, panics
+	// included. The session loop runs beside it on the key channel.
+	ui := newTuiProgram(ctx, int(os.Stdin.Fd()))
+	prog := tea.NewProgram(ui,
+		tea.WithAltScreen(), tea.WithInput(os.Stdin), tea.WithOutput(env.Out),
+		tea.WithoutSignalHandler(), tea.WithContext(ctx))
+	done := make(chan error, 1)
+	go func() {
+		err := tuiSession(ctx, c, m, ref, ui.keys, bubbleTerminal{ui, prog})
+		prog.Quit()
+		done <- err
+	}()
+	_, runErr := prog.Run()
+	cancel()
+	sessionErr := <-done
+	if sessionErr != nil {
+		return sessionErr
+	}
+	if runErr != nil && !errors.Is(runErr, tea.ErrProgramKilled) {
+		return runErr
+	}
+	return nil
 }
 
 // parseTuiArgs accepts at most one thread reference.
@@ -90,64 +104,12 @@ func parseTuiArgs(args []string) (string, error) {
 }
 
 // tuiTerminal is the display surface the session needs: query the size, paint
-// whole frames. Tests substitute a recording fake.
+// whole frames. bubbleTerminal is the real one; tests substitute a recording
+// fake. A terminal that also has `Resized() <-chan struct{}` wakes the session
+// on a resize.
 type tuiTerminal interface {
 	Size() (int, int, error)
 	Draw(frame string) error
-}
-
-// rawTerminal is tuiTerminal over a real tty: alternate screen, hidden cursor,
-// raw mode, and cursor-home whole-frame paints.
-type rawTerminal struct {
-	w   io.Writer
-	ctl *termCtl
-}
-
-// newRawTerminal draws on w and reads keys from the same file (os.Stdin).
-func newRawTerminal(w io.Writer, in *os.File) *rawTerminal {
-	return &rawTerminal{w: w, ctl: newTermCtl(int(in.Fd()))}
-}
-
-// Enter switches to the alternate screen with raw input. A stdin that is not
-// a terminal fails here: there are no keys without one.
-func (t *rawTerminal) Enter() error {
-	if err := t.ctl.MakeRaw(); err != nil {
-		return fmt.Errorf("tui needs a terminal: %w", err)
-	}
-	if _, err := fmt.Fprint(t.w, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J"); err != nil {
-		_ = t.ctl.Restore()
-		return err
-	}
-	return nil
-}
-
-// Exit returns the shell to the state it had before Enter. It is idempotent,
-// so it is safe to defer unconditionally.
-func (t *rawTerminal) Exit() {
-	_ = t.ctl.Restore()
-	_, _ = fmt.Fprint(t.w, "\x1b[?25h\x1b[?1049l")
-}
-
-// Size reports the terminal dimensions.
-func (t *rawTerminal) Size() (int, int, error) { return t.ctl.Size() }
-
-// Draw paints one frame: home the cursor, rewrite each line erasing to the end
-// (a shorter line must not smear the previous frame), then clear below.
-// Raw mode does not translate \n, so line breaks leave as \r\n.
-func (t *rawTerminal) Draw(frame string) error {
-	var b strings.Builder
-	b.WriteString("\x1b[H")
-	lines := strings.Split(frame, "\n")
-	for i, line := range lines {
-		b.WriteString(line)
-		b.WriteString("\x1b[K")
-		if i < len(lines)-1 {
-			b.WriteString("\r\n")
-		}
-	}
-	b.WriteString("\x1b[J")
-	_, err := io.WriteString(t.w, b.String())
-	return err
 }
 
 // tuiSession is the event loop, shaped like attachSession's: typed keys,
@@ -259,8 +221,10 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 	defer poll.Stop()
 	paintTick := time.NewTicker(tuiPaintInterval)
 	defer paintTick.Stop()
-	resize, stopResize := tuiResizeSignals()
-	defer stopResize()
+	var resize <-chan struct{}
+	if r, ok := term.(interface{ Resized() <-chan struct{} }); ok {
+		resize = r.Resized()
+	}
 
 	lastView := m.view
 	for {

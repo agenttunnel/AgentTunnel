@@ -1,15 +1,12 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/term"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -137,7 +134,7 @@ func TestTUISessionDrivesAThreadEndToEnd(t *testing.T) {
 	keys <- tuiKey{Kind: keyEnter}
 
 	frame = term.waitNextDraw(t, containsLine("backlog line"))
-	for _, want := range []string{`"the tui job"`, "AgentTunnel", "agent-orchestrator:running"} {
+	for _, want := range []string{"the tui job", "AgentTunnel", "agent-orchestrator:running"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("thread frame missing %q:\n%s", want, frame)
 		}
@@ -277,54 +274,6 @@ func TestTUISessionStartsATurnOnAnIdleThread(t *testing.T) {
 	}
 }
 
-// The real terminal wrapper enters the alternate screen, paints whole frames
-// with explicit erase/carriage returns, and restores on exit — idempotently.
-func TestTUIRawTerminalEntersDrawsAndRestores(t *testing.T) {
-	var madeRaw, restored int
-	ctl := &termCtl{
-		fd:      1,
-		makeRaw: func(int) (*term.State, error) { madeRaw++; return &term.State{}, nil },
-		restore: func(int, *term.State) error { restored++; return nil },
-		getSize: func(int) (int, int, error) { return 100, 24, nil },
-	}
-	var out bytes.Buffer
-	term := &rawTerminal{w: &out, ctl: ctl}
-
-	if err := term.Enter(); err != nil {
-		t.Fatalf("enter: %v", err)
-	}
-	if madeRaw != 1 {
-		t.Fatalf("MakeRaw ran %d times", madeRaw)
-	}
-	if enter := out.String(); !strings.HasPrefix(enter, "\x1b[?1049h\x1b[?25l") {
-		t.Fatalf("enter bytes = %q", enter)
-	}
-
-	out.Reset()
-	if err := term.Draw("alpha\nbeta"); err != nil {
-		t.Fatalf("draw: %v", err)
-	}
-	got := out.String()
-	for _, want := range []string{"\x1b[H", "alpha\x1b[K\r\nbeta\x1b[K", "\x1b[J"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("draw bytes %q missing %q", got, want)
-		}
-	}
-
-	term.Exit()
-	if restored != 1 {
-		t.Fatalf("Restore ran %d times", restored)
-	}
-	if exit := out.String(); !strings.Contains(exit, "\x1b[?25h\x1b[?1049l") {
-		t.Fatalf("exit bytes = %q", exit)
-	}
-	// A second Exit (a deferred restore racing an explicit one) is harmless.
-	term.Exit()
-	if restored != 1 {
-		t.Fatalf("Restore ran %d times after a second Exit", restored)
-	}
-}
-
 func TestParseTUIArgs(t *testing.T) {
 	ref, err := parseTuiArgs([]string{"th_1"})
 	if err != nil || ref != "th_1" {
@@ -390,7 +339,7 @@ func TestTUISessionDraftOpensOnTheThreadSurface(t *testing.T) {
 
 	// Release the reply: the draft opens, and the tab switches back with it.
 	close(release)
-	frame := term.waitNextDraw(t, containsLine(`"the draft thread"`))
+	frame := term.waitNextDraw(t, containsLine("the draft thread"))
 	if strings.Contains(frame, "notes body loaded") {
 		t.Fatalf("the draft opened behind the notes tab:\n%s", frame)
 	}

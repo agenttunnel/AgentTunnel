@@ -90,7 +90,7 @@ func TestTUIPaneFollowsScrollsAndCloses(t *testing.T) {
 	const cols, rows = 40, 6
 	last := func() string {
 		out := m.paneRows(cols, rows)
-		return out[len(out)-1].plain()
+		return strings.TrimLeft(out[len(out)-1].plain(), " ")
 	}
 	if got := last(); !strings.HasPrefix(got, "line 29") {
 		t.Fatalf("follow view ends at %q, want line 29", got)

@@ -265,7 +265,7 @@ func (m *tuiModel) paletteBox(cols, rows int) ([]tuiRow, int) {
 		gap := max(contentW-left.width()-hint.width(), 1)
 		row := left.join(tuiText(strings.Repeat(" ", gap), ink), hint).fit(contentW).padTo(contentW, ink)
 		if selected {
-			row = row.withBG(tuiColSelect)
+			row = row.selected()
 		}
 		inner = append(inner, row)
 	}
@@ -285,7 +285,7 @@ func tuiPaintModal(body []tuiRow, cols int, box []tuiRow, width int) []tuiRow {
 	top := (len(body) - len(box)) / 2
 	left := (cols - width) / 2
 	for i, line := range box {
-		row := body[top+i]
+		row := body[top+i].padTo(cols, tuiInk{})
 		before := row.cut(0, left).padTo(left, tuiInk{})
 		after := row.cut(left+width, cols+width)
 		body[top+i] = before.join(line, after)

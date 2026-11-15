@@ -147,7 +147,7 @@ func (m *tuiModel) dialogBox(cols, rows int) ([]tuiRow, int) {
 			}
 			row := tuiText(marker, accent).join(tuiText(d.items[i].label, ink)).fit(contentW).padTo(contentW, ink)
 			if selected {
-				row = row.withBG(tuiColSelect)
+				row = row.selected()
 			}
 			inner = append(inner, row)
 		}

@@ -372,7 +372,7 @@ func tuiViewFrame(cols, rows int, title string, lines []tuiRow, sel int, status 
 	marked := make([]tuiRow, len(lines))
 	copy(marked, lines)
 	if sel >= 0 && sel < len(marked) {
-		marked[sel] = marked[sel].fit(w).padTo(w, tuiInk{}).withBG(tuiColSelect)
+		marked[sel] = marked[sel].fit(w).padTo(w, tuiInk{}).selected()
 	}
 	out := fitRows(append([]tuiRow(nil), tuiScrollRows(marked, max(sel, 0), content)...), content)
 	out = append(out, fitRows([]tuiRow{status}, 1)...)
