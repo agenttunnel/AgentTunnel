@@ -28,6 +28,7 @@ export type PaletteActions<P extends string> = {
   busy: boolean;
   autoMode: boolean;
   peerMailbox: boolean;
+  compact: boolean;
   panels: Record<P, { label: string; key: string }>;
   /** Panels that are always open; they get no toggle entry. */
   pinned: P[];
@@ -42,6 +43,7 @@ export type PaletteActions<P extends string> = {
   stopTurn: () => void;
   toggleAutoMode: () => void;
   togglePeerMailbox: () => void;
+  toggleCompact: () => void;
 };
 
 const CENTER_TABS: { tab: CenterTab; label: string }[] = [
@@ -62,6 +64,9 @@ export function buildCommands<P extends string>(a: PaletteActions<P>): PaletteIt
 
   if (a.hasThread) {
     for (const { tab, label } of CENTER_TABS) cmd(`tab:${tab}`, "Navigate", label, () => a.setTab(tab));
+    cmd("view:compact", "Navigate", "Toggle compact mode", a.toggleCompact, {
+      detail: a.compact ? "on" : "off",
+    });
     for (const id of Object.keys(a.panels) as P[]) {
       if (a.pinned.includes(id)) continue;
       const open = a.isPanelOpen(id);

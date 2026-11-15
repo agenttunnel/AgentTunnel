@@ -503,6 +503,25 @@ select {
 .app.aside-closed {
   --as-track: 44px;
 }
+/* Compact mode (Cmd/Ctrl+S): the thread and its composer fill the window. The
+ * titlebar keeps its row but turns into a bare drag strip, so the macOS traffic
+ * lights still have room and the window stays draggable. */
+.app.compact {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 46px minmax(0, 1fr);
+}
+.app.compact .titlebar {
+  border-bottom: 0;
+  background: transparent;
+}
+.app.compact .titlebar > *,
+.app.compact .project-tabs,
+.app.compact .sidebar,
+.app.compact .aside,
+.app.compact .split,
+.app.compact .chat-head {
+  display: none;
+}
 .titlebar {
   grid-column: 1 / -1;
   --wails-draggable: drag;

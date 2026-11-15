@@ -29,6 +29,7 @@ export type SlashActions<P extends string> = {
   stopTurn: () => void;
   newThread: () => void;
   saveDefaults: () => void;
+  toggleCompact: () => void;
 };
 
 const CENTER_TABS: { tab: CenterTab; description: string }[] = [
@@ -65,6 +66,11 @@ export function buildCommands<P extends string>(a: SlashActions<P>): SlashComman
     { name: "peers", description: "Toggle agent-to-agent messages for this thread", run: () => a.togglePeerMailbox() },
     { name: "stop", description: "Stop the turn running on this thread", run: () => a.stopTurn() },
     { name: "new", description: "Start a new thread in this project", run: () => a.newThread() },
+    {
+      name: "compact",
+      description: "Hide the side panes and top bar for a clean composer",
+      run: () => a.toggleCompact(),
+    },
     { name: "defaults", description: "Save this view as the default for new threads", run: () => a.saveDefaults() },
     { name: "settings", description: "Open settings", run: () => a.openSettings() },
     { name: "help", description: "Show the how-to sheet", run: () => a.openHelp() },
