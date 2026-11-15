@@ -373,6 +373,67 @@ func TestApplyRecordsReleaseNotesUntilNewBuildRuns(t *testing.T) {
 	}
 }
 
+func TestCheckDetectsExternalUpdate(t *testing.T) {
+	linuxAsset := Asset{Name: "agenttunnel-go-linux-amd64.tar.gz"}
+	g := newFakeGitHub(t, nil)
+	g.releases = []Release{release("main-fff0000", false, linuxAsset)}
+
+	tests := []struct {
+		name        string
+		onDisk      string
+		wantAvail   bool
+		wantInstall string
+	}{
+		{
+			name:      "on-disk binary still old: update offered",
+			onDisk:    "abc1234",
+			wantAvail: true,
+		},
+		{
+			name:        "on-disk binary already updated: restart needed",
+			onDisk:      "fff0000",
+			wantAvail:   false,
+			wantInstall: "fff0000",
+		},
+		{
+			name:      "on-disk version unknown: update still offered",
+			onDisk:    "",
+			wantAvail: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u := g.updater("abc1234", Install{Kind: KindBin, Path: t.TempDir()}, "linux", "amd64")
+			u.probeOnDisk = func(context.Context) string { return tc.onDisk }
+			st, err := u.Check(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Available != tc.wantAvail {
+				t.Fatalf("Available = %v, want %v", st.Available, tc.wantAvail)
+			}
+			if st.Installed != tc.wantInstall {
+				t.Fatalf("Installed = %q, want %q", st.Installed, tc.wantInstall)
+			}
+		})
+	}
+}
+
+func TestParseExeVersion(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"atd abc1234\n", "abc1234"},
+		{"agenttunnel-desktop 1.2.3\n", "1.2.3"},
+		{"atd fff0000", "fff0000"},
+		{"", ""},
+		{"atd\n", "atd"},
+	}
+	for _, tc := range tests {
+		if got := parseExeVersion(tc.in); got != tc.want {
+			t.Errorf("parseExeVersion(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestUnpackRejectsEscapingPaths(t *testing.T) {
 	for _, name := range []string{"../evil", "/abs/evil"} {
 		archive := makeArchive(t, entry{name: name, body: "x"})

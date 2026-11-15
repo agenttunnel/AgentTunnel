@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -99,6 +100,13 @@ type Updater struct {
 	// the notes feature.
 	NotesPath string
 
+	// probeOnDisk returns the version of the binary at the executable path,
+	// or "" if it cannot be determined. nil runs the on-disk executable with
+	// --version. A running process keeps its old build even after its file is
+	// replaced, so this reads the version the next start would run — letting
+	// Check detect an update the install script applied out of band.
+	probeOnDisk func(context.Context) string
+
 	notesMu sync.Mutex
 }
 
@@ -170,7 +178,48 @@ func (u *Updater) plan(ctx context.Context) (Status, Release, error) {
 	}
 	st.Latest = versionOf(rel.Tag)
 	st.Available = st.Latest != u.Version
+	// An external updater (the install script, or `atd update` in another
+	// terminal) may have already replaced the on-disk binary. If the on-disk
+	// version matches Latest, the only remaining step is a restart, so report
+	// it as installed rather than available.
+	if st.Available {
+		if v := u.onDiskVersion(ctx); v != "" && v == st.Latest {
+			st.Available = false
+			st.Installed = st.Latest
+		}
+	}
 	return st, rel, nil
+}
+
+// onDiskVersion reports the version of the binary at the executable path. A
+// running process keeps its old build even after the file on disk is replaced
+// (the kernel holds the inode), so the next execution of that path runs the
+// new build. We exploit this by spawning the on-disk binary with --version.
+func (u *Updater) onDiskVersion(ctx context.Context) string {
+	if u.probeOnDisk != nil {
+		return u.probeOnDisk(ctx)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(probeCtx, exe, "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return parseExeVersion(string(out))
+}
+
+// parseExeVersion extracts the version token from "--version" output, which is
+// "atd <version>" or "agenttunnel-desktop <version>".
+func parseExeVersion(out string) string {
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[len(fields)-1]
 }
 
 // TakeReleaseNotes returns the notes saved by Apply if they describe the

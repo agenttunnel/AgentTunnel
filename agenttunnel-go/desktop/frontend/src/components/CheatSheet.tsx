@@ -82,7 +82,8 @@ export function CheatSheet({
               </li>
               <li>
                 Each top-level thread in a git project gets its own worktree on its first turn.
-                Subthreads share their parent's.
+                Subthreads share their parent's. The Worktrees tab shows every checkout and marks
+                the ones whose pull requests merged as ready to prune.
               </li>
               <li>
                 <kbd>!</kbd> followed by a command runs it in the thread's project.
@@ -90,6 +91,15 @@ export function CheatSheet({
               <li>
                 Hold <kbd>{HOLD_MOD_LABEL}</kbd>+
                 <kbd>T</kbd> to dictate; release to insert the text.
+              </li>
+              <li>
+                <kbd>{HOLD_MOD_LABEL}</kbd>+<kbd>S</kbd> or <code>/compact</code> hides the side
+                panes and the top bar for a clean composer window; press either again to bring
+                everything back.
+              </li>
+              <li>
+                <kbd>Option</kbd>/<kbd>Alt</kbd>+<kbd>Tab</kbd> opens All threads;
+                press <kbd>Tab</kbd> again to step through the list.
               </li>
             </ul>
           </section>
@@ -112,6 +122,9 @@ export function CheatSheet({
               </li>
               <li>
                 <code>/stop</code> stops the running turn; <code>/new</code> starts a thread.
+              </li>
+              <li>
+                <code>/compact</code> toggles the clean composer view.
               </li>
               <li>
                 <code>/defaults</code> saves this view for new threads; <code>/settings</code>{" "}

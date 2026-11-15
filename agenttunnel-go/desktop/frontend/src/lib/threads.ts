@@ -1,7 +1,9 @@
-// Thread-list layout: pure ordering, no React. A subthread sits directly under
-// the thread that started it, one level deeper. The daemon already sorts the
-// list by submission time, newest first; this keeps that order among siblings
-// and only moves the subthreads.
+// Thread-list layout and search: pure data, no React. A subthread sits directly
+// under the thread that started it, one level deeper. The daemon already sorts
+// the list by submission time, newest first; this keeps that order among
+// siblings and only moves the subthreads.
+
+import { fuzzyScore } from "./fuzzy";
 
 /** A thread row with its depth in the subthread tree (0 at the top level) and
  * how many subthreads it started directly. */
@@ -61,4 +63,39 @@ export function arrangeThreads<T extends { id: string; parentThreadId?: string }
   // the top level rather than dropping them.
   for (const t of list) place(t, 0);
   return out;
+}
+
+/** The thread fields search reads. The project name is passed separately so a
+ * single-project list (the sidebar) can leave it out and avoid repeating it on
+ * every row. */
+export type SearchableThread = {
+  title: string;
+  firstPrompt?: string;
+};
+
+// A prompt hit must be stronger than a title hit to win, so a thread whose
+// title matches leads a thread that only mentions the query in its prompt. The
+// project name is a looser signal: useful across projects, never enough on its
+// own to outrank a title.
+const PROMPT_WEIGHT = 0.7;
+const PROJECT_WEIGHT = 0.6;
+
+/**
+ * The best fuzzy match of `query` in a thread's title, first prompt, or project
+ * name. Null means the thread does not match.
+ */
+export function threadSearchScore(
+  t: SearchableThread,
+  query: string,
+  projectName?: string,
+): number | null {
+  const title = fuzzyScore(query, t.title);
+  const prompt = t.firstPrompt ? fuzzyScore(query, t.firstPrompt) : null;
+  const project = projectName ? fuzzyScore(query, projectName) : null;
+  if (title === null && prompt === null && project === null) return null;
+  return Math.max(
+    title ?? -Infinity,
+    (prompt ?? -Infinity) * PROMPT_WEIGHT,
+    (project ?? -Infinity) * PROJECT_WEIGHT,
+  );
 }
