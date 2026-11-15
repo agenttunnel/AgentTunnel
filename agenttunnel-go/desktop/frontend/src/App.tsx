@@ -1004,6 +1004,10 @@ const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } 
 
 // The jump-to-top pill appears once the stream is scrolled this far down.
 const TOP_SHOW = 240;
+// The log box is much shorter than the transcript, so its pill shows sooner.
+const LOGS_TOP_SHOW = 80;
+// Output this close to the end counts as "at the bottom" for the log pills.
+const LOGS_BOTTOM_SHOW = 48;
 
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
@@ -1348,15 +1352,31 @@ export default function App() {
   // Reopening a collapsed box jumps back to the newest output.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
   const logsWasOpen = useRef(logsOpen);
+  // Only the edges are stored, so scrolling re-renders when a jump pill should
+  // mount or unmount — not on every pixel of the log.
+  const [logsAtTop, setLogsAtTop] = useState(false);
+  const [logsAtBottom, setLogsAtBottom] = useState(true);
   useEffect(() => {
     const opening = !logsWasOpen.current && logsOpen;
     logsWasOpen.current = logsOpen;
     const el = actBodyRef.current;
     if (!el) return;
-    if (opening || el.scrollHeight - el.scrollTop - el.clientHeight < 48) {
+    if (opening || el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW) {
       el.scrollTop = el.scrollHeight;
     }
+    setLogsAtTop(el.scrollTop > LOGS_TOP_SHOW);
+    setLogsAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW);
   }, [live, logsOpen]);
+
+  const logsScrollToTop = () => {
+    const el = actBodyRef.current;
+    if (el) el.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const logsScrollToBottom = () => {
+    const el = actBodyRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -4873,7 +4893,7 @@ export default function App() {
               {/* Zero-height sticky anchor: mounting the jump-to-top pill
                   never shifts the transcript (it overlays, unlike a plain
                   sticky sibling, which would push content down). */}
-              <div className="stream-top-anchor">
+              <div className="scroll-top-anchor">
                 {atTop && (
                   <button
                     type="button"
@@ -5015,7 +5035,32 @@ export default function App() {
                     </button>
                   </div>
                   {logsOpen && (
-                    <div className="act-body" ref={actBodyRef}>
+                    <div
+                      className="act-body"
+                      ref={actBodyRef}
+                      onScroll={(e) => {
+                        const el = e.currentTarget;
+                        setLogsAtTop(el.scrollTop > LOGS_TOP_SHOW);
+                        setLogsAtBottom(
+                          el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW,
+                        );
+                      }}
+                    >
+                      {/* Zero-height sticky anchor: the jump-to-top pill
+                          overlays the log instead of pushing lines down. */}
+                      <div className="scroll-top-anchor">
+                        {logsAtTop && (
+                          <button
+                            type="button"
+                            className="scroll-top"
+                            onClick={logsScrollToTop}
+                            aria-label="Jump to start of logs"
+                            title="Jump to start of logs"
+                          >
+                            ↑
+                          </button>
+                        )}
+                      </div>
                       {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
                       {live.slice(-60).map((l, i) =>
                         l.kind === "text" || l.kind === "reasoning" ? (
@@ -5027,6 +5072,17 @@ export default function App() {
                             {l.text}
                           </div>
                         ),
+                      )}
+                      {!logsAtBottom && (
+                        <button
+                          type="button"
+                          className="scroll-bottom"
+                          onClick={logsScrollToBottom}
+                          aria-label="Jump to latest log output"
+                          title="Jump to latest log output"
+                        >
+                          ↓
+                        </button>
                       )}
                     </div>
                   )}
