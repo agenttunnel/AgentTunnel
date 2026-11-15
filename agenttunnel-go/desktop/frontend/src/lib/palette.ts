@@ -47,6 +47,7 @@ export type PaletteActions<P extends string> = {
 const CENTER_TABS: { tab: CenterTab; label: string }[] = [
   { tab: "chat", label: "Show chat" },
   { tab: "review", label: "Show review" },
+  { tab: "files", label: "Show files" },
   { tab: "graph", label: "Show agent graph" },
   { tab: "board", label: "Show task board" },
   { tab: "p2p", label: "Show agent chat" },

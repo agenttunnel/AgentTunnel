@@ -2756,15 +2756,22 @@ table.grid tr.rowlink:hover td {
 }
 
 /* --- files -------------------------------------------------------------- */
-/* Files view: lazy tree on the left, one CodeMirror buffer on the right. */
-.files-section[hidden] {
+/* Files view: lazy tree on the left, one CodeMirror buffer on the right.
+ * It is a center tab, so the wrapper fills the column and the panes scroll. */
+.files-center {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 14px 20px 16px;
+}
+.files-center[hidden] {
   display: none;
 }
 .files-view {
   display: flex;
+  flex: 1;
+  min-height: 0;
   gap: 10px;
-  height: 70vh;
-  min-height: 320px;
 }
 .files-tree-pane,
 .files-editor-pane {
@@ -2773,9 +2780,14 @@ table.grid tr.rowlink:hover td {
   min-width: 0;
   min-height: 0;
 }
+/* Real room for the tree in the wide center column (about 300px at a 1000px
+ * center), but it yields to the editor when the window narrows instead of
+ * crowding it. */
 .files-tree-pane {
-  flex: 0 0 38%;
-  max-width: 180px;
+  flex-grow: 0;
+  flex-shrink: 1;
+  flex-basis: clamp(160px, 30%, 380px);
+  max-width: 380px;
 }
 .files-tree {
   flex: 1;
@@ -2850,7 +2862,6 @@ table.grid tr.rowlink:hover td {
   font-size: 12px;
   line-height: 1.55;
 }
-.files-section,
 .diff-section,
 .pr-section,
 .stats-section {
