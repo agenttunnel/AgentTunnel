@@ -134,6 +134,13 @@ export function CheatSheet({
                 <code>/compact</code> toggles the clean composer view.
               </li>
               <li>
+                <code>/vim</code> turns on Vimium-style keys outside text fields: <kbd>f</kbd> shows
+                link hints (type a label to click), <kbd>j</kbd>/<kbd>k</kbd> scroll,{" "}
+                <kbd>Ctrl</kbd>+<kbd>D</kbd>/<kbd>U</kbd> scroll half a page, <kbd>g</kbd>/
+                <kbd>G</kbd> jump to the top or bottom, and <kbd>Esc</kbd> leaves the composer. While
+                on, <kbd>F</kbd> no longer opens Files; use <code>/files</code>.
+              </li>
+              <li>
                 <code>/defaults</code> saves this view for new threads; <code>/settings</code>{" "}
                 opens settings.
               </li>

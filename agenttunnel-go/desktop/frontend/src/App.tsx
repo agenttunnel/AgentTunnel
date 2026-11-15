@@ -91,6 +91,7 @@ import {
   loadCheatSheetOptedOut,
   saveCheatSheetOptedOut,
 } from "./components/CheatSheet";
+import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
 import type {
@@ -1232,6 +1233,9 @@ export default function App() {
   // The how-to sheet opens on every launch unless the user opted out (persisted).
   const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
   const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
+  // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
+  const [vimKeys, setVimKeys] = useState(loadVimKeys);
+  useVimKeys(vimKeys);
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
   // Pasted text per draft: draftKey -> token id -> full text.
   const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
@@ -2497,8 +2501,9 @@ export default function App() {
       }
       if (t instanceof HTMLElement && t.isContentEditable) return;
       // F opens the Files center tab; the aside letters below come from ASIDE_META.
+      // With /vim on, F is the link-hint key instead (Files stays on /files).
       if (e.key.toLowerCase() === "f") {
-        setTab("files");
+        if (!vimKeys) setTab("files");
         return;
       }
       const id = (Object.keys(ASIDE_META) as AsideTabId[]).find(
@@ -2508,7 +2513,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openPanel, cheatSheetOpen, setTab]);
+  }, [activeId, openPanel, cheatSheetOpen, setTab, vimKeys]);
 
   // While an agent is open in the detail panel, poll its log.
   useEffect(() => {
@@ -3406,6 +3411,11 @@ export default function App() {
       newThread: () => newThread(),
       saveDefaults: () => saveThreadDefaults(),
       toggleCompact: () => setCompact((v) => !v),
+      toggleVimKeys: () => {
+        const next = !vimKeys;
+        saveVimKeys(next);
+        setVimKeys(next);
+      },
     });
   const slashQ = slashQuery(input);
   const slashMatches: SlashCommand[] =
