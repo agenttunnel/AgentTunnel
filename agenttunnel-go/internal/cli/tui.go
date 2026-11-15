@@ -236,6 +236,7 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 		if m.screen != tuiScreenThread {
 			tracker = nil
 		}
+		tuiLoadSide(m)
 		if m.view != lastView {
 			lastView = m.view
 			dirty = true
@@ -345,6 +346,9 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 					return err
 				}
 				dirty = true
+			case k.Kind == keyRune && k.Rune == 'n':
+				tuiNewThread(m, "")
+				dirty = true
 			case k.Kind == keyRune && k.Rune == 'r':
 				if err := tuiRefreshList(ctx, c, m); err == nil {
 					dirty = true
@@ -422,10 +426,16 @@ func tuiThreadKey(m *tuiModel, tracker **turnTracker, k tuiKey, rows int, submit
 		submit(m.takeInput())
 	case keyBackspace:
 		m.backspace()
+	case keyTab:
+		m.completeSlash()
 	case keyUp:
-		m.scrollUp(1)
+		if !m.moveSlash(-1) {
+			m.scrollUp(1)
+		}
 	case keyDown:
-		m.scrollDown(1)
+		if !m.moveSlash(1) {
+			m.scrollDown(1)
+		}
 	case keyPgUp:
 		m.scrollUp(tuiPage(rows))
 	case keyPgDn:

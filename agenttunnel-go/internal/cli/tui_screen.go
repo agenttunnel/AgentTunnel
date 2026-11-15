@@ -146,6 +146,10 @@ type tuiModel struct {
 
 	// input is the single-line editor for the thread screen.
 	input []rune
+	// slashSel is the highlighted slash hint; reset whenever the input changes.
+	slashSel int
+	// side is the thread screen's right pane data.
+	side tuiSide
 }
 
 func newTuiModel(now time.Time) *tuiModel {
@@ -408,6 +412,7 @@ func (m *tuiModel) closeQuestion() {
 // typeRune edits the input line.
 func (m *tuiModel) typeRune(r rune) {
 	m.input = append(m.input, r)
+	m.slashSel = 0
 }
 
 // backspace deletes the last typed rune.
@@ -415,6 +420,7 @@ func (m *tuiModel) backspace() {
 	if len(m.input) > 0 {
 		m.input = m.input[:len(m.input)-1]
 	}
+	m.slashSel = 0
 }
 
 // takeInput returns the typed line and clears the editor. The line is what
@@ -423,6 +429,7 @@ func (m *tuiModel) backspace() {
 func (m *tuiModel) takeInput() string {
 	line := strings.TrimSpace(string(m.input))
 	m.input = nil
+	m.slashSel = 0
 	return line
 }
 
@@ -644,7 +651,7 @@ func (m *tuiModel) hints() []tuiHint {
 	if m.screen == tuiScreenThread {
 		return []tuiHint{{"enter", "send"}, {"esc", "back"}, {"pgup/pgdn", "scroll"}, {"ctrl+k", "commands"}, {"ctrl+c", "quit"}}
 	}
-	return []tuiHint{{"↑/↓", "select"}, {"enter", "open"}, {"tab", "views"}, {"r", "refresh"}, {"ctrl+k", "commands"}, {"q", "quit"}}
+	return []tuiHint{{"↑/↓", "select"}, {"enter", "open"}, {"n", "new"}, {"tab", "views"}, {"r", "refresh"}, {"ctrl+k", "commands"}, {"q", "quit"}}
 }
 
 // renderList draws the thread list the way opencode's session picker looks: a
@@ -668,7 +675,7 @@ func (m *tuiModel) renderList(cols, rows int) []tuiRow {
 	}
 	switch {
 	case len(m.rows) == 0:
-		out = append(out, tuiText("  no threads yet; start one with `agenttunnel run <template>`", tuiInk{fg: tuiColFaint}).fit(cols))
+		out = append(out, m.homeRows(cols, rows-len(out), "press n to start a thread")...)
 	case rows-len(out) >= 1:
 		visible, base := tuiListWindow(m.rows, m.cursor, rows-len(out))
 		for i, row := range visible {
@@ -748,6 +755,14 @@ func tuiListWindow(rows []psRow, cursor, height int) ([]psRow, int) {
 // conversation with quiet gutters instead of a frame, any pending question and
 // the roster, and a panel prompt pinned at the bottom.
 func (m *tuiModel) renderThread(cols, rows int) []tuiRow {
+	if !m.sideShown(cols, rows) {
+		return m.renderThreadMain(cols, rows)
+	}
+	mainCols := cols - tuiSideWidth
+	return m.withSidebar(m.renderThreadMain(mainCols, rows), mainCols, rows)
+}
+
+func (m *tuiModel) renderThreadMain(cols, rows int) []tuiRow {
 	input := m.inputBox(cols, rows)
 	innerW := max(cols-2, 1)
 	innerH := rows - len(input)
@@ -763,10 +778,17 @@ func (m *tuiModel) renderThread(cols, rows int) []tuiRow {
 		tail = questionRows(*m.pending, innerW)
 	}
 	tail = append(tail, m.rosterRow(innerW))
+	tail = append(tail, m.slashRows(innerW)...)
 	if len(tail) > innerH {
 		tail = tail[len(tail)-innerH:]
 	}
-	inner := append(m.logPane(innerW, innerH-len(tail)), tail...)
+	var pane []tuiRow
+	if len(m.log) == 0 && m.pending == nil && m.scroll == 0 {
+		pane = m.homeRows(innerW, innerH-len(tail), "type a message and press enter to start")
+	} else {
+		pane = m.logPane(innerW, innerH-len(tail))
+	}
+	inner := append(pane, tail...)
 	margin := tuiText("  ", tuiInk{})
 	for i := range inner {
 		inner[i] = margin.join(inner[i]).fit(cols).padTo(cols, tuiInk{})
@@ -778,6 +800,35 @@ func (m *tuiModel) renderThread(cols, rows int) []tuiRow {
 	}
 	body = append(body, fitRows(inner, innerH)...)
 	return append(body, input...)
+}
+
+// homeRows is the empty-state home, opencode style: the wordmark centered a
+// little above the middle of the pane, with one quiet tip under it.
+func (m *tuiModel) homeRows(width, height int, tip string) []tuiRow {
+	if height < 1 {
+		return nil
+	}
+	lines := []tuiRow{
+		tuiText("◆ ", tuiInk{fg: tuiColAccent, bold: true}).join(
+			tuiText("Agent", tuiInk{fg: tuiColFaint, bold: true}),
+			tuiText("Tunnel", tuiInk{fg: tuiColText, bold: true})),
+		tuiText("bring your own subscription", tuiInk{fg: tuiColFaint}),
+		nil,
+		tuiText(tip, tuiInk{fg: tuiColDim}),
+	}
+	if height < len(lines) {
+		lines = lines[len(lines)-1:]
+	}
+	top := max((height-len(lines))/2-1, 0)
+	out := make([]tuiRow, 0, height)
+	for i := 0; i < top; i++ {
+		out = append(out, nil)
+	}
+	for _, l := range lines {
+		pad := max((width-l.width())/2, 0)
+		out = append(out, tuiText(strings.Repeat(" ", pad), tuiInk{}).join(l).fit(width))
+	}
+	return fitRows(out, height)
 }
 
 // threadBar is the panel row over the conversation: the title, the project,

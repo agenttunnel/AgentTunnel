@@ -84,7 +84,7 @@ func TestTUIScreenListRender(t *testing.T) {
 		{
 			name: "empty list",
 			rows: nil,
-			want: []string{"no threads yet; start one with `agenttunnel run <template>`"},
+			want: []string{"press n to start a thread"},
 		},
 	}
 
