@@ -89,7 +89,8 @@ export function CheatSheet({
               </li>
               <li>
                 Each top-level thread in a git project gets its own worktree on its first turn.
-                Subthreads share their parent's.
+                Subthreads share their parent's. The Worktrees tab shows every checkout and marks
+                the ones whose pull requests merged as ready to prune.
               </li>
               <li>
                 <kbd>!</kbd> followed by a command runs it in the thread's project.

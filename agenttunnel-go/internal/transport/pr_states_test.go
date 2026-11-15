@@ -47,6 +47,9 @@ func TestThreadStatesMapsPRAndDirtyPerThread(t *testing.T) {
 		"merged": {Number: 9, URL: "https://github.com/o/r/pull/9", State: "merged", ReviewDecision: "none"},
 	}
 	wantDirty := map[contracts.ThreadID]bool{"open": true, "merged": false, "noPR": false, "notReady": false, "dirtyNoPR": true}
+	wantKnown := map[contracts.ThreadID]bool{
+		"open": true, "merged": true, "noPR": true, "notReady": true, "dirtyNoPR": true,
+	}
 	if len(got) != len(wantDirty) {
 		t.Fatalf("threadStates = %+v, want ids %v", got, wantDirty)
 	}
@@ -57,6 +60,9 @@ func TestThreadStatesMapsPRAndDirtyPerThread(t *testing.T) {
 		}
 		if st.Dirty != dirty {
 			t.Fatalf("threadStates[%s].Dirty = %v, want %v", id, st.Dirty, dirty)
+		}
+		if st.PRKnown != wantKnown[id] {
+			t.Fatalf("threadStates[%s].PRKnown = %v, want %v", id, st.PRKnown, wantKnown[id])
 		}
 		if pr, want := st.PR, wantPR[id]; (pr == nil) != (want == (ThreadPR{})) || (pr != nil && *pr != want) {
 			t.Fatalf("threadStates[%s].PR = %+v, want %+v", id, pr, want)
@@ -73,8 +79,8 @@ func TestThreadStatesUncachedDirectoryFailsSoft(t *testing.T) {
 		func(string) (bool, bool) { return false, false },
 	)
 	st, ok := got["t1"]
-	if !ok || st.PR != nil || st.Dirty {
-		t.Fatalf("threadStates[t1] = %+v, %v; want clean with no PR", st, ok)
+	if !ok || st.PR != nil || st.PRKnown || st.Dirty {
+		t.Fatalf("threadStates[t1] = %+v, %v; want clean, unknown, with no PR", st, ok)
 	}
 }
 
@@ -90,5 +96,8 @@ func TestThreadStatesKeepsDirtyWhenForgeHasNoRequest(t *testing.T) {
 	st := got["t1"]
 	if st.PR != nil || !st.Dirty {
 		t.Fatalf("threadStates[t1] = %+v; want dirty with no PR", st)
+	}
+	if !st.PRKnown {
+		t.Fatalf("threadStates[t1].PRKnown = false; a failed forge answer is still an answer")
 	}
 }
