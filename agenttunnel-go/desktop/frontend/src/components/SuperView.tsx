@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Project, ThreadSummary } from "../App";
+import { threadSearchScore } from "../lib/threads";
 
 /** One group of the super view: threads sharing a lifecycle state. */
 export type SuperGroups = {
@@ -12,10 +13,13 @@ export type SuperGroups = {
  * groupSuperThreads splits the daemon-wide thread list into the super view's
  * three groups: threads with live agents, threads whose newest completed turn
  * ended after the last view, and everything else. Archived threads stay out.
- * Each group sorts by recency (updatedAt desc). Pure, so it is smoke-testable
- * without React.
+ * Each group sorts by recency (updatedAt desc) unless the caller already ranked
+ * the list for a search. Pure, so it is smoke-testable without React.
  */
-export function groupSuperThreads(threads: ThreadSummary[]): SuperGroups {
+export function groupSuperThreads(
+  threads: ThreadSummary[],
+  preserveOrder = false,
+): SuperGroups {
   const out: SuperGroups = { running: [], unseen: [], quiet: [] };
   for (const t of threads) {
     if (t.archived) continue;
@@ -24,11 +28,13 @@ export function groupSuperThreads(threads: ThreadSummary[]): SuperGroups {
     else if (t.unseen) out.unseen.push(t);
     else out.quiet.push(t);
   }
-  const byRecency = (a: ThreadSummary, b: ThreadSummary) =>
-    (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
-  out.running.sort(byRecency);
-  out.unseen.sort(byRecency);
-  out.quiet.sort(byRecency);
+  if (!preserveOrder) {
+    const byRecency = (a: ThreadSummary, b: ThreadSummary) =>
+      (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    out.running.sort(byRecency);
+    out.unseen.sort(byRecency);
+    out.quiet.sort(byRecency);
+  }
   return out;
 }
 
@@ -37,6 +43,20 @@ function fmtDate(at?: string): string {
   const date = new Date(at);
   if (Number.isNaN(date.getTime()) || date.getFullYear() < 1970) return "";
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+/** The modifier the super view's shortcut is named after. */
+const ALL_THREADS_MODIFIER = IS_MAC ? "Option" : "Alt";
+
+/**
+ * Whether a key event is the all-threads shortcut: Option+Tab on macOS,
+ * Alt+Tab elsewhere. Some webviews also expose the Fn key as a modifier, so it
+ * works there too when the keyboard reports it.
+ */
+export function isAllThreadsShortcut(e: KeyboardEvent): boolean {
+  if (e.key !== "Tab" || e.metaKey || e.ctrlKey || e.shiftKey || e.isComposing) return false;
+  return e.altKey || e.getModifierState("Fn");
 }
 
 type GroupSpec = {
@@ -55,40 +75,92 @@ const GROUPS: GroupSpec[] = [
 /**
  * SuperView: every project's threads in one overlay, the answer to "what is
  * running and what finished while I was away". Data comes from App's existing
- * thread.list poll and mark-on-open wiring; this component only groups and
- * renders it. Esc closes, backdrop click closes, a row opens the thread.
+ * thread.list poll and mark-on-open wiring; this component groups, searches,
+ * and renders it. Esc closes, backdrop click closes, a row opens the thread.
+ * Option/Alt+Tab steps through the rows without closing the overlay, so
+ * releasing the modifier leaves it open.
  */
 export function SuperView({
   threads,
   projects,
+  initialThreadId,
   onOpen,
   onClose,
 }: {
   threads: ThreadSummary[];
   projects: Project[];
+  /** The row to highlight first, when a thread was open behind the overlay. */
+  initialThreadId?: string | null;
   onOpen: (t: ThreadSummary) => void;
   onClose: () => void;
 }) {
-  const groups = useMemo(() => groupSuperThreads(threads), [threads]);
+  const [search, setSearch] = useState("");
+  const [cursor, setCursor] = useState<string | null>(initialThreadId ?? null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name])), [projects]);
-  const openedRef = useRef<string | null>(null);
+  const query = search.trim();
+
+  const matches = useMemo(() => {
+    if (!query) return threads;
+    const ranked: { thread: ThreadSummary; score: number }[] = [];
+    for (const t of threads) {
+      const project = t.projectId ? names.get(t.projectId) : undefined;
+      const score = threadSearchScore(t, query, project);
+      if (score !== null) ranked.push({ thread: t, score });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    return ranked.map((r) => r.thread);
+  }, [threads, names, query]);
+
+  const groups = useMemo(
+    () => groupSuperThreads(matches, query !== ""),
+    [matches, query],
+  );
+  const rows = useMemo(
+    () => [...groups.running, ...groups.unseen, ...groups.quiet],
+    [groups],
+  );
+  // A search can hide the thread the cursor was on; fall back to the first row.
+  const cursorId = cursor && rows.some((t) => t.id === cursor) ? cursor : rows[0]?.id ?? null;
+  // Native key repeat can deliver several Tab presses before React re-renders;
+  // read the latest cursor synchronously so every press advances one row.
+  const cursorRef = useRef(cursorId);
+  cursorRef.current = cursorId;
+
+  useEffect(() => {
+    searchRef.current?.focus();
+  }, []);
+
+  const cycle = useCallback(
+    (dir: 1 | -1) => {
+      if (rows.length === 0) return;
+      const at = rows.findIndex((t) => t.id === cursorRef.current);
+      const next = rows[(at + dir + rows.length) % rows.length];
+      cursorRef.current = next.id;
+      setCursor(next.id);
+      // The next row is already rendered, so move focus with the highlight and
+      // Enter/Space opens it once the shortcut is released.
+      const el = document.getElementById(`super-row-${next.id}`);
+      el?.focus();
+      el?.scrollIntoView({ block: "nearest" });
+    },
+    [rows],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing) {
         e.preventDefault();
         onClose();
+        return;
       }
+      if (!isAllThreadsShortcut(e)) return;
+      e.preventDefault();
+      cycle(1);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const open = (t: ThreadSummary) => {
-    if (openedRef.current === t.id) return; // one navigation per row click
-    openedRef.current = t.id;
-    onOpen(t);
-  };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [cycle, onClose]);
 
   return (
     <div className="overlay super-overlay" onClick={onClose}>
@@ -105,33 +177,56 @@ export function SuperView({
           </span>
           <button onClick={onClose}>Close</button>
         </div>
+        <div className="super-search">
+          <input
+            ref={searchRef}
+            className="thread-filter"
+            type="search"
+            placeholder="Search threads…"
+            aria-label="Search all threads"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <span className="super-search-hint" aria-hidden="true">
+            <kbd>{ALL_THREADS_MODIFIER}</kbd>+<kbd>Tab</kbd> cycles
+          </span>
+        </div>
         <div className="super-body">
+          {query !== "" && matches.length === 0 && (
+            <p className="super-empty super-no-match">No threads match that search.</p>
+          )}
           {GROUPS.map((g) => {
-            const rows = groups[g.key];
+            const groupRows = groups[g.key];
+            if (query !== "" && groupRows.length === 0) return null;
             return (
               <section className="super-group" key={g.key}>
                 <h3 className="super-group-title">{g.title}</h3>
-                {rows.length === 0 && <p className="super-empty">{g.empty}</p>}
-                {rows.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className="super-row"
-                    onClick={() => open(t)}
-                    title={t.firstPrompt || t.title || "Untitled thread"}
-                  >
-                    <span className={`dot ${g.dot}`} aria-hidden="true" />
-                    <span className="super-name">{t.title || "Untitled thread"}</span>
-                    {t.projectId && (
-                      <span className="super-project">{names.get(t.projectId) ?? t.projectId}</span>
-                    )}
-                    {t.parentThreadId && <span className="super-parent">subthread</span>}
-                    <span className="super-meta">
-                      {t.messages} messages · {t.agents} agents
-                      {fmtDate(t.updatedAt) && ` · ${fmtDate(t.updatedAt)}`}
-                    </span>
-                  </button>
-                ))}
+                {groupRows.length === 0 && <p className="super-empty">{g.empty}</p>}
+                {groupRows.map((t) => {
+                  const active = t.id === cursorId;
+                  return (
+                    <button
+                      key={t.id}
+                      id={`super-row-${t.id}`}
+                      type="button"
+                      className={`super-row${active ? " is-cursor" : ""}`}
+                      aria-current={active ? "true" : undefined}
+                      onClick={() => onOpen(t)}
+                      title={t.firstPrompt || t.title || "Untitled thread"}
+                    >
+                      <span className={`dot ${g.dot}`} aria-hidden="true" />
+                      <span className="super-name">{t.title || "Untitled thread"}</span>
+                      {t.projectId && (
+                        <span className="super-project">{names.get(t.projectId) ?? t.projectId}</span>
+                      )}
+                      {t.parentThreadId && <span className="super-parent">subthread</span>}
+                      <span className="super-meta">
+                        {t.messages} messages · {t.agents} agents
+                        {fmtDate(t.updatedAt) && ` · ${fmtDate(t.updatedAt)}`}
+                      </span>
+                    </button>
+                  );
+                })}
               </section>
             );
           })}
