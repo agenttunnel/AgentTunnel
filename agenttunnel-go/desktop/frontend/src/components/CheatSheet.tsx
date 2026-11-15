@@ -105,7 +105,7 @@ export function CheatSheet({
             <h4>Slash commands</h4>
             <p className="hint">
               Type <kbd>/</kbd> in the composer. <code>/chat</code>, <code>/review</code>,{" "}
-              <code>/graph</code>, <code>/board</code> switch the center view.
+              <code>/files</code>, <code>/graph</code>, <code>/board</code> switch the center view.
             </p>
             <ul className="cheat-list">
               <li>

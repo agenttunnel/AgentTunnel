@@ -357,13 +357,13 @@ export type DependencyView = {
 };
 
 /** Aside panel tabs: agents + usage are pinned; the rest are addable.
- * (The team graph lives as a center tab beside Chat and Review. See `tab`.) */
+ * (The team graph and the file editor live as center tabs beside Chat and Review.
+ * See `tab`.) */
 type AsideTabId =
   | "agents"
   | "usage"
   | "context"
   | "inherited"
-  | "files"
   | "diff"
   | "pr"
   | "stats"
@@ -375,7 +375,6 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   usage: { label: "Token usage", key: "U" },
   context: { label: "Context", key: "C" },
   inherited: { label: "Inherited", key: "M" },
-  files: { label: "Files", key: "F" },
   diff: { label: "Diff", key: "D" },
   pr: { label: "Pull request", key: "P" },
   stats: { label: "Harness stats", key: "H" },
@@ -1158,7 +1157,7 @@ export default function App() {
   };
 
   const [tab, setTab, setTabDefault] = useThreadScoped<
-    "chat" | "review" | "graph" | "board" | "doc" | "p2p"
+    "chat" | "review" | "files" | "graph" | "board" | "doc" | "p2p"
   >(activeId, "chat", "at.tab");
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -2278,6 +2277,11 @@ export default function App() {
         return;
       }
       if (t instanceof HTMLElement && t.isContentEditable) return;
+      // F opens the Files center tab; the aside letters below come from ASIDE_META.
+      if (e.key.toLowerCase() === "f") {
+        setTab("files");
+        return;
+      }
       const id = (Object.keys(ASIDE_META) as AsideTabId[]).find(
         (k) => ASIDE_META[k].key.toLowerCase() === e.key.toLowerCase(),
       );
@@ -2285,7 +2289,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openPanel, cheatSheetOpen]);
+  }, [activeId, openPanel, cheatSheetOpen, setTab]);
 
   // While an agent is open in the detail panel, poll its log.
   useEffect(() => {
@@ -4799,6 +4803,12 @@ export default function App() {
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
             </div>
             <div
+              className={`tab ${tab === "files" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
+              {...tabProps(tab === "files", () => setTab("files"))}
+            >
+              Files
+            </div>
+            <div
               className={`tab ${tab === "graph" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "graph", () => setTab("graph"))}
             >
@@ -4880,7 +4890,20 @@ export default function App() {
           </div>
         </div>
 
-        {tab === "chat" ? (
+        {/* Kept mounted while hidden so unsaved buffers survive a tab switch.
+            `active` gates the first fs.list load until the tab is first shown. */}
+        {activeId && (
+          <div className="files-center" hidden={tab !== "files"}>
+            <FileEditor
+              key={activeId}
+              rpc={rpcRef.current}
+              threadId={activeId}
+              active={tab === "files"}
+            />
+          </div>
+        )}
+
+        {tab === "files" ? null : tab === "chat" ? (
           <>
             <div
               className="stream"
@@ -5398,17 +5421,6 @@ export default function App() {
         )}
 
         <div className="aside-body">
-          {/* Kept mounted while hidden so unsaved edits survive a tab switch. */}
-          {activeId && (
-            <div className="section files-section" hidden={asideActive !== "files"}>
-              <FileEditor
-                key={activeId}
-                rpc={rpcRef.current}
-                threadId={activeId}
-                active={asideActive === "files"}
-              />
-            </div>
-          )}
           {asideActive === "models" ? (
             <div className="aside-models">
               <ThreadSetup
@@ -5814,7 +5826,7 @@ export default function App() {
               onRefresh={() => loadPR(activeId).catch(() => undefined)}
             />
           </div>
-        ) : asideActive === "files" ? null : asideActive === "council" ? (
+        ) : asideActive === "council" ? (
           <div className="section council-section">
             {!activeId && <p className="hint">Open a thread to convene a council.</p>}
             <div className="council-pane">

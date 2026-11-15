@@ -212,7 +212,7 @@ function CodeEditor({
 
 /**
  * FileEditor is the Files view: a lazily expanded tree on the left and one
- * text editor on the right. It stays mounted while another aside tab is up
+ * text editor on the right. It stays mounted while another center tab is up
  * so unsaved edits survive a tab switch; `active` gates the first load.
  */
 export function FileEditor({ rpc, threadId, active }: { rpc: Rpc | null; threadId: string; active: boolean }) {
