@@ -15,6 +15,9 @@ export type ThreadState = {
   pr?: ThreadPR;
   /** Uncommitted changes in the worktree, tracked or untracked. */
   dirty: boolean;
+  /** The forge cache has answered for this worktree, so an absent pr is a real
+   * "no PR" rather than "not fetched yet". The daily scan waits for this. */
+  prKnown?: boolean;
 };
 
 /** The thread fields the board reads. */

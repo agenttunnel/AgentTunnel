@@ -42,6 +42,8 @@ export type PaletteActions<P extends string> = {
   stopTurn: () => void;
   toggleAutoMode: () => void;
   togglePeerMailbox: () => void;
+  /** Opens the environment-wide Worktrees page; omitted where there is none. */
+  goToWorktrees?: () => void;
 };
 
 const CENTER_TABS: { tab: CenterTab; label: string }[] = [
@@ -83,6 +85,7 @@ export function buildCommands<P extends string>(a: PaletteActions<P>): PaletteIt
 
   cmd("view:super", "Navigate", "All threads across projects", a.openSuperView);
   cmd("project:new", "Project", "Create project", a.createProject);
+  if (a.goToWorktrees) cmd("home:worktrees", "Navigate", "Go to worktrees", a.goToWorktrees);
   cmd("app:refresh", "App", "Refresh", a.refresh);
   cmd("app:settings", "App", "Open settings", a.openSettings);
   return out;
