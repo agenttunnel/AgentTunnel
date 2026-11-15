@@ -1,6 +1,6 @@
 # Go build output
 /bin/
-agenttunnel-go/bin/
+agenttunnel/bin/
 
 # Desktop (Wails) build output and generated assets
 desktop/bin/

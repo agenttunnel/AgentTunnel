@@ -105,16 +105,16 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: agenttunnel-go/go.mod
+          go-version-file: agenttunnel/go.mod
           cache-dependency-path: |
-            agenttunnel-go/go.sum
-            agenttunnel-go/desktop/go.sum
+            agenttunnel/go.sum
+            agenttunnel/desktop/go.sum
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: agenttunnel-go/desktop/frontend/package-lock.json
+          cache-dependency-path: agenttunnel/desktop/frontend/package-lock.json
       - name: Install Linux desktop dependencies
         if: matrix.platform == 'linux'
         run: |
@@ -123,7 +123,7 @@ jobs:
           # only used with -tags gtk3, which this build does not pass.
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev
       - name: Build frontend
-        working-directory: agenttunnel-go/desktop/frontend
+        working-directory: agenttunnel/desktop/frontend
         shell: bash
         run: |
           npm ci
@@ -133,7 +133,7 @@ jobs:
           mkdir -p ../../internal/webui/dist
           cp -R dist/. ../../internal/webui/dist/
       - name: Build Go binaries
-        working-directory: agenttunnel-go
+        working-directory: agenttunnel
         shell: bash
         env:
           GOOS: ${{ matrix.platform }}
@@ -163,7 +163,7 @@ jobs:
           tar -czf "agenttunnel-go-${GOOS}-${GOARCH}.tar.gz" -C go-dist .
       - name: Package macOS app and DMG
         if: matrix.platform == 'darwin'
-        working-directory: agenttunnel-go/desktop
+        working-directory: agenttunnel/desktop
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -180,9 +180,9 @@ jobs:
         with:
           name: agenttunnel-go-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            agenttunnel-go/agenttunnel-go-*.tar.gz
-            agenttunnel-go/AgentTunnel-darwin-*.app.tar.gz
-            agenttunnel-go/AgentTunnel-darwin-*.dmg
+            agenttunnel/agenttunnel-go-*.tar.gz
+            agenttunnel/AgentTunnel-darwin-*.app.tar.gz
+            agenttunnel/AgentTunnel-darwin-*.dmg
           if-no-files-found: error
 
   release:
@@ -199,7 +199,7 @@ jobs:
           merge-multiple: true
       - name: Stage Go installer
         run: |
-          cp agenttunnel-go/scripts/install.sh release-assets/install-agenttunnel-go.sh
+          cp agenttunnel/scripts/install.sh release-assets/install-agenttunnel-go.sh
           chmod +x release-assets/install-agenttunnel-go.sh
       - name: Verify release assets
         run: |

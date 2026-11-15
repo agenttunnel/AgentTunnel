@@ -5,13 +5,13 @@
 # Agent state and worktrees
 .agenttunnel/
 
-# Node (desktop frontend uses its own lockfile under agenttunnel-go/desktop/frontend)
+# Node (desktop frontend uses its own lockfile under agenttunnel/desktop/frontend)
 node_modules/
 
 # The web UI copy step swaps placeholder assets for the real build; keep only
 # the committed placeholder index.html tracked.
-agenttunnel-go/internal/webui/dist/*
-!agenttunnel-go/internal/webui/dist/index.html
+agenttunnel/internal/webui/dist/*
+!agenttunnel/internal/webui/dist/index.html
 
 # OS / editor
 .DS_Store

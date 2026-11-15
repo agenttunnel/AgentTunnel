@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="agenttunnel-go/desktop/frontend/public/brand-mark.svg" width="56" alt="AgentTunnel" />
+  <img src="agenttunnel/desktop/frontend/public/brand-mark.svg" width="56" alt="AgentTunnel" />
 </p>
 
 # AgentTunnel
@@ -38,7 +38,7 @@ WebKitGTK 6.0 at runtime.
 To build a DMG locally instead:
 
 ```
-cd agenttunnel-go/desktop
+cd agenttunnel/desktop
 ./build-app.sh --dmg
 # dist/AgentTunnel-darwin-<arch>.dmg
 ```
@@ -57,15 +57,15 @@ The version is embedded at link time (`-X main.version=…`). Check it with
 
 ## Build from source
 
-Requires Go (see `agenttunnel-go/go.mod`) and Node for the desktop frontend.
+Requires Go (see `agenttunnel/go.mod`) and Node for the desktop frontend.
 
 ```
-cd agenttunnel-go
+cd agenttunnel
 go build ./...
 ./desktop/build.sh   # desktop app: frontend + linked binary in desktop/bin/
 ```
 
-Architecture, the tool protocol, and how to hack on it: [agenttunnel-go/README.md](agenttunnel-go/README.md).
+Architecture, the tool protocol, and how to hack on it: [agenttunnel/README.md](agenttunnel/README.md).
 
 ## License
 

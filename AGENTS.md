@@ -4,7 +4,7 @@ AgentTunnel is a minimal GUI for coding agents. The Go daemon (`atd`) wraps
 provider CLIs (Codex, Claude, Cursor, OpenCode, Pi, Command Code) behind
 an HTTP/WebSocket surface, and a Wails v3 desktop app drives it.
 
-The Go app in `agenttunnel-go/` is the product. The previous TypeScript
+The Go app in `agenttunnel/` is the product. The previous TypeScript
 monorepo (web, Electron desktop, mobile, relay) was removed when it was
 deprecated; git history retains it. Don't resurrect its tooling — `vp`, pnpm,
 `apps/`, `packages/` are gone.
@@ -83,7 +83,7 @@ damage the AgentTunnel instance the contributor is using.
 ## Working in the codebase
 
 Everything is Go plus one TypeScript frontend. Layout (all under
-`agenttunnel-go/`):
+`agenttunnel/`):
 
 - `cmd/atd/` — daemon entrypoint (HTTP + WebSocket server, `tool` subcommand).
 - `internal/contracts/` — wire types: roles, harnesses, commands, events.
@@ -115,7 +115,7 @@ Taste:
 
 ## Verifying
 
-- Build: `go build ./...` from `agenttunnel-go/`. Test: `go test ./... -count=1`.
+- Build: `go build ./...` from `agenttunnel/`. Test: `go test ./... -count=1`.
 - Prefer the smallest proof: targeted `go test ./internal/orchestrator/ -run TestName -count=1`,
   `go vet`, `gofmt -l` for the scope you changed.
 - The full suite belongs to CI (`.github/workflows/agenttunnel-ci.yml`).

@@ -56,4 +56,4 @@ branch from `main` first.
 
 CI runs the same build in `.github/workflows/agenttunnel-ios.yml` on pushes to
 `main`, on pull requests, and on manual dispatch, filtered to changes under
-`agenttunnel-go/mobile/`. It uses no secrets and no signing.
+`agenttunnel/mobile/`. It uses no secrets and no signing.
