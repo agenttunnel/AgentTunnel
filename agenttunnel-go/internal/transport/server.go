@@ -20,6 +20,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/prefs"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolbox"
 )
 
@@ -39,6 +40,7 @@ type Server struct {
 	token       string
 	box         *toolbox.Box
 	attachments *attachments.Store
+	prefs       *prefs.Store
 
 	connMu sync.Mutex
 	conns  map[*conn]struct{}
@@ -59,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("/tool/call", s.handleToolCall)
 	mux.HandleFunc("/attachments", s.handleAttachments)
+	mux.HandleFunc("/prefs", s.handlePrefs)
 	mux.HandleFunc("/ws", s.handleWS)
 	return mux
 }
