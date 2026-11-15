@@ -1,24 +1,17 @@
 import { useEffect, useRef } from "react";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
+import { getPref, removePref, setPref } from "../lib/prefs";
 
 const OPT_OUT_KEY = "at.cheatSheetOptedOut";
 
 /** Whether the user chose "Do not show this again". Private mode reads as not opted out. */
 export function loadCheatSheetOptedOut(): boolean {
-  try {
-    return window.localStorage.getItem(OPT_OUT_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return getPref(OPT_OUT_KEY) === "1";
 }
 
 export function saveCheatSheetOptedOut(optedOut: boolean) {
-  try {
-    if (optedOut) window.localStorage.setItem(OPT_OUT_KEY, "1");
-    else window.localStorage.removeItem(OPT_OUT_KEY);
-  } catch {
-    /* private mode: the opt-out lasts only for this launch */
-  }
+  if (optedOut) setPref(OPT_OUT_KEY, "1");
+  else removePref(OPT_OUT_KEY);
 }
 
 type Panel = { label: string; key: string };

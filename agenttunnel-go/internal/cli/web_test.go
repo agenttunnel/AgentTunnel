@@ -354,6 +354,69 @@ func payloadKeys(payload map[string]json.RawMessage) []string {
 	return keys
 }
 
+// webConnToken reads the daemon token the page receives from /conn.
+func webConnToken(t *testing.T, w *webServer) string {
+	t.Helper()
+	res, err := http.Get(w.URL() + "/conn")
+	if err != nil {
+		t.Fatalf("GET /conn: %v", err)
+	}
+	defer res.Body.Close()
+	var conn struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&conn); err != nil || conn.Token == "" {
+		t.Fatalf("GET /conn token: %v", err)
+	}
+	return conn.Token
+}
+
+func TestStartWebPreferencesSurviveRestart(t *testing.T) {
+	stateDir := t.TempDir()
+	env := &Env{Out: io.Discard, Err: io.Discard, HomeDir: stateDir, Version: "webtest"}
+	dir := t.TempDir()
+
+	w, err := startWeb(context.Background(), env, dir)
+	if err != nil {
+		t.Fatalf("startWeb: %v", err)
+	}
+	// The daemon owns the preference store, so writes need the daemon token
+	// the page itself was handed.
+	req, _ := http.NewRequest(http.MethodPost, w.URL()+"/prefs", strings.NewReader(`{"at.theme":"nord","at.logsOpen":"false"}`))
+	req.Header.Set("Authorization", "Bearer "+webConnToken(t, w))
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /prefs: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /prefs = %d, want 204", res.StatusCode)
+	}
+	w.Close()
+
+	// The next run binds a different loopback port; the saved preferences must
+	// still be in the page before the app's scripts run.
+	again, err := startWeb(context.Background(), env, dir)
+	if err != nil {
+		t.Fatalf("restart startWeb: %v", err)
+	}
+	t.Cleanup(again.Close)
+	if again.URL() == w.URL() {
+		t.Log("the restart reused the origin; the test still checks the seed path")
+	}
+	page, err := http.Get(again.URL() + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	for _, want := range []string{`"at.theme":"nord"`, `"at.logsOpen":"false"`, "localStorage.setItem"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("restarted page does not seed %q: %s", want, body)
+		}
+	}
+}
+
 func TestStartWebConnFetchSiteGate(t *testing.T) {
 	w, _ := bootWeb(t, t.TempDir())
 

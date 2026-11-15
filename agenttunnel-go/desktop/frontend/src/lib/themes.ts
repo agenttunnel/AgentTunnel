@@ -1,8 +1,9 @@
 // Appearance themes. The stylesheet owns the actual tokens; this module names
 // them, supplies the swatches the settings sheet shows, and remembers the
-// choice on this device. A theme is a device preference, not daemon state:
-// the same environment can be open on a laptop and a phone with different
-// looks.
+// choice. The choice is saved through the prefs store, so the desktop app and
+// every web UI of one daemon show the same theme.
+
+import { getPref, setPref } from "./prefs";
 
 export type ThemeId = "warp" | "t3-chat" | "nord" | "rose-pine" | "solarized-light";
 
@@ -63,12 +64,7 @@ function findTheme(id: string | null | undefined): Theme | undefined {
 }
 
 export function loadTheme(): ThemeId {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    return findTheme(stored)?.id ?? DEFAULT_THEME;
-  } catch {
-    return DEFAULT_THEME;
-  }
+  return findTheme(getPref(STORAGE_KEY))?.id ?? DEFAULT_THEME;
 }
 
 /** Apply a theme to the document and remember it. Safe to call on every render. */
@@ -77,9 +73,5 @@ export function applyTheme(id: ThemeId): void {
   document.documentElement.dataset.theme = theme.id;
   const meta = document.querySelector('meta[name="theme-color"]');
   meta?.setAttribute("content", theme.chrome);
-  try {
-    window.localStorage.setItem(STORAGE_KEY, theme.id);
-  } catch {
-    /* private mode: the theme still applies for this session */
-  }
+  setPref(STORAGE_KEY, theme.id);
 }

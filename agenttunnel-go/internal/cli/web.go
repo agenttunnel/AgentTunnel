@@ -28,6 +28,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/daemonlock"
 	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
+	"github.com/agenttunnel/agenttunnel-go/internal/prefs"
 	"github.com/agenttunnel/agenttunnel-go/internal/webui"
 	"github.com/agenttunnel/agenttunnel-go/pkg/daemon"
 )
@@ -192,10 +193,10 @@ func startWebOwned(ctx context.Context, env *Env, resolved string, lock *daemonl
 	mux := http.NewServeMux()
 	mux.HandleFunc("/conn", conn.serveHTTP)
 	daemonH := d.Server.Handler()
-	for _, p := range []string{"/ws", "/healthz", "/tool/call", "/attachments"} {
+	for _, p := range []string{"/ws", "/healthz", "/tool/call", "/attachments", "/prefs"} {
 		mux.Handle(p, daemonH)
 	}
-	mux.Handle("/", webui.Handler())
+	mux.Handle("/", webui.HandlerWithPrefs(d.Prefs.Snapshot))
 
 	srv := &http.Server{Handler: loopbackHostGate(mux), ReadHeaderTimeout: 10 * time.Second}
 	w := &webServer{
@@ -248,7 +249,7 @@ func startWebOwned(ctx context.Context, env *Env, resolved string, lock *daemonl
 // startWebAttached serves the web surface for a daemon this process does not
 // own. The existing daemon's discovery file is read, never written or removed;
 // the browser reaches the daemon through this server's /conn handoff and a
-// token-injecting /attachments proxy, so everything stays same-origin and the
+// token-injecting /attachments and /prefs proxy, so everything stays same-origin and the
 // daemon keeps no CORS surface.
 func startWebAttached(ctx context.Context, info discovery.Info, resolved string) (*webServer, error) {
 	webCtx, cancel := context.WithCancel(ctx)
@@ -290,6 +291,7 @@ func startWebAttached(ctx context.Context, info discovery.Info, resolved string)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/conn", conn.serveHTTP)
+	mux.Handle("/prefs", proxy)
 	mux.Handle("/attachments", proxy)
 	// The daemon-owned routes are served by the existing daemon, not this
 	// server: they 404 rather than falling into the SPA, so a client pointed at
@@ -297,7 +299,7 @@ func startWebAttached(ctx context.Context, info discovery.Info, resolved string)
 	for _, p := range []string{"/ws", "/healthz", "/tool/call"} {
 		mux.Handle(p, http.NotFoundHandler())
 	}
-	mux.Handle("/", webui.Handler())
+	mux.Handle("/", webui.HandlerWithPrefs(prefs.FetchFunc(base, info.Token)))
 
 	srv := &http.Server{Handler: loopbackHostGate(mux), ReadHeaderTimeout: 10 * time.Second}
 	w := &webServer{
@@ -423,12 +425,20 @@ func (c webConn) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+	if !sameSiteRequest(r) {
 		http.Error(w, "cross-site requests are refused", http.StatusForbidden)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(c.payload())
+}
+
+// sameSiteRequest rejects browser requests a page on another origin initiated.
+// A non-browser client sends no Sec-Fetch-Site and is allowed; the loopback
+// bind plus the daemon token remain the trust boundary.
+func sameSiteRequest(r *http.Request) bool {
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site == "" || site == "same-origin" || site == "none"
 }
 
 // newWebToken mints the owned daemon's bearer token.

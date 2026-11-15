@@ -1,4 +1,5 @@
 import { Events } from "@wailsio/runtime";
+import { enablePrefMirror } from "./prefs";
 
 export type Conn = {
   wsUrl: string;
@@ -221,11 +222,16 @@ export function discover(): Promise<Conn> {
   // at:connection event can never fire in a plain browser, so a failed
   // handoff rejects with a reason the UI can show instead of falling back
   // to a wait that never settles.
-  if (!inDesktopShell())
-    return discoverOverHttp().catch((e) => {
-      throw new Error(`web UI handoff failed: ${e instanceof Error ? e.message : String(e)}`);
-    });
-  return discoverViaShell();
+  const found = inDesktopShell()
+    ? discoverViaShell()
+    : discoverOverHttp().catch((e) => {
+        throw new Error(`web UI handoff failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+  // Both shells learn the daemon's address here, so both mirror preferences to it.
+  return found.then((conn) => {
+    enablePrefMirror(conn);
+    return conn;
+  });
 }
 
 /** discoverViaShell is the desktop shell path: ask for an at:connection push. */
