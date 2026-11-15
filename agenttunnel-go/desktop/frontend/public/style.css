@@ -7233,3 +7233,49 @@ button.danger-text {
   font-size: 12.5px;
   line-height: 1.55;
 }
+
+/* --- threads cleanup ---------------------------------------------------- */
+.cleanup-threads-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cleanup-threads-btn .cleanup-icon {
+  display: block;
+  flex: none;
+  transition: transform 180ms ease, color 180ms ease;
+}
+.cleanup-threads-btn:not(:disabled):hover .cleanup-icon {
+  transform: rotate(-12deg) scale(1.08);
+}
+.cleanup-threads-btn.is-cleaning .cleanup-icon {
+  color: var(--danger, #e57373);
+  animation: cleanup-sweep 720ms ease-in-out infinite;
+  transform-origin: 50% 80%;
+}
+.cleanup-threads-btn.is-cleaning {
+  position: relative;
+}
+.cleanup-confirm-btn:disabled {
+  opacity: 0.8;
+}
+@keyframes cleanup-sweep {
+  0% {
+    transform: rotate(0deg) translateY(0);
+    opacity: 1;
+  }
+  20% {
+    transform: rotate(-18deg) translateY(-1px);
+  }
+  50% {
+    transform: rotate(16deg) translateY(0);
+    opacity: 0.7;
+  }
+  80% {
+    transform: rotate(-10deg) translateY(-1px);
+  }
+  100% {
+    transform: rotate(0deg) translateY(0);
+    opacity: 1;
+  }
+}
