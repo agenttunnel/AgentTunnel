@@ -355,8 +355,11 @@ type ThreadSummary struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 	Messages    int       `json:"messages"`
 	Agents      int       `json:"agents"`
-	AutoMode    bool      `json:"autoMode"`
-	Archived    bool      `json:"archived"`
+	// Harness is the provider of a solo thread's only agent, so the sidebar
+	// row can carry the same harness tint as the graph node. Empty otherwise.
+	Harness  contracts.Harness `json:"harness,omitempty"`
+	AutoMode bool              `json:"autoMode"`
+	Archived bool              `json:"archived"`
 	// ParentThreadID marks a subthread and names the thread that started it.
 	ParentThreadID contracts.ThreadID `json:"parentThreadId,omitempty"`
 	// Owner records who started the thread; absent means user (pre-change logs).
@@ -379,6 +382,23 @@ type ThreadSummary struct {
 	// ControlledBy names the thread that controls this one; empty means the
 	// user runs it.
 	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
+	// LastSeenAt is when a user last opened the thread; nil is never. A pointer
+	// keeps the zero time off the wire for never-viewed threads.
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	// Unseen is derived: the newest completed turn ended after the last view.
+	Unseen bool `json:"unseen"`
+}
+
+// soleHarness names the harness of a thread's only agent, or "" when the
+// thread has zero or several agents.
+func soleHarness(st *domain.ThreadState) contracts.Harness {
+	if len(st.Agents) != 1 {
+		return ""
+	}
+	for _, a := range st.Agents {
+		return a.Harness
+	}
+	return ""
 }
 
 // AgentView pairs an agent with its accumulated usage.
@@ -465,12 +485,16 @@ const threadLogTail = 400
 
 const defaultStaleAfterSeconds = 30 * 60
 
-// runTurn starts a user turn: it claims the thread's turn slot first, so a busy
+// runTurn starts a user turn: it refuses master conversations (agents cannot
+// run in chat history), claims the thread's turn slot first, so a busy
 // thread is refused before cmd is recorded, and the turn's image attachments
 // must resolve to readable files before cmd is recorded too. It then records
 // cmd and runs the lead orchestrators on text. A stop from the client is
 // reported as ok, not an error.
 func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
+	if err := d.refuseMasterTurn(ctx, threadID); err != nil {
+		return nil, err
+	}
 	turnCtx, done, err := d.beginTurn(ctx, threadID)
 	if err != nil {
 		return nil, err
@@ -560,6 +584,9 @@ func (d *Dispatcher) imageInputs(threadID contracts.ThreadID, refs []contracts.I
 func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.ThreadID, text string, cmd contracts.Command) (any, error) {
 	if d.orch == nil || d.engine == nil {
 		return nil, errors.New("detached turns are unavailable")
+	}
+	if err := d.refuseMasterTurn(ctx, threadID); err != nil {
+		return nil, err
 	}
 	// A caller with no daemon context (a bare dispatcher in a test) still gets
 	// a turn that outlives its socket. A daemon context that is already
@@ -1097,6 +1124,12 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			if err != nil {
 				return nil, err
 			}
+			// Master conversations are home-screen chat history, not work
+			// threads; they have their own list (master.history.list) and must
+			// not crowd the thread board or the WhatsApp /use picker.
+			if st.Owner.Normalized() == contracts.ThreadOwnerMaster {
+				continue
+			}
 			running := 0
 			for _, a := range st.Agents {
 				if a.Status == contracts.AgentRunning || a.Status == contracts.AgentPending {
@@ -1104,15 +1137,23 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 				}
 			}
 			stale := running == 0 && staleAfter > 0 && now.Sub(st.UpdatedAt) >= time.Duration(staleAfter)*time.Second
+			// A running thread is seen by definition; otherwise a completed turn
+			// after the last view is what makes a thread unseen. A thread with
+			// no completed turn at all (a draft) is never unseen.
+			ended := st.LastTurnEndedAt()
+			unseen := running == 0 && !ended.IsZero() &&
+				(st.LastSeenAt == nil || ended.After(*st.LastSeenAt))
 			rows = append(rows, summaryRow{
 				summary: ThreadSummary{
 					ID: id, Title: st.Title, ProjectID: st.ProjectID, UpdatedAt: st.UpdatedAt,
 					FirstPrompt: firstUserPrompt(st),
-					Messages:    len(st.Messages), Agents: len(st.Agents), AutoMode: st.AutoMode, Archived: st.Archived,
+					Messages:    len(st.Messages), Agents: len(st.Agents), Harness: soleHarness(st),
+					AutoMode: st.AutoMode, Archived: st.Archived,
 					ParentThreadID: st.ParentThreadID, Owner: st.Owner, Worktree: st.Worktree,
 					Draft: st.Draft, Issue: st.Issue, SoloRuntime: st.SoloRuntime,
 					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
 					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
+					LastSeenAt: st.LastSeenAt, Unseen: unseen,
 				},
 				createdAt: st.CreatedAt,
 			})
@@ -1322,6 +1363,10 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.orch == nil {
 			return nil, errors.New("orchestrator is unavailable")
 		}
+		// A council runs agents: master conversations are not work threads.
+		if err := d.refuseMasterTurn(ctx, p.ThreadID); err != nil {
+			return nil, err
+		}
 		// The debate is a turn: the topic lands in the transcript and the turn
 		// gate applies, so a council cannot race a normal turn.
 		if err := d.engine.Dispatch(ctx, contracts.Command{
@@ -1428,6 +1473,10 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if !st.Exists {
 			return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
 		}
+		// Steering steers a running turn; a master conversation has none.
+		if err := refuseMasterConversation(st, p.ThreadID); err != nil {
+			return nil, err
+		}
 		if d.steering == nil {
 			return nil, errors.New("steering is unavailable")
 		}
@@ -1466,6 +1515,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.runner == nil {
 			return nil, errors.New("side questions are unavailable")
 		}
+		// A side question runs an agent session on the thread; a master
+		// conversation is chat history, not a work directory.
+		if err := d.refuseMasterTurn(ctx, p.ThreadID); err != nil {
+			return nil, err
+		}
 		answer, err := d.runner.Btw(ctx, p.ThreadID, p.Question)
 		if err != nil {
 			return nil, err
@@ -1477,8 +1531,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		// thread. Dispatch is fire-and-forget: the first turn runs for as long
 		// as the work takes, so the reply cannot wait for it.
 		var p struct {
-			Text    string                       `json:"text"`
-			History []orchestrator.MasterMessage `json:"history"`
+			Text     string                       `json:"text"`
+			History  []orchestrator.MasterMessage `json:"history"`
+			ThreadID contracts.ThreadID           `json:"threadId"`
 		}
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
@@ -1489,12 +1544,106 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		if d.master == nil {
 			return nil, errors.New("master chat is unavailable")
 		}
+		// A caller that named a master conversation records the exchange into
+		// it and reads prior exchanges from it, serialized per conversation, so
+		// history survives restarts and device switches. A caller that passes
+		// no thread keeps the stateless shape: its own history, nothing
+		// recorded.
+		if p.ThreadID != "" {
+			return d.sendMasterWithThread(ctx, p.ThreadID, p.Text)
+		}
 		result, err := d.master.Send(ctx, p.Text, p.History)
 		if err != nil {
 			return nil, err
 		}
 		d.runMaster(ctx, &result)
 		return result, nil
+
+	case "master.runtime.get":
+		return d.masterRuntimeView(), nil
+
+	case "master.runtime.set":
+		var p struct {
+			Harness *string `json:"harness"`
+			Model   *string `json:"model"`
+			Variant *string `json:"variant"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Harness == nil && p.Model == nil && p.Variant == nil {
+			return nil, errors.New("harness, model, or variant is required")
+		}
+		if err := d.applyMasterRuntimeSet(p.Harness, p.Model, p.Variant); err != nil {
+			return nil, err
+		}
+		return d.masterRuntimeView(), nil
+
+	case "master.reporter.get":
+		return ControlState{Enabled: d.MasterReporterEnabled()}, nil
+
+	case "master.reporter.set":
+		var p struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Enabled == nil {
+			return nil, errors.New("enabled is required")
+		}
+		if d.settings == nil {
+			return nil, errors.New("settings are unavailable")
+		}
+		d.settings.SetMasterReporter(*p.Enabled)
+		return ControlState{Enabled: d.settings.MasterReporter()}, nil
+
+	case "master.history.new":
+		var p struct {
+			Title string `json:"title"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if d.engine == nil {
+			return nil, errors.New("threads are unavailable")
+		}
+		id, st, err := d.newMasterConversation(ctx, p.Title)
+		if err != nil {
+			return nil, err
+		}
+		return MasterThreadDetail{ID: id, Title: st.Title, UpdatedAt: st.UpdatedAt, Messages: []MasterHistoryMessage{}}, nil
+
+	case "master.history.list":
+		return d.masterThreadSummaries(ctx)
+
+	case "master.history.open":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		st, err := d.masterThreadState(ctx, p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		return MasterThreadDetail{
+			ID: p.ThreadID, Title: st.Title, UpdatedAt: st.UpdatedAt,
+			Messages: openMasterMessages(st),
+		}, nil
+
+	case "master.history.delete":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if _, err := d.masterThreadState(ctx, p.ThreadID); err != nil {
+			return nil, err
+		}
+		// A master conversation owns no worktree; there is never one to remove.
+		if err := d.deleteThread(ctx, p.ThreadID, false); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 
 	case "thread.setAutoMode":
 		var p setBoolParams
@@ -1514,6 +1663,18 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		if err := d.setArchived(ctx, p.ThreadID, p.Enabled); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.markSeen":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdThreadSeen, ThreadID: p.ThreadID,
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
@@ -2553,6 +2714,11 @@ func (d *Dispatcher) forkThread(ctx context.Context, p forkThreadParams) (any, e
 	}
 	if !src.Exists {
 		return nil, fmt.Errorf("thread %q does not exist", p.ThreadID)
+	}
+	// A fork copies a transcript into a fresh work thread; master
+	// conversations are chat history, not a branch source.
+	if src.Owner.Normalized() == contracts.ThreadOwnerMaster {
+		return nil, fmt.Errorf("thread %q is a master conversation", p.ThreadID)
 	}
 	end := -1
 	for i, m := range src.Messages {

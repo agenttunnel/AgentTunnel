@@ -16,17 +16,30 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
+// scriptedCall is one RPC a scriptedServer saw, with its raw params.
+type scriptedCall struct {
+	method string
+	params json.RawMessage
+}
+
 // scriptedServer is a minimal JSON-RPC daemon for the follower tests: it
 // answers known methods and, when told to, pushes thread.event frames after a
 // subscription. It never starts a real daemon and never touches disk.
 type scriptedServer struct {
 	mu         sync.Mutex
 	results    map[string]any
+	gates      map[string]chan struct{}
 	events     []threadFrame
 	eventMu    sync.Mutex
 	conns      map[*websocket.Conn]struct{}
 	subscribed chan struct{}
 	once       sync.Once
+
+	// calls records every request so tests can assert what the CLI asked
+	// for; recorded wakes waitCall.
+	callsMu  sync.Mutex
+	calls    []scriptedCall
+	recorded chan struct{}
 }
 
 // threadFrame is one pushed frame: the event type and its payload.
@@ -39,9 +52,22 @@ type threadFrame struct {
 func newScriptedServer() *scriptedServer {
 	return &scriptedServer{
 		results:    map[string]any{},
+		gates:      map[string]chan struct{}{},
 		conns:      map[*websocket.Conn]struct{}{},
 		subscribed: make(chan struct{}),
+		recorded:   make(chan struct{}, 256),
 	}
+}
+
+// gate parks method's reply until the returned channel closes. The request is
+// still recorded, so a test can watch it arrive, move a client under test
+// into some state, then release the reply — deterministically, with no sleeps.
+func (s *scriptedServer) gate(method string) chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan struct{})
+	s.gates[method] = ch
+	return ch
 }
 
 func (s *scriptedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,9 +98,24 @@ func (s *scriptedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(data, &req) != nil {
 			continue
 		}
+		s.callsMu.Lock()
+		s.calls = append(s.calls, scriptedCall{method: req.Method, params: req.Params})
+		s.callsMu.Unlock()
+		select {
+		case s.recorded <- struct{}{}:
+		default:
+		}
 		s.mu.Lock()
 		result, ok := s.results[req.Method]
+		gate := s.gates[req.Method]
 		s.mu.Unlock()
+		if gate != nil {
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if !ok {
 			frame, _ := json.Marshal(map[string]any{
 				"id": req.ID, "error": map[string]any{"code": 1, "message": "unsupported " + req.Method},
@@ -129,6 +170,36 @@ func (s *scriptedServer) queue(frame threadFrame) {
 	s.eventMu.Lock()
 	s.events = append(s.events, frame)
 	s.eventMu.Unlock()
+}
+
+// waitCall blocks until the daemon has seen a call for method, then returns
+// its params. Waking is the recorded channel, not a timer.
+func (s *scriptedServer) waitCall(t *testing.T, method string) scriptedCall {
+	t.Helper()
+	for {
+		s.callsMu.Lock()
+		var found *scriptedCall
+		for i := range s.calls {
+			if s.calls[i].method == method {
+				found = &s.calls[i]
+			}
+		}
+		s.callsMu.Unlock()
+		if found != nil {
+			return *found
+		}
+		select {
+		case <-s.recorded:
+		case <-time.After(5 * time.Second):
+			var seen []string
+			s.callsMu.Lock()
+			for _, c := range s.calls {
+				seen = append(seen, c.method)
+			}
+			s.callsMu.Unlock()
+			t.Fatalf("no %s call recorded; saw %v", method, seen)
+		}
+	}
 }
 
 func dialScripted(t *testing.T, s *scriptedServer) *Client {

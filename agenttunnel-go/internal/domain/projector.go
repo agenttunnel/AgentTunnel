@@ -104,6 +104,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
 
+	case contracts.ThreadSeen:
+		// Copy the stamp to a local before taking its address: e.At belongs to
+		// the shared event envelope and must not be aliased into the state.
+		if s.LastSeenAt == nil || e.At.After(*s.LastSeenAt) {
+			at := e.At
+			s.LastSeenAt = &at
+		}
+
 	case contracts.StatusPeriodSet:
 		s.StatusPeriodSeconds = p.PeriodSeconds
 
@@ -291,7 +299,12 @@ func Project(s *ThreadState, e contracts.Event) error {
 	default:
 		return fmt.Errorf("project: unknown event payload %T", e.Payload)
 	}
-	s.UpdatedAt = e.At
+	// A view is not activity: recording it must not reshuffle the recency list,
+	// so ThreadSeen leaves UpdatedAt alone. Version still advances — that is
+	// why the bump sits after the switch instead of an early return.
+	if _, isSeen := e.Payload.(contracts.ThreadSeen); !isSeen {
+		s.UpdatedAt = e.At
+	}
 	s.Version = e.Seq
 	return nil
 }

@@ -40,10 +40,11 @@ type tunnelRun struct {
 }
 
 // StartTunnel serves a relay on every interface and points this daemon at it
-// over loopback. It returns once the daemon socket is up, so a pairing code can
-// be minted at once. Starting a running tunnel returns its status unchanged.
+// over loopback. It returns once the daemon socket for that relay is up, so a
+// pairing code can be minted at once. Starting a running tunnel returns its
+// status unchanged.
 func (c *Client) StartTunnel(ctx context.Context) (transport.TunnelStatus, error) {
-	fresh, err := c.openTunnel()
+	url, fresh, err := c.openTunnel()
 	if err != nil {
 		return transport.TunnelStatus{}, err
 	}
@@ -55,7 +56,7 @@ func (c *Client) StartTunnel(ctx context.Context) (transport.TunnelStatus, error
 		err = c.WaitDisconnected(wctx)
 	}
 	if err == nil {
-		err = c.WaitConnected(wctx)
+		err = c.WaitConnectedFor(wctx, url)
 	}
 	if err != nil {
 		_ = c.StopTunnel()
@@ -99,23 +100,23 @@ func (c *Client) TunnelStatus() transport.TunnelStatus {
 }
 
 // openTunnel starts the relay server and enables the daemon's relay client
-// against it. It reports whether it opened a new tunnel. It holds tunnelMu only
-// for the setup, never while waiting for a connection, so status and stop are
-// never blocked by a slow start.
-func (c *Client) openTunnel() (bool, error) {
+// against it. It reports the relay's loopback URL and whether it opened a new
+// tunnel. It holds tunnelMu only for the setup, never while waiting for a
+// connection, so status and stop are never blocked by a slow start.
+func (c *Client) openTunnel() (string, bool, error) {
 	c.tunnelMu.Lock()
 	defer c.tunnelMu.Unlock()
 	if c.tunnel != nil {
-		return false, nil
+		return c.tunnel.url, false, nil
 	}
 	ln, err := c.listenTunnel()
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	lan := relaywire.LANURLWith(ln.Addr(), c.lanHost)
 	if lan == "" {
 		_ = ln.Close()
-		return false, errors.New("no LAN address for a phone to reach; connect this computer to a local network")
+		return "", false, errors.New("no LAN address for a phone to reach; connect this computer to a local network")
 	}
 	srv, err := relaywire.New(relaywire.Options{
 		StatePath: filepath.Join(c.opts.StateDir, "tunnel-relay.json"),
@@ -123,7 +124,7 @@ func (c *Client) openTunnel() (bool, error) {
 	})
 	if err != nil {
 		_ = ln.Close()
-		return false, err
+		return "", false, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,7 +148,7 @@ func (c *Client) openTunnel() (bool, error) {
 	// Save directly rather than through Enable: Enable stops a tunnel whose URL
 	// differs, and this is the tunnel's own URL, which must keep it running.
 	c.saveRelay(url)
-	return true, nil
+	return url, true, nil
 }
 
 // listenTunnel binds the default port on every interface. Only a busy port
