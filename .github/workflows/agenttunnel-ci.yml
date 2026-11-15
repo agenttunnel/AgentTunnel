@@ -25,17 +25,17 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: agenttunnel-go
+        working-directory: agenttunnel
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: agenttunnel-go/go.mod
+          go-version-file: agenttunnel/go.mod
           cache-dependency-path: |
-            agenttunnel-go/go.sum
-            agenttunnel-go/desktop/go.sum
+            agenttunnel/go.sum
+            agenttunnel/desktop/go.sum
       - name: Build
         run: go build ./...
       - name: Vet
@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: agenttunnel-go/desktop/frontend
+        working-directory: agenttunnel/desktop/frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -67,7 +67,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: agenttunnel-go/desktop/frontend/package-lock.json
+          cache-dependency-path: agenttunnel/desktop/frontend/package-lock.json
       - name: Build
         run: |
           npm ci

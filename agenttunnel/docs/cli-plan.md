@@ -205,7 +205,7 @@ precedes `/usr/bin`, so the CLI is `agenttunnel` instead.
 
 ## Phased plan and exact steps
 
-**P0 — this document:** `agenttunnel-go/docs/cli-plan.md`.
+**P0 — this document:** `agenttunnel/docs/cli-plan.md`.
 
 **P1 — foundation.**
 

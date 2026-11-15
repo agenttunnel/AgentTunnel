@@ -2,7 +2,7 @@ name: AgentTunnel iOS
 
 # Typechecks, smoke-tests, and builds the Expo mobile app for the iOS simulator
 # with no signing. Runs the same script developers run locally:
-# agenttunnel-go/mobile/scripts/ios-build.sh.
+# agenttunnel/mobile/scripts/ios-build.sh.
 #
 # No secrets and no signing. Later, to publish builds:
 #   - Add an EAS job (eas build --platform ios --profile preview) that runs
@@ -18,11 +18,11 @@ on:
     branches:
       - main
     paths:
-      - "agenttunnel-go/mobile/**"
+      - "agenttunnel/mobile/**"
       - ".github/workflows/agenttunnel-ios.yml"
   pull_request:
     paths:
-      - "agenttunnel-go/mobile/**"
+      - "agenttunnel/mobile/**"
       - ".github/workflows/agenttunnel-ios.yml"
   workflow_dispatch:
 
@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 45
     defaults:
       run:
-        working-directory: agenttunnel-go/mobile
+        working-directory: agenttunnel/mobile
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,7 +54,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: agenttunnel-go/mobile/package-lock.json
+          cache-dependency-path: agenttunnel/mobile/package-lock.json
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

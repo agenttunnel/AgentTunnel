@@ -21,7 +21,7 @@ stays light.
 ## Layout
 
 ```
-agenttunnel-go/
+agenttunnel/
   cmd/atd/            the daemon entrypoint (HTTP + WebSocket server)
   internal/
     contracts/        wire types: roles, harnesses, commands, events, usage, logs
