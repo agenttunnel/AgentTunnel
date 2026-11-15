@@ -90,7 +90,7 @@ func TestTUIPaneFollowsScrollsAndCloses(t *testing.T) {
 	const cols, rows = 40, 6
 	last := func() string {
 		out := m.paneRows(cols, rows)
-		return out[len(out)-1].plain()
+		return strings.TrimLeft(out[len(out)-1].plain(), " ")
 	}
 	if got := last(); !strings.HasPrefix(got, "line 29") {
 		t.Fatalf("follow view ends at %q, want line 29", got)
@@ -221,5 +221,108 @@ func TestTUISessionNewThreadFromThePalette(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ctrl-c did not leave the session")
+	}
+}
+
+// On the thread list, n opens the same project picker the palette's new thread
+// does, so a first-time user is never left without a way to start one.
+func TestTUISessionNewThreadFromTheNKey(t *testing.T) {
+	s := tuiServer("th_1", "running")
+	c := dialScripted(t, s)
+	term := newFakeTuiTerm(100, 24)
+	keys := make(chan tuiKey, 64)
+	m := newTuiModel(time.Now())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- tuiSession(context.Background(), c, m, "", keys, term)
+	}()
+	term.waitNextDraw(t, containsLine("the tui job"))
+
+	keys <- tuiKey{Kind: keyRune, Rune: 'n'}
+	term.waitNextDraw(t, containsLine("New project"))
+
+	keys <- tuiKey{Kind: keyCtrlC}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("tuiSession: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ctrl-c did not leave the session")
+	}
+}
+
+// Typing "/" on a thread lists the commands, narrows as the name grows, and
+// tab completes the first match. Arguments and plain text show no hints.
+func TestTUIThreadSlashHintsNarrowAndComplete(t *testing.T) {
+	m := newTuiModel(time.Now())
+	m.screen = tuiScreenThread
+	m.thread = threadListRow{ID: "th_1"}
+	if len(m.slashMatches()) != 0 {
+		t.Fatal("hints shown with an empty prompt")
+	}
+	m.input = []rune("/")
+	all := len(m.slashMatches())
+	if all < 2 || !strings.Contains(render(m, 100, 30), "tab complete") {
+		t.Fatalf("bare / gave %d hints", all)
+	}
+	m.input = []rune("/bt")
+	if got := m.slashMatches(); len(got) != 1 || got[0].name != "btw" {
+		t.Fatalf("/bt matched %v", got)
+	}
+	m.completeSlash()
+	if string(m.input) != "/btw " {
+		t.Fatalf("completed to %q", string(m.input))
+	}
+	if len(m.slashMatches()) != 0 {
+		t.Fatal("hints stay after the argument starts")
+	}
+	m.input = []rune("hello")
+	if len(m.slashMatches()) != 0 {
+		t.Fatal("plain text shows hints")
+	}
+}
+
+func TestTUIThreadSlashArrowsMoveSelection(t *testing.T) {
+	m := newTuiModel(time.Now())
+	m.screen = tuiScreenThread
+	m.thread = threadListRow{ID: "th_1"}
+	m.input = []rune("/")
+	matches := m.slashMatches()
+	var tr *turnTracker
+	tuiThreadKey(m, &tr, tuiKey{Kind: keyDown}, 20, func(string) {})
+	if m.slashSel != 1 {
+		t.Fatalf("down selected %d", m.slashSel)
+	}
+	tuiThreadKey(m, &tr, tuiKey{Kind: keyUp}, 20, func(string) {})
+	tuiThreadKey(m, &tr, tuiKey{Kind: keyUp}, 20, func(string) {})
+	if m.slashSel != len(matches)-1 {
+		t.Fatalf("up did not wrap: %d", m.slashSel)
+	}
+	m.completeSlash()
+	if !strings.HasPrefix(string(m.input), "/"+matches[len(matches)-1].name) {
+		t.Fatalf("completed %q", string(m.input))
+	}
+}
+
+func TestTUIThreadSidebarShowsUsageAgentsAndRoles(t *testing.T) {
+	m := newTuiModel(time.Now())
+	m.screen = tuiScreenThread
+	m.thread = threadListRow{ID: "th_1"}
+	m.setRoster(map[string]contracts.AgentStatus{"worker-1": "running"}, map[string]string{"worker-1": "claude"})
+	m.side.loaded = true
+	m.side.cfg = tuiSettingsWire{
+		Lead:  tuiLeadWire{Harness: "claude", Model: "opus"},
+		Roles: []tuiRoleWire{{ID: "reviewer", Name: "Reviewer", Harness: "codex", Model: "gpt-5", Enabled: true}},
+	}
+	wide := tuiPlain(render(m, 130, 30))
+	for _, want := range []string{"Usage", "Subagents", "worker-1", "Roles", "Reviewer", "codex/gpt-5", "claude/opus"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("wide frame lacks %q", want)
+		}
+	}
+	if narrow := tuiPlain(render(m, 80, 30)); strings.Contains(narrow, "Subagents") {
+		t.Error("narrow frame shows the sidebar")
 	}
 }

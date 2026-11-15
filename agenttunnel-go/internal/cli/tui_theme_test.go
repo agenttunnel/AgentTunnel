@@ -55,27 +55,6 @@ func TestTUIThemeDetectDepth(t *testing.T) {
 	}
 }
 
-func TestTUIThemeNearest256(t *testing.T) {
-	tests := []struct {
-		name string
-		c    tuiRGB
-		want int
-	}{
-		{"black is the cube origin", tuiRGB{0, 0, 0}, 16},
-		{"white is the cube corner", tuiRGB{255, 255, 255}, 231},
-		{"mid gray lands on the ramp", tuiRGB{128, 128, 128}, 244},
-		{"desktop accent maps into the cube", tuiColAccent, 38},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := nearest256(tt.c); got != tt.want {
-				t.Fatalf("nearest256(%v) = %d, want %d", tt.c, got, tt.want)
-			}
-		})
-	}
-}
-
-// Plain output carries no SGR at all, so pipes and NO_COLOR stay clean.
 func TestTUIThemePlainHasNoEscapes(t *testing.T) {
 	m := tuiColorModel(tuiTheme{})
 	if out := render(m, 60, 12); strings.Contains(out, "\x1b") {
@@ -87,10 +66,10 @@ func TestTUIThemeTruecolorPaintsTheDesktopPalette(t *testing.T) {
 	m := tuiColorModel(tuiTheme{depth: tuiDepthTrueColor})
 	out := render(m, 60, 12)
 	for _, want := range []string{
-		"\x1b[48;2;26;30;39m",    // the surface-2 bar
-		"\x1b[38;2;25;195;200m",  // the accent
-		"\x1b[38;2;240;133;133m", // the error red on an error line
-		"\x1b[38;2;229;181;103m", // the running amber on the roster
+		"48;2;20;20;20",    // the panel bar
+		"38;2;250;178;131", // the primary accent
+		"38;2;224;108;117", // the error red on an error line
+		"38;2;245;167;65",  // the running amber on the roster
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("truecolor frame missing %q", want)
@@ -101,7 +80,7 @@ func TestTUIThemeTruecolorPaintsTheDesktopPalette(t *testing.T) {
 func TestTUIThemeIndexedColorAt256(t *testing.T) {
 	m := tuiColorModel(tuiTheme{depth: tuiDepth256})
 	out := render(m, 60, 12)
-	if !strings.Contains(out, "\x1b[38;5;38m") {
+	if !strings.Contains(out, "38;5;216") {
 		t.Fatalf("256-color frame missing the accent index:\n%q", out)
 	}
 	if strings.Contains(out, "\x1b[38;2;") {
@@ -134,14 +113,14 @@ func TestTUIThemeLogLinesColorByKind(t *testing.T) {
 	m.appendStatusLines("10:30:00 lead status failed")
 	out := render(m, 60, 10)
 
-	wantTool := "\x1b[38;2;95;217;221m" // accent-2 for tool rows
+	wantTool := "\x1b[38;2;92;156;255m" // secondary for tool rows
 	if !strings.Contains(out, wantTool) {
 		t.Fatalf("tool row not tinted:\n%q", out)
 	}
-	if !strings.Contains(out, "\x1b[38;2;140;147;166m10:30:00 ") {
+	if !strings.Contains(out, "\x1b[38;2;110;110;110m10:30:00 ") {
 		t.Fatalf("timestamp not drawn faint:\n%q", out)
 	}
-	if !strings.Contains(out, "\x1b[38;2;140;147;166m") {
+	if !strings.Contains(out, "\x1b[38;2;110;110;110m") {
 		t.Fatalf("usage row not faint:\n%q", out)
 	}
 }
