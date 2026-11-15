@@ -1285,6 +1285,8 @@ export default function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectPath, setNewProjectPath] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
+  const [cleanupConfirm, setCleanupConfirm] = useState(false);
+  const [cleaningThreads, setCleaningThreads] = useState(false);
   const [infoTarget, setInfoTarget] = useState<{ id: string; tab: "usage" | "agents" } | null>(
     null,
   );
@@ -1858,6 +1860,41 @@ export default function App() {
       selectThread(null);
       setThread(null);
     }
+  };
+
+  /** Deletes every thread in the current project. Best-effort: threads that
+   *  refuse deletion (for example running ones) are skipped and reported. */
+  const cleanupAllProjectThreads = async () => {
+    const rpc = rpcRef.current;
+    if (!rpc || !projectId) return;
+    const ids = threads.filter((t) => t.projectId === projectId).map((t) => t.id);
+    if (ids.length === 0) {
+      setCleanupConfirm(false);
+      return;
+    }
+    setCleaningThreads(true);
+    const deleted: string[] = [];
+    let failures = 0;
+    let firstError = "";
+    for (const threadId of ids) {
+      try {
+        await rpc.call("thread.delete", { threadId });
+        deleted.push(threadId);
+      } catch (e) {
+        failures++;
+        if (!firstError) firstError = e instanceof Error ? e.message : String(e);
+      }
+    }
+    await reloadThreads();
+    if (activeId && deleted.includes(activeId)) {
+      selectThread(null);
+      setThread(null);
+    }
+    if (failures > 0) {
+      setError(`Cleaned up ${deleted.length}/${ids.length} threads. ${firstError}`);
+    }
+    setCleaningThreads(false);
+    setCleanupConfirm(false);
   };
 
   /** Fetches a thread's state for the info dialog; works for threads that are
@@ -3914,6 +3951,35 @@ export default function App() {
           </div>
         </div>
       )}
+      {cleanupConfirm && (
+        <div className="overlay" onClick={() => !cleaningThreads && setCleanupConfirm(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-head">
+              <strong>Clean up threads</strong>
+              <button disabled={cleaningThreads} onClick={() => setCleanupConfirm(false)}>
+                Cancel
+              </button>
+            </div>
+            <div className="sheet-body">
+              <p className="hint">
+                Delete all {threads.filter((t) => t.projectId === projectId).length} thread
+                {threads.filter((t) => t.projectId === projectId).length === 1 ? "" : "s"} in
+                this project? Threads disappear from the app and cannot be reopened. Running
+                threads may be skipped.
+              </p>
+              <div className="sheet-actions">
+                <button
+                  className="danger cleanup-confirm-btn"
+                  disabled={cleaningThreads}
+                  onClick={() => cleanupAllProjectThreads().catch(() => undefined)}
+                >
+                  {cleaningThreads ? "Cleaning up…" : "Clean up all threads"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {infoTarget && (
         <ThreadInfoDialog
           thread={infoState.thread}
@@ -4563,6 +4629,28 @@ export default function App() {
               </div>
               {threadView === "board" && <button onClick={newDraft}>New draft</button>}
               {threadView === "board" && <button onClick={newThread}>New thread</button>}
+              <button
+                className={`cleanup-threads-btn${cleaningThreads ? " is-cleaning" : ""}`}
+                onClick={() => setCleanupConfirm(true)}
+                disabled={cleaningThreads || !threads.some((t) => t.projectId === projectId)}
+                title="Clean up all threads in this project"
+                aria-label="Clean up all threads"
+              >
+                <svg
+                  className="cleanup-icon"
+                  viewBox="0 0 16 16"
+                  width="14"
+                  height="14"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path
+                    d="M6.2 2.2 7.5 1l1.3 1.2-.4 1.1h3.1a.7.7 0 0 1 0 1.4h-.5l-.8 7.2a1.8 1.8 0 0 1-1.8 1.6H7.6a1.8 1.8 0 0 1-1.8-1.6L5 4.7h-.5a.7.7 0 0 1 0-1.4h3.1l-.4-1.1Zm.2 2.5.7 6.8c0 .2.2.4.5.4h.8c.3 0 .5-.2.5-.4l.7-6.8H6.4Zm-3.6.2.5 4.4a.7.7 0 1 1-1.4.2L1.4 5a.7.7 0 1 1 1.4-.1Zm10.8 0a.7.7 0 1 1 1.4.1l-.5 4.5a.7.7 0 1 1-1.4-.2l.5-4.4Z"
+                    fill="currentColor"
+                  />
+                </svg>
+                <span>{cleaningThreads ? "Cleaning…" : "Clean up"}</span>
+              </button>
               <button
                 className={showWorktrees ? "primary" : undefined}
                 aria-pressed={showWorktrees}
