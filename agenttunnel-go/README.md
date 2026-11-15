@@ -73,6 +73,11 @@ curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/i
   | AGENTTUNNEL_VERSION=v0.10.0 sh
 ```
 
+Update by re-running the installer, or with `atd update` (or the desktop app's
+Update button). Uninstall by adding `--uninstall` to the same script; it removes
+the app and commands and keeps `~/.agenttunnel`. Full steps are in the
+[root README](../README.md#update).
+
 The Linux desktop build needs GTK 4 and WebKitGTK 6.0 at runtime
 (`libgtk-4-1` and `libwebkitgtk-6.0-4` on Debian/Ubuntu). `atd` has no GUI
 dependencies.
