@@ -126,6 +126,34 @@ Threads are only saved once something happens in them: creating one — from the
 UI or `agenttunnel-desktop <dir>` — is in-memory until the first message, rename, or
 setting change. A thread you create and never use leaves nothing behind.
 
+Terminal UI (attaches to the running daemon, or starts one):
+
+```bash
+agenttunnel tui                  # the thread list
+agenttunnel tui <thread>         # straight into a thread
+```
+
+A thread reads as a conversation: your messages, each agent's reply under its
+name, tool calls and errors marked in the gutter. The keys that are not
+obvious:
+
+| Key | Does |
+| --- | --- |
+| `enter` / `alt+enter` (or `ctrl+j`) | send / start a new line |
+| `↑` `↓` | prompt history, or the options of a question an agent asked |
+| `ctrl+g` | write the prompt in `$VISUAL` / `$EDITOR` |
+| `tab` / `shift+tab` | Files, Review, PR and the other tabs, over the open thread; `esc` comes back |
+| `pgup` `pgdn`, mouse wheel | scroll the transcript; `end` on an empty prompt follows the newest output again |
+| `ctrl+k` | command palette (fuzzy); `/` in the composer lists the same thread commands |
+| `/` on the thread list | filter threads |
+
+The wheel needs the mouse captured, so selecting text takes the terminal's
+modifier (Shift, or Option in iTerm2 and Terminal.app); `/copy` puts the last
+reply on the clipboard without it. A terminal that reports focus gets a
+notification and a bell when a turn ends, or an agent asks a question, while
+you are in another window. A light terminal gets a light palette, and the
+theme picked in the desktop app lends its accent color.
+
 Tests:
 
 ```bash

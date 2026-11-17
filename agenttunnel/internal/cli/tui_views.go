@@ -117,14 +117,12 @@ func tuiTabTitle(id string) string {
 	return id
 }
 
-// switchView makes id the active tab. Any switch also closes an open thread,
-// so no other tab is ever drawn over a half-open thread view.
+// switchView makes id the active tab. An open thread stays open underneath:
+// its files, diff and request are tabs of the conversation, and Esc from any
+// of them comes back to it with the transcript and the draft as they were.
 func (m *tuiModel) switchView(id string) {
 	if _, ok := tuiViewByID(id); !ok && id != tuiThreadsViewID {
 		return
-	}
-	if m.screen == tuiScreenThread {
-		m.closeThread()
 	}
 	m.view = id
 }
@@ -159,7 +157,12 @@ func (m *tuiModel) openPalette() {
 // the thread commands.
 func (m *tuiModel) allActions() []tuiAction {
 	actions := []tuiAction{
-		{Title: "Threads: show list", Run: func(m *tuiModel) { m.switchView(tuiThreadsViewID) }},
+		{Title: "Threads: show list", Run: func(m *tuiModel) {
+			m.switchView(tuiThreadsViewID)
+			if m.screen == tuiScreenThread {
+				m.closeThread()
+			}
+		}},
 		{Title: "Threads: refresh", Hint: "r", Run: func(m *tuiModel) { m.refresh = true }},
 		{Title: "Quit", Hint: "q", Run: func(m *tuiModel) { m.quit = true }},
 	}
@@ -188,18 +191,21 @@ func (m *tuiModel) allActions() []tuiAction {
 	return shown
 }
 
-// paletteMatches is the actions whose titles contain the typed query, case
-// insensitively, in palette order.
+// paletteMatches is the actions the typed query fuzzy-matches, best match
+// first; an empty query lists every action in palette order.
 func (m *tuiModel) paletteMatches() []tuiAction {
 	if m.palette == nil {
 		return nil
 	}
-	q := strings.ToLower(string(m.palette.query))
-	var out []tuiAction
-	for _, a := range m.allActions() {
-		if q == "" || strings.Contains(strings.ToLower(a.Title), q) {
-			out = append(out, a)
-		}
+	actions := m.allActions()
+	titles := make([]string, len(actions))
+	for i, a := range actions {
+		titles[i] = a.Title + " " + a.Hint
+	}
+	order := tuiFuzzyOrder(string(m.palette.query), titles)
+	out := make([]tuiAction, len(order))
+	for i, index := range order {
+		out[i] = actions[index]
 	}
 	return out
 }

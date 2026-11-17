@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -78,20 +79,11 @@ func (m *tuiModel) sideRows(width int) []tuiRow {
 		}
 	}
 
-	heading("Subagents")
+	heading("Agents")
 	if len(m.roster) == 0 {
 		out = append(out, tuiFaint("none"))
 	}
-	ids := make([]string, 0, len(m.roster))
-	for id := range m.roster {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		status := string(m.roster[id])
-		out = append(out, tuiText(id, tuiHarnessInk(m.harness[id])).
-			join(tuiText("  ", tuiInk{}), tuiText(status, tuiStatusInk(status))))
-	}
+	out = append(out, m.agentTreeRows(width)...)
 
 	heading("Roles")
 	if !m.side.loaded {
@@ -114,6 +106,56 @@ func (m *tuiModel) sideRows(width int) []tuiRow {
 		out = append(out, tuiText(name, ink))
 		out = append(out, tuiFaint("  "+tuiRuntime(r.Harness, r.Model, r.Variant)))
 	}
+	return out
+}
+
+// agentTreeRows is the thread's agents as a tree: each one under the agent
+// that spawned it, with its status and — while it works — how long it has
+// been at it. Siblings sort by id so the tree is stable between renders.
+func (m *tuiModel) agentTreeRows(width int) []tuiRow {
+	children := map[string][]string{}
+	for id := range m.roster {
+		parent := m.parent[id]
+		if _, known := m.roster[parent]; !known || parent == id {
+			parent = ""
+		}
+		children[parent] = append(children[parent], id)
+	}
+	for _, ids := range children {
+		sort.Strings(ids)
+	}
+	var out []tuiRow
+	var walk func(parent string, depth int)
+	walk = func(parent string, depth int) {
+		// A parent chain that loops back on itself would never end; the
+		// roster's size bounds any honest depth.
+		if depth > len(m.roster) {
+			return
+		}
+		for _, id := range children[parent] {
+			status := m.roster[id]
+			lead := strings.Repeat("  ", depth)
+			if depth > 0 {
+				lead = strings.Repeat("  ", depth-1) + "└ "
+			}
+			row := tuiText(lead, tuiInk{fg: tuiColBorder}).join(
+				tuiText("● ", tuiStatusInk(string(status))),
+				tuiText(id, tuiHarnessInk(m.harness[id])))
+			detail := string(status)
+			if status == contracts.AgentRunning || status == contracts.AgentPending {
+				if at := m.started[id]; !at.IsZero() {
+					detail += " " + tuiElapsed(m.now.Sub(at))
+				}
+			}
+			row = row.join(tuiText("  "+detail, tuiStatusInk(string(status))))
+			out = append(out, row.fit(width))
+			if role := m.role[id]; role != "" && role != id {
+				out = append(out, tuiFaint(strings.Repeat("  ", depth+1)+role).fit(width))
+			}
+			walk(id, depth+1)
+		}
+	}
+	walk("", 0)
 	return out
 }
 

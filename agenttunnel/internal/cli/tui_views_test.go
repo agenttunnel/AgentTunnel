@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
 // tuiTestRegistry swaps the view registry for the test's own, restored on
@@ -96,15 +98,33 @@ func TestTUIViewTabsCycleAndRender(t *testing.T) {
 	}
 }
 
-// Switching tabs from an open thread closes it, so no tab draws over a
-// half-open thread view.
-func TestTUIViewSwitchClosesAnOpenThread(t *testing.T) {
+// Switching tabs keeps an open thread open underneath: the tab reads that
+// thread, and coming back finds the transcript and the draft as they were.
+func TestTUIViewSwitchKeepsTheOpenThread(t *testing.T) {
 	tuiTestRegistry(t, notesView())
-	m := newTuiModel(tuiTestClock())
-	m.openThread(threadListRow{ID: "th_open0000001"}, "demo", nil, nil)
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	tuiOpenWith(m, threadListRow{ID: "th_open0000001", Title: "the open job"}, "demo",
+		[]contracts.LogEntry{tuiEntry(now, "lead", "still here")}, nil)
+	for _, r := range "half typed" {
+		m.typeRune(r)
+	}
 	m.switchView("notes")
-	if m.screen != tuiScreenList || m.thread.ID != "" {
-		t.Fatalf("thread still open after a tab switch: screen=%v thread=%q", m.screen, m.thread.ID)
+	if m.screen != tuiScreenThread || m.thread.ID != "th_open0000001" {
+		t.Fatalf("the tab switch closed the thread: screen=%v thread=%q", m.screen, m.thread.ID)
+	}
+	if row, ok := m.focusRow(); !ok || row.thread.ID != "th_open0000001" {
+		t.Fatalf("the tab does not read the open thread: %+v", row.thread)
+	}
+	if frame := tuiPlain(render(m, 80, 12)); !strings.Contains(frame, "notes body") || strings.Contains(frame, "still here") {
+		t.Fatalf("the tab is not the one on screen:\n%s", frame)
+	}
+	m.switchView(tuiThreadsViewID)
+	frame := tuiPlain(render(m, 80, 12))
+	for _, want := range []string{"the open job", "still here", "half typed"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("back on the thread, %q is gone:\n%s", want, frame)
+		}
 	}
 }
 
@@ -200,7 +220,7 @@ func TestTUIUnreadMarker(t *testing.T) {
 	}
 
 	m.setList([]psRow{row("th_seed000001", 4, 0)})
-	m.openThread(threadListRow{ID: "th_seed000001", Messages: 4}, "demo", nil, nil)
+	tuiOpenWith(m, threadListRow{ID: "th_seed000001", Messages: 4}, "demo", nil, nil)
 	m.setList([]psRow{row("th_seed000001", 5, 0)})
 	if m.unreadCount() != 0 {
 		t.Fatal("the open thread is unread")
@@ -249,7 +269,7 @@ func TestTUISessionTabsViewsAndPalette(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "", keys, term)
+		done <- tuiSession(context.Background(), c, m, "", keys, term, nil)
 	}()
 	term.waitNextDraw(t, containsLine("the tui job"))
 

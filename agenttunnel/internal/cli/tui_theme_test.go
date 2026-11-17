@@ -95,7 +95,7 @@ func tuiColorModel(theme tuiTheme) *tuiModel {
 	m := newTuiModel(at)
 	m.theme = theme
 	m.info = tuiInfo{daemon: "127.0.0.1:7777", version: "1.2.3"}
-	m.openThread(threadListRow{ID: "th_color0000001", Title: "colors", RunningAgents: 1, Agents: 1}, "demo", []contracts.LogEntry{
+	tuiOpenWith(m, threadListRow{ID: "th_color0000001", Title: "colors", RunningAgents: 1, Agents: 1}, "demo", []contracts.LogEntry{
 		{AgentID: "lead", Kind: contracts.LogError, Text: "boom", At: at},
 	}, map[string]contracts.AgentStatus{"lead": contracts.AgentRunning})
 	m.harness["lead"] = "claude"
@@ -106,22 +106,24 @@ func TestTUIThemeLogLinesColorByKind(t *testing.T) {
 	at := tuiTestClock()
 	m := newTuiModel(at)
 	m.theme = tuiTheme{depth: tuiDepthTrueColor}
-	m.openThread(threadListRow{ID: "th_kinds000001"}, "demo", []contracts.LogEntry{
+	tuiOpenWith(m, threadListRow{ID: "th_kinds000001"}, "demo", []contracts.LogEntry{
 		{AgentID: "lead", Kind: contracts.LogTool, Text: "$ go test", At: at},
 		{AgentID: "lead", Kind: contracts.LogUsage, Text: "in 10 out 2", At: at},
 	}, nil)
-	m.appendStatusLines("10:30:00 lead status failed")
-	out := render(m, 60, 10)
+	m.appendStatusLines("lead failed")
+	out := render(m, 60, 14)
 
-	wantTool := "\x1b[38;2;92;156;255m" // secondary for tool rows
-	if !strings.Contains(out, wantTool) {
+	if !strings.Contains(out, "\x1b[38;2;92;156;255m$ go test") { // secondary for tool rows
 		t.Fatalf("tool row not tinted:\n%q", out)
 	}
-	if !strings.Contains(out, "\x1b[38;2;110;110;110m10:30:00 ") {
-		t.Fatalf("timestamp not drawn faint:\n%q", out)
+	if !strings.Contains(out, "\x1b[38;2;110;110;110m  10:30") {
+		t.Fatalf("the speaker row's time not drawn faint:\n%q", out)
 	}
-	if !strings.Contains(out, "\x1b[38;2;110;110;110m") {
+	if !strings.Contains(out, "\x1b[38;2;110;110;110min 10 out 2") {
 		t.Fatalf("usage row not faint:\n%q", out)
+	}
+	if !strings.Contains(out, "\x1b[38;2;160;160;160mlead failed") {
+		t.Fatalf("status note not dim:\n%q", out)
 	}
 }
 
@@ -314,7 +316,7 @@ func TestTUIRowWidthIsCellAware(t *testing.T) {
 	// title and a log line of CJK must not push any boxed row past its border.
 	now := tuiTestClock()
 	m := newTuiModel(now)
-	m.openThread(threadListRow{ID: "th_wide00000001", Title: strings.Repeat("中", 30)}, "demo", []contracts.LogEntry{
+	tuiOpenWith(m, threadListRow{ID: "th_wide00000001", Title: strings.Repeat("中", 30)}, "demo", []contracts.LogEntry{
 		tuiEntry(now, "lead", strings.Repeat("文", 40)),
 	}, map[string]contracts.AgentStatus{"lead": contracts.AgentRunning})
 	const cols = 40

@@ -14,8 +14,11 @@ func TestTUIBubbleKeyMapping(t *testing.T) {
 		want []tuiKey
 	}{
 		{"rune", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}, []tuiKey{{Kind: keyRune, Rune: 'a'}}},
-		{"paste types each rune", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi é")}, []tuiKey{
+		{"several runes type in order", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi é")}, []tuiKey{
 			{Kind: keyRune, Rune: 'h'}, {Kind: keyRune, Rune: 'i'}, {Kind: keyRune, Rune: ' '}, {Kind: keyRune, Rune: 'é'},
+		}},
+		{"a paste arrives whole, line breaks included", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb"), Paste: true}, []tuiKey{
+			{Kind: keyPaste, Text: "a\nb"},
 		}},
 		{"space", tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}, []tuiKey{{Kind: keyRune, Rune: ' '}}},
 		{"alt rune is ignored", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x"), Alt: true}, nil},
@@ -28,7 +31,20 @@ func TestTUIBubbleKeyMapping(t *testing.T) {
 		{"pgup", tea.KeyMsg{Type: tea.KeyPgUp}, []tuiKey{{Kind: keyPgUp}}},
 		{"pgdown", tea.KeyMsg{Type: tea.KeyPgDown}, []tuiKey{{Kind: keyPgDn}}},
 		{"arrows", tea.KeyMsg{Type: tea.KeyLeft}, []tuiKey{{Kind: keyLeft}}},
-		{"unmapped", tea.KeyMsg{Type: tea.KeyCtrlA}, nil},
+		{"alt+enter starts a line", tea.KeyMsg{Type: tea.KeyEnter, Alt: true}, []tuiKey{{Kind: keyNewline}}},
+		{"ctrl+j starts a line", tea.KeyMsg{Type: tea.KeyCtrlJ}, []tuiKey{{Kind: keyNewline}}},
+		{"delete", tea.KeyMsg{Type: tea.KeyDelete}, []tuiKey{{Kind: keyDelete}}},
+		{"home", tea.KeyMsg{Type: tea.KeyHome}, []tuiKey{{Kind: keyHome}}},
+		{"ctrl+a is home", tea.KeyMsg{Type: tea.KeyCtrlA}, []tuiKey{{Kind: keyHome}}},
+		{"ctrl+e is end", tea.KeyMsg{Type: tea.KeyCtrlE}, []tuiKey{{Kind: keyEnd}}},
+		{"alt+left moves a word", tea.KeyMsg{Type: tea.KeyLeft, Alt: true}, []tuiKey{{Kind: keyWordLeft}}},
+		{"ctrl+right moves a word", tea.KeyMsg{Type: tea.KeyCtrlRight}, []tuiKey{{Kind: keyWordRight}}},
+		{"alt+b moves a word", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true}, []tuiKey{{Kind: keyWordLeft}}},
+		{"ctrl+w kills a word", tea.KeyMsg{Type: tea.KeyCtrlW}, []tuiKey{{Kind: keyKillWord}}},
+		{"alt+backspace kills a word", tea.KeyMsg{Type: tea.KeyBackspace, Alt: true}, []tuiKey{{Kind: keyKillWord}}},
+		{"ctrl+u kills the line", tea.KeyMsg{Type: tea.KeyCtrlU}, []tuiKey{{Kind: keyKillLine}}},
+		{"shift+tab", tea.KeyMsg{Type: tea.KeyShiftTab}, []tuiKey{{Kind: keyShiftTab}}},
+		{"unmapped", tea.KeyMsg{Type: tea.KeyCtrlB}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

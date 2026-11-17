@@ -10,7 +10,10 @@ are the real surface; prefer them over line numbers.
    the same JSON-RPC WebSocket. `agenttunnel` never imports `pkg/daemon` or the server
    half of `internal/transport`.
 2. A daemon publishes `<state>/daemon.json`; `agenttunnel` reads it and `agenttunnel run`
-   autostarts a detached `atd --port 0` when none answers.
+   autostarts a detached `atd --port 0` when none answers. (Extended: `agenttunnel tui`
+   autostarts the same way, so opening it in a repository is the whole first step.
+   It still never starts one for an explicit `--daemon`, and after a dropped
+   connection it waits for the daemon to come back rather than starting another.)
 3. Turns can detach from the client socket and bind to the daemon lifetime
    context; only `thread.turn.stop` or daemon shutdown ends them.
 4. Docker-shaped commands: `run`, `ps`, `logs`, `attach`, `stop`, `projects`,
@@ -65,7 +68,7 @@ exit; the desktop writes it only while it owns the daemon. Readers probe with
 fixtures). A stale file is removed; `agenttunnel run` then autostarts, other commands
 tell the user to.
 
-Autostart is `agenttunnel run` only: take `<state>/daemon.start.lock` with `O_EXCL`
+Autostart is `agenttunnel run` and `agenttunnel tui` only: take `<state>/daemon.start.lock` with `O_EXCL`
 (break locks older than 30 s whose pid is gone), re-read discovery, spawn
 `atd --port 0 --home-dir <state>` detached with stdin `/dev/null`, stdout/stderr
 appended to `<state>/logs/atd.log`, env scrubbed of `AT_AGENT_ID`,
