@@ -81,9 +81,9 @@ func TestTUIPaneFollowsScrollsAndCloses(t *testing.T) {
 	m := newTuiModel(time.Now())
 	m.screen = tuiScreenThread
 	m.thread = threadListRow{ID: "th_1"}
-	var lines []tuiLogLine
+	var lines []tuiBlock
 	for i := 0; i < 30; i++ {
-		lines = append(lines, tuiLogLine{text: fmt.Sprintf("line %d", i), kind: string(contracts.LogText)})
+		lines = append(lines, tuiNoteBlock(string(contracts.LogText), fmt.Sprintf("line %d", i)))
 	}
 	m.openPane("agent a1", lines, true)
 
@@ -133,7 +133,7 @@ func TestTUISessionSlashCommandsReachTheDaemon(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "", keys, term)
+		done <- tuiSession(context.Background(), c, m, "", keys, term, nil)
 	}()
 	term.waitNextDraw(t, containsLine("the tui job"))
 	keys <- tuiKey{Kind: keyEnter}
@@ -181,7 +181,7 @@ func TestTUISessionNewThreadFromThePalette(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "", keys, term)
+		done <- tuiSession(context.Background(), c, m, "", keys, term, nil)
 	}()
 	term.waitNextDraw(t, containsLine("the tui job"))
 
@@ -235,7 +235,7 @@ func TestTUISessionNewThreadFromTheNKey(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "", keys, term)
+		done <- tuiSession(context.Background(), c, m, "", keys, term, nil)
 	}()
 	term.waitNextDraw(t, containsLine("the tui job"))
 
@@ -262,23 +262,23 @@ func TestTUIThreadSlashHintsNarrowAndComplete(t *testing.T) {
 	if len(m.slashMatches()) != 0 {
 		t.Fatal("hints shown with an empty prompt")
 	}
-	m.input = []rune("/")
+	m.input.set("/")
 	all := len(m.slashMatches())
 	if all < 2 || !strings.Contains(render(m, 100, 30), "tab complete") {
 		t.Fatalf("bare / gave %d hints", all)
 	}
-	m.input = []rune("/bt")
+	m.input.set("/bt")
 	if got := m.slashMatches(); len(got) != 1 || got[0].name != "btw" {
 		t.Fatalf("/bt matched %v", got)
 	}
 	m.completeSlash()
-	if string(m.input) != "/btw " {
-		t.Fatalf("completed to %q", string(m.input))
+	if m.input.string() != "/btw " {
+		t.Fatalf("completed to %q", m.input.string())
 	}
 	if len(m.slashMatches()) != 0 {
 		t.Fatal("hints stay after the argument starts")
 	}
-	m.input = []rune("hello")
+	m.input.set("hello")
 	if len(m.slashMatches()) != 0 {
 		t.Fatal("plain text shows hints")
 	}
@@ -288,7 +288,7 @@ func TestTUIThreadSlashArrowsMoveSelection(t *testing.T) {
 	m := newTuiModel(time.Now())
 	m.screen = tuiScreenThread
 	m.thread = threadListRow{ID: "th_1"}
-	m.input = []rune("/")
+	m.input.set("/")
 	matches := m.slashMatches()
 	var tr *turnTracker
 	tuiThreadKey(m, &tr, tuiKey{Kind: keyDown}, 20, func(string) {})
@@ -301,8 +301,8 @@ func TestTUIThreadSlashArrowsMoveSelection(t *testing.T) {
 		t.Fatalf("up did not wrap: %d", m.slashSel)
 	}
 	m.completeSlash()
-	if !strings.HasPrefix(string(m.input), "/"+matches[len(matches)-1].name) {
-		t.Fatalf("completed %q", string(m.input))
+	if !strings.HasPrefix(m.input.string(), "/"+matches[len(matches)-1].name) {
+		t.Fatalf("completed %q", m.input.string())
 	}
 }
 
@@ -310,19 +310,19 @@ func TestTUIThreadSidebarShowsUsageAgentsAndRoles(t *testing.T) {
 	m := newTuiModel(time.Now())
 	m.screen = tuiScreenThread
 	m.thread = threadListRow{ID: "th_1"}
-	m.setRoster(map[string]contracts.AgentStatus{"worker-1": "running"}, map[string]string{"worker-1": "claude"})
+	m.setRoster(tuiRoster{statuses: map[string]contracts.AgentStatus{"worker-1": "running"}, harness: map[string]string{"worker-1": "claude"}})
 	m.side.loaded = true
 	m.side.cfg = tuiSettingsWire{
 		Lead:  tuiLeadWire{Harness: "claude", Model: "opus"},
 		Roles: []tuiRoleWire{{ID: "reviewer", Name: "Reviewer", Harness: "codex", Model: "gpt-5", Enabled: true}},
 	}
 	wide := tuiPlain(render(m, 130, 30))
-	for _, want := range []string{"Usage", "Subagents", "worker-1", "Roles", "Reviewer", "codex/gpt-5", "claude/opus"} {
+	for _, want := range []string{"Usage", "Agents", "● worker-1  running", "Roles", "Reviewer", "codex/gpt-5", "claude/opus"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("wide frame lacks %q", want)
 		}
 	}
-	if narrow := tuiPlain(render(m, 80, 30)); strings.Contains(narrow, "Subagents") {
+	if narrow := tuiPlain(render(m, 80, 30)); strings.Contains(narrow, "Roles") {
 		t.Error("narrow frame shows the sidebar")
 	}
 }

@@ -57,27 +57,47 @@ type tuiFilesState struct {
 	// preview is the open file, or nil. scroll is its line offset.
 	preview *tuiFileRead
 	scroll  int
+	// gen numbers the preview and search requests: each one, and each way of
+	// closing what they open, moves it on, and a result lands only if its
+	// request is still the latest. A reply that arrives after Esc, or after a
+	// newer search, is dropped instead of reopening what the user closed.
+	gen int
 }
 
 func tuiFilesOf(m *tuiModel) *tuiFilesState {
 	return tuiStateOf[tuiFilesState](m, tuiViewFiles)
 }
 
-// fetch reads the focused thread's tree and git status.
-func (st *tuiFilesState) fetch() error {
-	if st.threadID == "" {
-		st.root, st.marks = nil, nil
-		return nil
+// fetchJob reads the focused thread's tree and git status in the background.
+// The fold drops the result if the focus moved to another thread meanwhile.
+func (st *tuiFilesState) fetchJob() tuiJob {
+	id := st.threadID
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		if id == "" {
+			return func(m *tuiModel) {
+				st := tuiFilesOf(m)
+				if st.threadID != "" {
+					return // the user focused a thread meanwhile
+				}
+				st.root, st.marks = nil, nil
+			}
+		}
+		var tree struct {
+			Entries []tuiFileEntry    `json:"entries"`
+			Status  map[string]string `json:"status"`
+		}
+		if err := c.Call(ctx, "files.tree", map[string]string{"threadId": id}, &tree); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiFilesOf(m)
+			if st.threadID != id {
+				return // the user focused another thread meanwhile
+			}
+			st.root, st.marks = tree.Entries, tree.Status
+		}
 	}
-	var tree struct {
-		Entries []tuiFileEntry    `json:"entries"`
-		Status  map[string]string `json:"status"`
-	}
-	if err := st.call("files.tree", map[string]string{"threadId": st.threadID}, &tree); err != nil {
-		return err
-	}
-	st.root, st.marks = tree.Entries, tree.Status
-	return nil
 }
 
 // visible flattens the expanded tree into the rows the cursor walks.
@@ -104,33 +124,53 @@ func (st *tuiFilesState) listLen() int {
 	return len(st.visible())
 }
 
-// open loads a file for the preview pane. Binary and oversized files come back
-// flagged by the daemon, so the preview shows that instead of bytes.
-func (st *tuiFilesState) open(path string) {
-	var read tuiFileRead
-	if err := st.call("files.read", map[string]string{"threadId": st.threadID, "path": path}, &read); err != nil {
-		st.setErr(err)
-		return
-	}
-	st.preview, st.scroll = &read, 0
+// open loads a file for the preview pane in the background. Binary and oversized
+// files come back flagged by the daemon, so the preview shows that instead of bytes.
+func (st *tuiFilesState) open(m *tuiModel, path string) {
+	id := st.threadID
+	base := &st.tuiBase
+	st.gen++
+	gen := st.gen
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var read tuiFileRead
+		if err := c.Call(ctx, "files.read", map[string]string{"threadId": id, "path": path}, &read); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiFilesOf(m)
+			if st.threadID != id || st.gen != gen {
+				return // another thread, or a newer request or a close, meanwhile
+			}
+			st.preview, st.scroll = &read, 0
+		}
+	})
 }
 
-// runSearch replaces the tree with the matches for query.
-func (st *tuiFilesState) runSearch(query string) {
-	var reply struct {
-		Matches []tuiFileMatch `json:"matches"`
-	}
-	if err := st.call("files.search", map[string]any{"threadId": st.threadID, "query": query, "limit": 200}, &reply); err != nil {
-		st.setErr(err)
-		return
-	}
-	st.query = query
-	st.search = reply.Matches
-	if st.search == nil {
-		st.search = []tuiFileMatch{}
-	}
-	st.searched = true
-	st.cursor = 0
+// runSearch replaces the tree with the matches for query, in the background.
+func (st *tuiFilesState) runSearch(m *tuiModel, query string) {
+	id := st.threadID
+	base := &st.tuiBase
+	st.gen++
+	gen := st.gen
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var reply struct {
+			Matches []tuiFileMatch `json:"matches"`
+		}
+		if err := c.Call(ctx, "files.search", map[string]any{"threadId": id, "query": query, "limit": 200}, &reply); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		matches := reply.Matches
+		if matches == nil {
+			matches = []tuiFileMatch{}
+		}
+		return func(m *tuiModel) {
+			st := tuiFilesOf(m)
+			if st.threadID != id || st.gen != gen {
+				return // another thread, or a newer request or a close, meanwhile
+			}
+			st.query, st.search, st.searched, st.cursor = query, matches, true, 0
+		}
+	})
 }
 
 func (st *tuiFilesState) render(cols, rows int) []tuiRow {
@@ -246,7 +286,7 @@ func fileStatusInk(code string) tuiInk {
 	return tuiInk{fg: tuiColWarn}
 }
 
-func (st *tuiFilesState) key(k tuiKey) bool {
+func (st *tuiFilesState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.ed.on {
 		if st.ed.key(k) {
@@ -254,8 +294,9 @@ func (st *tuiFilesState) key(k tuiKey) bool {
 			st.ed.text = nil
 			if query == "" {
 				st.search, st.searched, st.query = nil, false, ""
+				st.gen++
 			} else {
-				st.runSearch(query)
+				st.runSearch(m, query)
 			}
 		}
 		return true
@@ -267,12 +308,14 @@ func (st *tuiFilesState) key(k tuiKey) bool {
 		}
 		if k.Kind == keyEsc || k.Kind == keyEnter || (k.Kind == keyRune && k.Rune == 'h') {
 			st.preview = nil
+			st.gen++
 			return true
 		}
 		return false
 	}
 	if k.Kind == keyEsc && st.searched {
 		st.search, st.searched, st.query, st.cursor = nil, false, "", 0
+		st.gen++
 		return true
 	}
 	if step := tuiNav(k, 10); step != 0 {
@@ -283,11 +326,11 @@ func (st *tuiFilesState) key(k tuiKey) bool {
 	case k.Kind == keyRune && k.Rune == '/':
 		st.ed.open("search files", st.query)
 	case k.Kind == keyEnter || (k.Kind == keyRune && k.Rune == 'l'):
-		st.activate()
+		st.activate(m)
 	case k.Kind == keyRune && k.Rune == 'h':
 		st.collapse()
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -295,10 +338,10 @@ func (st *tuiFilesState) key(k tuiKey) bool {
 }
 
 // activate opens the row under the cursor: a folder toggles, a file previews.
-func (st *tuiFilesState) activate() {
+func (st *tuiFilesState) activate(m *tuiModel) {
 	if st.search != nil {
 		if st.cursor < len(st.search) && !st.search[st.cursor].Dir {
-			st.open(st.search[st.cursor].Path)
+			st.open(m, st.search[st.cursor].Path)
 		}
 		return
 	}
@@ -308,7 +351,7 @@ func (st *tuiFilesState) activate() {
 	}
 	e := vis[st.cursor].entry
 	if !e.Dir {
-		st.open(e.Path)
+		st.open(m, e.Path)
 		return
 	}
 	if st.expanded == nil {
@@ -353,16 +396,17 @@ func init() {
 		Order: 20,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiFilesOf(m)
+			st.bind(ctx, c)
 			st.focus(m)
 			// The tree is cheap to read but walks the worktree, so it refreshes on
 			// open and on r rather than on every poll tick.
-			tuiLoadView(ctx, c, &st.tuiBase, time.Hour, st.fetch)
+			tuiLoadJob(m, &st.tuiBase, time.Hour, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiFilesOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiFilesOf(m).key(k)
+			return tuiFilesOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "move"}, {"enter", "open"}, {"h", "collapse"}, {"/", "search"},

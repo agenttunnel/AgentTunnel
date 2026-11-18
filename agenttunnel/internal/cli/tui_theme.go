@@ -1,20 +1,28 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"image/color"
 	"io"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/mattn/go-runewidth"
+
+	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
+	"github.com/agenttunnel/agenttunnel-go/internal/prefs"
 )
 
 // The TUI's look follows opencode and the modern terminal coding agents: a
 // near-black canvas, one warm accent, quiet gutters instead of boxes, and
 // panels that read by background rather than by border. Colors are chosen per
-// terminal depth and rendered through lipgloss; NO_COLOR, a pipe, or a dumb
-// terminal gets plain text with no SGR at all.
+// terminal depth; NO_COLOR, a pipe, or a dumb terminal gets plain text with no
+// SGR at all.
 
 // tuiDepth is how many colors the terminal can show.
 type tuiDepth int
@@ -64,30 +72,117 @@ func mixRGB(a, b tuiRGB, pct int) tuiRGB {
 	return tuiRGB{mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b)}
 }
 
-// The palette is opencode's default dark theme. The names predate it and stay
+// tuiColors is one full palette. The names predate opencode's theme and stay
 // so views keep reading by role: bar is the panel background, accent is the
-// primary peach, agent is the secondary blue.
-var (
-	tuiColBar     = rgb(0x141414) // panel: header, input, and dialog background
-	tuiColBorder  = rgb(0x3c3c3c) // subtle borders and gutters
-	tuiColText    = rgb(0xeeeeee)
-	tuiColDim     = rgb(0xa0a0a0)
-	tuiColFaint   = rgb(0x6e6e6e) // muted
-	tuiColAccent  = rgb(0xfab283) // primary
-	tuiColAccent2 = rgb(0x5c9cff) // secondary: tools and links
-	tuiColAgent   = rgb(0x9d7cd8) // purple: reasoning and agent mode
-	tuiColOK      = rgb(0x7fd88f)
-	tuiColWarn    = rgb(0xf5a742)
-	tuiColErr     = rgb(0xe06c75)
-	tuiColInk     = rgb(0x0a0a0a) // text on a primary-colored background
+// primary, agent is the reasoning purple.
+type tuiColors struct {
+	bar, border            tuiRGB
+	text, dim, faint       tuiRGB
+	accent, accent2, agent tuiRGB
+	ok, warn, err          tuiRGB
+	ink                    tuiRGB // text on a primary-colored background
+	harnessShade           int    // percent of each harness tint kept; the rest is ink
+}
 
-	// The selected row: a primary wash, dark text on top.
+// tuiDarkColors is opencode's default dark theme. tuiLightColors is its
+// counterpart for a light terminal, where near-white text would disappear.
+var (
+	tuiDarkColors = tuiColors{
+		bar: rgb(0x141414), border: rgb(0x3c3c3c),
+		text: rgb(0xeeeeee), dim: rgb(0xa0a0a0), faint: rgb(0x6e6e6e),
+		accent: rgb(0xfab283), accent2: rgb(0x5c9cff), agent: rgb(0x9d7cd8),
+		ok: rgb(0x7fd88f), warn: rgb(0xf5a742), err: rgb(0xe06c75),
+		ink: rgb(0x0a0a0a), harnessShade: 100,
+	}
+	tuiLightColors = tuiColors{
+		bar: rgb(0xececec), border: rgb(0xc4c4c4),
+		text: rgb(0x1c1c1c), dim: rgb(0x555555), faint: rgb(0x8a8a8a),
+		accent: rgb(0xb5520f), accent2: rgb(0x1d5fbf), agent: rgb(0x7b5bb6),
+		ok: rgb(0x2f8f46), warn: rgb(0xa86400), err: rgb(0xc23b3b),
+		ink: rgb(0xffffff), harnessShade: 45,
+	}
+)
+
+// The palette in use. It starts dark; applyTuiPalette swaps it for a light
+// terminal and for the theme the user picked in the desktop app.
+var (
+	tuiColBar     = tuiDarkColors.bar // panel: header, input, and dialog background
+	tuiColBorder  = tuiDarkColors.border
+	tuiColText    = tuiDarkColors.text
+	tuiColDim     = tuiDarkColors.dim
+	tuiColFaint   = tuiDarkColors.faint
+	tuiColAccent  = tuiDarkColors.accent  // primary
+	tuiColAccent2 = tuiDarkColors.accent2 // secondary: tools and links
+	tuiColAgent   = tuiDarkColors.agent   // purple: reasoning and agent mode
+	tuiColOK      = tuiDarkColors.ok
+	tuiColWarn    = tuiDarkColors.warn
+	tuiColErr     = tuiDarkColors.err
+	tuiColInk     = tuiDarkColors.ink
+
+	// The selected row: a primary wash, ink on top.
 	tuiColSelect = tuiColAccent
 )
 
-// tuiHarnessColors are the foreground tints graph.ts assigns each harness,
-// lifted from the desktop's h-* washes to their solid hue.
-var tuiHarnessColors = map[string]tuiRGB{
+// tuiThemeAccents is each desktop theme's accent as the TUI paints it: on a
+// dark terminal the theme's own hue, on a light one a shade of it that still
+// reads on white. The ids are the desktop's (lib/themes.ts), saved in the
+// daemon's preferences as at.theme.
+var tuiThemeAccents = map[string][2]tuiRGB{
+	"warp":            {rgb(0x19c3c8), rgb(0x0a7f84)},
+	"t3-chat":         {rgb(0xf472b6), rgb(0xdb2777)},
+	"nord":            {rgb(0x88c0d0), rgb(0x5e81ac)},
+	"rose-pine":       {rgb(0xebbcba), rgb(0xb4637a)},
+	"solarized-light": {rgb(0x4aa3df), rgb(0x268bd2)},
+}
+
+// applyTuiPalette settles the colors: the dark or the light palette, with the
+// accent of theme when it names a desktop theme, so the terminal and the app
+// look like one product. It always starts from the palette's own values, so
+// it can run again when the terminal answers about its background. The canvas
+// itself is never painted: it stays whatever the terminal's background is.
+func applyTuiPalette(light bool, theme string) {
+	p := tuiDarkColors
+	if light {
+		p = tuiLightColors
+	}
+	if accents, ok := tuiThemeAccents[theme]; ok {
+		p.accent = accents[0]
+		if light {
+			p.accent = accents[1]
+		}
+	}
+	tuiColBar, tuiColBorder = p.bar, p.border
+	tuiColText, tuiColDim, tuiColFaint = p.text, p.dim, p.faint
+	tuiColAccent, tuiColAccent2, tuiColAgent = p.accent, p.accent2, p.agent
+	tuiColOK, tuiColWarn, tuiColErr = p.ok, p.warn, p.err
+	tuiColInk, tuiColSelect = p.ink, p.accent
+	// The harness tints are pastels made for a dark canvas; a light one gets
+	// them shaded toward ink.
+	for name, c := range tuiHarnessBase {
+		tuiHarnessColors[name] = mixRGB(c, rgb(0x101010), p.harnessShade)
+	}
+}
+
+// tuiSavedTheme is the theme the user picked in the desktop app, read from the
+// daemon's preferences, or "" when there is none to read. It is a nicety, so
+// it gets a second and no more.
+func tuiSavedTheme(ctx context.Context, info discovery.Info) string {
+	if info.HTTPURL == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	values, err := prefs.Fetch(ctx, info.HTTPURL, info.Token)
+	if err != nil {
+		return ""
+	}
+	return values["at.theme"]
+}
+
+// tuiHarnessBase is the foreground tint graph.ts assigns each harness, lifted
+// from the desktop's h-* washes to their solid hue. tuiHarnessColors is those
+// tints as painted in the palette in use.
+var tuiHarnessBase = map[string]tuiRGB{
 	"claude":      rgb(0xfab387),
 	"opencode":    rgb(0x8ca9ee),
 	"codex":       rgb(0xa6d189),
@@ -96,6 +191,14 @@ var tuiHarnessColors = map[string]tuiRGB{
 	"commandcode": rgb(0xe3c471),
 	"grok":        rgb(0xabb2c4),
 }
+
+var tuiHarnessColors = func() map[string]tuiRGB {
+	out := make(map[string]tuiRGB, len(tuiHarnessBase))
+	for name, c := range tuiHarnessBase {
+		out[name] = c
+	}
+	return out
+}()
 
 // tuiInk is the styling of one span. Zero fields inherit nothing: plain text.
 type tuiInk struct {
@@ -127,12 +230,12 @@ func tuiHarnessInk(harness string) tuiInk {
 	return tuiInk{fg: tuiColText}
 }
 
-// tuiKindInk colors a log line by its entry kind. Unknown kinds read as text.
+// tuiKindInk colors a transcript block by its kind. Unknown kinds read as text.
 func tuiKindInk(kind string) tuiInk {
 	switch kind {
 	case "error":
 		return tuiInk{fg: tuiColErr}
-	case "tool":
+	case "tool", "shell":
 		return tuiInk{fg: tuiColAccent2}
 	case "usage", "raw":
 		return tuiInk{fg: tuiColFaint}
@@ -145,17 +248,46 @@ func tuiKindInk(kind string) tuiInk {
 	}
 }
 
-// Renderers per depth, so a lipgloss style downsamples to the depth the
-// theme asks for no matter what the host terminal is.
-var (
-	tuiTrueColorRenderer = newTuiRenderer(termenv.TrueColor)
-	tui256Renderer       = newTuiRenderer(termenv.ANSI256)
-)
+// tuiSGR is the escape pair that paints one ink at one depth.
+type tuiSGR struct{ open, close string }
 
-func newTuiRenderer(profile termenv.Profile) *lipgloss.Renderer {
-	r := lipgloss.NewRenderer(io.Discard)
-	r.SetColorProfile(profile)
-	return r
+// tuiSGRCache memoizes the pair per depth and ink. A frame is thousands of
+// spans in a dozen inks, repainted many times a second while agents stream,
+// so the sequence is built once per ink instead of once per span.
+var tuiSGRCache sync.Map // map[tuiSGRKey]tuiSGR
+
+type tuiSGRKey struct {
+	depth tuiDepth
+	ink   tuiInk
+}
+
+// sgr builds, or recalls, the escape pair for ink: bold and faint first, then
+// the colors, downsampled to the 256-color palette below true color.
+func (t tuiTheme) sgr(ink tuiInk) tuiSGR {
+	key := tuiSGRKey{t.depth, ink}
+	if v, ok := tuiSGRCache.Load(key); ok {
+		return v.(tuiSGR)
+	}
+	profile := colorprofile.ANSI256
+	if t.depth == tuiDepthTrueColor {
+		profile = colorprofile.TrueColor
+	}
+	var st ansi.Style
+	if ink.bold {
+		st = st.Bold()
+	}
+	if ink.dim {
+		st = st.Faint()
+	}
+	if ink.fg != (tuiRGB{}) {
+		st = st.ForegroundColor(profile.Convert(ink.fg.color()))
+	}
+	if ink.bg != (tuiRGB{}) {
+		st = st.BackgroundColor(profile.Convert(ink.bg.color()))
+	}
+	pair := tuiSGR{open: st.String(), close: "\x1b[0m"}
+	tuiSGRCache.Store(key, pair)
+	return pair
 }
 
 // style wraps s in the SGR for ink, or returns s unchanged when there is
@@ -164,26 +296,45 @@ func (t tuiTheme) style(s string, ink tuiInk) string {
 	if t.depth == tuiDepthNone || s == "" || ink == (tuiInk{}) {
 		return s
 	}
-	r := tui256Renderer
-	if t.depth == tuiDepthTrueColor {
-		r = tuiTrueColorRenderer
-	}
-	st := r.NewStyle().Bold(ink.bold).Faint(ink.dim)
-	if ink.fg != (tuiRGB{}) {
-		st = st.Foreground(lipgloss.Color(ink.fg.hex()))
-	}
-	if ink.bg != (tuiRGB{}) {
-		st = st.Background(lipgloss.Color(ink.bg.hex()))
-	}
-	return st.Render(s)
+	pair := t.sgr(ink)
+	return pair.open + s + pair.close
 }
 
 func (c tuiRGB) hex() string { return fmt.Sprintf("#%02x%02x%02x", c.r, c.g, c.b) }
 
-// tuiSpan is a run of text sharing one ink.
+func (c tuiRGB) color() color.Color { return color.RGBA{R: c.r, G: c.g, B: c.b, A: 0xff} }
+
+// tuiSpan is a run of text sharing one ink. link, when set, makes the run a
+// hyperlink in terminals that take OSC 8; the others just show the text.
 type tuiSpan struct {
 	text string
 	ink  tuiInk
+	link string
+}
+
+// tuiLink is text that opens url when clicked. A url that is not plain http(s)
+// yields ordinary text: it comes from a forge or an agent, and a control byte
+// in it would end the escape sequence early and start one of its own.
+func tuiLink(text, url string, ink tuiInk) tuiRow {
+	row := tuiText(text, ink)
+	if len(row) == 1 && tuiSafeURL(url) {
+		row[0].link = url
+	}
+	return row
+}
+
+// tuiSafeURL reports whether url can sit inside an OSC 8 sequence: http or
+// https, and nothing but visible ASCII.
+func tuiSafeURL(url string) bool {
+	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+		return false
+	}
+	for _, r := range url {
+		if r <= 0x20 || r >= 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // tuiRow is one display line as styled spans. Widths count terminal cells, so
@@ -207,28 +358,22 @@ func (r tuiRow) join(parts ...tuiRow) tuiRow {
 	return out
 }
 
+// tuiWidths measures runes the way terminals draw them. East Asian ambiguous
+// width stays narrow whatever the locale says: the frame is built from box
+// drawing and bullet glyphs that modern terminals draw one cell wide.
+var tuiWidths = &runewidth.Condition{EastAsianWidth: false, StrictEmojiNeutral: true}
+
 // runeCells is how many terminal cells r occupies: wide runes — CJK,
-// fullwidth forms, emoji — take two, everything else one.
+// fullwidth forms, emoji — take two, combining marks, joiners and variation
+// selectors take none, everything else one.
 func runeCells(r rune) int {
 	switch {
-	case r >= 0x1100 && r <= 0x115F, // Hangul Jamo
-		r >= 0x2E80 && r <= 0x303E,   // CJK radicals and symbols
-		r >= 0x3041 && r <= 0x33FF,   // kana, CJK compatibility
-		r >= 0x3400 && r <= 0x4DBF,   // CJK extension A
-		r >= 0x4E00 && r <= 0x9FFF,   // CJK unified ideographs
-		r >= 0xA000 && r <= 0xA4CF,   // Yi
-		r >= 0xAC00 && r <= 0xD7A3,   // Hangul syllables
-		r >= 0xF900 && r <= 0xFAFF,   // CJK compatibility ideographs
-		r >= 0xFE30 && r <= 0xFE4F,   // CJK compatibility forms
-		r >= 0xFF00 && r <= 0xFF60,   // fullwidth forms
-		r >= 0xFFE0 && r <= 0xFFE6,   // fullwidth signs
-		r >= 0x1F300 && r <= 0x1F64F, // emoji: pictographs, emoticons
-		r >= 0x1F680 && r <= 0x1F6FF, // emoji: transport and map
-		r >= 0x1F900 && r <= 0x1F9FF, // emoji: supplemental
-		r >= 0x1FA70 && r <= 0x1FAFF: // emoji: symbols and pictographs extended
-		return 2
+	case r < 0x7f:
+		return 1 // printable ASCII; control runes never reach a row
+	case r >= 0xFE00 && r <= 0xFE0F:
+		return 0 // variation selectors restyle the rune before them
 	}
-	return 1
+	return tuiWidths.RuneWidth(r)
 }
 
 // stringCells is s's width in terminal cells.
@@ -264,7 +409,7 @@ func (r tuiRow) cut(from, to int) tuiRow {
 			pos += w
 		}
 		if b.Len() > 0 {
-			out = append(out, tuiSpan{text: b.String(), ink: s.ink})
+			out = append(out, tuiSpan{text: b.String(), ink: s.ink, link: s.link})
 		}
 	}
 	return out
@@ -301,7 +446,7 @@ func (r tuiRow) fit(width int) tuiRow {
 			cells += w
 		}
 		if b.Len() > 0 {
-			out = append(out, tuiSpan{text: b.String(), ink: s.ink})
+			out = append(out, tuiSpan{text: b.String(), ink: s.ink, link: s.link})
 		}
 	}
 	return append(out, tuiSpan{text: "…"})
@@ -335,7 +480,7 @@ func (r tuiRow) tail(width int) tuiRow {
 			cells += w
 		}
 		if len(kept) > 0 {
-			spans = append(tuiRow{{text: string(kept), ink: r[i].ink}}, spans...)
+			spans = append(tuiRow{{text: string(kept), ink: r[i].ink, link: r[i].link}}, spans...)
 		}
 	}
 	return tuiRow{{text: "…"}}.join(spans)
@@ -371,11 +516,18 @@ func (r tuiRow) selected() tuiRow {
 	return out
 }
 
-// render is the row's bytes at theme t.
+// render is the row's bytes at theme t. A linked span is wrapped in OSC 8,
+// except on plain output, which carries no escape sequences at all.
 func (r tuiRow) render(t tuiTheme) string {
 	var b strings.Builder
 	for _, s := range r {
+		if s.link == "" || t.depth == tuiDepthNone {
+			b.WriteString(t.style(s.text, s.ink))
+			continue
+		}
+		b.WriteString("\x1b]8;;" + s.link + "\x1b\\")
 		b.WriteString(t.style(s.text, s.ink))
+		b.WriteString("\x1b]8;;\x1b\\")
 	}
 	return b.String()
 }

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -12,16 +11,16 @@ import (
 // closes with the thread.
 type tuiDetail struct {
 	title string
-	lines []tuiLogLine
+	lines []tuiBlock
 	// top is the first display row shown. follow pins the view to the newest
 	// rows, which suits logs; a reader who scrolls up stops following. The
-	// wrapped rows are memoized per stored line (tuiLogLine cache).
+	// rendered rows are memoized per block (tuiBlock cache).
 	top    int
 	follow bool
 }
 
-// rowsFor wraps the pane's lines to width, reusing the cache when it fits.
-// Each line memoizes its own wrap, so an unchanged pane repaints for free.
+// rowsFor renders the pane's blocks to width. Each block memoizes its own
+// rows, so an unchanged pane repaints for free.
 func (p *tuiDetail) rowsFor(width int) []tuiRow {
 	var rows []tuiRow
 	for i := range p.lines {
@@ -31,7 +30,7 @@ func (p *tuiDetail) rowsFor(width int) []tuiRow {
 }
 
 // openPane shows lines as a full-body view. follow starts it at the newest rows.
-func (m *tuiModel) openPane(title string, lines []tuiLogLine, follow bool) {
+func (m *tuiModel) openPane(title string, lines []tuiBlock, follow bool) {
 	m.pane = &tuiDetail{title: title, lines: lines, follow: follow}
 }
 
@@ -70,6 +69,10 @@ func tuiPaneKey(m *tuiModel, k tuiKey, rows int) {
 		p.follow, p.top = false, p.top-page
 	case keyPgDn:
 		p.follow, p.top = false, p.top+page
+	case keyWheelUp:
+		p.follow, p.top = false, p.top-tuiWheelRows
+	case keyWheelDown:
+		p.follow, p.top = false, p.top+tuiWheelRows
 	case keyRune:
 		if k.Rune == 'q' {
 			m.pane = nil
@@ -78,36 +81,34 @@ func tuiPaneKey(m *tuiModel, k tuiKey, rows int) {
 }
 
 // mailboxLines renders a thread's peer mailbox, oldest first.
-func mailboxLines(box []tuiMailboxRow) []tuiLogLine {
+func mailboxLines(box []tuiMailboxRow) []tuiBlock {
 	if len(box) == 0 {
-		return []tuiLogLine{{text: "no peer messages", kind: "system"}}
+		return []tuiBlock{tuiNoteBlock(tuiKindSystem, "no peer messages")}
 	}
-	var lines []tuiLogLine
+	var lines []tuiBlock
 	for _, msg := range box {
 		head := fmt.Sprintf("%s %s → %s", msg.At.Local().Format("15:04:05"), msg.From, msg.To)
 		if msg.Kind != "" {
 			head += " (" + msg.Kind + ")"
 		}
-		lines = append(lines, tuiLogLine{text: head, kind: "status"})
-		for _, body := range strings.Split(strings.TrimRight(msg.Body, "\n"), "\n") {
-			lines = append(lines, tuiLogLine{text: "  " + body, kind: string(contracts.LogText)})
-		}
+		lines = append(lines, tuiNoteBlock(tuiKindStatus, head),
+			tuiNoteBlock(string(contracts.LogText), msg.Body))
 	}
 	return lines
 }
 
 // taskLines renders a thread's task list in plan order.
-func taskLines(tasks []tuiTaskRow) []tuiLogLine {
+func taskLines(tasks []tuiTaskRow) []tuiBlock {
 	if len(tasks) == 0 {
-		return []tuiLogLine{{text: "no tasks planned", kind: "system"}}
+		return []tuiBlock{tuiNoteBlock(tuiKindSystem, "no tasks planned")}
 	}
-	lines := make([]tuiLogLine, 0, len(tasks))
+	lines := make([]tuiBlock, 0, len(tasks))
 	for _, task := range tasks {
 		title := task.Title
 		if title == "" {
 			title = task.Name
 		}
-		lines = append(lines, tuiLogLine{text: fmt.Sprintf("[%s] %s", task.Status, title), kind: "status"})
+		lines = append(lines, tuiNoteBlock(tuiKindStatus, fmt.Sprintf("[%s] %s", task.Status, title)))
 	}
 	return lines
 }

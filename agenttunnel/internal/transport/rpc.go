@@ -480,7 +480,8 @@ type (
 )
 
 // threadLogTail bounds thread.logs: the desktop log box shows this many recent
-// lines, so the restore never ships a whole long-running thread over the socket.
+// lines, so the restore never ships a whole long-running thread over the
+// socket. A client that wants more pages backwards with `before`.
 const threadLogTail = 400
 
 const defaultStaleAfterSeconds = 30 * 60
@@ -1848,11 +1849,21 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		return out, nil
 
 	case "thread.logs":
-		var p threadParams
+		// Before pages backwards: a client that has the tail asks for the
+		// entries older than the oldest one it holds, a tail at a time.
+		var p struct {
+			ThreadID contracts.ThreadID `json:"threadId"`
+			Before   time.Time          `json:"before"`
+		}
 		if err := decode(req.Params, &p); err != nil {
 			return nil, err
 		}
 		entries := d.logs.Entries(p.ThreadID)
+		if !p.Before.IsZero() {
+			// Entries are in append order, which is time order.
+			end := sort.Search(len(entries), func(i int) bool { return !entries[i].At.Before(p.Before) })
+			entries = entries[:end]
+		}
 		if len(entries) > threadLogTail {
 			entries = entries[len(entries)-threadLogTail:]
 		}

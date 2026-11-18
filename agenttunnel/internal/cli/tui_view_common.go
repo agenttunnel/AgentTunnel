@@ -2,15 +2,14 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"math"
 	"strings"
 	"sync"
 	"time"
 )
 
-// tuiCallTimeout bounds one daemon request a view makes. Forge and model calls
-// can run long, so they go through tuiBase.run instead of blocking the screen.
+// tuiCallTimeout bounds the daemon requests a view makes off the loop: one run
+// action, or one queued load job. Forge and model calls can run long.
 const tuiCallTimeout = 30 * time.Second
 
 // tuiGate decides when a view refetches. A view loads when it has never loaded,
@@ -60,26 +59,6 @@ func (b *tuiBase) bind(ctx context.Context, c cliCaller) {
 	b.ctx, b.c = ctx, c
 }
 
-// bound is the recorded context and client, set by Load.
-func (b *tuiBase) bound() (context.Context, cliCaller) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.ctx, b.c
-}
-
-// call makes one synchronous daemon request. Use it for reads the local daemon
-// answers at once; anything that shells out to a forge or a model goes to run
-// or a queued load job.
-func (b *tuiBase) call(method string, params, out any) error {
-	ctx, c := b.bound()
-	if c == nil || ctx == nil {
-		return errors.New("not connected yet")
-	}
-	ctx, cancel := context.WithTimeout(ctx, tuiCallTimeout)
-	defer cancel()
-	return c.Call(ctx, method, params, out)
-}
-
 // run starts a slow daemon action in the background so the screen keeps
 // painting. While it runs the status row names it; its outcome becomes the
 // notice, and the view reloads on its next load. A second action while one is
@@ -119,7 +98,7 @@ func (b *tuiBase) run(label string, fn func(ctx context.Context, c cliCaller) (s
 	}()
 }
 
-// setErr records a failed synchronous read or action, keeping the last good data.
+// setErr records a failed read or action, keeping the last good data.
 func (b *tuiBase) setErr(err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -130,7 +109,7 @@ func (b *tuiBase) setErr(err error) {
 	}
 }
 
-// say sets the notice line for a finished synchronous action.
+// say sets the notice line for an action that finished on the loop.
 func (b *tuiBase) say(msg string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -161,27 +140,12 @@ func (b *tuiBase) status() tuiRow {
 	return nil
 }
 
-// tuiLoadView fetches a view's data when its gate says so. The gate is closed
-// before the fetch, so a failing forge CLI is retried after the ttl, not on every tick.
-func tuiLoadView(ctx context.Context, c cliCaller, b *tuiBase, ttl time.Duration, fetch func() error) {
-	b.bind(ctx, c)
-	b.mu.Lock()
-	due := b.gate.due(time.Now(), ttl)
-	if due {
-		b.gate.finish(time.Now())
-	}
-	b.mu.Unlock()
-	if !due {
-		return
-	}
-	b.setErr(fetch())
-}
-
 // tuiLoadJob queues a view's slow fetch as a background job the session loop
 // runs, so Load stays cache-only: the loop never blocks on a forge or network
 // call. The job's fold applies on the loop, where the view's data is safe to
 // write. The gate closes at queue time, so a failed fetch retries only after
-// the ttl, and a fetch already in flight is not stacked behind.
+// the ttl, and a fetch already in flight is not stacked behind. The fetch gets
+// tuiCallTimeout, and a fold that does not fail clears the last fetch's error.
 func tuiLoadJob(m *tuiModel, b *tuiBase, ttl time.Duration, job tuiJob) bool {
 	b.mu.Lock()
 	if b.loading || !b.gate.due(time.Now(), ttl) {
@@ -192,11 +156,14 @@ func tuiLoadJob(m *tuiModel, b *tuiBase, ttl time.Duration, job tuiJob) bool {
 	b.loading = true
 	b.mu.Unlock()
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		ctx, cancel := context.WithTimeout(ctx, tuiCallTimeout)
+		defer cancel()
 		apply := job(ctx, c)
 		return func(m *tuiModel) {
 			b.mu.Lock()
 			b.loading = false
 			b.mu.Unlock()
+			b.setErr(nil)
 			if apply != nil {
 				apply(m)
 			}
@@ -221,14 +188,6 @@ func tuiViewErrJob(b *tuiBase, err error) func(*tuiModel) {
 	return func(*tuiModel) {
 		b.setErr(err)
 	}
-}
-
-// reload forces the next load and runs it now, for the view's refresh key.
-func (b *tuiBase) reload(fetch func() error) {
-	b.mu.Lock()
-	b.gate.finish(time.Now())
-	b.mu.Unlock()
-	b.setErr(fetch())
 }
 
 // tuiArm is a destructive action waiting for its confirming key.

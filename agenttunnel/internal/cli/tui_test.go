@@ -54,13 +54,16 @@ func (f *fakeTuiTerm) Draw(frame string) error {
 // a stalled drive shows where the session actually was.
 func (f *fakeTuiTerm) waitNextDraw(t *testing.T, want func(string) bool) string {
 	t.Helper()
+	// One deadline for the whole wait: a working thread repaints its spinner
+	// ten times a second, so a per-frame timer would never fire.
+	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case frame := <-f.drawn:
 			if want(frame) {
 				return frame
 			}
-		case <-time.After(5 * time.Second):
+		case <-deadline:
 			f.mu.Lock()
 			recent := f.frames
 			f.mu.Unlock()
@@ -123,7 +126,7 @@ func TestTUISessionDrivesAThreadEndToEnd(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "", keys, term)
+		done <- tuiSession(context.Background(), c, m, "", keys, term, nil)
 	}()
 
 	// The list paints the thread; Enter opens it.
@@ -233,7 +236,7 @@ func TestTUISessionStartsATurnOnAnIdleThread(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "th_1", keys, term)
+		done <- tuiSession(context.Background(), c, m, "th_1", keys, term, nil)
 	}()
 
 	// The ref argument opens the thread directly.
@@ -313,7 +316,7 @@ func TestTUISessionDraftOpensOnTheThreadSurface(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- tuiSession(context.Background(), c, m, "", keys, term)
+		done <- tuiSession(context.Background(), c, m, "", keys, term, nil)
 	}()
 	term.waitNextDraw(t, containsLine("the tui job"))
 

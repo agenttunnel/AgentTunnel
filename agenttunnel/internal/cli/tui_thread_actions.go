@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,7 @@ func tuiThreadCommands() []tuiThreadCommand {
 		{name: "rename", args: "<title>", title: "Thread: rename", run: tuiRename},
 		{name: "fork", title: "Thread: fork from a message", run: tuiFork},
 		{name: "archive", title: "Thread: archive or unarchive", run: tuiArchive},
+		{name: "delete", title: "Thread: delete", run: tuiDelete},
 		{name: "auto", title: "Thread: toggle auto mode", run: tuiAutoMode},
 		{name: "peer", title: "Thread: toggle peer mailbox", run: tuiPeerMailbox},
 		{name: "solo", title: "Thread: set solo runtime", run: tuiSolo},
@@ -44,6 +46,10 @@ func tuiThreadCommands() []tuiThreadCommand {
 		{name: "role", title: "Thread: set a role's runtime", run: tuiRole},
 		{name: "schedule", title: "Thread: schedule after other threads", run: tuiSchedule},
 		{name: "unschedule", title: "Thread: cancel the schedule", run: tuiUnschedule},
+		{name: "copy", title: "Thread: copy the last reply", run: tuiCopyReply},
+		{name: "edit", title: "Thread: write the prompt in $EDITOR", run: func(m *tuiModel, _ string) {
+			m.edit = m.screen == tuiScreenThread
+		}},
 		{name: "mail", title: "Thread: show peer mailbox", run: tuiShowMailbox},
 		{name: "tasks", title: "Thread: show task list", run: tuiShowTasks},
 		{name: "agent", title: "Thread: agent logs", run: tuiAgentLogs},
@@ -78,7 +84,7 @@ func tuiSlashCommand(line string) (func(m *tuiModel, arg string), string, bool) 
 // It is empty once a space starts the argument, while a question owns the
 // prompt, and for text that is not a slash command.
 func (m *tuiModel) slashMatches() []tuiThreadCommand {
-	line := string(m.input)
+	line := m.input.string()
 	if m.pending != nil || !strings.HasPrefix(line, "/") || strings.Contains(line, " ") {
 		return nil
 	}
@@ -99,11 +105,12 @@ func (m *tuiModel) completeSlash() {
 		return
 	}
 	sel := matches[m.slashSel%len(matches)]
-	m.input = []rune("/" + sel.name)
-	m.slashSel = 0
+	line := "/" + sel.name
 	if sel.args != "" {
-		m.input = append(m.input, ' ')
+		line += " "
 	}
+	m.input.set(line)
+	m.slashSel = 0
 }
 
 // moveSlash shifts the highlighted hint by d, wrapping, and reports whether
@@ -237,9 +244,10 @@ type tuiThreadState struct {
 }
 
 type tuiMessageRow struct {
-	ID     string `json:"id"`
-	Author string `json:"author"`
-	Text   string `json:"text"`
+	ID     string    `json:"id"`
+	Author string    `json:"author"`
+	Text   string    `json:"text"`
+	At     time.Time `json:"at"`
 }
 
 type tuiMailboxRow struct {
@@ -412,15 +420,41 @@ func tuiNewThread(m *tuiModel, _ string) {
 	})
 }
 
+// tuiUnderDir reports whether dir is root or sits inside it. Both are
+// followed through symlinks first, so a project registered by one spelling of
+// its path is found from another.
+func tuiUnderDir(dir, root string) bool {
+	if dir == "" || root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(tuiRealPath(root), tuiRealPath(dir))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// tuiRealPath is path with its symlinks resolved, or path itself when it
+// cannot be resolved (it may not exist on this machine at all).
+func tuiRealPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
+}
+
 // openNewProject asks for a name and a folder, then creates the project and
 // runs then with its id. A nil then just reports the project.
 func (m *tuiModel) openNewProject(then func(m *tuiModel, projectID string)) {
-	m.openPrompt("project name", "", func(m *tuiModel, name string) {
+	// The folder the TUI was started in is the likeliest project: both
+	// prompts open filled in from it, ready to confirm or type over.
+	name := ""
+	if m.cwd != "" {
+		name = filepath.Base(m.cwd)
+	}
+	m.openPrompt("project name", name, func(m *tuiModel, name string) {
 		if name == "" {
 			m.notify("project name is required")
 			return
 		}
-		m.openPrompt("project folder (absolute path)", "", func(m *tuiModel, path string) {
+		m.openPrompt("project folder (absolute path)", m.cwd, func(m *tuiModel, path string) {
 			if path == "" {
 				m.notify("project folder is required")
 				return
@@ -836,10 +870,23 @@ func tuiAgentLogsJob(threadID, agent string) tuiJob {
 		}
 		return func(m *tuiModel) {
 			if m.onThread(threadID) {
-				m.openPane("agent "+agent, tuiLogLines(entries...), true)
+				m.openPane("agent "+agent, tuiLogBlocks(entries...), true)
 			}
 		}
 	}
+}
+
+// tuiCopyReply asks the loop to put the newest agent reply on the clipboard.
+func tuiCopyReply(m *tuiModel, _ string) {
+	if m.screen != tuiScreenThread {
+		return
+	}
+	reply := m.lastReply()
+	if reply == "" {
+		m.notify("no reply to copy yet")
+		return
+	}
+	m.copyText = reply
 }
 
 func tuiDismissQuestion(m *tuiModel, _ string) {

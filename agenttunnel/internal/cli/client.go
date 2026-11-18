@@ -54,6 +54,8 @@ type Client struct {
 
 	events chan Event
 	done   chan struct{}
+	// dropped counts pushed frames discarded because the consumer fell behind.
+	dropped atomic.Int64
 
 	readErrMu sync.Mutex
 	readErr   error
@@ -85,6 +87,11 @@ func Dial(ctx context.Context, wsURL, token string) (*Client, error) {
 // Events returns pushed frames. The channel closes when the connection does.
 func (c *Client) Events() <-chan Event { return c.events }
 
+// Dropped is how many pushed frames were discarded because Events was not
+// read fast enough. A consumer that must not miss output watches it change
+// and reads the state it missed again.
+func (c *Client) Dropped() int64 { return c.dropped.Load() }
+
 // Err reports why the connection ended, once it has.
 func (c *Client) Err() error {
 	c.readErrMu.Lock()
@@ -99,9 +106,9 @@ func (c *Client) Close() {
 }
 
 // readLoop owns the socket's reads. Replies go to their waiting Call; every
-// other frame is published as an Event (dropped when the consumer is slow: CLI
-// commands that need every frame keep up, and a blocking send would stall the
-// reply correlation behind it).
+// other frame is published as an Event. A frame is dropped, and counted, when
+// the consumer is slow: a blocking send would stall the reply correlation
+// behind it.
 func (c *Client) readLoop() {
 	defer close(c.done)
 	defer close(c.events)
@@ -125,6 +132,7 @@ func (c *Client) readLoop() {
 			select {
 			case c.events <- Event{Method: frame.Method, Params: frame.Params}:
 			default:
+				c.dropped.Add(1)
 			}
 			continue
 		}

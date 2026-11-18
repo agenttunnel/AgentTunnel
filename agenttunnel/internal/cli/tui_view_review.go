@@ -70,30 +70,46 @@ func tuiReviewOf(m *tuiModel) *tuiReviewState {
 	return tuiStateOf[tuiReviewState](m, tuiViewReview)
 }
 
-// fetch reads the diff and the thread's review comments, and lays the rows out
-// once here so each paint only windows them.
-func (st *tuiReviewState) fetch() error {
-	if st.threadID == "" {
-		st.rows, st.anchors, st.open = nil, nil, 0
-		return nil
-	}
-	var diff tuiDiffWire
-	if err := st.call("review.diff", map[string]string{"threadId": st.threadID}, &diff); err != nil {
-		return err
-	}
-	var thread tuiThreadReviewWire
-	if err := st.call("thread.get", map[string]string{"threadId": st.threadID}, &thread); err != nil {
-		return err
-	}
-	st.rows, st.anchors = tuiReviewRows(diff, thread.ReviewThreads)
-	st.open = 0
-	for _, t := range thread.ReviewThreads {
-		if t.Status == "open" {
-			st.open++
+// fetchJob reads the diff and the thread's review comments in the background, and
+// lays the rows out there too so each paint only windows them. The fold drops the
+// result if the focus moved to another thread meanwhile.
+func (st *tuiReviewState) fetchJob() tuiJob {
+	id := st.threadID
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		if id == "" {
+			return func(m *tuiModel) {
+				st := tuiReviewOf(m)
+				if st.threadID != "" {
+					return // the user focused a thread meanwhile
+				}
+				st.rows, st.anchors, st.open = nil, nil, 0
+			}
+		}
+		var diff tuiDiffWire
+		if err := c.Call(ctx, "review.diff", map[string]string{"threadId": id}, &diff); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var thread tuiThreadReviewWire
+		if err := c.Call(ctx, "thread.get", map[string]string{"threadId": id}, &thread); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		rows, anchors := tuiReviewRows(diff, thread.ReviewThreads)
+		open := 0
+		for _, t := range thread.ReviewThreads {
+			if t.Status == "open" {
+				open++
+			}
+		}
+		return func(m *tuiModel) {
+			st := tuiReviewOf(m)
+			if st.threadID != id {
+				return // the user focused another thread meanwhile
+			}
+			st.rows, st.anchors, st.open = rows, anchors, open
+			st.cursor = tuiMoveCursor(st.cursor, 0, len(st.rows))
 		}
 	}
-	st.cursor = tuiMoveCursor(st.cursor, 0, len(st.rows))
-	return nil
 }
 
 // tuiReviewRows builds the comment list and the diff as one row slice. Each diff
@@ -197,7 +213,7 @@ func (st *tuiReviewState) comment() {
 	st.ed.open(fmt.Sprintf("comment %s:%d", a.file, a.line), "")
 }
 
-func (st *tuiReviewState) key(k tuiKey) bool {
+func (st *tuiReviewState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.ed.on {
 		if st.ed.key(k) {
@@ -237,7 +253,7 @@ func (st *tuiReviewState) key(k tuiKey) bool {
 			return "review submitted", err
 		})
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -267,14 +283,15 @@ func init() {
 		Order: 30,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiReviewOf(m)
+			st.bind(ctx, c)
 			st.focus(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, st.fetch)
+			tuiLoadJob(m, &st.tuiBase, 5*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiReviewOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiReviewOf(m).key(k)
+			return tuiReviewOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "move"}, {"c", "comment"}, {"s", "submit"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},

@@ -36,18 +36,34 @@ func tuiWorktreesOf(m *tuiModel) *tuiWorktreesState {
 	return tuiStateOf[tuiWorktreesState](m, tuiViewWorktrees)
 }
 
-func (st *tuiWorktreesState) fetch() error {
-	if st.projectID == "" {
-		st.rows = nil
-		return nil
+// fetchJob reads the focused project's worktrees in the background. The fold drops
+// the result if the focus moved to another project meanwhile.
+func (st *tuiWorktreesState) fetchJob() tuiJob {
+	id := st.projectID
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		if id == "" {
+			return func(m *tuiModel) {
+				st := tuiWorktreesOf(m)
+				if st.projectID != "" {
+					return // the user focused a project meanwhile
+				}
+				st.rows = nil
+			}
+		}
+		var rows []tuiWorktreeWire
+		if err := c.Call(ctx, "worktree.list", map[string]string{"projectId": id}, &rows); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiWorktreesOf(m)
+			if st.projectID != id {
+				return // the user focused another project meanwhile
+			}
+			st.rows = rows
+			st.cursor = tuiMoveCursor(st.cursor, 0, len(rows))
+		}
 	}
-	var rows []tuiWorktreeWire
-	if err := st.call("worktree.list", map[string]string{"projectId": st.projectID}, &rows); err != nil {
-		return err
-	}
-	st.rows = rows
-	st.cursor = tuiMoveCursor(st.cursor, 0, len(rows))
-	return nil
 }
 
 func (st *tuiWorktreesState) selected() (tuiWorktreeWire, bool) {
@@ -97,7 +113,7 @@ func worktreeRow(w tuiWorktreeWire) tuiRow {
 	return row.join(tuiText("  "+w.Path, tuiInk{fg: tuiColFaint}))
 }
 
-func (st *tuiWorktreesState) key(k tuiKey) bool {
+func (st *tuiWorktreesState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.ed.on {
 		return true
@@ -130,7 +146,7 @@ func (st *tuiWorktreesState) key(k tuiKey) bool {
 			return "pruned missing worktrees", err
 		})
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -159,14 +175,15 @@ func init() {
 		Order: 100,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiWorktreesOf(m)
+			st.bind(ctx, c)
 			st.focus(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, st.fetch)
+			tuiLoadJob(m, &st.tuiBase, 5*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiWorktreesOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiWorktreesOf(m).key(k)
+			return tuiWorktreesOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "select"}, {"x", "remove"}, {"P", "prune"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},

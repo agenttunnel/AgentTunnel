@@ -43,14 +43,20 @@ func tuiProjectsOf(m *tuiModel) *tuiProjectsState {
 	return tuiStateOf[tuiProjectsState](m, tuiViewProjects)
 }
 
-func (st *tuiProjectsState) fetch() error {
-	var rows []projectsRow
-	if err := st.call("project.list", nil, &rows); err != nil {
-		return err
+// fetchJob reads the project registry in the background.
+func (st *tuiProjectsState) fetchJob() tuiJob {
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var rows []projectsRow
+		if err := c.Call(ctx, "project.list", nil, &rows); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiProjectsOf(m)
+			st.rows = rows
+			st.cursor = tuiMoveCursor(st.cursor, 0, len(rows))
+		}
 	}
-	st.rows = rows
-	st.cursor = tuiMoveCursor(st.cursor, 0, len(rows))
-	return nil
 }
 
 func (st *tuiProjectsState) render(cols, rows int) []tuiRow {
@@ -70,7 +76,7 @@ func (st *tuiProjectsState) render(cols, rows int) []tuiRow {
 	return tuiViewFrame(cols, rows, "Projects", out, st.cursor, status)
 }
 
-func (st *tuiProjectsState) key(k tuiKey) bool {
+func (st *tuiProjectsState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.ed.on {
 		if st.ed.key(k) {
@@ -107,7 +113,7 @@ func (st *tuiProjectsState) key(k tuiKey) bool {
 			return "removed " + p.Name, err
 		})
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -121,13 +127,14 @@ func init() {
 		Order: 80,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiProjectsOf(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, st.fetch)
+			st.bind(ctx, c)
+			tuiLoadJob(m, &st.tuiBase, 5*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiProjectsOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiProjectsOf(m).key(k)
+			return tuiProjectsOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "select"}, {"a", "add"}, {"x", "remove"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
@@ -203,7 +210,7 @@ func (st *tuiIssuesState) render(cols, rows int) []tuiRow {
 	}
 	if st.detail && st.cursor < len(st.list.Issues) {
 		is := st.list.Issues[st.cursor]
-		lines = append(lines, nil, tuiFaint(is.WebURL))
+		lines = append(lines, nil, tuiLink(tuiSanitize(is.WebURL), is.WebURL, tuiInk{fg: tuiColFaint}))
 		body := strings.TrimSpace(is.Description)
 		if body == "" {
 			body = "no description"
@@ -250,8 +257,9 @@ func init() {
 		ID:    tuiViewIssues,
 		Title: "Issues",
 		Order: 90,
-		Load: func(_ context.Context, _ cliCaller, m *tuiModel) {
+		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiIssuesOf(m)
+			st.bind(ctx, c)
 			st.focus(m)
 			// Forge issue lists cost a network round trip, so the fetch runs
 			// as a background job on a minute's ttl: Load only queues it.
