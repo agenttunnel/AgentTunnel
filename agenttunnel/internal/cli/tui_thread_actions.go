@@ -420,13 +420,24 @@ func tuiNewThread(m *tuiModel, _ string) {
 	})
 }
 
-// tuiUnderDir reports whether dir is root or sits inside it.
+// tuiUnderDir reports whether dir is root or sits inside it. Both are
+// followed through symlinks first, so a project registered by one spelling of
+// its path is found from another.
 func tuiUnderDir(dir, root string) bool {
 	if dir == "" || root == "" {
 		return false
 	}
-	rel, err := filepath.Rel(root, dir)
+	rel, err := filepath.Rel(tuiRealPath(root), tuiRealPath(dir))
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// tuiRealPath is path with its symlinks resolved, or path itself when it
+// cannot be resolved (it may not exist on this machine at all).
+func tuiRealPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return filepath.Clean(path)
 }
 
 // openNewProject asks for a name and a folder, then creates the project and

@@ -55,48 +55,78 @@ func tuiMasterOf(m *tuiModel) *tuiMasterState {
 	return tuiStateOf[tuiMasterState](m, tuiViewMaster)
 }
 
-// fetch reads the conversation list and, in chat mode, the open transcript.
-func (st *tuiMasterState) fetch() error {
-	var list []tuiMasterSummary
-	if err := st.call("master.history.list", nil, &list); err != nil {
-		return err
+// fetchJob reads the conversation list and, in chat mode, the open transcript in
+// the background. The transcript only lands if the same chat is still open.
+func (st *tuiMasterState) fetchJob() tuiJob {
+	base := &st.tuiBase
+	chat := ""
+	if st.inChat {
+		chat = st.chatID
 	}
-	st.list = list
-	if st.inChat && st.chatID != "" {
-		return st.openTranscript(st.chatID)
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var list []tuiMasterSummary
+		if err := c.Call(ctx, "master.history.list", nil, &list); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var transcript *tuiMasterDetail
+		if chat != "" {
+			var d tuiMasterDetail
+			if err := c.Call(ctx, "master.history.open", map[string]string{"threadId": chat}, &d); err != nil {
+				return tuiViewErrJob(base, err)
+			}
+			transcript = &d
+		}
+		return func(m *tuiModel) {
+			st := tuiMasterOf(m)
+			st.list = list
+			if transcript != nil && st.inChat && st.chatID == chat {
+				st.chatName, st.messages = transcript.Title, transcript.Messages
+				return
+			}
+			st.cursor = tuiMoveCursor(st.cursor, 0, len(st.list))
+		}
 	}
-	st.cursor = tuiMoveCursor(st.cursor, 0, len(st.list))
-	return nil
 }
 
-func (st *tuiMasterState) openTranscript(id string) error {
-	var d tuiMasterDetail
-	if err := st.call("master.history.open", map[string]string{"threadId": id}, &d); err != nil {
-		return err
-	}
-	st.chatID, st.chatName, st.messages = id, d.Title, d.Messages
-	return nil
+// open switches to the chat for id. The transcript is fetched in the background,
+// and the chat only opens if the list is still showing when it lands.
+func (st *tuiMasterState) open(m *tuiModel, id string) {
+	base := &st.tuiBase
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var d tuiMasterDetail
+		if err := c.Call(ctx, "master.history.open", map[string]string{"threadId": id}, &d); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiMasterOf(m)
+			if st.inChat {
+				return // the user opened another chat meanwhile
+			}
+			st.chatID, st.chatName, st.messages = id, d.Title, d.Messages
+			st.inChat, st.scroll = true, 0
+		}
+	})
 }
 
-// open switches to the chat for id.
-func (st *tuiMasterState) open(id string) {
-	if err := st.openTranscript(id); err != nil {
-		st.setErr(err)
-		return
-	}
-	st.inChat, st.scroll = true, 0
-}
-
-// newConversation creates an empty durable conversation and opens it.
-func (st *tuiMasterState) newConversation() {
-	var d tuiMasterDetail
-	if err := st.call("master.history.new", map[string]string{"title": ""}, &d); err != nil {
-		st.setErr(err)
-		return
-	}
-	st.chatID, st.chatName, st.messages = d.ID, d.Title, nil
-	st.inChat, st.scroll = true, 0
-	st.reload(st.fetch)
+// newConversation creates an empty durable conversation in the background and
+// opens it, then reloads the list.
+func (st *tuiMasterState) newConversation(m *tuiModel) {
+	base := &st.tuiBase
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var d tuiMasterDetail
+		if err := c.Call(ctx, "master.history.new", map[string]string{"title": ""}, &d); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiMasterOf(m)
+			if st.inChat {
+				return // the user opened another chat meanwhile
+			}
+			st.chatID, st.chatName, st.messages = d.ID, d.Title, nil
+			st.inChat, st.scroll = true, 0
+			tuiReloadJob(m, base, st.fetchJob())
+		}
+	})
 }
 
 // send posts text to the open conversation. The reply lands in the transcript,
@@ -175,10 +205,10 @@ func (st *tuiMasterState) listRows(cols, rows int, status tuiRow) []tuiRow {
 	return tuiViewFrame(cols, rows, "Master", out, st.cursor, status)
 }
 
-func (st *tuiMasterState) key(k tuiKey) bool {
+func (st *tuiMasterState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.inChat {
-		return st.chatKey(k)
+		return st.chatKey(m, k)
 	}
 	if st.ed.on {
 		return true
@@ -190,10 +220,10 @@ func (st *tuiMasterState) key(k tuiKey) bool {
 	switch {
 	case k.Kind == keyEnter:
 		if st.cursor < len(st.list) {
-			st.open(st.list[st.cursor].ID)
+			st.open(m, st.list[st.cursor].ID)
 		}
 	case k.Kind == keyRune && k.Rune == 'n':
-		st.newConversation()
+		st.newConversation(m)
 	case k.Kind == keyRune && k.Rune == 'd':
 		if st.cursor >= len(st.list) {
 			return true
@@ -207,7 +237,7 @@ func (st *tuiMasterState) key(k tuiKey) bool {
 			return "conversation deleted", err
 		})
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -216,7 +246,7 @@ func (st *tuiMasterState) key(k tuiKey) bool {
 
 // chatKey edits the message and sends it. Typing opens the editor, so every
 // printable key is text in chat mode; Esc leaves the chat for the list.
-func (st *tuiMasterState) chatKey(k tuiKey) bool {
+func (st *tuiMasterState) chatKey(m *tuiModel, k tuiKey) bool {
 	switch {
 	case st.ed.on:
 		if st.ed.key(k) {
@@ -229,7 +259,7 @@ func (st *tuiMasterState) chatKey(k tuiKey) bool {
 		return true
 	case k.Kind == keyEsc:
 		st.inChat = false
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 		return true
 	case k.Kind == keyEnter:
 		st.ed.open("ask master", "")
@@ -255,15 +285,16 @@ func init() {
 		Order: 10,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiMasterOf(m)
+			st.bind(ctx, c)
 			// The transcript changes when a reply lands, so the forced reload from
 			// the background send is what keeps it current; the ttl covers others.
-			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, st.fetch)
+			tuiLoadJob(m, &st.tuiBase, 5*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiMasterOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiMasterOf(m).key(k)
+			return tuiMasterOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"enter", "open / send"}, {"n", "new"}, {"d", "delete"}, {"esc", "back"}, {"pgup/pgdn", "scroll"}, {"tab", "views"},

@@ -80,6 +80,40 @@ func TestThreadLogsReturnsBoundedTail(t *testing.T) {
 	}
 }
 
+// `before` pages backwards through a thread's log: each call returns the tail
+// of what is older than the given time, so a client holding the newest lines
+// walks to the start without ever receiving a line twice.
+func TestThreadLogsPagesBackwardsWithBefore(t *testing.T) {
+	d, logs := logsFixture(t)
+	start := time.Unix(1_700_000_000, 0).UTC()
+	total := threadLogTail*2 + 5
+	for i := 0; i < total; i++ {
+		_ = logs.Append("t1", contracts.LogEntry{
+			AgentID: "agent-a", Kind: contracts.LogText, Text: fmt.Sprint(i), At: start.Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+	page := func(before time.Time) []contracts.LogEntry {
+		params, _ := json.Marshal(map[string]any{"threadId": "t1", "before": before})
+		return callRPC(t, d, "thread.logs", string(params))
+	}
+
+	tail := callRPC(t, d, "thread.logs", `{"threadId":"t1"}`)
+	older := page(tail[0].At)
+	if len(older) != threadLogTail {
+		t.Fatalf("older page holds %d lines, want %d", len(older), threadLogTail)
+	}
+	if first, last := older[0].Text, older[len(older)-1].Text; first != "5" || last != fmt.Sprint(threadLogTail+4) {
+		t.Fatalf("older page spans %s..%s, want 5..%d", first, last, threadLogTail+4)
+	}
+	oldest := page(older[0].At)
+	if len(oldest) != 5 || oldest[0].Text != "0" || oldest[4].Text != "4" {
+		t.Fatalf("oldest page = %d lines starting %q", len(oldest), oldest[0].Text)
+	}
+	if beyond := page(oldest[0].At); len(beyond) != 0 {
+		t.Fatalf("a page before the first line returned %d lines", len(beyond))
+	}
+}
+
 // agents.logs is scoped by thread too, so the detail panel of one thread's
 // agent never lists another thread's agent with the same id.
 func TestAgentLogsFilterByThread(t *testing.T) {

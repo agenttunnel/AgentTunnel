@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,6 +40,9 @@ type tuiBlock struct {
 	at    time.Time
 	head  bool
 	gap   bool
+	// id is the message id of a block the user sent, so it can be taken back
+	// out when older output loads around it.
+	id string
 	// wrapW/wrapped memoize rows(width): a block changes only when a chunk
 	// grows it, so a repaint reuses the rendered rows instead of re-rendering
 	// up to tuiLogCap blocks every frame.
@@ -184,8 +188,16 @@ func (m *tuiModel) appendLog(entries ...contracts.LogEntry) {
 // agent output. A message seen before (the backlog and the live stream can
 // both carry it) is added once.
 func (m *tuiModel) appendMessage(id, author, text string, at time.Time) {
+	m.grow(func() {
+		m.log = m.sentBlock(m.log, tuiMessageRow{ID: id, Author: author, Text: text, At: at})
+	})
+}
+
+// sentBlock appends msg to blocks as a block of the user's, unless its author
+// is not the user or it is already shown.
+func (m *tuiModel) sentBlock(blocks []tuiBlock, msg tuiMessageRow) []tuiBlock {
 	kind, speaker := "", tuiSpeakerYou
-	switch author {
+	switch msg.Author {
 	case "user":
 		kind = tuiKindUser
 	case "steering":
@@ -193,20 +205,20 @@ func (m *tuiModel) appendMessage(id, author, text string, at time.Time) {
 	case "shell":
 		kind, speaker = tuiKindShell, "shell"
 	default:
-		return
+		return blocks
 	}
-	if id != "" {
-		if m.shown[id] {
-			return
+	if msg.ID != "" {
+		if m.shown[msg.ID] {
+			return blocks
 		}
 		if m.shown == nil {
 			m.shown = map[string]bool{}
 		}
-		m.shown[id] = true
+		m.shown[msg.ID] = true
 	}
-	m.grow(func() {
-		m.log = tuiAppendBlock(m.log, speaker, kind, text, at)
-	})
+	blocks = tuiAppendBlock(blocks, speaker, kind, msg.Text, msg.At)
+	blocks[len(blocks)-1].id = msg.ID
+	return blocks
 }
 
 // appendLogLines appends the TUI's own notes (help, command results).
@@ -241,7 +253,7 @@ func (m *tuiModel) grow(appendBlocks func()) {
 	if m.scroll > 0 {
 		m.scroll += m.logRows() - before
 	}
-	if over := len(m.log) - tuiLogCap; over > 0 {
+	if over := len(m.log) - max(m.logCap, tuiLogCap); over > 0 {
 		m.log = m.log[over:]
 	}
 	m.clampScroll()
@@ -355,9 +367,15 @@ func (m *tuiModel) logPane(cols, height int) []tuiRow {
 }
 
 // scrollUp moves toward older output; leaving the very bottom stops following.
+// A reader who pushes past the oldest row held asks the daemon for the page
+// before it.
 func (m *tuiModel) scrollUp(n int) {
-	m.scroll += n
+	want := m.scroll + n
+	m.scroll = want
 	m.clampScroll()
+	if m.scroll < want {
+		m.loadOlder()
+	}
 }
 
 // scrollDown moves toward newer output; reaching the bottom resumes following.
@@ -395,13 +413,39 @@ func (m *tuiModel) lastReply() string {
 
 // --- Backlog ---
 
-// tuiBacklog interleaves a thread's agent output with the messages the user
-// sent, by time, so a reopened thread reads as the conversation it was. The
-// output is a tail; of the messages older than it only the newest is kept,
-// as the prompt the visible work answers.
+// tuiOlder is where the transcript stands against the daemon's log: the time
+// of the oldest output held, whether the page before it is being fetched, and
+// whether the start has been reached.
+type tuiOlder struct {
+	before  time.Time
+	loading bool
+	done    bool
+}
+
+// appendBacklog seeds a reopened thread: its output tail interleaved with the
+// messages the user sent, by time, so it reads as the conversation it was.
 func (m *tuiModel) appendBacklog(entries []contracts.LogEntry, messages []tuiMessageRow) {
-	messages = append([]tuiMessageRow(nil), messages...)
-	sort.SliceStable(messages, func(i, j int) bool { return messages[i].At.Before(messages[j].At) })
+	m.messages = append([]tuiMessageRow(nil), messages...)
+	sort.SliceStable(m.messages, func(i, j int) bool { return m.messages[i].At.Before(m.messages[j].At) })
+	m.older = tuiOlder{}
+	if len(entries) > 0 {
+		m.older.before = entries[0].At
+	}
+	blocks := m.windowBlocks(entries, time.Time{})
+	m.grow(func() { m.log = append(m.log, blocks...) })
+}
+
+// windowBlocks builds the blocks for one window of the log: entries, with the
+// user's not-yet-shown messages from before until interleaved by time (a zero
+// until is open-ended). Of the messages older than the window only the newest
+// is kept, as the prompt the window's work answers.
+func (m *tuiModel) windowBlocks(entries []contracts.LogEntry, until time.Time) []tuiBlock {
+	var messages []tuiMessageRow
+	for _, msg := range m.messages {
+		if !m.shown[msg.ID] && (until.IsZero() || msg.At.Before(until)) {
+			messages = append(messages, msg)
+		}
+	}
 	if len(entries) > 0 && !entries[0].At.IsZero() {
 		first := 0
 		for first < len(messages) && messages[first].At.Before(entries[0].At) {
@@ -411,19 +455,79 @@ func (m *tuiModel) appendBacklog(entries []contracts.LogEntry, messages []tuiMes
 			messages = messages[first-1:]
 		}
 	}
+	var blocks []tuiBlock
 	next := 0
 	for _, e := range entries {
 		for next < len(messages) && !e.At.IsZero() && !messages[next].At.After(e.At) {
-			msg := messages[next]
-			m.appendMessage(msg.ID, msg.Author, msg.Text, msg.At)
+			blocks = m.sentBlock(blocks, messages[next])
 			next++
 		}
-		m.appendLog(e)
+		blocks = tuiAppendBlock(blocks, string(e.AgentID), tuiEntryKind(e), e.Text, e.At)
 	}
 	for ; next < len(messages); next++ {
-		msg := messages[next]
-		m.appendMessage(msg.ID, msg.Author, msg.Text, msg.At)
+		blocks = m.sentBlock(blocks, messages[next])
 	}
+	return blocks
+}
+
+// loadOlder asks the daemon for the output before the oldest held. It does
+// nothing while a page is on its way, once the start is reached, or when the
+// output carries no times to page by.
+func (m *tuiModel) loadOlder() {
+	if m.older.loading || m.older.done || m.older.before.IsZero() || m.thread.ID == "" {
+		return
+	}
+	m.older.loading = true
+	threadID, before := m.thread.ID, m.older.before
+	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var entries []contracts.LogEntry
+		err := c.Call(ctx, "thread.logs", map[string]any{"threadId": threadID, "before": before}, &entries)
+		return func(m *tuiModel) {
+			// A thread closed, reopened, or reconnected meanwhile has its own
+			// paging state; this page is not for it.
+			if !m.onThread(threadID) || !m.older.before.Equal(before) {
+				return
+			}
+			m.older.loading = false
+			if err != nil {
+				m.appendLogLines("thread.logs: " + err.Error())
+				return
+			}
+			m.prependOlder(entries)
+		}
+	})
+}
+
+// prependOlder puts an older page above the transcript. The view does not
+// move: scroll counts rows from the newest output, and those are unchanged.
+// The cap grows by what was loaded, so a reader's history is not trimmed away
+// by the next line of output.
+func (m *tuiModel) prependOlder(entries []contracts.LogEntry) {
+	if len(entries) == 0 {
+		m.older.done = true
+		return
+	}
+	// A prompt kept above the old window as its context belongs somewhere in
+	// the older output: take it out, and let the page place it by time.
+	for len(m.log) > 0 && m.log[0].id != "" && m.log[0].at.Before(m.older.before) {
+		delete(m.shown, m.log[0].id)
+		m.log = m.log[1:]
+	}
+	older := m.windowBlocks(entries, m.older.before)
+	if len(m.log) > 0 && len(older) > 0 {
+		// The block that used to open the transcript now follows another.
+		first, prev := &m.log[0], older[len(older)-1]
+		if first.agent == "" {
+			first.gap = prev.agent != ""
+		} else {
+			first.head = first.id != "" || first.kind == tuiKindShell || prev.agent != first.agent
+			first.gap = first.head
+		}
+	}
+	m.logCap = max(m.logCap, tuiLogCap) + len(older)
+	m.log = append(older, m.log...)
+	m.older.before = entries[0].At
+	m.clampScroll()
 }
 
 // --- The line under the transcript ---
@@ -490,7 +594,11 @@ func (m *tuiModel) statusRow(width int) tuiRow {
 	if m.following() {
 		return row.fit(width)
 	}
-	note := tuiText(fmt.Sprintf("↑ %d rows above the latest · end to follow", m.scroll), tuiInk{fg: tuiColAccent})
+	text := fmt.Sprintf("↑ %d rows above the latest · end to follow", m.scroll)
+	if m.older.loading {
+		text = "loading older output… · " + text
+	}
+	note := tuiText(text, tuiInk{fg: tuiColAccent})
 	if width <= note.width()+2 {
 		return note.fit(width)
 	}

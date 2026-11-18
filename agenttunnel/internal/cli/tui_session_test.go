@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
@@ -18,13 +16,16 @@ import (
 // drives. The session is left with Ctrl-C when the test ends.
 type tuiSessionRun struct {
 	s    *scriptedServer
+	c    *Client
 	term *fakeTuiTerm
 	keys chan tuiKey
 	m    *tuiModel
 	done chan error
 }
 
-func startTuiSession(t *testing.T, s *scriptedServer, ref string, term tuiTerminal, redial func(context.Context) (*Client, error)) *tuiSessionRun {
+// startTuiSession's optional last argument is the directory the TUI was
+// started in.
+func startTuiSession(t *testing.T, s *scriptedServer, ref string, term tuiTerminal, redial func(context.Context) (*Client, error), cwd ...string) *tuiSessionRun {
 	t.Helper()
 	run := &tuiSessionRun{s: s, keys: make(chan tuiKey, 64), m: newTuiModel(time.Now()), done: make(chan error, 1)}
 	switch tt := term.(type) {
@@ -41,6 +42,10 @@ func startTuiSession(t *testing.T, s *scriptedServer, ref string, term tuiTermin
 	}
 	s.mu.Unlock()
 	c := dialScripted(t, s)
+	run.c = c
+	if len(cwd) > 0 {
+		run.m.cwd = cwd[0]
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		run.done <- tuiSession(ctx, c, run.m, ref, run.keys, term, redial)
@@ -529,36 +534,47 @@ func TestTUICellWidthsOfZeroWidthRunes(t *testing.T) {
 	}
 }
 
-// The cached escape pair paints exactly what lipgloss would, for every ink
-// shape the TUI uses, at both depths.
-func TestTUIThemeCachedStyleMatchesLipgloss(t *testing.T) {
-	inks := []tuiInk{
-		{fg: tuiColText},
-		{fg: tuiColAccent, bold: true},
-		{fg: tuiColInk, bg: tuiColSelect, bold: true},
-		{bg: tuiColBar},
-		{fg: tuiColFaint, dim: true},
+// The cached escape pair is the same on every call, wraps the text and
+// nothing else, and carries the colors at the depth asked for.
+func TestTUIThemeCachedStyleIsStable(t *testing.T) {
+	const text = "some words — and 中文"
+	ink := tuiInk{fg: tuiColAccent, bg: tuiColBar, bold: true}
+	for depth, want := range map[tuiDepth]string{
+		tuiDepthTrueColor: "38;2;250;178;131",
+		tuiDepth256:       "38;5;216",
+	} {
+		theme := tuiTheme{depth: depth}
+		first := theme.style(text, ink)
+		for range 2 { // the second pass reads the cache
+			if got := theme.style(text, ink); got != first {
+				t.Fatalf("depth %d: style changed between calls: %q vs %q", depth, got, first)
+			}
+		}
+		if !strings.Contains(first, want) || !strings.Contains(first, ";1m") && !strings.Contains(first, "[1;") {
+			t.Fatalf("depth %d: %q lacks %s or bold", depth, first, want)
+		}
+		if !strings.Contains(first, text) || !strings.HasSuffix(first, "\x1b[0m") {
+			t.Fatalf("depth %d: %q does not wrap the text and reset", depth, first)
+		}
 	}
-	for _, theme := range []tuiTheme{{depth: tuiDepth256}, {depth: tuiDepthTrueColor}} {
-		renderer := tui256Renderer
-		if theme.depth == tuiDepthTrueColor {
-			renderer = tuiTrueColorRenderer
-		}
-		for _, ink := range inks {
-			st := renderer.NewStyle().Bold(ink.bold).Faint(ink.dim)
-			if ink.fg != (tuiRGB{}) {
-				st = st.Foreground(lipgloss.Color(ink.fg.hex()))
-			}
-			if ink.bg != (tuiRGB{}) {
-				st = st.Background(lipgloss.Color(ink.bg.hex()))
-			}
-			const text = "some words — and 中文"
-			for range 2 { // the second pass reads the cache
-				if got, want := theme.style(text, ink), st.Render(text); got != want {
-					t.Fatalf("style(%+v) at depth %d = %q, want %q", ink, theme.depth, got, want)
-				}
-			}
-		}
+	if got := (tuiTheme{}).style(text, ink); got != text {
+		t.Fatalf("a plain theme styled the text: %q", got)
+	}
+}
+
+// A repaint after the palette changes renders blocks again: the rows a block
+// remembers carry the colors of the palette they were built in.
+func TestTUIRepaintAllDropsRememberedRows(t *testing.T) {
+	now := tuiTestClock()
+	m := newTuiModel(now)
+	tuiOpenWith(m, threadListRow{ID: "th_1"}, "demo", []contracts.LogEntry{tuiEntry(now, "lead", "hello")}, nil)
+	render(m, 60, 10)
+	if m.log[0].wrapped == nil {
+		t.Fatal("the block did not remember its rows")
+	}
+	m.repaintAll()
+	if m.log[0].wrapped != nil {
+		t.Fatal("repaintAll left remembered rows in place")
 	}
 }
 
@@ -592,9 +608,11 @@ func TestTUIPaletteForLightTerminalsAndSavedThemes(t *testing.T) {
 	if luma(tuiColText) < 180 {
 		t.Fatalf("dark terminal text is not light: %v", tuiColText)
 	}
+	// The palette is rebuilt from its own values each time, so an unknown theme
+	// brings the default accent back instead of keeping the last theme's.
 	applyTuiPalette(false, "no-such-theme")
-	if tuiColAccent != rgb(0x88c0d0) {
-		t.Fatal("an unknown theme changed the accent")
+	if tuiColAccent != tuiDarkColors.accent {
+		t.Fatalf("an unknown theme left accent %v, want the default", tuiColAccent)
 	}
 
 	applyTuiPalette(true, "warp")

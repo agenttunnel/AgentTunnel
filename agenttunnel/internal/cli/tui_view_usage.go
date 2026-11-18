@@ -38,34 +38,51 @@ type tuiUsageState struct {
 	harness   []tuiUsageHarness
 	models    []tuiUsageModel
 	fetchedAt time.Time
+	// refresh is set by r: the next fetch asks the providers for live limits
+	// instead of their cache. It clears when a refreshing fetch lands.
+	refresh bool
 }
 
 func tuiUsageOf(m *tuiModel) *tuiUsageState {
 	return tuiStateOf[tuiUsageState](m, tuiViewUsage)
 }
 
-// fetch reads the ledger and the rollups; limits come from the provider cache
-// unless refresh asks for a live read.
-func (st *tuiUsageState) fetch(refresh bool) error {
-	var ledger contracts.ThreadUsage
-	if err := st.call("usage.get", nil, &ledger); err != nil {
-		return err
+// fetchJob reads the ledger and the rollups in the background; limits come from
+// the provider cache unless refresh asks for a live read.
+func (st *tuiUsageState) fetchJob() tuiJob {
+	base := &st.tuiBase
+	refresh := st.refresh
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var ledger contracts.ThreadUsage
+		if err := c.Call(ctx, "usage.get", nil, &ledger); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var limits []contracts.HarnessLimits
+		if err := c.Call(ctx, "usage.limits", map[string]bool{"refresh": refresh}, &limits); err != nil {
+			// A failed refresh is not retried on every tick; the next r asks again.
+			return func(m *tuiModel) {
+				tuiUsageOf(m).refresh = false
+				base.setErr(err)
+			}
+		}
+		var harness []tuiUsageHarness
+		if err := c.Call(ctx, "stats.harnesses", nil, &harness); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var models []tuiUsageModel
+		if err := c.Call(ctx, "stats.models", nil, &models); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiUsageOf(m)
+			st.ledger, st.limits, st.harness, st.models = ledger, limits, harness, models
+			st.fetchedAt = time.Now()
+			if refresh {
+				st.refresh = false
+				base.say("limits refreshed")
+			}
+		}
 	}
-	var limits []contracts.HarnessLimits
-	if err := st.call("usage.limits", map[string]bool{"refresh": refresh}, &limits); err != nil {
-		return err
-	}
-	var harness []tuiUsageHarness
-	if err := st.call("stats.harnesses", nil, &harness); err != nil {
-		return err
-	}
-	var models []tuiUsageModel
-	if err := st.call("stats.models", nil, &models); err != nil {
-		return err
-	}
-	st.ledger, st.limits, st.harness, st.models = ledger, limits, harness, models
-	st.fetchedAt = time.Now()
-	return nil
 }
 
 // lines is the whole view as rows, in reading order.
@@ -150,20 +167,15 @@ func (st *tuiUsageState) render(cols, rows int) []tuiRow {
 	return tuiViewFrame(cols, rows, "Usage", lines[off:], -1, st.status())
 }
 
-func (st *tuiUsageState) key(k tuiKey) bool {
+func (st *tuiUsageState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if step := tuiNav(k, 8); step != 0 {
 		st.cursor = max(st.cursor+step, 0)
 		return true
 	}
 	if k.Kind == keyRune && k.Rune == 'r' {
-		st.reload(func() error {
-			err := st.fetch(true)
-			if err == nil {
-				st.say("limits refreshed")
-			}
-			return err
-		})
+		st.refresh = true
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 		return true
 	}
 	return false
@@ -176,13 +188,14 @@ func init() {
 		Order: 50,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiUsageOf(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 5*time.Second, func() error { return st.fetch(false) })
+			st.bind(ctx, c)
+			tuiLoadJob(m, &st.tuiBase, 5*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiUsageOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiUsageOf(m).key(k)
+			return tuiUsageOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "scroll"}, {"r", "refresh limits"}, {"tab", "views"}, {"esc", "threads"}, {"q", "quit"},

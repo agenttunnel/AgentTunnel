@@ -60,18 +60,24 @@ func tuiSettingsOf(m *tuiModel) *tuiSettingsState {
 	return tuiStateOf[tuiSettingsState](m, tuiViewSettings)
 }
 
-func (st *tuiSettingsState) fetch() error {
-	var cfg tuiSettingsWire
-	if err := st.call("settings.get", nil, &cfg); err != nil {
-		return err
+// fetchJob reads the settings and the harness list in the background.
+func (st *tuiSettingsState) fetchJob() tuiJob {
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var cfg tuiSettingsWire
+		if err := c.Call(ctx, "settings.get", nil, &cfg); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var harn harnessListResult
+		if err := c.Call(ctx, "harness.list", nil, &harn); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiSettingsOf(m)
+			st.cfg, st.harn = cfg, harn
+			st.cursor = tuiMoveCursor(st.cursor, 0, len(st.items()))
+		}
 	}
-	var harn harnessListResult
-	if err := st.call("harness.list", nil, &harn); err != nil {
-		return err
-	}
-	st.cfg, st.harn = cfg, harn
-	st.cursor = tuiMoveCursor(st.cursor, 0, len(st.items()))
-	return nil
 }
 
 // harnesses is every harness the list knows, in daemon order, falling back to
@@ -116,22 +122,32 @@ func (st *tuiSettingsState) items() []tuiSettingItem {
 	return items
 }
 
-// toggle flips the selected switch with one settings.set patch.
-func (st *tuiSettingsState) toggle(it tuiSettingItem) error {
-	var patch map[string]any
+// togglePatch is the settings.set patch that flips the switch it names, or nil
+// for a row that is not a switch.
+func (it tuiSettingItem) togglePatch() map[string]any {
 	switch it.kind {
 	case "auto":
-		patch = map[string]any{"autoMode": !it.on}
+		return map[string]any{"autoMode": !it.on}
 	case "experimental":
-		patch = map[string]any{"experimentalRoles": !it.on}
+		return map[string]any{"experimentalRoles": !it.on}
 	case "role":
-		patch = map[string]any{"roleEnabled": map[string]any{"id": it.id, "enabled": !it.on}}
+		return map[string]any{"roleEnabled": map[string]any{"id": it.id, "enabled": !it.on}}
 	case "harness":
-		patch = map[string]any{"harness": map[string]any{"id": it.id, "enabled": !it.on}}
-	default:
-		return nil
+		return map[string]any{"harness": map[string]any{"id": it.id, "enabled": !it.on}}
 	}
-	return st.call("settings.set", patch, nil)
+	return nil
+}
+
+// toggle flips a switch in the background. The notice names the new state; the
+// palette's auto-mode command passes no notice and stays silent.
+func (st *tuiSettingsState) toggle(it tuiSettingItem, notice string) {
+	patch := it.togglePatch()
+	if patch == nil {
+		return
+	}
+	st.run("saving", func(ctx context.Context, c cliCaller) (string, error) {
+		return notice, c.Call(ctx, "settings.set", patch, nil)
+	})
 }
 
 func (st *tuiSettingsState) selected() (tuiSettingItem, bool) {
@@ -144,7 +160,7 @@ func (st *tuiSettingsState) selected() (tuiSettingItem, bool) {
 
 // key handles the Settings keys. Every key it does not use returns false, so
 // Esc, Tab, ctrl+k and q reach the global layer.
-func (st *tuiSettingsState) key(k tuiKey) bool {
+func (st *tuiSettingsState) key(m *tuiModel, k tuiKey) bool {
 	st.touch(k)
 	if st.ed.on {
 		if st.ed.key(k) {
@@ -167,12 +183,8 @@ func (st *tuiSettingsState) key(k tuiKey) bool {
 	switch {
 	case k.Kind == keyEnter || (k.Kind == keyRune && k.Rune == ' '):
 		if it, ok := st.selected(); ok {
-			if err := st.toggle(it); err != nil {
-				st.setErr(err)
-			} else {
-				st.say(fmt.Sprintf("%s %s", it.kind, map[bool]string{true: "off", false: "on"}[it.on]))
-				st.reload(st.fetch)
-			}
+			notice := fmt.Sprintf("%s %s", it.kind, map[bool]string{true: "off", false: "on"}[it.on])
+			st.toggle(it, notice)
 		}
 	case k.Kind == keyRune && k.Rune == 'm':
 		if it, ok := st.selected(); ok && it.kind == "harness" {
@@ -196,7 +208,7 @@ func (st *tuiSettingsState) key(k tuiKey) bool {
 			})
 		}
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -309,13 +321,14 @@ func init() {
 		Order: 60,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiSettingsOf(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 10*time.Second, st.fetch)
+			st.bind(ctx, c)
+			tuiLoadJob(m, &st.tuiBase, 10*time.Second, st.fetchJob())
 		},
 		Render: func(m *tuiModel, cols, rows int) []tuiRow {
 			return tuiSettingsOf(m).render(cols, rows)
 		},
 		Key: func(m *tuiModel, k tuiKey) bool {
-			return tuiSettingsOf(m).key(k)
+			return tuiSettingsOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
 			{"enter", "toggle"}, {"m", "add model"}, {"R", "refresh models"},
@@ -324,11 +337,7 @@ func init() {
 		Actions: []tuiAction{
 			{Title: "Settings: toggle auto mode", Run: func(m *tuiModel) {
 				st := tuiSettingsOf(m)
-				if err := st.toggle(tuiSettingItem{kind: "auto", on: st.cfg.AutoMode}); err != nil {
-					st.setErr(err)
-					return
-				}
-				st.reload(st.fetch)
+				st.toggle(tuiSettingItem{kind: "auto", on: st.cfg.AutoMode}, "")
 			}},
 		},
 	})

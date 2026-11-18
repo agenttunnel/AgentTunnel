@@ -142,8 +142,9 @@ obvious:
 | `enter` / `alt+enter` (or `ctrl+j`) | send / start a new line |
 | `↑` `↓` | prompt history, or the options of a question an agent asked |
 | `ctrl+g` | write the prompt in `$VISUAL` / `$EDITOR` |
+| `@` in the prompt | search the thread's files; `↑` `↓` pick, `tab` attaches the path to the turn, `esc` dismisses |
 | `tab` / `shift+tab` | Files, Review, PR and the other tabs, over the open thread; `esc` comes back |
-| `pgup` `pgdn`, mouse wheel | scroll the transcript; `end` on an empty prompt follows the newest output again |
+| `pgup` `pgdn`, mouse wheel | scroll the transcript (past the top it loads older output); `end` on an empty prompt follows the newest output again |
 | `ctrl+k` | command palette (fuzzy); `/` in the composer lists the same thread commands |
 | `/` on the thread list | filter threads |
 
@@ -152,7 +153,10 @@ modifier (Shift, or Option in iTerm2 and Terminal.app); `/copy` puts the last
 reply on the clipboard without it. A terminal that reports focus gets a
 notification and a bell when a turn ends, or an agent asks a question, while
 you are in another window. A light terminal gets a light palette, and the
-theme picked in the desktop app lends its accent color.
+theme picked in the desktop app lends its accent color. URLs in replies and on
+the PR and issue tabs are clickable in terminals that support OSC 8 links.
+Started inside a registered project, `agenttunnel tui` opens a new thread
+there; one you never type in is discarded when you leave.
 
 Tests:
 

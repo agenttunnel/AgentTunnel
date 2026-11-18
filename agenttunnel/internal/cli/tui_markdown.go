@@ -5,34 +5,36 @@ import "strings"
 // tuiCell is one rune of a row with its ink and width. Wrapping cuts on cells
 // so a wide rune is never split and widths are counted once.
 type tuiCell struct {
-	r   rune
-	ink tuiInk
-	w   int
+	r    rune
+	ink  tuiInk
+	w    int
+	link string
 }
 
 func tuiCellsOf(row tuiRow) []tuiCell {
 	var cells []tuiCell
 	for _, s := range row {
 		for _, r := range s.text {
-			cells = append(cells, tuiCell{r: r, ink: s.ink, w: runeCells(r)})
+			cells = append(cells, tuiCell{r: r, ink: s.ink, w: runeCells(r), link: s.link})
 		}
 	}
 	return cells
 }
 
-// tuiCellRow rebuilds a row from cells, merging runs that share an ink.
+// tuiCellRow rebuilds a row from cells, merging runs that share an ink and a
+// link, so a link wrapped over two rows is a link on both.
 func tuiCellRow(cells []tuiCell) tuiRow {
 	var out tuiRow
 	var b strings.Builder
 	for i, c := range cells {
-		if i > 0 && c.ink != cells[i-1].ink {
-			out = append(out, tuiSpan{text: b.String(), ink: cells[i-1].ink})
+		if i > 0 && (c.ink != cells[i-1].ink || c.link != cells[i-1].link) {
+			out = append(out, tuiSpan{text: b.String(), ink: cells[i-1].ink, link: cells[i-1].link})
 			b.Reset()
 		}
 		b.WriteRune(c.r)
 	}
-	if len(cells) > 0 {
-		out = append(out, tuiSpan{text: b.String(), ink: cells[len(cells)-1].ink})
+	if n := len(cells); n > 0 {
+		out = append(out, tuiSpan{text: b.String(), ink: cells[n-1].ink, link: cells[n-1].link})
 	}
 	return out
 }
@@ -51,7 +53,7 @@ func tuiFitEnd(cells []tuiCell, start, avail int) int {
 // tuiForce replaces a cell that can never fit with an ellipsis, so a row
 // always makes progress and keeps its width.
 func tuiForce(cells []tuiCell, i int) {
-	cells[i] = tuiCell{r: '…', ink: cells[i].ink, w: 1}
+	cells[i] = tuiCell{r: '…', ink: cells[i].ink, w: 1, link: cells[i].link}
 }
 
 func tuiSkipSpaces(cells []tuiCell, i int) int {
@@ -295,6 +297,14 @@ func tuiInlineRow(s string, base tuiInk) tuiRow {
 				continue
 			}
 		}
+		if url := tuiURLAt(s, i); url != "" {
+			flush()
+			link := base
+			link.fg = tuiColAccent2
+			out = append(out, tuiLink(url, url, link)...)
+			i += len(url)
+			continue
+		}
 		if strings.HasPrefix(s[i:], "**") {
 			if end := tuiBoldClose(s, i+2); end >= 0 {
 				flush()
@@ -313,6 +323,33 @@ func tuiInlineRow(s string, base tuiInk) tuiRow {
 	}
 	flush()
 	return out
+}
+
+// tuiURLAt is the http(s) URL that starts at s[i], or "". It must start a
+// word, runs to the next whitespace, and gives back the punctuation prose and
+// markdown put after a link: "see https://x.y/z." links without the full stop,
+// and "[title](https://x.y/z)" without the closing bracket.
+func tuiURLAt(s string, i int) string {
+	rest := s[i:]
+	if !strings.HasPrefix(rest, "https://") && !strings.HasPrefix(rest, "http://") {
+		return ""
+	}
+	if i > 0 && tuiWordByte(s[i-1]) {
+		return ""
+	}
+	end := strings.IndexAny(rest, " \t<>\"`")
+	if end < 0 {
+		end = len(rest)
+	}
+	url := strings.TrimRight(rest[:end], ".,;:!?)]}'*")
+	if !tuiSafeURL(url) || strings.HasSuffix(url, "://") {
+		return ""
+	}
+	return url
+}
+
+func tuiWordByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
 }
 
 // tuiBoldClose finds the "**" that closes bold text opened before from. Code

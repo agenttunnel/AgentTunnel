@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -64,27 +64,27 @@ func runTui(ctx context.Context, env *Env, args []string) error {
 	defer cancel()
 
 	m := newTuiModel(time.Now())
-	// The terminal is asked for its background before Bubble Tea takes the
-	// input: the answer comes back on stdin.
+	// The palette starts dark; the terminal's own answer about its background
+	// arrives as a message once the program runs, and the session applies it.
 	m.theme = detectTuiTheme(env.Out, os.Getenv)
-	applyTuiPalette(tuiTerminalIsLight(m.theme), tuiSavedTheme(ctx, info))
+	m.savedTheme = tuiSavedTheme(ctx, info)
+	applyTuiPalette(false, m.savedTheme)
 	m.info = tuiInfo{daemon: tuiDaemonLabel(env.DaemonURL), version: env.Version}
 	m.cwd, _ = os.Getwd()
 
 	// Bubble Tea owns the terminal (raw mode, alternate screen, key decoding,
 	// resize, frame diffing) and restores it on every way out, panics
-	// included. The session loop runs beside it on the key channel. The mouse
-	// is captured for the wheel alone, and focus is reported so a finished turn
-	// only rings when the user is looking elsewhere.
+	// included. The session loop runs beside it on the key channel. The screen
+	// mode (alternate screen, wheel capture, focus reports) is declared by the
+	// program's View.
 	ui := newTuiProgram(ctx, int(os.Stdin.Fd()))
 	prog := tea.NewProgram(ui,
-		tea.WithAltScreen(), tea.WithInput(os.Stdin), tea.WithOutput(env.Out),
-		tea.WithMouseCellMotion(), tea.WithReportFocus(),
+		tea.WithInput(os.Stdin), tea.WithOutput(env.Out),
 		tea.WithoutSignalHandler(), tea.WithContext(ctx))
 	redial := func(ctx context.Context) (*Client, error) { return tuiRedial(ctx, env) }
 	done := make(chan error, 1)
 	go func() {
-		err := tuiSession(ctx, c, m, ref, ui.keys, bubbleTerminal{ui, prog, env.Out}, redial)
+		err := tuiSession(ctx, c, m, ref, ui.keys, bubbleTerminal{ui, prog}, redial)
 		prog.Quit()
 		done <- err
 	}()
@@ -165,6 +165,11 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			}
 			return err
 		}
+	} else if opened, err := tuiOpenHere(ctx, c, m); err == nil && opened != nil {
+		// Started inside a project with no thread named: a new thread there
+		// is on screen, composer ready. Failing to make one is no reason not
+		// to start; the list is still there.
+		tracker = opened
 	}
 
 	// events is the live stream; it is nil while the connection is down.
@@ -172,10 +177,20 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 	// loop then owns and closes.
 	events := c.Events()
 	redialed := make(chan *Client, 1)
+	// dropped is the client's count of discarded frames as last seen here.
+	dropped := c.Dropped()
 	var owned *Client
 	defer func() {
 		if owned != nil {
 			owned.Close()
+		}
+	}()
+	// A thread the TUI opened on its own and the user never used is taken
+	// back on the way out, whichever way that is. (Deferred after the close
+	// above, so it runs before it, on a connection that is still open.)
+	defer func() {
+		if m.fresh != "" && m.input.empty() {
+			tuiDiscardFresh(c, m.fresh)
 		}
 	}()
 
@@ -189,6 +204,9 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 	// the loop applies each one, so the model stays single-threaded.
 	results := make(chan func(*tuiModel), 16)
 	submit := func(line string) {
+		// The paths picked with "@" go with whatever this line turns out to
+		// be; a line that is not a message simply drops them.
+		attachments := m.takeAttachments(line)
 		// A known /command runs its thread operation; anything else is the
 		// attach grammar below (steer text, or an answer to an open question).
 		if run, arg, ok := tuiSlashCommand(line); ok {
@@ -233,7 +251,11 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			m.appendLogLines(tuiHelpLines()...)
 		case attachSteer:
 			if tracker != nil && (tracker.anyActive() || starting) {
-				if err := c.Call(ctx, "thread.steer", map[string]string{"threadId": m.thread.ID, "text": parsed.text}, nil); err != nil {
+				steer := map[string]any{"threadId": m.thread.ID, "text": parsed.text}
+				if len(attachments) > 0 {
+					steer["attachments"] = attachments
+				}
+				if err := c.Call(ctx, "thread.steer", steer, nil); err != nil {
 					m.appendLogLines("thread.steer: " + err.Error())
 				}
 				return
@@ -243,7 +265,7 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			caller := c
 			go func() {
 				starts <- caller.Call(ctx, "thread.turn.start", runTurnStartParams{
-					ThreadID: threadID, Text: text, Detach: true,
+					ThreadID: threadID, Text: text, Detach: true, Attachments: attachments,
 				}, nil)
 			}()
 		}
@@ -300,6 +322,11 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 	var resize <-chan struct{}
 	if r, ok := term.(interface{ Resized() <-chan struct{} }); ok {
 		resize = r.Resized()
+	}
+	// background carries the terminal's answer about its own background.
+	var background <-chan bool
+	if b, ok := term.(interface{ Background() <-chan bool }); ok {
+		background = b.Background()
 	}
 
 	// onKey applies one key. It reports true when the key ends the session.
@@ -523,6 +550,7 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				owned.Close()
 			}
 			c, owned, events = next, next, next.Events()
+			dropped = c.Dropped()
 			m.info.offline = false
 			m.refresh = true
 			// The thread on screen is subscribed and read again: whatever
@@ -535,6 +563,17 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			dirty = true
 
 		case <-poll.C:
+			// Frames the client had to discard are output this transcript
+			// never saw. The daemon still has it: read the thread again.
+			if n := c.Dropped(); n != dropped {
+				dropped = n
+				if m.screen == tuiScreenThread {
+					if reopened, err := tuiReopenThread(ctx, c, m); err == nil {
+						tracker = reopened
+						dirty = true
+					}
+				}
+			}
 			if tracker != nil {
 				if roster, err := fetchTuiRoster(ctx, c, m.thread.ID); err == nil {
 					settled(func() {
@@ -559,6 +598,15 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 
 		case <-resize:
 			dirty = true
+
+		case light := <-background:
+			// Colors are baked into the rows each block remembers, so the
+			// remembered rows go with the old palette.
+			if m.theme.depth != tuiDepthNone {
+				applyTuiPalette(light, m.savedTheme)
+				m.repaintAll()
+				dirty = true
+			}
 
 		case <-paintTick.C:
 			// The working indicator repaints on its own beat, so the spinner
@@ -656,11 +704,24 @@ func (m *tuiModel) windowTitle() string {
 // hints, an open question's options, the lines of a multi-line prompt, the
 // prompt history, and last the transcript.
 func tuiThreadKey(m *tuiModel, tracker **turnTracker, k tuiKey, rows int, submit func(string)) {
+	// Whatever the key did to the prompt, the "@" search follows it.
+	defer func() {
+		if m.screen == tuiScreenThread {
+			m.syncMention()
+		}
+	}()
 	switch k.Kind {
 	case keyEsc:
+		// Esc closes the nearest thing first: an open "@" list, then the thread.
+		if m.dismissMention() {
+			return
+		}
 		m.closeThread()
 		*tracker = nil
 	case keyEnter:
+		if m.completeMention() {
+			return
+		}
 		submit(m.takeInput())
 	case keyNewline:
 		m.typeRune('\n')
@@ -699,6 +760,9 @@ func tuiThreadKey(m *tuiModel, tracker **turnTracker, k tuiKey, rows int, submit
 	case keyEditor:
 		m.edit = true
 	case keyTab:
+		if m.completeMention() {
+			return
+		}
 		if len(m.slashMatches()) > 0 {
 			m.completeSlash()
 			return
@@ -707,11 +771,11 @@ func tuiThreadKey(m *tuiModel, tracker **turnTracker, k tuiKey, rows int, submit
 	case keyShiftTab:
 		m.cycleView(-1)
 	case keyUp:
-		if !m.moveSlash(-1) && !m.moveChoice(-1) && !m.input.up() && !m.input.historyPrev() {
+		if !m.moveSlash(-1) && !m.moveMention(-1) && !m.moveChoice(-1) && !m.input.up() && !m.input.historyPrev() {
 			m.scrollUp(1)
 		}
 	case keyDown:
-		if !m.moveSlash(1) && !m.moveChoice(1) && !m.input.down() && !m.input.historyNext() {
+		if !m.moveSlash(1) && !m.moveMention(1) && !m.moveChoice(1) && !m.input.down() && !m.input.historyNext() {
 			m.scrollDown(1)
 		}
 	case keyWheelUp:
@@ -746,19 +810,104 @@ func tuiRefreshList(ctx context.Context, c *Client, m *tuiModel) error {
 	return nil
 }
 
-// tuiOpenThread switches to a thread's live view: subscribe first so nothing
+// tuiOpenThread switches to a thread's live view and marks it read: opening is
+// reading, so the daemon's unread state clears with the view.
+func tuiOpenThread(ctx context.Context, c *Client, m *tuiModel, row threadListRow, project string) (*turnTracker, error) {
+	tracker, err := tuiShowThread(ctx, c, m, row, project)
+	if err == nil {
+		m.startJob(tuiMarkReadJob(row.ID))
+	}
+	return tracker, err
+}
+
+// tuiShowThread switches to a thread's live view: subscribe first so nothing
 // between the backlog read and the live stream is missed, then seed the
 // transcript, the roster, and the turn tracker.
-func tuiOpenThread(ctx context.Context, c *Client, m *tuiModel, row threadListRow, project string) (*turnTracker, error) {
+func tuiShowThread(ctx context.Context, c *Client, m *tuiModel, row threadListRow, project string) (*turnTracker, error) {
 	feed, err := fetchTuiFeed(ctx, c, row.ID)
 	if err != nil {
 		return nil, err
 	}
 	m.openThread(row, project, feed.roster.statuses)
-	tracker := m.seedThread(feed)
-	// Opening is reading: the daemon's unread state clears with the view.
-	m.startJob(tuiMarkReadJob(row.ID))
+	return m.seedThread(feed), nil
+}
+
+// tuiOpenHere opens a new thread in the project the TUI was started inside,
+// the way an editor opens on the folder it was launched in. It returns nil
+// when the directory belongs to no registered project: the TUI never
+// registers one unasked. The thread exists only in the daemon's memory until
+// something is done in it, and it is not marked read, because a read mark is
+// itself something done.
+func tuiOpenHere(ctx context.Context, c *Client, m *tuiModel) (*turnTracker, error) {
+	if m.cwd == "" {
+		return nil, nil
+	}
+	var projects []projectsRow
+	if err := c.Call(ctx, "project.list", nil, &projects); err != nil {
+		return nil, err
+	}
+	// Projects can nest; the deepest one that holds the directory is it.
+	var here *projectsRow
+	for i, p := range projects {
+		if tuiUnderDir(m.cwd, p.Path) && (here == nil || len(p.Path) > len(here.Path)) {
+			here = &projects[i]
+		}
+	}
+	if here == nil {
+		return nil, nil
+	}
+	var created struct {
+		ThreadID string `json:"threadId"`
+	}
+	if err := c.Call(ctx, "thread.create", map[string]string{"projectId": here.ID}, &created); err != nil {
+		return nil, err
+	}
+	row, err := resolveThreadRow(ctx, c, created.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	tracker, err := tuiShowThread(ctx, c, m, row, projectLabel(*here))
+	if err != nil {
+		return nil, err
+	}
+	m.fresh = created.ThreadID
+	_ = tuiRefreshList(ctx, c, m) // the list behind the thread now has it too
 	return tracker, nil
+}
+
+// tuiDiscardCall deletes a thread only if nothing was ever recorded in it: a
+// version of zero is a thread that lives in the daemon's memory alone, which
+// deleting simply forgets. Anything the user did keeps the thread.
+func tuiDiscardCall(ctx context.Context, c cliCaller, threadID string) error {
+	var st struct {
+		Version int64 `json:"version"`
+	}
+	if err := c.Call(ctx, "thread.get", map[string]string{"threadId": threadID}, &st); err != nil {
+		return err
+	}
+	if st.Version != 0 {
+		return nil
+	}
+	return c.Call(ctx, "thread.delete", map[string]string{"threadId": threadID}, nil)
+}
+
+// tuiDiscardJob takes back an unused thread the TUI opened on its own, then
+// refreshes the list it was in.
+func tuiDiscardJob(threadID string) tuiJob {
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		if tuiDiscardCall(ctx, c, threadID) != nil {
+			return nil
+		}
+		return func(m *tuiModel) { m.refresh = true }
+	}
+}
+
+// tuiDiscardFresh is tuiDiscardJob for the way out, when the session's own
+// context may already be done: it gets a moment of its own.
+func tuiDiscardFresh(c cliCaller, threadID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = tuiDiscardCall(ctx, c, threadID)
 }
 
 // tuiReopenThread reads the open thread again over a new connection. The
@@ -769,7 +918,8 @@ func tuiReopenThread(ctx context.Context, c *Client, m *tuiModel) (*turnTracker,
 	if err != nil {
 		return nil, err
 	}
-	m.log, m.shown, m.scroll, m.pending = nil, nil, 0, nil
+	m.resetTranscript()
+	m.pending = nil
 	return m.seedThread(feed), nil
 }
 

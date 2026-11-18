@@ -130,7 +130,7 @@ func (st *tuiPRState) lines(width int) []tuiRow {
 		}
 		out = append(out, state)
 		out = append(out, tuiKV("  checks ", usageDash(r.Checks)), tuiKV("  review ", usageDash(r.Review)))
-		out = append(out, tuiFaint("  "+r.URL))
+		out = append(out, tuiFaint("  ").join(tuiLink(tuiSanitize(r.URL), r.URL, tuiInk{fg: tuiColFaint})))
 		if len(r.Comments) > 0 {
 			out = append(out, nil, tuiHeading("Recent comments"))
 			from := max(len(r.Comments)-3, 0)

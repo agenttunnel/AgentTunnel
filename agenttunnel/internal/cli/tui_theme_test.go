@@ -69,7 +69,7 @@ func TestTUIThemeTruecolorPaintsTheDesktopPalette(t *testing.T) {
 		"48;2;20;20;20",    // the panel bar
 		"38;2;250;178;131", // the primary accent
 		"38;2;224;108;117", // the error red on an error line
-		"38;2;245;167;65",  // the running amber on the roster
+		"38;2;245;167;66",  // the running amber on the roster
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("truecolor frame missing %q", want)

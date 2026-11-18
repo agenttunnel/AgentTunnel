@@ -58,21 +58,25 @@ func tuiRemoteOf(m *tuiModel) *tuiRemoteState {
 	return tuiStateOf[tuiRemoteState](m, tuiViewRemote)
 }
 
-// fetch reads the remote and relay status: local daemon reads the session
-// loop can make directly.
-func (st *tuiRemoteState) fetch() error {
-	var remote struct {
-		Items []tuiRemoteItem `json:"items"`
+// fetchJob reads the remote and relay status in the background.
+func (st *tuiRemoteState) fetchJob() tuiJob {
+	base := &st.tuiBase
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var remote struct {
+			Items []tuiRemoteItem `json:"items"`
+		}
+		if err := c.Call(ctx, "remote.status", nil, &remote); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		var relay tuiRelayStatus
+		if err := c.Call(ctx, "relay.status", nil, &relay); err != nil {
+			return tuiViewErrJob(base, err)
+		}
+		return func(m *tuiModel) {
+			st := tuiRemoteOf(m)
+			st.items, st.relay = remote.Items, relay
+		}
 	}
-	if err := st.call("remote.status", nil, &remote); err != nil {
-		return err
-	}
-	var relay tuiRelayStatus
-	if err := st.call("relay.status", nil, &relay); err != nil {
-		return err
-	}
-	st.items, st.relay = remote.Items, relay
-	return nil
 }
 
 // startUpdateCheck asks the release feed for the latest build as a background
@@ -257,7 +261,7 @@ func (st *tuiRemoteState) key(m *tuiModel, k tuiKey) bool {
 			st.say("nothing to install · press u to check")
 		}
 	case k.Kind == keyRune && k.Rune == 'r':
-		st.reload(st.fetch)
+		tuiReloadJob(m, &st.tuiBase, st.fetchJob())
 	default:
 		return false
 	}
@@ -271,7 +275,8 @@ func init() {
 		Order: 70,
 		Load: func(ctx context.Context, c cliCaller, m *tuiModel) {
 			st := tuiRemoteOf(m)
-			tuiLoadView(ctx, c, &st.tuiBase, 10*time.Second, st.fetch)
+			st.bind(ctx, c)
+			tuiLoadJob(m, &st.tuiBase, 10*time.Second, st.fetchJob())
 			// The update check is a network call to the release feed, so it
 			// runs in the background, once on first open.
 			st.startUpdateCheck(m, false)

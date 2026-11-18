@@ -59,8 +59,13 @@ type tuiModel struct {
 	screen tuiScreen
 
 	// cwd is the directory the TUI was started in, offered as the folder of a
-	// new project.
-	cwd string
+	// new project. fresh is the thread the TUI opened there on its own: one
+	// left with nothing done in it is discarded, so starting the TUI never
+	// leaves an empty thread behind.
+	cwd   string
+	fresh string
+	// savedTheme is the desktop theme the user picked, which lends its accent.
+	savedTheme string
 
 	// filter narrows the thread list to the rows matching what was typed after
 	// "/"; nil shows every row.
@@ -78,8 +83,14 @@ type tuiModel struct {
 	// Thread screen.
 	thread  threadListRow
 	project string
-	// log is the transcript, oldest block first.
-	log []tuiBlock
+	// log is the transcript, oldest block first. logCap is how many blocks it
+	// may hold: tuiLogCap, plus whatever older output the reader loaded.
+	log    []tuiBlock
+	logCap int
+	// messages is what the user sent in this thread, oldest first, for placing
+	// in older output as it loads; older is the paging state.
+	messages []tuiMessageRow
+	older    tuiOlder
 	// shown holds the ids of the user messages already in the transcript, so
 	// one the backlog and the live stream both carry appears once.
 	shown map[string]bool
@@ -110,6 +121,10 @@ type tuiModel struct {
 	drafts map[string]string
 	// slashSel is the highlighted slash hint; reset whenever the input changes.
 	slashSel int
+	// mention is the open "@" file search; attached holds, per thread, the
+	// paths picked from it that the draft may still name.
+	mention  tuiMention
+	attached map[string]map[string]bool
 	// side is the thread screen's right pane data.
 	side tuiSide
 }
@@ -187,9 +202,7 @@ func (m *tuiModel) openThread(row threadListRow, project string, statuses map[st
 	m.screen = tuiScreenThread
 	m.thread = row
 	m.project = project
-	m.log = nil
-	m.shown = nil
-	m.scroll = 0
+	m.resetTranscript()
 	m.pending = nil
 	m.pane = nil
 	m.harness = map[string]string{}
@@ -200,6 +213,27 @@ func (m *tuiModel) openThread(row threadListRow, project string, statuses map[st
 	}
 	m.input.set(m.drafts[row.ID])
 	m.slashSel = 0
+	m.mention = tuiMention{}
+}
+
+// repaintAll drops every block's remembered rows, for a palette change: the
+// rows carry their colors, so they must be rendered again.
+func (m *tuiModel) repaintAll() {
+	for i := range m.log {
+		m.log[i].wrapped = nil
+	}
+	if m.pane != nil {
+		for i := range m.pane.lines {
+			m.pane.lines[i].wrapped = nil
+		}
+	}
+}
+
+// resetTranscript empties the transcript and everything that describes it.
+func (m *tuiModel) resetTranscript() {
+	m.log, m.logCap, m.shown, m.messages = nil, 0, nil, nil
+	m.older = tuiOlder{}
+	m.scroll = 0
 }
 
 // closeThread returns to the list screen and drops the thread view's state,
@@ -217,18 +251,23 @@ func (m *tuiModel) closeThread() {
 			m.drafts[m.thread.ID] = draft
 		} else {
 			delete(m.drafts, m.thread.ID)
+			if m.thread.ID == m.fresh {
+				m.startJob(tuiDiscardJob(m.fresh))
+			}
+		}
+		if m.thread.ID == m.fresh {
+			m.fresh = ""
 		}
 	}
 	m.screen = tuiScreenList
 	m.thread = threadListRow{}
 	m.project = ""
-	m.log = nil
-	m.shown = nil
-	m.scroll = 0
+	m.resetTranscript()
 	m.pending = nil
 	m.pane = nil
 	m.input.clear()
 	m.slashSel = 0
+	m.mention = tuiMention{}
 	m.roster = map[string]contracts.AgentStatus{}
 	m.harness = map[string]string{}
 	m.started = map[string]time.Time{}
@@ -709,6 +748,7 @@ func (m *tuiModel) renderThreadMain(cols, rows int) []tuiRow {
 	}
 	tail = append(tail, m.statusRow(innerW))
 	tail = append(tail, m.slashRows(innerW)...)
+	tail = append(tail, m.mentionRows(innerW)...)
 	if len(tail) > innerH {
 		tail = tail[len(tail)-innerH:]
 	}

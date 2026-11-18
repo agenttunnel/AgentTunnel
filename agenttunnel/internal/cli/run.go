@@ -123,6 +123,8 @@ type (
 		ThreadID string `json:"threadId"`
 		Text     string `json:"text"`
 		Detach   bool   `json:"detach"`
+		// Attachments are worktree-relative files or folders sent as context.
+		Attachments []string `json:"attachments,omitempty"`
 	}
 	runThreadCreateReply struct {
 		ThreadID string `json:"threadId"`

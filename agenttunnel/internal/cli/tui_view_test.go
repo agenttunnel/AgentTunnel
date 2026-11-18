@@ -150,6 +150,53 @@ func tuiRunes(s string) []tuiKey {
 
 var tuiEnter = tuiKey{Kind: keyEnter}
 
+// tuiGateCaller stands in for a daemon that does not answer until gate opens.
+// Each call announces itself on entered before it blocks, so a call made on the
+// loop shows up at once, with no timeout involved.
+type tuiGateCaller struct {
+	*tuiFakeCaller
+	entered chan string
+	gate    chan struct{}
+	once    sync.Once
+}
+
+func newTuiGateCaller(t *testing.T) *tuiGateCaller {
+	t.Helper()
+	g := &tuiGateCaller{
+		tuiFakeCaller: &tuiFakeCaller{replies: tuiViewReplies()},
+		entered:       make(chan string, 64),
+		gate:          make(chan struct{}),
+	}
+	t.Cleanup(g.open)
+	return g
+}
+
+func (g *tuiGateCaller) Call(ctx context.Context, method string, params, out any) error {
+	g.entered <- method
+	<-g.gate
+	return g.tuiFakeCaller.Call(ctx, method, params, out)
+}
+
+// open lets every blocked and future call through.
+func (g *tuiGateCaller) open() { g.once.Do(func() { close(g.gate) }) }
+
+// tuiOffLoop runs fn and fails the test if fn reaches the daemon before it
+// returns. A synchronous call blocks on the gate, so fn cannot return and the
+// select takes the announcement instead; nothing waits on a timeout.
+func tuiOffLoop(t *testing.T, g *tuiGateCaller, fn func()) {
+	t.Helper()
+	returned := make(chan struct{})
+	go func() {
+		fn()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case method := <-g.entered:
+		t.Fatalf("%s ran on the loop: the handler waited on the daemon", method)
+	}
+}
+
 func TestTUIViewsRegisterEveryAppView(t *testing.T) {
 	want := []string{"settings", "usage", "review", "pr", "files", "worktrees", "projects", "issues", "master", "remote"}
 	for _, id := range want {
@@ -192,6 +239,7 @@ func TestTUIViewUsageShowsWindowMeters(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewUsage
 	tuiViewOf(t, tuiViewUsage).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 
 	out := render(m, 80, 30)
 	for _, want := range []string{"5-hour", "95%", "claude/m1", "$0.6000"} {
@@ -212,9 +260,11 @@ func TestTUIViewSettingsTogglesThroughSettingsSet(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewSettings
 	tuiViewOf(t, tuiViewSettings).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 
 	// The first switch is auto mode; Enter flips it on with one settings.set.
 	tuiKeys(t, m, tuiViewSettings, tuiEnter)
+	tuiWaitIdle(t, &tuiSettingsOf(m).tuiBase)
 	if !c.sent("settings.set", `"autoMode":true`) {
 		t.Fatalf("enter on auto mode did not send settings.set autoMode=true; calls: %+v", c.calls)
 	}
@@ -225,10 +275,12 @@ func TestTUIViewSettingsDownArrowMovesToHarnessRows(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewSettings
 	tuiViewOf(t, tuiViewSettings).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 
 	// auto, experimental, the executor role, then claude: three steps down.
 	tuiKeys(t, m, tuiViewSettings, tuiKey{Kind: keyDown}, tuiKey{Kind: keyDown}, tuiKey{Kind: keyDown})
 	tuiKeys(t, m, tuiViewSettings, tuiEnter)
+	tuiWaitIdle(t, &tuiSettingsOf(m).tuiBase)
 	if !c.sent("settings.set", `"harness":{"enabled":false,"id":"claude"}`) {
 		t.Fatalf("enter on the claude harness did not disable it; calls: %+v", c.calls)
 	}
@@ -270,9 +322,11 @@ func TestTUIViewMasterSendsIntoTheDurableConversation(t *testing.T) {
 	m.view = tuiViewMaster
 	v := tuiViewOf(t, tuiViewMaster)
 	v.Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiMasterOf(m)
 
 	tuiKeys(t, m, tuiViewMaster, tuiEnter) // open the first conversation
+	tuiDrainJobs(t, m, c)
 	if !st.inChat || st.chatID != "c1" {
 		t.Fatalf("enter did not open conversation c1 (inChat=%v chat=%q)", st.inChat, st.chatID)
 	}
@@ -289,7 +343,9 @@ func TestTUIViewMasterEscLeavesTheChat(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewMaster
 	tuiViewOf(t, tuiViewMaster).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	tuiKeys(t, m, tuiViewMaster, tuiEnter)
+	tuiDrainJobs(t, m, c)
 
 	if !tuiViewOf(t, tuiViewMaster).Key(m, tuiKey{Kind: keyEsc}) {
 		t.Fatal("esc in the chat should be consumed, not fall through to the thread list")
@@ -304,6 +360,7 @@ func TestTUIViewFilesExpandPreviewAndSearch(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewFiles
 	tuiViewOf(t, tuiViewFiles).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiFilesOf(m)
 
 	tuiKeys(t, m, tuiViewFiles, tuiEnter) // expand src
@@ -311,6 +368,7 @@ func TestTUIViewFilesExpandPreviewAndSearch(t *testing.T) {
 		t.Fatalf("after expanding src the tree has %d rows, want 3 (src, a.go, README.md)", got)
 	}
 	tuiKeys(t, m, tuiViewFiles, tuiKey{Kind: keyDown}, tuiEnter) // open src/a.go
+	tuiDrainJobs(t, m, c)
 	if !c.sent("files.read", `"path":"src/a.go"`) || st.preview == nil {
 		t.Fatalf("enter on a file did not open its preview; calls: %+v", c.calls)
 	}
@@ -321,6 +379,7 @@ func TestTUIViewFilesExpandPreviewAndSearch(t *testing.T) {
 	tuiKeys(t, m, tuiViewFiles, tuiRunes("/")...)
 	tuiKeys(t, m, tuiViewFiles, tuiRunes("a.go")...)
 	tuiKeys(t, m, tuiViewFiles, tuiEnter)
+	tuiDrainJobs(t, m, c)
 	if !c.sent("files.search", `"query":"a.go"`) || len(st.search) != 1 {
 		t.Fatalf("search did not run; search=%v calls=%+v", st.search, c.calls)
 	}
@@ -331,6 +390,7 @@ func TestTUIViewReviewCommentsTheDiffLineUnderTheCursor(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewReview
 	tuiViewOf(t, tuiViewReview).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiReviewOf(m)
 
 	idx := -1
@@ -357,6 +417,7 @@ func TestTUIViewReviewSubmitNeedsASecondPress(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewReview
 	tuiViewOf(t, tuiViewReview).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiReviewOf(m)
 
 	tuiKeys(t, m, tuiViewReview, tuiRunes("s")...)
@@ -377,6 +438,7 @@ func TestTUIViewRemoteNeverShowsThePairingQR(t *testing.T) {
 	c := &tuiFakeCaller{replies: replies}
 	m.view = tuiViewRemote
 	tuiViewOf(t, tuiViewRemote).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 
 	if out := render(m, 80, 24); strings.Contains(out, "SECRET-PAIR-CODE") {
 		t.Fatal("the pairing QR leaked into the remote view")
@@ -412,6 +474,7 @@ func TestTUIViewWorktreesRemoveNeedsASecondPress(t *testing.T) {
 	c := &tuiFakeCaller{replies: tuiViewReplies()}
 	m.view = tuiViewWorktrees
 	tuiViewOf(t, tuiViewWorktrees).Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
 	st := tuiWorktreesOf(m)
 
 	tuiKeys(t, m, tuiViewWorktrees, tuiRunes("x")...)
@@ -580,6 +643,175 @@ func TestTUIViewIssuesDropsStaleFoldWhenProjectFocusMoved(t *testing.T) {
 	}
 	if !c.sent("issues.list", `"projectId":"p2"`) {
 		t.Fatalf("p2 never got its own fetch; calls: %+v", c.calls)
+	}
+}
+
+// TestTUIViewLoadNeverCallsTheDaemonOnTheLoop holds every registered view's
+// daemon calls behind a gate. Load must return with a fetch queued and no call
+// made from the loop.
+func TestTUIViewLoadNeverCallsTheDaemonOnTheLoop(t *testing.T) {
+	for _, v := range tuiViewRegistry {
+		m := tuiViewModel()
+		m.view = v.ID
+		g := newTuiGateCaller(t)
+		tuiOffLoop(t, g, func() { v.Load(context.Background(), g, m) })
+		if jobs := m.takeJobs(); len(jobs) == 0 {
+			t.Errorf("view %s: Load queued no background job", v.ID)
+		}
+	}
+}
+
+// TestTUIViewKeysNeverCallTheDaemonOnTheLoop presses the keys that used to call
+// the daemon inline. Each key must return with its work queued, and the result
+// must land once the daemon answers.
+func TestTUIViewKeysNeverCallTheDaemonOnTheLoop(t *testing.T) {
+	cases := []struct {
+		name  string
+		view  string
+		setup []tuiKey // keys pressed before the probe, so its target exists
+		probe tuiKey
+		check func(t *testing.T, m *tuiModel, g *tuiGateCaller)
+	}{
+		{
+			name:  "files preview",
+			view:  tuiViewFiles,
+			setup: []tuiKey{tuiEnter, {Kind: keyDown}}, // expand src, move onto src/a.go
+			probe: tuiEnter,
+			check: func(t *testing.T, m *tuiModel, g *tuiGateCaller) {
+				if tuiFilesOf(m).preview == nil || !g.sent("files.read", `"path":"src/a.go"`) {
+					t.Fatalf("the preview never landed; calls: %+v", g.calls)
+				}
+			},
+		},
+		{
+			name:  "master conversation",
+			view:  tuiViewMaster,
+			probe: tuiEnter,
+			check: func(t *testing.T, m *tuiModel, g *tuiGateCaller) {
+				if st := tuiMasterOf(m); !st.inChat || st.chatID != "c1" {
+					t.Fatalf("the transcript never opened (inChat=%v chat=%q)", st.inChat, st.chatID)
+				}
+			},
+		},
+		{
+			name:  "settings toggle",
+			view:  tuiViewSettings,
+			probe: tuiEnter,
+			check: func(t *testing.T, m *tuiModel, g *tuiGateCaller) {
+				tuiWaitIdle(t, &tuiSettingsOf(m).tuiBase)
+				if !g.sent("settings.set", `"autoMode":true`) {
+					t.Fatalf("the toggle never reached settings.set; calls: %+v", g.calls)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tuiViewModel()
+			m.view = tc.view
+			plain := &tuiFakeCaller{replies: tuiViewReplies()}
+			tuiViewOf(t, tc.view).Load(context.Background(), plain, m)
+			tuiDrainJobs(t, m, plain)
+			tuiKeys(t, m, tc.view, tc.setup...)
+			tuiDrainJobs(t, m, plain)
+
+			// The session binds its client on every Load, and run uses that binding,
+			// so one more Load points the view at the gated caller before the probe.
+			g := newTuiGateCaller(t)
+			tuiViewOf(t, tc.view).Load(context.Background(), g, m)
+			tuiOffLoop(t, g, func() { tuiKeys(t, m, tc.view, tc.probe) })
+
+			g.open()
+			tuiDrainJobs(t, m, g)
+			tc.check(t, m, g)
+		})
+	}
+}
+
+// TestTUIViewFilesDropsStaleFoldWhenThreadFocusMoved is the files twin of the PR
+// stale-fold test: a tree fetched for one thread must not land after the focus
+// moved to another.
+func TestTUIViewFilesDropsStaleFoldWhenThreadFocusMoved(t *testing.T) {
+	m := tuiViewModel()
+	m.setList([]psRow{
+		{thread: threadListRow{ID: "t1", ProjectID: "p1", Title: "one"}, project: "proj"},
+		{thread: threadListRow{ID: "t2", ProjectID: "p2", Title: "two"}, project: "other"},
+	})
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewFiles
+	v := tuiViewOf(t, tuiViewFiles)
+	v.Load(context.Background(), c, m) // queues the tree for t1
+	jobs := m.takeJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("the first load queued %d jobs, want 1", len(jobs))
+	}
+
+	m.cursor = 1
+	v.Load(context.Background(), c, m) // focus moves to t2 while t1's tree is in flight
+	st := tuiFilesOf(m)
+	if st.threadID != "t2" {
+		t.Fatalf("focus did not move to t2: %q", st.threadID)
+	}
+
+	apply := jobs[0](context.Background(), c)
+	if !c.sent("files.tree", `"threadId":"t1"`) {
+		t.Fatalf("the in-flight fetch did not call files.tree for t1; calls: %+v", c.calls)
+	}
+	apply(m)
+	if st.root != nil || st.marks != nil {
+		t.Fatalf("t1's tree landed after focus moved to t2: %+v", st.root)
+	}
+
+	v.Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
+	if len(st.root) == 0 {
+		t.Fatal("the matching fold for t2's tree did not land")
+	}
+	if !c.sent("files.tree", `"threadId":"t2"`) {
+		t.Fatalf("t2 never got its own tree; calls: %+v", c.calls)
+	}
+}
+
+// TestTUIViewReviewDropsStaleFoldWhenThreadFocusMoved is the review twin: a diff
+// fetched for one thread must not land after the focus moved to another.
+func TestTUIViewReviewDropsStaleFoldWhenThreadFocusMoved(t *testing.T) {
+	m := tuiViewModel()
+	m.setList([]psRow{
+		{thread: threadListRow{ID: "t1", ProjectID: "p1", Title: "one"}, project: "proj"},
+		{thread: threadListRow{ID: "t2", ProjectID: "p2", Title: "two"}, project: "other"},
+	})
+	c := &tuiFakeCaller{replies: tuiViewReplies()}
+	m.view = tuiViewReview
+	v := tuiViewOf(t, tuiViewReview)
+	v.Load(context.Background(), c, m) // queues the diff for t1
+	jobs := m.takeJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("the first load queued %d jobs, want 1", len(jobs))
+	}
+
+	m.cursor = 1
+	v.Load(context.Background(), c, m) // focus moves to t2 while t1's diff is in flight
+	st := tuiReviewOf(m)
+	if st.threadID != "t2" {
+		t.Fatalf("focus did not move to t2: %q", st.threadID)
+	}
+
+	apply := jobs[0](context.Background(), c)
+	if !c.sent("review.diff", `"threadId":"t1"`) {
+		t.Fatalf("the in-flight fetch did not call review.diff for t1; calls: %+v", c.calls)
+	}
+	apply(m)
+	if len(st.rows) != 0 || st.open != 0 {
+		t.Fatalf("t1's diff landed after focus moved to t2: rows=%d open=%d", len(st.rows), st.open)
+	}
+
+	v.Load(context.Background(), c, m)
+	tuiDrainJobs(t, m, c)
+	if len(st.rows) == 0 || st.open != 1 {
+		t.Fatalf("the matching fold for t2's diff did not land: rows=%d open=%d", len(st.rows), st.open)
+	}
+	if !c.sent("review.diff", `"threadId":"t2"`) {
+		t.Fatalf("t2 never got its own diff; calls: %+v", c.calls)
 	}
 }
 
