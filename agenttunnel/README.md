@@ -156,7 +156,9 @@ you are in another window. A light terminal gets a light palette, and the
 theme picked in the desktop app lends its accent color. URLs in replies and on
 the PR and issue tabs are clickable in terminals that support OSC 8 links.
 Started inside a registered project, `agenttunnel tui` opens a new thread
-there; one you never type in is discarded when you leave.
+there; one you never type in is discarded when you leave. Started in a git
+repository that is not a project yet, it asks whether to add it (never in your
+home directory, and never without asking).
 
 Tests:
 

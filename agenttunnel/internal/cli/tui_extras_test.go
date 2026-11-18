@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -246,4 +249,200 @@ func TestTUISessionResyncsAfterDroppedFrames(t *testing.T) {
 	run.c.dropped.Add(1) // as if the read loop had discarded a frame
 	waitMoreCalls(t, s, "thread.subscribe", before)
 	run.term.waitNextDraw(t, containsLine("missed while behind"))
+}
+
+// deadlineCaller answers every call and records whether its context had a
+// deadline, so a test can see a request is bounded without waiting one out.
+type deadlineCaller struct {
+	bounded bool
+	reply   string
+}
+
+func (d *deadlineCaller) Call(ctx context.Context, _ string, _, out any) error {
+	_, d.bounded = ctx.Deadline()
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal([]byte(d.reply), out)
+}
+
+// The update check goes to the network, so it is bounded like every other
+// background request, and a failed one frees the next check.
+func TestTUIRemoteUpdateCheckIsBounded(t *testing.T) {
+	tuiTestRegistry(t, tuiViewOf(t, tuiViewRemote))
+	m := tuiViewModel()
+	st := tuiRemoteOf(m)
+	st.startUpdateCheck(m, true)
+	jobs := m.takeJobs()
+	if len(jobs) != 1 {
+		t.Fatalf("the check queued %d jobs", len(jobs))
+	}
+	c := &deadlineCaller{reply: `{"current":"v1","latest":"v1","enabled":true}`}
+	jobs[0](context.Background(), c)(m)
+	if !c.bounded {
+		t.Fatal("the update check ran without a deadline")
+	}
+	if st.checkBusy {
+		t.Fatal("a finished check left the view busy")
+	}
+}
+
+// A preview or search that lands after Esc, or after a newer request, must not
+// reopen what the user closed or replace what they asked for last.
+func TestTUIFilesDropsRepliesAfterAClose(t *testing.T) {
+	m := tuiViewModel()
+	st := tuiFilesOf(m)
+	st.threadID = "t1"
+	read := &tuiFakeCaller{replies: map[string]string{"files.read": `{"path":"a.go","text":"package a"}`}}
+	search := &tuiFakeCaller{replies: map[string]string{"files.search": `{"matches":[{"path":"a.go"}]}`}}
+	key := func(k tuiKey) { st.key(m, k) }
+
+	// Open a file, then Esc out of it before the read comes back.
+	st.open(m, "a.go")
+	st.preview = &tuiFileRead{Path: "a.go"}
+	key(tuiKey{Kind: keyEsc})
+	tuiDrainJobs(t, m, read)
+	if st.preview != nil {
+		t.Fatal("a preview reply reopened a file the user had closed")
+	}
+
+	// Two searches in a row: only the newer one may land.
+	st.runSearch(m, "old")
+	st.runSearch(m, "new")
+	jobs := m.takeJobs()
+	if len(jobs) != 2 {
+		t.Fatalf("queued %d searches", len(jobs))
+	}
+	jobs[1](context.Background(), search)(m) // the newer reply is quicker
+	jobs[0](context.Background(), search)(m) // the older one straggles in
+	if st.query != "new" {
+		t.Fatalf("query = %q, want the newer search to stay", st.query)
+	}
+
+	// Esc clears a search; a straggler must not bring it back.
+	st.runSearch(m, "late")
+	late := m.takeJobs()
+	key(tuiKey{Kind: keyEsc})
+	late[0](context.Background(), search)(m)
+	if st.search != nil || st.searched {
+		t.Fatal("a search reply landed after Esc cleared the search")
+	}
+}
+
+// The latest conversation the user asked for opens, however the replies are
+// ordered.
+func TestTUIMasterLatestOpenWins(t *testing.T) {
+	m := tuiViewModel()
+	st := tuiMasterOf(m)
+	a := &tuiFakeCaller{replies: map[string]string{"master.history.open": `{"id":"a","title":"A"}`}}
+	b := &tuiFakeCaller{replies: map[string]string{"master.history.open": `{"id":"b","title":"B"}`}}
+	st.open(m, "a")
+	st.open(m, "b")
+	jobs := m.takeJobs()
+	jobs[1](context.Background(), b)(m)
+	jobs[0](context.Background(), a)(m) // the first, slower reply
+	if st.chatID != "b" || st.chatName != "B" {
+		t.Fatalf("chat = %q (%q), want the second request to win", st.chatID, st.chatName)
+	}
+
+	// And in the other order, the older reply never opens anything.
+	st.inChat, st.chatID = false, ""
+	st.open(m, "a")
+	st.open(m, "b")
+	jobs = m.takeJobs()
+	jobs[0](context.Background(), a)(m)
+	if st.inChat {
+		t.Fatal("a superseded open landed")
+	}
+	jobs[1](context.Background(), b)(m)
+	if st.chatID != "b" {
+		t.Fatalf("chat = %q, want b", st.chatID)
+	}
+}
+
+// Outside every project, in a git repository, the TUI asks before adding the
+// folder, and does nothing elsewhere: not outside a repository, not in $HOME.
+func TestTUIOffersTheCurrentFolderOnlyInARepository(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := newTuiModel(tuiTestClock())
+	m.cwd = repo
+	m.offerHere()
+	if m.dialog == nil || !strings.Contains(m.dialog.title, "as a project") {
+		t.Fatalf("no offer inside a repository: %+v", m.dialog)
+	}
+
+	for name, dir := range map[string]string{"outside a repository": t.TempDir(), "the home directory": t.TempDir()} {
+		m := newTuiModel(tuiTestClock())
+		m.cwd = dir
+		if name == "the home directory" {
+			t.Setenv("HOME", dir)
+			if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		m.offerHere()
+		if m.dialog != nil {
+			t.Fatalf("offered a project for %s", name)
+		}
+	}
+}
+
+// Saying yes adds the folder as a project and opens a fresh thread in it,
+// without the read mark that would save it; saying no does nothing.
+func TestTUISessionAddsTheCurrentFolderWhenAsked(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := tuiServer("th_1", "idle")
+	s.results["project.list"] = []projectsRow{}
+	s.results["project.create"] = map[string]any{"project": map[string]any{"id": "prj_new", "name": filepath.Base(repo), "path": repo}}
+	s.results["thread.create"] = map[string]any{"threadId": "th_new"}
+	s.results["thread.list"] = []threadListRow{{ID: "th_new", Title: "New thread", ProjectID: "prj_new", UpdatedAt: time.Now()}}
+	s.results["thread.get"] = map[string]any{"version": 0}
+	s.results["thread.delete"] = map[string]any{"ok": true}
+	run := startTuiSession(t, s, "", newFakeTuiTerm(100, 30), nil, repo)
+
+	frame := run.term.waitNextDraw(t, containsLine("as a project?"))
+	if !strings.Contains(frame, "Not now") {
+		t.Fatalf("the offer has no way to decline:\n%s", frame)
+	}
+	if tuiCallCount(s, "project.create") != 0 {
+		t.Fatal("the folder was added before the user answered")
+	}
+	run.keys <- tuiKey{Kind: keyEnter} // the first choice: yes
+	var created map[string]string
+	if err := json.Unmarshal(s.waitCall(t, "project.create").params, &created); err != nil || created["path"] != repo {
+		t.Fatalf("project.create params = %v (%v)", created, err)
+	}
+	run.term.waitNextDraw(t, containsLine("New thread"))
+	var made map[string]string
+	if err := json.Unmarshal(s.waitCall(t, "thread.create").params, &made); err != nil || made["projectId"] != "prj_new" {
+		t.Fatalf("thread.create params = %v (%v)", made, err)
+	}
+	if tuiCallCount(s, "thread.markSeen") != 0 {
+		t.Fatal("opening the fresh thread marked it read, which would have saved it")
+	}
+}
+
+func TestTUISessionDecliningTheOfferChangesNothing(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := tuiServer("th_1", "idle")
+	s.results["project.list"] = []projectsRow{}
+	run := startTuiSession(t, s, "", newFakeTuiTerm(100, 30), nil, repo)
+	run.term.waitNextDraw(t, containsLine("as a project?"))
+	run.keys <- tuiKey{Kind: keyDown}
+	run.keys <- tuiKey{Kind: keyEnter} // Not now
+	run.term.waitNextDraw(t, func(f string) bool {
+		return !strings.Contains(f, "as a project?") && strings.Contains(f, "the tui job")
+	})
+	if tuiCallCount(s, "project.create") != 0 || tuiCallCount(s, "thread.create") != 0 {
+		t.Fatal("declining still created something")
+	}
 }

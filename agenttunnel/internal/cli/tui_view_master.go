@@ -49,6 +49,10 @@ type tuiMasterState struct {
 	messages []tuiMasterMessage
 	// scroll is how many transcript rows the view sits above the newest one.
 	scroll int
+	// opens numbers the requests that open a chat; the latest one wins, so
+	// pressing Enter on a second conversation before the first loads opens
+	// the second, not whichever reply is quicker.
+	opens int
 }
 
 func tuiMasterOf(m *tuiModel) *tuiMasterState {
@@ -92,6 +96,8 @@ func (st *tuiMasterState) fetchJob() tuiJob {
 // and the chat only opens if the list is still showing when it lands.
 func (st *tuiMasterState) open(m *tuiModel, id string) {
 	base := &st.tuiBase
+	st.opens++
+	opens := st.opens
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
 		var d tuiMasterDetail
 		if err := c.Call(ctx, "master.history.open", map[string]string{"threadId": id}, &d); err != nil {
@@ -99,8 +105,8 @@ func (st *tuiMasterState) open(m *tuiModel, id string) {
 		}
 		return func(m *tuiModel) {
 			st := tuiMasterOf(m)
-			if st.inChat {
-				return // the user opened another chat meanwhile
+			if st.opens != opens {
+				return // a newer open or a new conversation took over
 			}
 			st.chatID, st.chatName, st.messages = id, d.Title, d.Messages
 			st.inChat, st.scroll = true, 0
@@ -112,6 +118,8 @@ func (st *tuiMasterState) open(m *tuiModel, id string) {
 // opens it, then reloads the list.
 func (st *tuiMasterState) newConversation(m *tuiModel) {
 	base := &st.tuiBase
+	st.opens++
+	opens := st.opens
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
 		var d tuiMasterDetail
 		if err := c.Call(ctx, "master.history.new", map[string]string{"title": ""}, &d); err != nil {
@@ -119,8 +127,8 @@ func (st *tuiMasterState) newConversation(m *tuiModel) {
 		}
 		return func(m *tuiModel) {
 			st := tuiMasterOf(m)
-			if st.inChat {
-				return // the user opened another chat meanwhile
+			if st.opens != opens {
+				return // a newer open or a new conversation took over
 			}
 			st.chatID, st.chatName, st.messages = d.ID, d.Title, nil
 			st.inChat, st.scroll = true, 0

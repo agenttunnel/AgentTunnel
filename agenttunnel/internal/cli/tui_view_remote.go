@@ -92,6 +92,10 @@ func (st *tuiRemoteState) startUpdateCheck(m *tuiModel, force bool) {
 	st.mu.Unlock()
 	base := &st.tuiBase
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		// The release feed can hang; a check that never answers must not leave
+		// the view saying it is checking, or refuse every later one.
+		ctx, cancel := context.WithTimeout(ctx, tuiCallTimeout)
+		defer cancel()
 		var up tuiUpdateStatus
 		err := c.Call(ctx, "update.check", nil, &up)
 		return func(m *tuiModel) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -165,11 +166,16 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			}
 			return err
 		}
-	} else if opened, err := tuiOpenHere(ctx, c, m); err == nil && opened != nil {
+	} else if opened, err := tuiOpenHere(ctx, c, m); err != nil {
+		// Failing to make a thread is no reason not to start; the list is
+		// still there.
+	} else if opened != nil {
 		// Started inside a project with no thread named: a new thread there
-		// is on screen, composer ready. Failing to make one is no reason not
-		// to start; the list is still there.
+		// is on screen, composer ready.
 		tracker = opened
+	} else {
+		// Not inside any project: offer this folder as one, and ask.
+		m.offerHere()
 	}
 
 	// events is the live stream; it is nil while the connection is down.
@@ -875,6 +881,64 @@ func tuiOpenHere(ctx context.Context, c *Client, m *tuiModel) (*turnTracker, err
 	return tracker, nil
 }
 
+// offerHere asks whether to add the folder the TUI was started in as a
+// project, and on a yes opens a new thread in it. The TUI never registers a
+// project unasked, so this is a question, not a default. It asks only inside a
+// git repository, and never for the home directory, so starting the TUI
+// anywhere else is not met with a prompt.
+func (m *tuiModel) offerHere() {
+	cwd := m.cwd
+	if cwd == "" || !tuiInRepo(cwd) || tuiIsHome(cwd) {
+		return
+	}
+	name := filepath.Base(cwd)
+	m.openPicker("add "+name+" as a project?", []tuiPickItem{
+		{"Yes, work in " + cwd, "yes"},
+		{"Not now", ""},
+	}, func(m *tuiModel, answer string) {
+		if answer != "yes" {
+			return
+		}
+		m.startJob(tuiCreateProjectJob(name, cwd, func(m *tuiModel, projectID string) {
+			m.startJob(tuiHereJob(projectID))
+		}))
+	})
+}
+
+// tuiInRepo reports whether dir is inside a git repository.
+func tuiInRepo(dir string) bool {
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return true
+		}
+		if filepath.Dir(d) == d {
+			return false
+		}
+	}
+}
+
+// tuiIsHome reports whether dir is the user's home directory.
+func tuiIsHome(dir string) bool {
+	home, err := os.UserHomeDir()
+	return err == nil && tuiRealPath(home) == tuiRealPath(dir)
+}
+
+// tuiHereJob makes a new thread in a project the TUI just added and asks the
+// loop to open it as the fresh thread: nothing is saved until the user types.
+func tuiHereJob(projectID string) tuiJob {
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		var created struct {
+			ThreadID string `json:"threadId"`
+		}
+		if err := c.Call(ctx, "thread.create", map[string]string{"projectId": projectID}, &created); err != nil {
+			return tuiNote("", "thread.create: "+err.Error())
+		}
+		return func(m *tuiModel) {
+			m.fresh, m.openID, m.refresh = created.ThreadID, created.ThreadID, true
+		}
+	}
+}
+
 // tuiDiscardCall deletes a thread only if nothing was ever recorded in it: a
 // version of zero is a thread that lives in the daemon's memory alone, which
 // deleting simply forgets. Anything the user did keeps the thread.
@@ -971,6 +1035,11 @@ func tuiOpenByID(ctx context.Context, c *Client, m *tuiModel, id string) (*turnT
 	row, err := resolveThreadRow(ctx, c, id)
 	if err != nil {
 		return nil, err
+	}
+	if id == m.fresh {
+		// A thread the TUI made for the folder it started in is not marked
+		// read: that mark is itself something done, which would save it.
+		return tuiShowThread(ctx, c, m, row, tuiProjectLabel(ctx, c, row))
 	}
 	return tuiOpenThread(ctx, c, m, row, tuiProjectLabel(ctx, c, row))
 }

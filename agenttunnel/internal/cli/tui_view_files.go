@@ -57,6 +57,11 @@ type tuiFilesState struct {
 	// preview is the open file, or nil. scroll is its line offset.
 	preview *tuiFileRead
 	scroll  int
+	// gen numbers the preview and search requests: each one, and each way of
+	// closing what they open, moves it on, and a result lands only if its
+	// request is still the latest. A reply that arrives after Esc, or after a
+	// newer search, is dropped instead of reopening what the user closed.
+	gen int
 }
 
 func tuiFilesOf(m *tuiModel) *tuiFilesState {
@@ -124,6 +129,8 @@ func (st *tuiFilesState) listLen() int {
 func (st *tuiFilesState) open(m *tuiModel, path string) {
 	id := st.threadID
 	base := &st.tuiBase
+	st.gen++
+	gen := st.gen
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
 		var read tuiFileRead
 		if err := c.Call(ctx, "files.read", map[string]string{"threadId": id, "path": path}, &read); err != nil {
@@ -131,8 +138,8 @@ func (st *tuiFilesState) open(m *tuiModel, path string) {
 		}
 		return func(m *tuiModel) {
 			st := tuiFilesOf(m)
-			if st.threadID != id {
-				return // the user focused another thread meanwhile
+			if st.threadID != id || st.gen != gen {
+				return // another thread, or a newer request or a close, meanwhile
 			}
 			st.preview, st.scroll = &read, 0
 		}
@@ -143,6 +150,8 @@ func (st *tuiFilesState) open(m *tuiModel, path string) {
 func (st *tuiFilesState) runSearch(m *tuiModel, query string) {
 	id := st.threadID
 	base := &st.tuiBase
+	st.gen++
+	gen := st.gen
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
 		var reply struct {
 			Matches []tuiFileMatch `json:"matches"`
@@ -156,8 +165,8 @@ func (st *tuiFilesState) runSearch(m *tuiModel, query string) {
 		}
 		return func(m *tuiModel) {
 			st := tuiFilesOf(m)
-			if st.threadID != id {
-				return // the user focused another thread meanwhile
+			if st.threadID != id || st.gen != gen {
+				return // another thread, or a newer request or a close, meanwhile
 			}
 			st.query, st.search, st.searched, st.cursor = query, matches, true, 0
 		}
@@ -285,6 +294,7 @@ func (st *tuiFilesState) key(m *tuiModel, k tuiKey) bool {
 			st.ed.text = nil
 			if query == "" {
 				st.search, st.searched, st.query = nil, false, ""
+				st.gen++
 			} else {
 				st.runSearch(m, query)
 			}
@@ -298,12 +308,14 @@ func (st *tuiFilesState) key(m *tuiModel, k tuiKey) bool {
 		}
 		if k.Kind == keyEsc || k.Kind == keyEnter || (k.Kind == keyRune && k.Rune == 'h') {
 			st.preview = nil
+			st.gen++
 			return true
 		}
 		return false
 	}
 	if k.Kind == keyEsc && st.searched {
 		st.search, st.searched, st.query, st.cursor = nil, false, "", 0
+		st.gen++
 		return true
 	}
 	if step := tuiNav(k, 10); step != 0 {
