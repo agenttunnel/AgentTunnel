@@ -4,6 +4,7 @@ import { threadSearchScore } from "../lib/threads";
 
 /** One group of the super view: threads sharing a lifecycle state. */
 export type SuperGroups = {
+  attention: ThreadSummary[];
   running: ThreadSummary[];
   unseen: ThreadSummary[];
   quiet: ThreadSummary[];
@@ -11,8 +12,9 @@ export type SuperGroups = {
 
 /**
  * groupSuperThreads splits the daemon-wide thread list into the super view's
- * three groups: threads with live agents, threads whose newest completed turn
- * ended after the last view, and everything else. Archived threads stay out.
+ * groups, the ones that need you first: threads with an agent question waiting
+ * on you, threads with live agents, threads whose newest completed turn ended
+ * after the last view, and everything else. Archived threads stay out.
  * Each group sorts by recency (updatedAt desc) unless the caller already ranked
  * the list for a search. Pure, so it is smoke-testable without React.
  */
@@ -20,17 +22,19 @@ export function groupSuperThreads(
   threads: ThreadSummary[],
   preserveOrder = false,
 ): SuperGroups {
-  const out: SuperGroups = { running: [], unseen: [], quiet: [] };
+  const out: SuperGroups = { attention: [], running: [], unseen: [], quiet: [] };
   for (const t of threads) {
     if (t.archived) continue;
     const running = (t.runningAgents ?? 0) > 0;
-    if (running) out.running.push(t);
+    if ((t.pendingQuestions ?? 0) > 0) out.attention.push(t);
+    else if (running) out.running.push(t);
     else if (t.unseen) out.unseen.push(t);
     else out.quiet.push(t);
   }
   if (!preserveOrder) {
     const byRecency = (a: ThreadSummary, b: ThreadSummary) =>
       (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    out.attention.sort(byRecency);
     out.running.sort(byRecency);
     out.unseen.sort(byRecency);
     out.quiet.sort(byRecency);
@@ -59,6 +63,26 @@ export function isAllThreadsShortcut(e: KeyboardEvent): boolean {
   return e.altKey || e.getModifierState("Fn");
 }
 
+/** A row's live state: questions waiting on you, then running agents. */
+function ThreadState({ t }: { t: ThreadSummary }) {
+  const asks = t.pendingQuestions ?? 0;
+  const running = t.runningAgents ?? 0;
+  return (
+    <>
+      {asks > 0 && (
+        <span className="super-state ask" title="Agent questions waiting on you">
+          ? {asks} {asks === 1 ? "question" : "questions"}
+        </span>
+      )}
+      {running > 0 && (
+        <span className="super-state run" title="Agents running now">
+          {running} running
+        </span>
+      )}
+    </>
+  );
+}
+
 type GroupSpec = {
   key: keyof SuperGroups;
   title: string;
@@ -67,6 +91,7 @@ type GroupSpec = {
 };
 
 const GROUPS: GroupSpec[] = [
+  { key: "attention", title: "Needs you", empty: "", dot: "attention" },
   { key: "running", title: "Running", empty: "No threads are running.", dot: "running" },
   { key: "unseen", title: "Finished, not seen yet", empty: "You've seen every finished thread.", dot: "succeeded" },
   { key: "quiet", title: "Quiet", empty: "Nothing to show.", dot: "missing" },
@@ -117,7 +142,7 @@ export function SuperView({
     [matches, query],
   );
   const rows = useMemo(
-    () => [...groups.running, ...groups.unseen, ...groups.quiet],
+    () => [...groups.attention, ...groups.running, ...groups.unseen, ...groups.quiet],
     [groups],
   );
   // A search can hide the thread the cursor was on; fall back to the first row.
@@ -173,6 +198,7 @@ export function SuperView({
         <div className="sheet-head">
           <strong>All threads</strong>
           <span className="super-sub">
+            {groups.attention.length > 0 && `${groups.attention.length} ${groups.attention.length === 1 ? "needs" : "need"} you · `}
             {groups.running.length} running · {groups.unseen.length} unseen
           </span>
           <button onClick={onClose}>Close</button>
@@ -197,7 +223,8 @@ export function SuperView({
           )}
           {GROUPS.map((g) => {
             const groupRows = groups[g.key];
-            if (query !== "" && groupRows.length === 0) return null;
+            // "Needs you" shows only when something does.
+            if ((query !== "" || g.key === "attention") && groupRows.length === 0) return null;
             return (
               <section className="super-group" key={g.key}>
                 <h3 className="super-group-title">{g.title}</h3>
@@ -220,6 +247,7 @@ export function SuperView({
                         <span className="super-project">{names.get(t.projectId) ?? t.projectId}</span>
                       )}
                       {t.parentThreadId && <span className="super-parent">subthread</span>}
+                      <ThreadState t={t} />
                       <span className="super-meta">
                         {t.messages} messages · {t.agents} agents
                         {fmtDate(t.updatedAt) && ` · ${fmtDate(t.updatedAt)}`}

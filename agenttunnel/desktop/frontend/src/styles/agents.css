@@ -1,0 +1,654 @@
+/* Multi-agent views: the Agents panel tree, team progress, the agent sheet,
+   graph status, board dependencies, and the all-threads state chips.
+   Built on the base tokens in style.css; adds none of its own. Status always
+   pairs a color with a shape or a word. The one animation is the running
+   spinner (transform only, off under reduced motion). */
+
+/* --- phase glyph ------------------------------------------------------- */
+.ag-glyph {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--faint);
+  box-sizing: border-box;
+}
+.ag-glyph.ag-running {
+  border: 2px solid var(--warn-line);
+  border-top-color: var(--warn);
+  animation: ag-spin 0.9s linear infinite;
+}
+.ag-glyph.ag-waiting {
+  background: var(--agent);
+  color: var(--bg);
+}
+.ag-glyph.ag-blocked {
+  border: 1.5px dashed var(--warn);
+  color: var(--warn);
+  font-size: 7px;
+}
+.ag-glyph.ag-queued {
+  border: 1.5px solid var(--border-strong);
+  color: transparent;
+}
+.ag-glyph.ag-done {
+  background: var(--ok-soft);
+  border: 1px solid var(--ok-line);
+  color: var(--ok);
+}
+.ag-glyph.ag-failed {
+  background: var(--err-soft);
+  border: 1px solid var(--err-line);
+  color: var(--err);
+}
+.ag-glyph.ag-stopped {
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  width: 11px;
+  height: 11px;
+  font-size: 0;
+  background: var(--faint);
+  margin: 1.5px;
+}
+@keyframes ag-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ag-glyph.ag-running {
+    animation: none;
+    border-color: var(--warn);
+  }
+}
+
+.ag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px 2px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ag-badge.ag-running {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+.ag-badge.ag-waiting {
+  color: var(--agent);
+  border-color: var(--agent-line);
+}
+.ag-badge.ag-blocked {
+  color: var(--warn);
+  border-style: dashed;
+}
+.ag-badge.ag-done {
+  color: var(--ok);
+  border-color: var(--ok-line);
+}
+.ag-badge.ag-failed {
+  color: var(--err);
+  border-color: var(--err-line);
+}
+
+.ag-elapsed {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+/* --- Agents panel tree ------------------------------------------------- */
+.ag-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ag-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--r-lg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  outline: none;
+}
+.ag-row > .ag-glyph {
+  margin-top: 1px;
+}
+.ag-row:hover {
+  background: var(--panel);
+}
+.ag-row.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.ag-row:focus-visible {
+  border-color: var(--accent);
+}
+/* A thin guide line links a subagent to its parent's column. */
+.ag-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.ag-main {
+  flex: 1;
+  min-width: 0;
+}
+.ag-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.ag-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ag-role {
+  font-size: 10.5px;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+.ag-spacer {
+  flex: 1;
+}
+.ag-act {
+  font-size: 11.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.ag-row.ag-done .ag-act,
+.ag-row.ag-stopped .ag-act,
+.ag-row.ag-queued .ag-act {
+  color: var(--faint);
+}
+.ag-row.ag-blocked .ag-act {
+  color: var(--warn);
+}
+.ag-row.ag-failed .ag-act {
+  color: var(--err);
+}
+.ag-act.attn {
+  color: var(--agent);
+  font-weight: 600;
+}
+.ag-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--faint);
+  min-width: 0;
+}
+.ag-runtime {
+  font-family: var(--mono);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ag-usage {
+  margin-left: auto;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.ag-meta .stop-btn.mini {
+  flex: none;
+}
+.ag-keys {
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.ag-keys kbd {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  margin-right: 2px;
+}
+@media (hover: none) {
+  .ag-keys {
+    display: none;
+  }
+}
+
+/* --- team progress ----------------------------------------------------- */
+.team-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+button.team-progress {
+  cursor: pointer;
+}
+button.team-progress:hover {
+  background: var(--hover);
+}
+.section > .team-progress {
+  display: flex;
+  flex-wrap: wrap;
+  white-space: normal;
+  padding: 0 0 10px;
+}
+.tp-bar {
+  display: inline-flex;
+  width: 56px;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-3);
+  flex: none;
+}
+.tp-bar i {
+  display: block;
+  flex-basis: 0;
+}
+.tp-bar .seg-done {
+  background: var(--ok);
+}
+.tp-bar .seg-running {
+  background: var(--warn);
+}
+.tp-bar .seg-failed {
+  background: var(--err);
+}
+.tp-main {
+  color: var(--text);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+.tp-part {
+  font-variant-numeric: tabular-nums;
+}
+.tp-part.tp-running {
+  color: var(--warn);
+}
+.tp-part.tp-waiting {
+  color: var(--agent);
+  font-weight: 600;
+}
+.tp-part.tp-blocked {
+  color: var(--warn);
+}
+.tp-part.tp-failed {
+  color: var(--err);
+}
+.tp-part.tp-plan {
+  color: var(--faint);
+}
+/* The header copy is the summary; at narrow widths the bar and main count say it. */
+@media (max-width: 720px) {
+  .toggles .team-progress .tp-part {
+    display: none;
+  }
+}
+
+/* --- agent sheet ------------------------------------------------------- */
+.agent-sheet {
+  position: relative;
+  height: min(820px, 88vh);
+}
+.ad-head {
+  align-items: flex-start;
+}
+.ad-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ad-title-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.ad-title-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ad-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 10px 18px 0;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.ad-summary b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ad-now {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin: 10px 18px 0;
+  padding: 8px 10px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  font-size: 12px;
+  min-width: 0;
+}
+.ad-now.ag-waiting {
+  border-color: var(--agent-line);
+}
+.ad-now.ag-blocked {
+  border-color: var(--warn-line);
+  border-style: dashed;
+}
+.ad-now-k {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.ad-now-v {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ad-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 10px 18px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.ad-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 6px 10px 8px;
+  font-size: 12.5px;
+  color: var(--faint);
+  cursor: pointer;
+}
+.ad-tab:hover {
+  color: var(--text);
+}
+.ad-tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.ad-body {
+  flex: 1;
+  min-height: 0;
+}
+.ad-output {
+  padding-top: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.ad-earlier {
+  display: block;
+  margin: 0 auto 10px;
+  font-size: 11px;
+}
+.ad-resume {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 11.5px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  box-shadow: var(--shadow-float);
+  cursor: pointer;
+}
+.ad-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ad-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+.ad-link:hover {
+  border-color: var(--accent-line);
+}
+.ad-link-name {
+  font-weight: 600;
+  flex: none;
+}
+.ad-link-task {
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ad-blocked {
+  color: var(--warn);
+  text-transform: none;
+  letter-spacing: 0;
+}
+@media (max-width: 600px) {
+  .agent-sheet {
+    width: 100vw;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+  .ad-summary,
+  .ad-tabs {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .ad-now {
+    margin-left: 14px;
+    margin-right: 14px;
+  }
+}
+
+/* --- live log narrowed to one agent ------------------------------------ */
+.log-only {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  font-family: var(--sans);
+  font-size: 11.5px;
+}
+.log-only button {
+  font-size: 11px;
+  padding: 1px 8px;
+}
+
+/* --- board dependencies ------------------------------------------------ */
+.board-card.blocked {
+  border-style: dashed;
+}
+.board-card-deps .dep-ok {
+  color: var(--ok);
+}
+.board-card-deps .dep-wait {
+  color: var(--warn);
+}
+.board-card-top .ag-glyph {
+  margin-top: 1px;
+}
+
+/* --- all threads ------------------------------------------------------- */
+.dot.attention {
+  background: var(--agent);
+}
+.super-state {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.super-state.ask {
+  color: var(--agent);
+  border-color: var(--agent-line);
+}
+.super-state.run {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
+/* --- graph ------------------------------------------------------------- */
+.graph-fit-box {
+  position: relative;
+}
+.graph-canvas {
+  transform-origin: 0 0;
+}
+.graph-fit.on {
+  color: var(--dim);
+}
+.graph-legend .graph-reset + .graph-reset {
+  margin-left: 0;
+}
+.graph-node-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.graph-node-phase {
+  font-size: 10px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.graph-node.ag-running .graph-node-phase {
+  color: var(--warn);
+}
+.graph-node.ag-waiting .graph-node-phase {
+  color: var(--agent);
+  font-weight: 600;
+}
+.graph-node.ag-failed .graph-node-phase {
+  color: var(--err);
+}
+.graph-node.ag-done .graph-node-phase {
+  color: var(--ok);
+}
+/* Shape cues: waiting work is dashed, a failure gets a solid red edge, a
+   finished or stopped node steps back. */
+.graph-node.ag-queued,
+.graph-node.ag-blocked {
+  border-style: dashed;
+}
+.graph-node.ag-blocked {
+  border-color: var(--warn-line);
+}
+.graph-node.ag-failed {
+  border-color: var(--err-line);
+  box-shadow: inset 3px 0 0 var(--err);
+}
+.graph-node.ag-running {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.graph-node.ag-waiting {
+  border-color: var(--agent-line);
+  box-shadow: inset 3px 0 0 var(--agent);
+}
+/* Node opacity belongs to the enter animation (fill-mode both), so receding
+   nodes fade their content instead. */
+.graph-node.ag-stopped > * {
+  opacity: 0.7;
+}
+.graph-node.selected {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+.graph-node.dim {
+  border-color: var(--border-soft);
+  box-shadow: none;
+}
+.graph-node.dim > * {
+  opacity: 0.4;
+}
+.agent-sheet:focus {
+  outline: none;
+}
+.graph-spawn.lit,
+.graph-depends.lit {
+  stroke: var(--accent);
+  opacity: 1;
+}
+.graph-spawn.dim,
+.graph-depends.dim,
+.graph-pair.dim {
+  opacity: 0.25;
+}
