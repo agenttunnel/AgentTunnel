@@ -47,6 +47,8 @@ import {
   clampWidth,
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
+import { DrawerToggle } from "./components/DrawerToggle";
+import { useDrawers } from "./lib/useDrawers";
 import { PeerChat } from "./components/PeerChat";
 import { useHoldToTalk } from "./lib/dictation";
 import { KanbanBoard } from "./components/KanbanBoard";
@@ -970,6 +972,9 @@ export default function App() {
   // and drops the titlebar, project tabs, and side panes (Cmd/Ctrl+S).
   const [compact, setCompact] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
+  // Narrow windows turn the side panels into slide-over drawers; opening a
+  // thread closes them.
+  const drawers = useDrawers(shellRef, activeId);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   // The live log box can be collapsed to a header; the choice persists per viewer.
   const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
@@ -4050,7 +4055,7 @@ export default function App() {
   return (
     <DocLinkContext.Provider value={openChatDoc}>
     <div
-      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}`}
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}${drawers.className}`}
       ref={shellRef}
       style={
         {
@@ -4061,13 +4066,18 @@ export default function App() {
     >
       {titlebar}
       {projectTabs}
+      {drawers.open && <div className="drawer-scrim" onClick={drawers.close} aria-hidden="true" />}
 
-      <div className={`col sidebar${layout.sidebarOpen ? "" : " collapsed"}`}>
+      <div className={`col sidebar${layout.sidebarOpen || drawers.sidebarDrawer ? "" : " collapsed"}`}>
         <div className="col-head">
           <PanelToggle
             side="left"
-            open={layout.sidebarOpen}
-            onToggle={() => setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))}
+            open={layout.sidebarOpen || drawers.sidebarDrawer}
+            onToggle={() =>
+              drawers.sidebarDrawer
+                ? drawers.close()
+                : setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))
+            }
           />
           <button onClick={newThread}>New</button>
         </div>
@@ -4096,6 +4106,7 @@ export default function App() {
 
       <div className="col">
         <div className="chat-head">
+          <DrawerToggle side="sidebar" open={drawers.open === "sidebar"} onToggle={drawers.toggle} />
           <div className="tabs" role="tablist" aria-label="Thread view">
             <div
               className={`tab ${tab === "chat" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
@@ -4196,6 +4207,9 @@ export default function App() {
               <span className="sw" /> Peer chat
             </div>
           </div>
+          {!setupMode && (
+            <DrawerToggle side="aside" open={drawers.open === "aside"} onToggle={drawers.toggle} />
+          )}
         </div>
 
         {/* Kept mounted while hidden so unsaved buffers survive a tab switch.
@@ -4495,13 +4509,14 @@ export default function App() {
         onCommit={(px) => setLayout((l) => ({ ...l, asideW: px }))}
       />
 
-      <div className={`col aside${asideCollapsed ? " collapsed" : ""}`}>
+      <div className={`col aside${asideCollapsed && !drawers.asideDrawer ? " collapsed" : ""}`}>
         <div className="aside-tabs" role="tablist" aria-label="Thread details">
           <PanelToggle
             side="right"
-            open={!asideCollapsed}
+            open={!asideCollapsed || drawers.asideDrawer}
             onToggle={() => {
-              if (!setupMode) setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }));
+              if (drawers.asideDrawer) drawers.close();
+              else if (!setupMode) setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }));
             }}
           />
           {asideTabs.map((id) => (
