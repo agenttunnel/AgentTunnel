@@ -82,12 +82,8 @@ import { FolderBrowser } from "./components/FolderBrowser";
 import { useAttention } from "./lib/attention";
 import { useUrlRoute, type Route } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
-import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
-import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
-import type {
-  HarnessUpdateReport,
-  HarnessUpdateResult,
-} from "./lib/harnessUpdates";
+import { AppUpdate } from "./components/UpdateChip";
+import { HarnessUpdates } from "./components/HarnessUpdateChip";
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { getPref, setPref } from "./lib/prefs";
@@ -403,9 +399,6 @@ const WORKTREE_SCAN_RETRY_MS = 4_000;
 const WORKTREE_SCAN_TIMEOUT_MS = 90_000;
 const WORKTREE_SCAN_START_DELAY_MS = 2_500;
 const WORKTREE_SCAN_KEY = "at.worktreeScan";
-/** How often a connected app asks for a newer release. At this rate a client
- * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
-const UPDATE_CHECK_MS = 5 * 60_000;
 /** After a detached send, how long to wait for the turn to appear before
  * treating a busy flag with no visible turn as stale (the start failed before
  * any agent existed). */
@@ -879,28 +872,7 @@ export default function App() {
   // thread never shows another thread's messages.
   const threadCacheRef = useRef<Record<string, ThreadState>>({});
   const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
-  const [update, setUpdate] = useState<UpdateStatus | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes | null>(null);
-  const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
-  const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
-  const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
-  // A check keeps the "restart to run" state after an install; the daemon's
-  // plain check result does not know about it.
-  const checkForUpdate = useCallback(() => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    rpc
-      .call<UpdateStatus>("update.check")
-      .then((s) => setUpdate((prev) => (prev?.installed ? prev : s)))
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (status !== "online") return;
-    const id = window.setInterval(checkForUpdate, UPDATE_CHECK_MS);
-    return () => window.clearInterval(id);
-  }, [status, checkForUpdate]);
 
   // Threads with a turn, council, or review in flight. Keyed by thread so a turn
   // running in one thread never gates or steers another.
@@ -1258,38 +1230,6 @@ export default function App() {
   // and live log lines, but only a changed transcript regroups, so memoized
   // turns and their message rows stay untouched.
   const turnBlocks = useMemo(() => groupTurns(thread?.messages ?? []), [thread?.messages]);
-
-  const installUpdate = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setUpdateBusy(true);
-    setUpdateError(null);
-    try {
-      setUpdate(await rpc.call<UpdateStatus>("update.apply"));
-    } catch (e) {
-      setUpdateError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setUpdateBusy(false);
-    }
-  }, []);
-
-  const updateHarnesses = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setHarnessUpdateBusy(true);
-    setHarnessUpdateError(null);
-    try {
-      const res = await rpc.call<HarnessUpdateResult>("harness.update", { harnesses: [] });
-      setHarnessUpdates(res.report);
-      if (res.failed && res.failed.length > 0) {
-        setHarnessUpdateError(res.failed.map((f) => `${f.harness}: ${f.error}`).join("; "));
-      }
-    } catch (e) {
-      setHarnessUpdateError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setHarnessUpdateBusy(false);
-    }
-  }, []);
 
   const loadDiff = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
@@ -1907,8 +1847,7 @@ export default function App() {
       });
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
-      // Not awaited: a slow GitHub lookup must not hold up startup.
-      checkForUpdate();
+      // The titlebar's AppUpdate and HarnessUpdates check for updates themselves.
       // Read-and-clear on the daemon: a null answer means nothing is pending.
       rpc
         .call<ReleaseNotes | null>("update.takeReleaseNotes")
@@ -1916,7 +1855,6 @@ export default function App() {
           if (n && !cancelled) setReleaseNotes(n);
         })
         .catch(() => {});
-      rpc.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -3313,18 +3251,8 @@ export default function App() {
           </div>
         )}
       </div>
-      <UpdateChip
-        status={update}
-        busy={updateBusy}
-        error={updateError}
-        onInstall={installUpdate}
-      />
-      <HarnessUpdateChip
-        report={harnessUpdates}
-        busy={harnessUpdateBusy}
-        error={harnessUpdateError}
-        onUpdate={updateHarnesses}
-      />
+      <AppUpdate rpc={rpcRef.current} />
+      <HarnessUpdates rpc={rpcRef.current} />
       <button
         type="button"
         className="title-gear"

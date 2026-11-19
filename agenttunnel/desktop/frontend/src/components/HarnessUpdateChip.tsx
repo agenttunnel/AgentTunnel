@@ -1,5 +1,48 @@
+import { memo, useCallback, useEffect, useState } from "react";
 import { harnessName } from "../lib/limits";
-import { pendingUpdates, type HarnessUpdateReport } from "../lib/harnessUpdates";
+import {
+  pendingUpdates,
+  type HarnessUpdateReport,
+  type HarnessUpdateResult,
+} from "../lib/harnessUpdates";
+import type { Rpc } from "../lib/rpc";
+
+/** HarnessUpdates reads the harness update report once connected and runs
+ * the upgrade on click, holding its own state. */
+export const HarnessUpdates = memo(function HarnessUpdates({ rpc }: { rpc: Rpc | null }) {
+  const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
+  const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
+  const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
+  useEffect(() => {
+    rpc?.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
+  }, [rpc]);
+
+  const updateHarnesses = useCallback(async () => {
+    if (!rpc) return;
+    setHarnessUpdateBusy(true);
+    setHarnessUpdateError(null);
+    try {
+      const res = await rpc.call<HarnessUpdateResult>("harness.update", { harnesses: [] });
+      setHarnessUpdates(res.report);
+      if (res.failed && res.failed.length > 0) {
+        setHarnessUpdateError(res.failed.map((f) => `${f.harness}: ${f.error}`).join("; "));
+      }
+    } catch (e) {
+      setHarnessUpdateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHarnessUpdateBusy(false);
+    }
+  }, [rpc]);
+
+  return (
+    <HarnessUpdateChip
+      report={harnessUpdates}
+      busy={harnessUpdateBusy}
+      error={harnessUpdateError}
+      onUpdate={updateHarnesses}
+    />
+  );
+});
 
 interface Props {
   report: HarnessUpdateReport | null;
