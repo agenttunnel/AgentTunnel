@@ -133,6 +133,7 @@ import {
 import { useLatestCallback } from "./lib/store";
 import { LiveLog, StreamingReply } from "./components/LiveLog";
 import { InheritedPanel } from "./components/InheritedPanel";
+import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
 import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
 import { changesThreadList, foldThreadEvent, parseThreadEvent, stateVersion } from "./lib/threadFold";
 import { useAgentLog } from "./lib/useAgentLog";
@@ -281,14 +282,6 @@ export type Project = { id: string; name: string; path: string; threads: number 
 /** The top-level pages shown when no project is open. */
 type HomePage = "projects" | "orchestrator" | "worktrees" | "stats";
 
-/** One editable seat in the council sheet before it is convened. */
-type CouncilMemberRow = {
-  name: string;
-  role: string;
-  harness: string;
-  model: string;
-  perspective: string;
-};
 type DiffLine = { old?: number; new?: number; kind: string; text: string };
 type DiffFile = {
   path: string;
@@ -916,33 +909,6 @@ function useThreadScoped<T>(threadId: string | null, initial: T | (() => T), sto
   return [value, set, setFallback] as const;
 }
 
-const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } => ({
-  rounds: 2,
-  members: [
-    {
-      name: "planner",
-      role: "planner",
-      harness: "",
-      model: "",
-      perspective: "weigh architecture and long-term maintainability",
-    },
-    {
-      name: "executor",
-      role: "executor",
-      harness: "",
-      model: "",
-      perspective: "prize the simplest thing that actually ships",
-    },
-    {
-      name: "reviewer",
-      role: "reviewer",
-      harness: "",
-      model: "",
-      perspective: "hunt risk, edge cases, and hidden cost",
-    },
-  ],
-});
-
 // The jump-to-top pill appears once the stream is scrolled this far down.
 const TOP_SHOW = 240;
 
@@ -1147,21 +1113,6 @@ export default function App() {
   const [conn, setConn] = useState<Conn | null>(null);
   const [keepRunning, setKeepRunningState] = useState(false);
 
-  // Council of agents: convene several perspectives on one question and let
-  // them debate to a synthesized outcome.
-  // The topic is per thread; rounds and seats default globally and can be saved
-  // as the default for new threads.
-  const [councilTopic, setCouncilTopic] = useThreadScoped<string>(activeId, "");
-  const [councilSetup, setCouncilSetup, setCouncilSetupDefault] = useThreadScoped(
-    activeId,
-    defaultCouncilSetup,
-    "at.councilSetup",
-  );
-  const councilRounds = councilSetup.rounds;
-  const councilMembers = councilSetup.members;
-  const setCouncilRounds = (rounds: number) => setCouncilSetup((s) => ({ ...s, rounds }));
-  const setCouncilMembers = (update: (prev: CouncilMemberRow[]) => CouncilMemberRow[]) =>
-    setCouncilSetup((s) => ({ ...s, members: update(s.members) }));
   const [workdirInput, setWorkdirInput] = useState("");
   const [approvedModels, setApprovedModels] = useState<string[]>([]);
   const [staleAfterInput, setStaleAfterInput] = useState("30");
@@ -1480,7 +1431,7 @@ export default function App() {
   const openPanel = useCallback((id: AsideTabId) => {
     // Seeds the council topic from the draft.
     const draft = id === "council" ? draftText(draftKeyRef.current) : "";
-    if (draft) setCouncilTopic(draft);
+    if (draft) councilTopic.set(activeIdRef.current, draft);
     setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setAsideActive(id);
   }, []);
@@ -2756,24 +2707,33 @@ export default function App() {
 
   // Roles only offer enabled harnesses. A role already pointing at a disabled
   // harness keeps it as an option so its current value stays visible.
-  const harnessOptionsFor = (current: string): DropdownOption[] =>
-    harnesses.all
-      .filter((h) => isHarnessEnabled(h) || h === current)
-      .map((h) => ({
-        value: h,
-        label: isHarnessEnabled(h) ? h : `${h} (disabled)`,
-      }));
+  // Both change only with the harness list, so memoized panels re-render when it does.
+  const harnessOptionsFor = useCallback(
+    (current: string): DropdownOption[] => {
+      const enabled = harnesses.enabled ?? harnesses.all;
+      return harnesses.all
+        .filter((h) => enabled.includes(h) || h === current)
+        .map((h) => ({
+          value: h,
+          label: enabled.includes(h) ? h : `${h} (disabled)`,
+        }));
+    },
+    [harnesses],
+  );
 
-  const modelOptions = (harness: string, current: string): DropdownOption[] => {
-    const opts: DropdownOption[] = [{ value: "", label: "model (default)", group: "Default" }];
-    const list = harnesses.models?.[harness] ?? [];
-    const merged = current && !list.includes(current) ? [current, ...list] : list;
-    for (const m of merged) {
-      const slash = m.indexOf("/");
-      opts.push({ value: m, label: m, group: slash > 0 ? m.slice(0, slash) : "Other" });
-    }
-    return opts;
-  };
+  const modelOptions = useCallback(
+    (harness: string, current: string): DropdownOption[] => {
+      const opts: DropdownOption[] = [{ value: "", label: "model (default)", group: "Default" }];
+      const list = harnesses.models?.[harness] ?? [];
+      const merged = current && !list.includes(current) ? [current, ...list] : list;
+      for (const m of merged) {
+        const slash = m.indexOf("/");
+        opts.push({ value: m, label: m, group: slash > 0 ? m.slice(0, slash) : "Other" });
+      }
+      return opts;
+    },
+    [harnesses],
+  );
 
   const newThread = async () => {
     const rpc = rpcRef.current;
@@ -3062,16 +3022,13 @@ export default function App() {
     if (activeId) refresh(activeId).catch(() => undefined);
   };
 
-  const updateCouncilMember = (idx: number, patch: Partial<CouncilMemberRow>) => {
-    setCouncilMembers((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
-  };
-
   /** Convenes the council: members debate in parallel rounds, then a
    *  facilitator synthesizes the outcome into the thread. */
-  const startCouncil = async () => {
+  const startCouncil = useLatestCallback(async () => {
     const rpc = rpcRef.current;
-    const topic = councilTopic.trim();
     const threadId = activeId;
+    const topic = councilTopic.get(threadId).trim();
+    const { rounds: councilRounds, members: councilMembers } = councilSetup.get(threadId);
     if (!rpc || !threadId || !topic || turnThreads[threadId]) return;
     setInput("");
     setTurnBusy(threadId, true);
@@ -3094,7 +3051,7 @@ export default function App() {
       setTurnBusy(threadId, false);
       refresh(threadId).catch(() => undefined);
     }
-  };
+  });
 
   const addComment = async () => {
     const rpc = rpcRef.current;
@@ -3347,7 +3304,7 @@ export default function App() {
     setAsideTabsDefault(asideTabs);
     setAsideActiveDefault(asideActive);
     setLayoutDefault(layout);
-    setCouncilSetupDefault(councilSetup);
+    councilSetup.setDefault(councilSetup.get(activeId));
   };
 
   const openSettings = () => {
@@ -5586,121 +5543,15 @@ export default function App() {
             />
           </div>
         ) : asideActive === "council" ? (
-          <div className="section council-section">
-            {!activeId && <p className="hint">Open a thread to convene a council.</p>}
-            <div className="council-pane">
-              <label className="field">
-                <span>The question to debate</span>
-                <textarea
-                  rows={2}
-                  value={councilTopic}
-                  onChange={(e) => setCouncilTopic(e.target.value)}
-                  placeholder="e.g. Which approach should we take for the parser rewrite?"
-                />
-              </label>
-              <label className="field">
-                <span>
-                  Debate rounds — every member answers, then sees and challenges the table
-                </span>
-                <input
-                  type="number"
-                  min={1}
-                  max={4}
-                  value={councilRounds}
-                  onChange={(e) =>
-                    setCouncilRounds(Math.max(1, Math.min(4, Number(e.target.value) || 2)))
-                  }
-                  style={{ maxWidth: 100 }}
-                />
-              </label>
-              <div className="council-members">
-                <span className="field-label">Members</span>
-                {councilMembers.map((m, idx) => (
-                  <div className="council-member" key={idx}>
-                    <div className="cm-row">
-                      <input
-                        className="cm-name"
-                        value={m.name}
-                        onChange={(e) => updateCouncilMember(idx, { name: e.target.value })}
-                        placeholder="name"
-                        title="Seat name — how this member shows up in the debate"
-                      />
-                      <Dropdown
-                        value={m.role}
-                        options={roles.map((r) => ({ value: r.id, label: r.name }))}
-                        onChange={(v) => updateCouncilMember(idx, { role: v })}
-                      />
-                      <Dropdown
-                        value={m.harness}
-                        options={harnessOptionsFor(m.harness)}
-                        onChange={(v) => {
-                          updateCouncilMember(idx, { harness: v, model: "" });
-                          if (v) refreshModels(v).catch(() => undefined);
-                        }}
-                      />
-                      <Dropdown
-                        value={m.model}
-                        options={modelOptions(m.harness, m.model)}
-                        searchable
-                        placeholder="model (role default)"
-                        onRefresh={() => refreshModels(m.harness).catch(() => undefined)}
-                        onChange={(v) => updateCouncilMember(idx, { model: v })}
-                      />
-                      {councilMembers.length > 2 && (
-                        <button
-                          className="cm-remove"
-                          title="Remove this seat"
-                          onClick={() =>
-                            setCouncilMembers((prev) => prev.filter((_, i) => i !== idx))
-                          }
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                    <input
-                      className="cm-perspective"
-                      value={m.perspective}
-                      onChange={(e) => updateCouncilMember(idx, { perspective: e.target.value })}
-                      placeholder="Perspective this member argues from (optional)"
-                    />
-                  </div>
-                ))}
-                {councilMembers.length < 6 && (
-                  <button
-                    className="cm-add"
-                    onClick={() =>
-                      setCouncilMembers((prev) => [
-                        ...prev,
-                        {
-                          name: roles[prev.length % Math.max(1, roles.length)]?.id ?? "member",
-                          role: roles[prev.length % Math.max(1, roles.length)]?.id ?? "executor",
-                          harness: "",
-                          model: "",
-                          perspective: "",
-                        },
-                      ])
-                    }
-                  >
-                    + Add seat
-                  </button>
-                )}
-              </div>
-              <p className="hint">
-                Members run in parallel each round. A facilitator — who was not part of the debate —
-                writes the final consensus into this thread, with dissent recorded.
-              </p>
-              <div className="sheet-actions">
-                <button
-                  className="primary"
-                  disabled={!activeId || !councilTopic.trim() || councilMembers.length < 2 || busy}
-                  onClick={startCouncil}
-                >
-                  Convene council
-                </button>
-              </div>
-            </div>
-          </div>
+          <CouncilPanel
+            activeId={activeId}
+            roles={roles}
+            busy={busy}
+            harnessOptionsFor={harnessOptionsFor}
+            modelOptions={modelOptions}
+            refreshModels={refreshModels}
+            onStart={startCouncil}
+          />
         ) : (
           <>
             <div className="section diff-section">
