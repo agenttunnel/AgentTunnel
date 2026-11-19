@@ -80,7 +80,7 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
 import { useAttention } from "./lib/attention";
-import { useUrlRoute, type Route } from "./lib/route";
+import { parseRoute, useUrlRoute, type Route } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { AppUpdate } from "./components/UpdateChip";
 import { HarnessUpdates } from "./components/HarnessUpdateChip";
@@ -1871,7 +1871,10 @@ export default function App() {
         // Start at the projects screen; a thread is opened explicitly —
         // unless the app was launched as `agenttunnel <dir>`, which opens a
         // thread in that project right away.
-        if (conn.launchDir) {
+        // A web page opened on a thread or project path (a reload, a shared
+        // link) restores that place instead; the route resolves once loaded.
+        const deepLinked = !inDesktopShell() && parseRoute(window.location.pathname).kind !== "home";
+        if (conn.launchDir && !deepLinked) {
           const opened = await rpc.call<{
             threadId: string;
             projectId: string;
