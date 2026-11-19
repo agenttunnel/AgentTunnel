@@ -324,6 +324,34 @@ func threadStates(
 // openers are short, and the list is shipped whole on every state change.
 const maxSummaryPromptRunes = 200
 
+// blankThread finds the project's newest blank thread: a top-level user
+// thread nothing has happened in yet (no messages, agents, worktree, draft,
+// issue or schedule), not archived. thread.open reuses it.
+func (d *Dispatcher) blankThread(ctx context.Context, projectID string) (contracts.ThreadID, bool, error) {
+	ids, err := d.engine.Threads(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	var best contracts.ThreadID
+	var bestAt time.Time
+	for _, id := range ids {
+		st, err := d.engine.State(ctx, id)
+		if err != nil {
+			return "", false, err
+		}
+		if st.ProjectID != projectID || st.ParentThreadID != "" || st.Archived ||
+			st.Owner.Normalized() != contracts.ThreadOwnerUser ||
+			len(st.Messages) > 0 || len(st.Agents) > 0 || st.Worktree != nil ||
+			st.Draft || st.Issue != nil || st.Waiting != nil {
+			continue
+		}
+		if best == "" || st.CreatedAt.After(bestAt) {
+			best, bestAt = id, st.CreatedAt
+		}
+	}
+	return best, best != "", nil
+}
+
 // firstUserPrompt returns the thread's first human message, truncated to the
 // list-search budget. Threads started only by agents have none.
 func firstUserPrompt(st *domain.ThreadState) string {
@@ -1021,9 +1049,9 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 
 	case "thread.open":
 		// The desktop's `agenttunnel-desktop <dir>` flow: resolve the directory to
-		// a project (creating one when the dir is unknown) and open a fresh
-		// thread in it. Creation is provisional — closing the window without
-		// typing leaves nothing behind.
+		// a project (creating one when the dir is unknown) and open a thread in
+		// it: the project's newest blank thread, else a fresh one. Creation is
+		// provisional — closing the window without typing leaves nothing behind.
 		var p struct {
 			Dir string `json:"dir"`
 		}
@@ -1054,12 +1082,21 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			d.settings.AddProject(project)
 			created = true
 		}
-		id := d.newThreadID()
-		if err := d.engine.Dispatch(ctx, contracts.Command{
-			ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id, ProjectID: project.ID,
-			Owner: contracts.ThreadOwnerUser,
-		}); err != nil {
+		// Reloading a web page launched on a directory opens it again; a blank
+		// thread already waiting in the project is reused instead of piling up
+		// another one.
+		id, reused, err := d.blankThread(ctx, project.ID)
+		if err != nil {
 			return nil, err
+		}
+		if !reused {
+			id = d.newThreadID()
+			if err := d.engine.Dispatch(ctx, contracts.Command{
+				ID: d.nextID(), Type: contracts.CmdThreadCreate, ThreadID: id, ProjectID: project.ID,
+				Owner: contracts.ThreadOwnerUser,
+			}); err != nil {
+				return nil, err
+			}
 		}
 		return map[string]any{
 			"threadId":       id,
