@@ -40,7 +40,7 @@ import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
 import { ThreadWizard } from "./components/ThreadWizard";
 import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
-import { switchProps } from "./lib/switchProps";
+import { clickable, switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
   PanelToggle,
@@ -58,7 +58,6 @@ import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FileEditor } from "./components/FileEditor";
 import { PRPanel, type PRListing } from "./components/PRPanel";
 import {
-  ThreadBoard,
   type BoardIssue,
   type BoardIssues,
   type ThreadState as BoardThreadState,
@@ -93,7 +92,6 @@ import type {
 } from "./lib/harnessUpdates";
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
-import { arrangeThreads, threadSearchScore, visibleThreadRows } from "./lib/threads";
 import { getPref, setPref } from "./lib/prefs";
 import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
@@ -135,6 +133,8 @@ import { LiveLog, StreamingReply } from "./components/LiveLog";
 import { InheritedPanel } from "./components/InheritedPanel";
 import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
 import { RenameDialog } from "./components/RenameDialog";
+import { ThreadList, ThreadSearch } from "./components/Sidebar/ThreadList";
+import { ProjectThreads } from "./components/ProjectThreads";
 import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
 import { changesThreadList, foldThreadEvent, parseThreadEvent, stateVersion } from "./lib/threadFold";
 import { useAgentLog } from "./lib/useAgentLog";
@@ -796,14 +796,6 @@ interface ReleaseNotes {
   body: string;
 }
 
-/** fmtUpdated renders a thread's last activity as a short local date. */
-function fmtUpdated(at?: string): string {
-  if (!at) return "";
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime()) || date.getFullYear() < 1970) return "";
-  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-}
-
 /** Tab strips stay divs so they can hold a close control, which a button may
  * not. They get the keyboard behavior a button would otherwise provide. */
 function tabProps(selected: boolean, onSelect: () => void) {
@@ -819,60 +811,6 @@ function tabProps(selected: boolean, onSelect: () => void) {
       }
     },
   };
-}
-
-/** Clickable cards and rows are divs, so give them the button contract and
- * leave clicks on nested controls to those controls. */
-function clickable(onActivate: () => void) {
-  return {
-    role: "button" as const,
-    tabIndex: 0,
-    onClick: onActivate,
-    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onActivate();
-      }
-    },
-  };
-}
-
-/** fmtIdleDuration renders an age as "45s" / "12m" / "3h 05m" / "4d". */
-function fmtIdleDuration(ms: number): string {
-  const mins = Math.floor(ms / 60_000);
-  if (mins < 1) return `${Math.max(0, Math.round(ms / 1000))}s`;
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ${String(mins % 60).padStart(2, "0")}m`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
-/**
- * ThreadClock shows a thread's activity state as a live pill: "Working" while
- * agents run, "Stale" once the thread has been idle past the configured
- * threshold, or a countdown to staleness otherwise. It owns a coarse interval
- * (30s) and re-renders only itself, so a full board of timers costs almost
- * nothing.
- */
-function ThreadClock({ t }: { t: ThreadSummary }) {
-  const [, bump] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => bump((n) => n + 1), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  if ((t.runningAgents ?? 0) > 0) {
-    return <span className="pill run">● Working</span>;
-  }
-  const at = t.updatedAt ? Date.parse(t.updatedAt) : NaN;
-  if (Number.isNaN(at)) return null;
-  const idleMs = Date.now() - at;
-  const afterMs = (t.staleAfterSeconds ?? 0) * 1000;
-  if (afterMs <= 0) return null;
-  if (idleMs >= afterMs) {
-    return <span className="pill stale">◌ Stale · {fmtIdleDuration(idleMs)}</span>;
-  }
-  return <span className="pill live">○ Stale in {fmtIdleDuration(afterMs - idleMs)}</span>;
 }
 
 /** UI state that belongs to one thread. A thread with no value of its own reads
@@ -2450,30 +2388,6 @@ export default function App() {
     [threads],
   );
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
-  const [threadFilter, setThreadFilter] = useState("");
-  // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
-  // has subthreads toggles this, so a long tree can be folded away.
-  const [collapsedThreads, setCollapsedThreads] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleSubthreads = (id: string) =>
-    setCollapsedThreads((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const query = threadFilter.trim();
-  const projectThreads = useMemo(() => {
-    const scoped = threads.filter((t) => t.projectId === projectId);
-    if (query === "") return arrangeThreads(scoped);
-    const ranked: { thread: ThreadSummary; score: number }[] = [];
-    for (const thread of scoped) {
-      const score = threadSearchScore(thread, query);
-      if (score !== null) ranked.push({ thread, score });
-    }
-    // Array.sort is stable, so equal scores keep the daemon's submission order.
-    ranked.sort((a, b) => b.score - a.score);
-    return arrangeThreads(ranked.map((r) => r.thread));
-  }, [threads, projectId, query]);
 
   // The board is an alternative to the card list, not a replacement: the choice
   // is remembered, and both views read the same thread list.
@@ -2629,10 +2543,15 @@ export default function App() {
       });
   };
   // Only threads with a worktree can have a branch PR. The joined id string keeps
-  // the poll from restarting when unrelated thread fields change.
+  // the poll from restarting when unrelated thread fields change, or when the
+  // search narrows the board.
   const boardPRIds = useMemo(
-    () => projectThreads.filter((t) => t.worktree).map((t) => t.id).join(","),
-    [projectThreads],
+    () =>
+      threads
+        .filter((t) => t.projectId === projectId && t.worktree)
+        .map((t) => t.id)
+        .join(","),
+    [threads, projectId],
   );
   useEffect(() => {
     if (threadView !== "board" || boardPRIds === "") return;
@@ -2748,6 +2667,17 @@ export default function App() {
     setThreads(list);
     selectThread(created.threadId);
   };
+
+  // Stable handles for the memoized thread lists.
+  const newThreadStable = useLatestCallback(() => void newThread());
+  const selectThreadStable = useLatestCallback((id: string) => selectThread(id));
+  const openThreadMenuStable = useLatestCallback(openThreadMenu);
+  const startDraftStable = useLatestCallback((id: string) => void startDraft(id).catch(() => undefined));
+  const dropIssueStable = useLatestCallback(dropIssue);
+  const archiveThreadsStable = useLatestCallback(
+    (ids: string[], archived: boolean) => void setThreadsArchived(ids, archived),
+  );
+  const deleteThreadsStable = useLatestCallback((ids: string[]) => void deleteThreadsById(ids));
 
   const send = async () => {
     const rpc = rpcRef.current;
@@ -4478,12 +4408,7 @@ export default function App() {
               {selectedProject?.path && <p className="screen-sub">{selectedProject.path}</p>}
             </div>
             <div className="screen-actions">
-              <input
-                className="thread-filter"
-                placeholder="Search threads…"
-                value={threadFilter}
-                onChange={(e) => setThreadFilter(e.target.value)}
-              />
+              <ThreadSearch />
               <div className="view-toggle" role="group" aria-label="Thread layout">
                 <button
                   className={threadView === "list" ? "primary" : undefined}
@@ -4526,69 +4451,23 @@ export default function App() {
               </button>
             </div>
           </div>
-          {threadView === "list" && projectThreads.length === 0 && query !== "" && (
-            <div className="empty">No threads match that filter.</div>
-          )}
-          {threadView === "board" ? (
-            <ThreadBoard
-              threads={projectThreads}
-              states={threadStates}
-              formatUpdated={fmtUpdated}
-              issues={boardIssueList}
-              issuesLoading={issuesLoading}
-              onOpen={openBoardThread}
-              onStartDraft={(id) => startDraft(id).catch(() => undefined)}
-              onDropIssue={dropIssue}
-              onRefreshIssues={loadIssues}
-              onArchive={(ids, archived) => void setThreadsArchived(ids, archived)}
-              onDelete={(ids) => void deleteThreadsById(ids)}
-            />
-          ) : (
-          <div className="thread-cards">
-            <div
-              className="new-card"
-              aria-label="New thread"
-              title="New thread"
-              {...clickable(newThread)}
-            >
-              <span className="new-card-plus" aria-hidden="true">
-                +
-              </span>
-            </div>
-            {projectThreads.map((t) => {
-              const tint = t.soloRuntime ? harnessTint(t.soloRuntime.harness ?? "") : "";
-              return (
-                <div
-                  className={`thread-card${t.stale ? " is-stale" : ""}${tint ? ` ${tint}` : ""}`}
-                  key={t.id}
-                  style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-                  {...clickable(() => selectThread(t.id))}
-                  onContextMenu={(e) => openThreadMenu(t, e)}
-                >
-                  <div className="tc-head">
-                    <div className="tc-title" title={t.title}>
-                      {t.title}
-                    </div>
-                    {t.owner === "orchestrator" && (
-                      <span className="tc-owner" title="Started by the orchestrator">
-                        Orchestrator
-                      </span>
-                    )}
-                  </div>
-                  <div className="tc-meta">
-                    {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
-                  </div>
-                  <div className="tc-foot">
-                    <ThreadClock t={t} />
-                    {fmtUpdated(t.updatedAt) && (
-                      <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          )}
+          <ProjectThreads
+            threads={threads}
+            projectId={projectId}
+            view={threadView}
+            states={threadStates}
+            issues={boardIssueList}
+            issuesLoading={issuesLoading}
+            onNew={newThreadStable}
+            onSelect={selectThreadStable}
+            onMenu={openThreadMenuStable}
+            onOpen={openBoardThread}
+            onStartDraft={startDraftStable}
+            onDropIssue={dropIssueStable}
+            onRefreshIssues={loadIssues}
+            onArchive={archiveThreadsStable}
+            onDelete={deleteThreadsStable}
+          />
           {threadOverlays}
           {superViewDialog}
           {newProjectDialog}
@@ -4635,79 +4514,13 @@ export default function App() {
           />
           <button onClick={newThread}>New</button>
         </div>
-        <div className="sidebar-search">
-          <input
-            className="thread-filter"
-            placeholder="Search threads…"
-            value={threadFilter}
-            onChange={(e) => setThreadFilter(e.target.value)}
-          />
-        </div>
-        <div className="col-body">
-          {projectThreads.length === 0 && (
-            <div className="empty">
-              {query !== "" ? "No threads match that search." : "No threads yet"}
-            </div>
-          )}
-          {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
-            <div
-              key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""} ${harnessTint(t.harness ?? "")}`}
-              style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-              {...clickable(() => {
-                if (t.subthreads > 0) toggleSubthreads(t.id);
-                selectThread(t.id);
-              })}
-              onContextMenu={(e) => openThreadMenu(t, e)}
-            >
-              {t.waiting && (
-                <svg className="row-sched-ring" aria-hidden="true" focusable="false">
-                  <rect x="1" y="1" rx="9" pathLength="100" />
-                </svg>
-              )}
-              <div className="t" title={t.title}>
-                {t.title}
-                {t.waiting && (
-                  <span className="row-scheduled" title={`Scheduled — waiting on ${t.waiting.dependsOn.length} thread${t.waiting.dependsOn.length === 1 ? "" : "s"}`}>
-                    ◷ {t.waiting.dependsOn.length}
-                  </span>
-                )}
-                {t.subthreads > 0 && (
-                  <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
-                    {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
-                  </span>
-                )}
-              </div>
-              <div className="m">
-                {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
-              </div>
-              <div className="thread-row-foot">
-                <ThreadClock t={t} />
-                {t.controlledBy && (
-                  <button
-                    type="button"
-                    className="controlled-chip"
-                    title={`Relaunched by ${threads.find((c) => c.id === t.controlledBy)?.title ?? t.controlledBy}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (t.controlledBy) selectThread(t.controlledBy);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (t.controlledBy) selectThread(t.controlledBy);
-                      }
-                    }}
-                  >
-                    ⌁ controlled
-                  </button>
-                )}
-                {fmtUpdated(t.updatedAt) && <span className="u">{fmtUpdated(t.updatedAt)}</span>}
-              </div>
-            </div>
-          ))}
-        </div>
+        <ThreadList
+          threads={threads}
+          projectId={projectId}
+          activeId={activeId}
+          onSelect={selectThreadStable}
+          onMenu={openThreadMenuStable}
+        />
         <div className="sidebar-foot">
           <LimitsMeter rpc={rpcRef.current} />
           <RemoteSection rpc={rpcRef.current} />
