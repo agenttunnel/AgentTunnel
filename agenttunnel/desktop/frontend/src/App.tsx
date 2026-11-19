@@ -39,8 +39,7 @@ import { copyText as writeClipboard } from "./lib/clipboard";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
 import { ThreadWizard } from "./components/ThreadWizard";
-import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
-import { switchProps } from "./lib/switchProps";
+import { clickable, switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
   PanelToggle,
@@ -54,11 +53,10 @@ import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
-import { Dropdown, type DropdownOption } from "./components/Dropdown";
+import type { DropdownOption } from "./components/Dropdown";
 import { FileEditor } from "./components/FileEditor";
 import { PRPanel, type PRListing } from "./components/PRPanel";
 import {
-  ThreadBoard,
   type BoardIssue,
   type BoardIssues,
   type ThreadState as BoardThreadState,
@@ -81,21 +79,15 @@ import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
-import { BrowserNotifyToggle } from "./components/BrowserNotifyToggle";
 import { useAttention } from "./lib/attention";
 import { useUrlRoute, type Route } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
-import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
-import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
-import type {
-  HarnessUpdateReport,
-  HarnessUpdateResult,
-} from "./lib/harnessUpdates";
+import { AppUpdate } from "./components/UpdateChip";
+import { HarnessUpdates } from "./components/HarnessUpdateChip";
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
-import { arrangeThreads, threadSearchScore, visibleThreadRows } from "./lib/threads";
 import { getPref, setPref } from "./lib/prefs";
-import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
+import { applyTheme, loadTheme } from "./lib/themes";
 import {
   buildCommands,
   parseSlash,
@@ -133,6 +125,16 @@ import {
 import { useLatestCallback } from "./lib/store";
 import { LiveLog, StreamingReply } from "./components/LiveLog";
 import { InheritedPanel } from "./components/InheritedPanel";
+import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
+import { RenameDialog } from "./components/RenameDialog";
+import {
+  SettingsSheet,
+  fillSettingsForm,
+  flashSaved,
+  setModelsNotice,
+} from "./components/SettingsSheet";
+import { ThreadList, ThreadSearch } from "./components/Sidebar/ThreadList";
+import { ProjectThreads } from "./components/ProjectThreads";
 import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
 import { changesThreadList, foldThreadEvent, parseThreadEvent, stateVersion } from "./lib/threadFold";
 import { useAgentLog } from "./lib/useAgentLog";
@@ -146,6 +148,7 @@ type Role = {
 };
 type Agent = {
   id: string;
+  threadId?: string;
   parentAgentId?: string;
   name?: string;
   role: string;
@@ -280,14 +283,6 @@ export type Project = { id: string; name: string; path: string; threads: number 
 /** The top-level pages shown when no project is open. */
 type HomePage = "projects" | "orchestrator" | "worktrees" | "stats";
 
-/** One editable seat in the council sheet before it is convened. */
-type CouncilMemberRow = {
-  name: string;
-  role: string;
-  harness: string;
-  model: string;
-  perspective: string;
-};
 type DiffLine = { old?: number; new?: number; kind: string; text: string };
 type DiffFile = {
   path: string;
@@ -297,7 +292,7 @@ type DiffFile = {
   lines: DiffLine[] | null;
 };
 type Diff = { files: DiffFile[] | null; raw: string; empty: boolean };
-type HarnessInfo = {
+export type HarnessInfo = {
   all: string[];
   available: string[];
   enabled: string[] | null;
@@ -404,9 +399,6 @@ const WORKTREE_SCAN_RETRY_MS = 4_000;
 const WORKTREE_SCAN_TIMEOUT_MS = 90_000;
 const WORKTREE_SCAN_START_DELAY_MS = 2_500;
 const WORKTREE_SCAN_KEY = "at.worktreeScan";
-/** How often a connected app asks for a newer release. At this rate a client
- * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
-const UPDATE_CHECK_MS = 5 * 60_000;
 /** After a detached send, how long to wait for the turn to appear before
  * treating a busy flag with no visible turn as stale (the start failed before
  * any agent existed). */
@@ -801,14 +793,6 @@ interface ReleaseNotes {
   body: string;
 }
 
-/** fmtUpdated renders a thread's last activity as a short local date. */
-function fmtUpdated(at?: string): string {
-  if (!at) return "";
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime()) || date.getFullYear() < 1970) return "";
-  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-}
-
 /** Tab strips stay divs so they can hold a close control, which a button may
  * not. They get the keyboard behavior a button would otherwise provide. */
 function tabProps(selected: boolean, onSelect: () => void) {
@@ -824,60 +808,6 @@ function tabProps(selected: boolean, onSelect: () => void) {
       }
     },
   };
-}
-
-/** Clickable cards and rows are divs, so give them the button contract and
- * leave clicks on nested controls to those controls. */
-function clickable(onActivate: () => void) {
-  return {
-    role: "button" as const,
-    tabIndex: 0,
-    onClick: onActivate,
-    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onActivate();
-      }
-    },
-  };
-}
-
-/** fmtIdleDuration renders an age as "45s" / "12m" / "3h 05m" / "4d". */
-function fmtIdleDuration(ms: number): string {
-  const mins = Math.floor(ms / 60_000);
-  if (mins < 1) return `${Math.max(0, Math.round(ms / 1000))}s`;
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ${String(mins % 60).padStart(2, "0")}m`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
-/**
- * ThreadClock shows a thread's activity state as a live pill: "Working" while
- * agents run, "Stale" once the thread has been idle past the configured
- * threshold, or a countdown to staleness otherwise. It owns a coarse interval
- * (30s) and re-renders only itself, so a full board of timers costs almost
- * nothing.
- */
-function ThreadClock({ t }: { t: ThreadSummary }) {
-  const [, bump] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => bump((n) => n + 1), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  if ((t.runningAgents ?? 0) > 0) {
-    return <span className="pill run">● Working</span>;
-  }
-  const at = t.updatedAt ? Date.parse(t.updatedAt) : NaN;
-  if (Number.isNaN(at)) return null;
-  const idleMs = Date.now() - at;
-  const afterMs = (t.staleAfterSeconds ?? 0) * 1000;
-  if (afterMs <= 0) return null;
-  if (idleMs >= afterMs) {
-    return <span className="pill stale">◌ Stale · {fmtIdleDuration(idleMs)}</span>;
-  }
-  return <span className="pill live">○ Stale in {fmtIdleDuration(afterMs - idleMs)}</span>;
 }
 
 /** UI state that belongs to one thread. A thread with no value of its own reads
@@ -915,33 +845,6 @@ function useThreadScoped<T>(threadId: string | null, initial: T | (() => T), sto
   return [value, set, setFallback] as const;
 }
 
-const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } => ({
-  rounds: 2,
-  members: [
-    {
-      name: "planner",
-      role: "planner",
-      harness: "",
-      model: "",
-      perspective: "weigh architecture and long-term maintainability",
-    },
-    {
-      name: "executor",
-      role: "executor",
-      harness: "",
-      model: "",
-      perspective: "prize the simplest thing that actually ships",
-    },
-    {
-      name: "reviewer",
-      role: "reviewer",
-      harness: "",
-      model: "",
-      perspective: "hunt risk, edge cases, and hidden cost",
-    },
-  ],
-});
-
 // The jump-to-top pill appears once the stream is scrolled this far down.
 const TOP_SHOW = 240;
 
@@ -969,28 +872,7 @@ export default function App() {
   // thread never shows another thread's messages.
   const threadCacheRef = useRef<Record<string, ThreadState>>({});
   const [globalUsage, setGlobalUsage] = useState<ThreadUsage | null>(null);
-  const [update, setUpdate] = useState<UpdateStatus | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes | null>(null);
-  const [harnessUpdates, setHarnessUpdates] = useState<HarnessUpdateReport | null>(null);
-  const [harnessUpdateBusy, setHarnessUpdateBusy] = useState(false);
-  const [harnessUpdateError, setHarnessUpdateError] = useState<string | null>(null);
-  // A check keeps the "restart to run" state after an install; the daemon's
-  // plain check result does not know about it.
-  const checkForUpdate = useCallback(() => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    rpc
-      .call<UpdateStatus>("update.check")
-      .then((s) => setUpdate((prev) => (prev?.installed ? prev : s)))
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (status !== "online") return;
-    const id = window.setInterval(checkForUpdate, UPDATE_CHECK_MS);
-    return () => window.clearInterval(id);
-  }, [status, checkForUpdate]);
 
   // Threads with a turn, council, or review in flight. Keyed by thread so a turn
   // running in one thread never gates or steers another.
@@ -1130,9 +1012,9 @@ export default function App() {
   const scanningWorktrees = useRef(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Appearance is shared by every client of this daemon through the prefs store.
-  const [theme, setTheme] = useState<ThemeId>(loadTheme);
-  useEffect(() => applyTheme(theme), [theme]);
+  // Appearance is shared by every client of this daemon through the prefs
+  // store; the settings sheet changes it.
+  useEffect(() => applyTheme(loadTheme()), []);
   // The how-to sheet opens on its own only until it has been seen once; /help reopens it.
   const [cheatSheetOpen, setCheatSheetOpen] = useState(showCheatSheetOnLaunch);
   // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
@@ -1146,30 +1028,6 @@ export default function App() {
   const [conn, setConn] = useState<Conn | null>(null);
   const [keepRunning, setKeepRunningState] = useState(false);
 
-  // Council of agents: convene several perspectives on one question and let
-  // them debate to a synthesized outcome.
-  // The topic is per thread; rounds and seats default globally and can be saved
-  // as the default for new threads.
-  const [councilTopic, setCouncilTopic] = useThreadScoped<string>(activeId, "");
-  const [councilSetup, setCouncilSetup, setCouncilSetupDefault] = useThreadScoped(
-    activeId,
-    defaultCouncilSetup,
-    "at.councilSetup",
-  );
-  const councilRounds = councilSetup.rounds;
-  const councilMembers = councilSetup.members;
-  const setCouncilRounds = (rounds: number) => setCouncilSetup((s) => ({ ...s, rounds }));
-  const setCouncilMembers = (update: (prev: CouncilMemberRow[]) => CouncilMemberRow[]) =>
-    setCouncilSetup((s) => ({ ...s, members: update(s.members) }));
-  const [workdirInput, setWorkdirInput] = useState("");
-  const [approvedModels, setApprovedModels] = useState<string[]>([]);
-  const [staleAfterInput, setStaleAfterInput] = useState("30");
-  const [saved, setSaved] = useState(false);
-  const [modelsNotice, setModelsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [deps, setDeps] = useState<DependencyView[] | null>(null);
-  const [depsBusy, setDepsBusy] = useState(false);
-  const [depsError, setDepsError] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -1199,7 +1057,6 @@ export default function App() {
     y: number;
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ThreadSummary | null>(null);
-  const [renameValue, setRenameValue] = useState("");
   // Browser fallback for the Add Project flow: no native folder picker there,
   // so the path is typed into a small sheet instead.
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -1215,6 +1072,8 @@ export default function App() {
   });
 
   const rpcRef = useRef<Rpc | null>(null);
+  /** The client still making its first connection; the splash's Retry pokes it. */
+  const bootRpcRef = useRef<Rpc | null>(null);
   // The daemon's HTTP origin + token, for image uploads and fetches that must
   // not ride the WebSocket.
   const connRef = useRef<Conn | null>(null);
@@ -1372,38 +1231,6 @@ export default function App() {
   // turns and their message rows stay untouched.
   const turnBlocks = useMemo(() => groupTurns(thread?.messages ?? []), [thread?.messages]);
 
-  const installUpdate = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setUpdateBusy(true);
-    setUpdateError(null);
-    try {
-      setUpdate(await rpc.call<UpdateStatus>("update.apply"));
-    } catch (e) {
-      setUpdateError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setUpdateBusy(false);
-    }
-  }, []);
-
-  const updateHarnesses = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setHarnessUpdateBusy(true);
-    setHarnessUpdateError(null);
-    try {
-      const res = await rpc.call<HarnessUpdateResult>("harness.update", { harnesses: [] });
-      setHarnessUpdates(res.report);
-      if (res.failed && res.failed.length > 0) {
-        setHarnessUpdateError(res.failed.map((f) => `${f.harness}: ${f.error}`).join("; "));
-      }
-    } catch (e) {
-      setHarnessUpdateError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setHarnessUpdateBusy(false);
-    }
-  }, []);
-
   const loadDiff = useCallback(async (id: string | null) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -1477,7 +1304,7 @@ export default function App() {
   const openPanel = useCallback((id: AsideTabId) => {
     // Seeds the council topic from the draft.
     const draft = id === "council" ? draftText(draftKeyRef.current) : "";
-    if (draft) setCouncilTopic(draft);
+    if (draft) councilTopic.set(activeIdRef.current, draft);
     setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setAsideActive(id);
   }, []);
@@ -1492,20 +1319,6 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     setHarnesses(await rpc.call<HarnessInfo>("harness.list"));
-  }, []);
-
-  const loadDeps = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setDepsBusy(true);
-    try {
-      setDeps(await rpc.call<DependencyView[]>("deps.check"));
-      setDepsError(null);
-    } catch (e) {
-      setDepsError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setDepsBusy(false);
-    }
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -1812,12 +1625,10 @@ export default function App() {
 
   const beginRename = (t: ThreadSummary) => {
     setRenameTarget(t);
-    setRenameValue(t.title);
   };
 
-  const confirmRename = async () => {
+  const confirmRename = useLatestCallback(async (title: string) => {
     const rpc = rpcRef.current;
-    const title = renameValue.trim();
     if (!rpc || !renameTarget || !title) return;
     try {
       await rpc.call("thread.rename", { threadId: renameTarget.id, title });
@@ -1829,7 +1640,12 @@ export default function App() {
     setRenameTarget(null);
     await reloadThreads();
     if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
-  };
+  });
+  const renameThread = useCallback(
+    (title: string) => void confirmRename(title).catch(() => undefined),
+    [confirmRename],
+  );
+  const cancelRename = useCallback(() => setRenameTarget(null), []);
 
   /** Archives or restores several threads in one go. A failure stops the batch
    * and reports the first error; threads already changed stay changed. */
@@ -1977,37 +1793,39 @@ export default function App() {
     if (!rpc) return null;
     const s = await rpc.call<SettingsView>("settings.get");
     setSettings(s);
-    setWorkdirInput(s.workdir ?? "");
-    setApprovedModels(s.approvedModels ?? []);
-    setStaleAfterInput(String(s.staleAfterMinutes ?? 30));
+    fillSettingsForm(s);
     return s;
   }, []);
 
-  const loadAppInfo = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    try {
-      const info = await rpc.call<{ version?: string }>("app.info");
-      setAppVersion(info?.version || "dev");
-    } catch {
-      setAppVersion("dev");
-    }
-  }, []);
-
   // Connect to the embedded daemon once the shell hands us its address.
+  // A daemon that is not up yet (or a web UI loaded before it) keeps the
+  // splash on "Connecting…" with the reason, retrying with the reconnect
+  // backoff; the splash's Retry skips the wait.
   useEffect(() => {
     let cancelled = false;
-    discover().then(async (conn: Conn) => {
+    let boot: Rpc | null = null;
+    const failed = (e: unknown) => {
       if (cancelled) return;
-      const rpc = new Rpc(conn, rediscover);
-      try {
-        await rpc.connect();
-      } catch (e) {
-        setStatus("offline");
-        setError(e instanceof Error ? e.message : String(e));
-        return;
-      }
+      setStatus("offline");
+      setError(e instanceof Error ? e.message : String(e));
+    };
+    const stopWake: { off?: () => void } = {};
+    discover()
+      .catch((e) => {
+        // The web UI's /conn did not answer; the retries ask it again.
+        failed(e);
+        return null;
+      })
+      .then(async (found: Conn | null) => {
       if (cancelled) return;
+      const rpc = new Rpc(found, rediscover);
+      boot = rpc;
+      bootRpcRef.current = rpc;
+      stopWake.off = rpc.retryOnWake();
+      await rpc.connect(failed);
+      if (cancelled) return;
+      const conn = rpc.connection;
+      setError(null);
       rpcRef.current = rpc;
       connRef.current = conn;
       setStatus("online");
@@ -2021,7 +1839,6 @@ export default function App() {
         setResync((n) => n + 1);
         scheduleBoardReloadRef.current();
       });
-      rpc.retryOnWake();
       // Any thread's durable event may change its list row; this replaces polling.
       rpc.onNotification(({ method, params }) => {
         if (method !== "thread.changed") return;
@@ -2030,8 +1847,7 @@ export default function App() {
       });
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
-      // Not awaited: a slow GitHub lookup must not hold up startup.
-      checkForUpdate();
+      // The titlebar's AppUpdate and HarnessUpdates check for updates themselves.
       // Read-and-clear on the daemon: a null answer means nothing is pending.
       rpc
         .call<ReleaseNotes | null>("update.takeReleaseNotes")
@@ -2039,7 +1855,6 @@ export default function App() {
           if (n && !cancelled) setReleaseNotes(n);
         })
         .catch(() => {});
-      rpc.call<HarnessUpdateReport>("harness.updates").then(setHarnessUpdates).catch(() => {});
       try {
         const [r, h, list, projs, s] = await Promise.all([
           rpc.call<Role[]>("roles.list"),
@@ -2100,16 +1915,15 @@ export default function App() {
         }
         Window.Focus().catch(() => undefined);
       });
-    }).catch((e) => {
-      // The daemon never handed us a connection (e.g. the web UI's /conn is
-      // unreachable): fail loudly instead of booting forever.
-      setStatus("offline");
-      setError(e instanceof Error ? e.message : String(e));
-    });
+    })
+      .catch(failed);
     return () => {
       cancelled = true;
+      stopWake.off?.();
+      boot?.close();
     };
   }, []);
+  const retryConnect = useCallback(() => bootRpcRef.current?.retryNow(), []);
 
   const scheduleRefresh = useCallback(
     (id: string) => {
@@ -2338,12 +2152,6 @@ export default function App() {
     return map;
   }, [roles]);
 
-  // The master orchestrator (lead) runs on the Orchestrator role's runtime
-  // unless it is pinned, in which case the pin is the persisted lead setting.
-  const leadSettings = settings?.lead ?? {};
-  const orchestratorRole = settings?.roles.find((r) => r.id === "orchestrator");
-  const leadHarness = leadSettings.harness || orchestratorRole?.harness || "";
-
   const agents = useMemo<Agent[]>(() => {
     const out: Agent[] = [];
     if (thread?.agentOrder) {
@@ -2480,30 +2288,6 @@ export default function App() {
     [threads],
   );
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
-  const [threadFilter, setThreadFilter] = useState("");
-  // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
-  // has subthreads toggles this, so a long tree can be folded away.
-  const [collapsedThreads, setCollapsedThreads] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleSubthreads = (id: string) =>
-    setCollapsedThreads((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const query = threadFilter.trim();
-  const projectThreads = useMemo(() => {
-    const scoped = threads.filter((t) => t.projectId === projectId);
-    if (query === "") return arrangeThreads(scoped);
-    const ranked: { thread: ThreadSummary; score: number }[] = [];
-    for (const thread of scoped) {
-      const score = threadSearchScore(thread, query);
-      if (score !== null) ranked.push({ thread, score });
-    }
-    // Array.sort is stable, so equal scores keep the daemon's submission order.
-    ranked.sort((a, b) => b.score - a.score);
-    return arrangeThreads(ranked.map((r) => r.thread));
-  }, [threads, projectId, query]);
 
   // The board is an alternative to the card list, not a replacement: the choice
   // is remembered, and both views read the same thread list.
@@ -2659,10 +2443,15 @@ export default function App() {
       });
   };
   // Only threads with a worktree can have a branch PR. The joined id string keeps
-  // the poll from restarting when unrelated thread fields change.
+  // the poll from restarting when unrelated thread fields change, or when the
+  // search narrows the board.
   const boardPRIds = useMemo(
-    () => projectThreads.filter((t) => t.worktree).map((t) => t.id).join(","),
-    [projectThreads],
+    () =>
+      threads
+        .filter((t) => t.projectId === projectId && t.worktree)
+        .map((t) => t.id)
+        .join(","),
+    [threads, projectId],
   );
   useEffect(() => {
     if (threadView !== "board" || boardPRIds === "") return;
@@ -2736,28 +2525,36 @@ export default function App() {
     return map;
   }, [threads]);
   const enabledHarnesses = harnesses.enabled ?? harnesses.all;
-  const isHarnessEnabled = (h: string) => enabledHarnesses.includes(h);
 
   // Roles only offer enabled harnesses. A role already pointing at a disabled
   // harness keeps it as an option so its current value stays visible.
-  const harnessOptionsFor = (current: string): DropdownOption[] =>
-    harnesses.all
-      .filter((h) => isHarnessEnabled(h) || h === current)
-      .map((h) => ({
-        value: h,
-        label: isHarnessEnabled(h) ? h : `${h} (disabled)`,
-      }));
+  // Both change only with the harness list, so memoized panels re-render when it does.
+  const harnessOptionsFor = useCallback(
+    (current: string): DropdownOption[] => {
+      const enabled = harnesses.enabled ?? harnesses.all;
+      return harnesses.all
+        .filter((h) => enabled.includes(h) || h === current)
+        .map((h) => ({
+          value: h,
+          label: enabled.includes(h) ? h : `${h} (disabled)`,
+        }));
+    },
+    [harnesses],
+  );
 
-  const modelOptions = (harness: string, current: string): DropdownOption[] => {
-    const opts: DropdownOption[] = [{ value: "", label: "model (default)", group: "Default" }];
-    const list = harnesses.models?.[harness] ?? [];
-    const merged = current && !list.includes(current) ? [current, ...list] : list;
-    for (const m of merged) {
-      const slash = m.indexOf("/");
-      opts.push({ value: m, label: m, group: slash > 0 ? m.slice(0, slash) : "Other" });
-    }
-    return opts;
-  };
+  const modelOptions = useCallback(
+    (harness: string, current: string): DropdownOption[] => {
+      const opts: DropdownOption[] = [{ value: "", label: "model (default)", group: "Default" }];
+      const list = harnesses.models?.[harness] ?? [];
+      const merged = current && !list.includes(current) ? [current, ...list] : list;
+      for (const m of merged) {
+        const slash = m.indexOf("/");
+        opts.push({ value: m, label: m, group: slash > 0 ? m.slice(0, slash) : "Other" });
+      }
+      return opts;
+    },
+    [harnesses],
+  );
 
   const newThread = async () => {
     const rpc = rpcRef.current;
@@ -2769,6 +2566,17 @@ export default function App() {
     setThreads(list);
     selectThread(created.threadId);
   };
+
+  // Stable handles for the memoized thread lists.
+  const newThreadStable = useLatestCallback(() => void newThread());
+  const selectThreadStable = useLatestCallback((id: string) => selectThread(id));
+  const openThreadMenuStable = useLatestCallback(openThreadMenu);
+  const startDraftStable = useLatestCallback((id: string) => void startDraft(id).catch(() => undefined));
+  const dropIssueStable = useLatestCallback(dropIssue);
+  const archiveThreadsStable = useLatestCallback(
+    (ids: string[], archived: boolean) => void setThreadsArchived(ids, archived),
+  );
+  const deleteThreadsStable = useLatestCallback((ids: string[]) => void deleteThreadsById(ids));
 
   const send = async () => {
     const rpc = rpcRef.current;
@@ -3046,16 +2854,13 @@ export default function App() {
     if (activeId) refresh(activeId).catch(() => undefined);
   };
 
-  const updateCouncilMember = (idx: number, patch: Partial<CouncilMemberRow>) => {
-    setCouncilMembers((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
-  };
-
   /** Convenes the council: members debate in parallel rounds, then a
    *  facilitator synthesizes the outcome into the thread. */
-  const startCouncil = async () => {
+  const startCouncil = useLatestCallback(async () => {
     const rpc = rpcRef.current;
-    const topic = councilTopic.trim();
     const threadId = activeId;
+    const topic = councilTopic.get(threadId).trim();
+    const { rounds: councilRounds, members: councilMembers } = councilSetup.get(threadId);
     if (!rpc || !threadId || !topic || turnThreads[threadId]) return;
     setInput("");
     setTurnBusy(threadId, true);
@@ -3078,7 +2883,7 @@ export default function App() {
       setTurnBusy(threadId, false);
       refresh(threadId).catch(() => undefined);
     }
-  };
+  });
 
   const addComment = async () => {
     const rpc = rpcRef.current;
@@ -3326,25 +3131,19 @@ export default function App() {
   );
 
   /** Makes the view on screen the default for threads that have not set their own. */
-  const saveThreadDefaults = () => {
+  const saveThreadDefaults = useLatestCallback(() => {
     setTabDefault(tab);
     setAsideTabsDefault(asideTabs);
     setAsideActiveDefault(asideActive);
     setLayoutDefault(layout);
-    setCouncilSetupDefault(councilSetup);
-  };
+    councilSetup.setDefault(councilSetup.get(activeId));
+  });
 
   const openSettings = () => {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([
-          loadSettings(),
-          loadHarnesses(),
-          loadProjects(),
-          loadAppInfo(),
-          loadDeps(),
-        ]);
+        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
@@ -3352,48 +3151,23 @@ export default function App() {
       }
     })();
   };
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   /** Persists the shell's keep-running preference. */
-  const toggleKeepRunning = (enabled: boolean) => {
+  const toggleKeepRunning = useCallback((enabled: boolean) => {
     setKeepRunningState(enabled);
     emitKeepRunning(enabled);
-  };
+  }, []);
 
-  const flashSaved = () => {
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 1500);
-  };
-
-  const saveEnv = async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      workdir: workdirInput,
-      autoMode: settings?.autoMode ?? false,
-      approvedModels,
-      staleAfterMinutes: staleAfterInput,
-    });
-    setSettings(s);
-    flashSaved();
-  };
-
-  const toggleHarness = async (id: string, enabled: boolean) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    await rpc.call("settings.set", { harness: { id, enabled } });
-    await loadHarnesses();
-    flashSaved();
-  };
-
-  const updateRole = (id: string, patch: Partial<RoleConfigView>) => {
+  const updateRole = useCallback((id: string, patch: Partial<RoleConfigView>) => {
     setSettings((prev) =>
       prev
         ? { ...prev, roles: prev.roles.map((r) => (r.id === id ? { ...r, ...patch } : r)) }
         : prev,
     );
-  };
+  }, []);
 
-  const persistRole = async (row: RoleConfigView) => {
+  const persistRole = useCallback(async (row: RoleConfigView) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
     const s = await rpc.call<SettingsView>("settings.set", {
@@ -3401,22 +3175,7 @@ export default function App() {
     });
     setSettings(s);
     flashSaved();
-  };
-
-  /** Pins the master orchestrator's runtime; empty fields inherit the role. */
-  const persistLeadRuntime = async (runtime: LeadRuntimeView) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      lead: {
-        harness: runtime.harness ?? "",
-        model: runtime.model ?? "",
-        variant: runtime.variant ?? "",
-      },
-    });
-    setSettings(s);
-    flashSaved();
-  };
+  }, []);
 
   // Required roles cannot be disabled; the daemon refuses them too.
   const toggleRoleEnabled = async (row: RoleConfigView, enabled: boolean) => {
@@ -3435,13 +3194,6 @@ export default function App() {
     }
   };
 
-  const toggleExperimentalRoles = async (enabled: boolean) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", { experimentalRoles: enabled });
-    setSettings(s);
-    flashSaved();
-  };
 
   const titlebar = (
     <div className="titlebar">
@@ -3480,18 +3232,8 @@ export default function App() {
           </div>
         )}
       </div>
-      <UpdateChip
-        status={update}
-        busy={updateBusy}
-        error={updateError}
-        onInstall={installUpdate}
-      />
-      <HarnessUpdateChip
-        report={harnessUpdates}
-        busy={harnessUpdateBusy}
-        error={harnessUpdateError}
-        onUpdate={updateHarnesses}
-      />
+      <AppUpdate rpc={rpcRef.current} />
+      <HarnessUpdates rpc={rpcRef.current} />
       <button
         type="button"
         className="title-gear"
@@ -3720,30 +3462,12 @@ export default function App() {
         />
       )}
       {renameTarget && (
-        <div className="overlay" onClick={() => setRenameTarget(null)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-head">
-              <strong>Rename thread</strong>
-              <button onClick={() => setRenameTarget(null)}>Cancel</button>
-            </div>
-            <div className="sheet-body">
-              <input
-                autoFocus
-                value={renameValue}
-                placeholder="Thread title"
-                onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") confirmRename().catch(() => undefined);
-                }}
-              />
-              <div className="sheet-actions">
-                <button className="primary" onClick={() => confirmRename().catch(() => undefined)}>
-                  Rename
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <RenameDialog
+          key={renameTarget.id}
+          initial={renameTarget.title}
+          onRename={renameThread}
+          onCancel={cancelRename}
+        />
       )}
       {deleteTarget && (
         <div className="overlay" onClick={() => setDeleteTarget(null)}>
@@ -3907,9 +3631,14 @@ export default function App() {
         <img src="/brand-mark.svg" alt="" />
         <div className="mark">AgentTunnel</div>
         <div className="splash-sub">
-          {status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}
+          {status === "connecting" ? "Starting the daemon…" : "Connecting…"}
         </div>
-        {error && <div className="err-text">{error}</div>}
+        {status === "offline" && (
+          <>
+            {error && <div className="err-text">{error}</div>}
+            <button onClick={retryConnect}>Retry</button>
+          </>
+        )}
       </div>
     );
   }
@@ -4012,306 +3741,24 @@ export default function App() {
   // Rendered on every screen: settings are app-global, so the titlebar gear
   // must open the sheet wherever the user is.
   const settingsSheet = settingsOpen && settings && (
-    <div className="overlay" onClick={() => setSettingsOpen(false)}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-head">
-          <strong>Settings</strong>
-          <div className="sheet-head-right">
-            {saved && <span className="saved">Saved</span>}
-            <button onClick={() => setSettingsOpen(false)}>Close</button>
-          </div>
-        </div>
-        <div className="sheet-body">
-          <section className="set-section">
-            <h4>Appearance</h4>
-            <p className="hint">
-              Color theme for this device. It applies everywhere and is saved locally, not in
-              the daemon config.
-            </p>
-            <div className="theme-grid">
-              {THEMES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={`theme-card ${theme === t.id ? "on" : ""}`}
-                  aria-pressed={theme === t.id}
-                  onClick={() => setTheme(t.id)}
-                >
-                  <span className="theme-swatch" aria-hidden="true">
-                    {t.swatches.map((c, i) => (
-                      <span key={`${t.id}-${i}`} style={{ background: c }} />
-                    ))}
-                  </span>
-                  <span className="theme-name">{t.name}</span>
-                  <span className="theme-note">{t.note}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-          <section className="set-section">
-            <h4>New thread defaults</h4>
-            <p className="hint">
-              New threads open with the tab, panels, layout, and council setup saved here. A
-              thread you change keeps its own view.
-            </p>
-            <div className="sheet-actions">
-              <button onClick={saveThreadDefaults}>Save this view as default</button>
-            </div>
-          </section>
-          {!conn?.attached && (
-            <section className="set-section">
-              <h4>Desktop</h4>
-              <p className="hint">
-                When this is on, closing the window leaves the daemon (and any running
-                turns) alive in the background so <code>at</code> can still reach it.
-                Turn it off to stop the daemon with the window.
-              </p>
-              <div
-                className={`toggle ${keepRunning ? "on" : ""}`}
-                {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
-              >
-                <span className="sw" /> Keep daemon running after the window closes
-              </div>
-            </section>
-          )}
-          <BrowserNotifyToggle />
-          <section className="set-section">
-            <h4>Environment</h4>
-            <label className="field">
-              <span>Fallback working directory (used when a thread has no project)</span>
-              <input
-                value={workdirInput}
-                onChange={(e) => setWorkdirInput(e.target.value)}
-                placeholder="/path/to/your/repo"
-              />
-            </label>
-            <div
-              className={`toggle ${settings.autoMode ? "on" : ""}`}
-              {...switchProps(settings.autoMode, () =>
-                setSettings({ ...settings, autoMode: !settings.autoMode }),
-              )}
-              style={{ marginTop: 10 }}
-            >
-              <span className="sw" /> Auto mode — orchestrator picks each task's model
-            </div>
-            <div className="field" style={{ marginTop: 12 }}>
-              <span>Approved models for auto mode</span>
-              <ApprovedModelsPicker
-                value={approvedModels}
-                onChange={setApprovedModels}
-                models={harnesses.models}
-                harnessOrder={harnesses.all}
-              />
-            </div>
-            <label className="field" style={{ marginTop: 12 }}>
-              <span>Mark threads stale after this many minutes of inactivity</span>
-              <input
-                value={staleAfterInput}
-                onChange={(e) => setStaleAfterInput(e.target.value)}
-                inputMode="numeric"
-                placeholder="30"
-                style={{ maxWidth: 120 }}
-              />
-            </label>
-            {settings.configPath && (
-              <p className="hint">
-                Config file: <code>{settings.configPath}</code>
-              </p>
-            )}
-            <div className="sheet-actions">
-              <button className="primary" onClick={saveEnv}>
-                Save environment
-              </button>
-            </div>
-          </section>
-
-          <section className="set-section">
-            <h4>Harnesses</h4>
-            <p className="hint">Disable a harness to remove it from every role.</p>
-            {harnesses.all.map((h) => (
-              <div className="harness-row" key={h}>
-                <span className="hn">{h}</span>
-                <span className={`avail ${harnesses.available.includes(h) ? "detected" : ""}`}>
-                  {harnesses.available.includes(h) ? "detected" : "not on PATH"}
-                </span>
-                <div
-                  className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
-                  {...switchProps(isHarnessEnabled(h), () =>
-                    toggleHarness(h, !isHarnessEnabled(h)),
-                  )}
-                  aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
-                >
-                  <span className="sw" />
-                </div>
-              </div>
-            ))}
-          </section>
-
-          <section className="set-section">
-            <h4>Master orchestrator</h4>
-            <p className="hint">
-              The team lead runs on this harness and model. Leave it on the Orchestrator role
-              to inherit that role's default; each thread can still override its own leads.
-            </p>
-            <div className="role-edit">
-              <span className="rn">Lead agent</span>
-              <Dropdown
-                value={leadSettings.harness ?? ""}
-                options={[
-                  {
-                    value: "",
-                    label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
-                  },
-                  ...harnessOptionsFor(leadSettings.harness ?? ""),
-                ]}
-                onChange={(v) => {
-                  persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
-                    () => undefined,
-                  );
-                  if (v) refreshModels(v).catch(() => undefined);
-                }}
-              />
-              <Dropdown
-                value={leadSettings.model ?? ""}
-                options={modelOptions(leadHarness, leadSettings.model ?? "")}
-                searchable
-                align="end"
-                placeholder="model (default)"
-                footNote="Discovered from the harness CLI"
-                onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
-                addLabel="Add model"
-                onAdd={(m) => {
-                  addModel(leadHarness, m)
-                    .then(() =>
-                      persistLeadRuntime({
-                        harness: leadSettings.harness ?? "",
-                        model: m,
-                        variant: leadSettings.variant ?? "",
-                      }),
-                    )
-                    .catch(() => undefined);
-                }}
-                onChange={(v) =>
-                  persistLeadRuntime({
-                    harness: leadSettings.harness ?? "",
-                    model: v,
-                    variant: leadSettings.variant ?? "",
-                  }).catch(() => undefined)
-                }
-              />
-            </div>
-          </section>
-
-          <section className="set-section">
-            <h4>Dependencies</h4>
-            <p className="hint">
-              The forge CLIs the Pull request tab shells out to. Versions are read from the
-              tools on PATH.
-            </p>
-            {depsError && <p className="hint warn">{depsError}</p>}
-            {deps === null && !depsError && <p className="hint">Checking…</p>}
-            {(deps ?? []).map((d) => (
-              <div className="dep-row" key={d.name}>
-                <span className="dn">{d.name}</span>
-                <span className={`dv ${d.status}`}>
-                  {d.status === "missing"
-                    ? "not installed"
-                    : `${d.version || "unknown version"}${
-                        d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
-                      }`}
-                </span>
-                <span
-                  className={`dot ${
-                    d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
-                  }`}
-                  title={d.status}
-                />
-              </div>
-            ))}
-            <div className="sheet-actions">
-              <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
-                {depsBusy ? "Checking…" : "Recheck"}
-              </button>
-            </div>
-          </section>
-
-          <section className="set-section">
-            <h4>Roles</h4>
-            <p className="hint">
-              Each subagent role runs on its own harness and model; the Orchestrator role is the
-              master orchestrator above. Changes apply to the next turn.
-            </p>
-            <div
-              className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
-              {...switchProps(settings.experimentalRoles, () =>
-                toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
-              )}
-              style={{ marginBottom: 10 }}
-            >
-              <span className="sw" /> Experimental roles
-            </div>
-            <p className="hint">
-              Experimental roles are off by default. Turn this on to dispatch them.
-            </p>
-            {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
-            {settings.roles
-              .filter((r) => r.id !== "orchestrator")
-              .map((r) => (
-                <div className="role-edit" key={r.id}>
-                  <span className="rn">
-                    {r.name}
-                    {r.experimental && <span className="badge experimental">Experimental</span>}
-                  </span>
-                  <Dropdown
-                    value={r.harness}
-                    options={harnessOptionsFor(r.harness)}
-                    onChange={(v) => {
-                      const row = { ...r, harness: v };
-                      updateRole(r.id, { harness: v });
-                      persistRole(row).catch(() => undefined);
-                      refreshModels(v).catch(() => undefined);
-                    }}
-                  />
-                  <Dropdown
-                    value={r.model}
-                    options={modelOptions(r.harness, r.model)}
-                    searchable
-                    align="end"
-                    placeholder="model (default)"
-                    footNote="Discovered from the harness CLI"
-                    onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                    addLabel="Add model"
-                    onAdd={(m) => {
-                      addModel(r.harness, m)
-                        .then(() => {
-                          const row = { ...r, model: m };
-                          updateRole(r.id, { model: m });
-                          persistRole(row).catch(() => undefined);
-                        })
-                        .catch(() => undefined);
-                    }}
-                    onChange={(v) => {
-                      const row = { ...r, model: v };
-                      updateRole(r.id, { model: v });
-                      persistRole(row).catch(() => undefined);
-                    }}
-                  />
-                </div>
-              ))}
-          </section>
-
-          <section className="set-section about-section">
-            <h4>About</h4>
-            <p className="hint">
-              AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
-            </p>
-            <p className="hint">
-              <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
-            </p>
-          </section>
-        </div>
-      </div>
-    </div>
+    <SettingsSheet
+      rpc={rpcRef.current}
+      settings={settings}
+      setSettings={setSettings}
+      harnesses={harnesses}
+      loadHarnesses={loadHarnesses}
+      attached={!!conn?.attached}
+      keepRunning={keepRunning}
+      onToggleKeepRunning={toggleKeepRunning}
+      onSaveThreadDefaults={saveThreadDefaults}
+      onClose={closeSettings}
+      harnessOptionsFor={harnessOptionsFor}
+      modelOptions={modelOptions}
+      refreshModels={refreshModels}
+      addModel={addModel}
+      updateRole={updateRole}
+      persistRole={persistRole}
+    />
   );
 
   // The daily scan's question is app-global: it can arrive on any screen, so it
@@ -4515,12 +3962,7 @@ export default function App() {
               {selectedProject?.path && <p className="screen-sub">{selectedProject.path}</p>}
             </div>
             <div className="screen-actions">
-              <input
-                className="thread-filter"
-                placeholder="Search threads…"
-                value={threadFilter}
-                onChange={(e) => setThreadFilter(e.target.value)}
-              />
+              <ThreadSearch />
               <div className="view-toggle" role="group" aria-label="Thread layout">
                 <button
                   className={threadView === "list" ? "primary" : undefined}
@@ -4563,69 +4005,23 @@ export default function App() {
               </button>
             </div>
           </div>
-          {threadView === "list" && projectThreads.length === 0 && query !== "" && (
-            <div className="empty">No threads match that filter.</div>
-          )}
-          {threadView === "board" ? (
-            <ThreadBoard
-              threads={projectThreads}
-              states={threadStates}
-              formatUpdated={fmtUpdated}
-              issues={boardIssueList}
-              issuesLoading={issuesLoading}
-              onOpen={openBoardThread}
-              onStartDraft={(id) => startDraft(id).catch(() => undefined)}
-              onDropIssue={dropIssue}
-              onRefreshIssues={loadIssues}
-              onArchive={(ids, archived) => void setThreadsArchived(ids, archived)}
-              onDelete={(ids) => void deleteThreadsById(ids)}
-            />
-          ) : (
-          <div className="thread-cards">
-            <div
-              className="new-card"
-              aria-label="New thread"
-              title="New thread"
-              {...clickable(newThread)}
-            >
-              <span className="new-card-plus" aria-hidden="true">
-                +
-              </span>
-            </div>
-            {projectThreads.map((t) => {
-              const tint = t.soloRuntime ? harnessTint(t.soloRuntime.harness ?? "") : "";
-              return (
-                <div
-                  className={`thread-card${t.stale ? " is-stale" : ""}${tint ? ` ${tint}` : ""}`}
-                  key={t.id}
-                  style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-                  {...clickable(() => selectThread(t.id))}
-                  onContextMenu={(e) => openThreadMenu(t, e)}
-                >
-                  <div className="tc-head">
-                    <div className="tc-title" title={t.title}>
-                      {t.title}
-                    </div>
-                    {t.owner === "orchestrator" && (
-                      <span className="tc-owner" title="Started by the orchestrator">
-                        Orchestrator
-                      </span>
-                    )}
-                  </div>
-                  <div className="tc-meta">
-                    {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
-                  </div>
-                  <div className="tc-foot">
-                    <ThreadClock t={t} />
-                    {fmtUpdated(t.updatedAt) && (
-                      <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          )}
+          <ProjectThreads
+            threads={threads}
+            projectId={projectId}
+            view={threadView}
+            states={threadStates}
+            issues={boardIssueList}
+            issuesLoading={issuesLoading}
+            onNew={newThreadStable}
+            onSelect={selectThreadStable}
+            onMenu={openThreadMenuStable}
+            onOpen={openBoardThread}
+            onStartDraft={startDraftStable}
+            onDropIssue={dropIssueStable}
+            onRefreshIssues={loadIssues}
+            onArchive={archiveThreadsStable}
+            onDelete={deleteThreadsStable}
+          />
           {threadOverlays}
           {superViewDialog}
           {newProjectDialog}
@@ -4672,79 +4068,13 @@ export default function App() {
           />
           <button onClick={newThread}>New</button>
         </div>
-        <div className="sidebar-search">
-          <input
-            className="thread-filter"
-            placeholder="Search threads…"
-            value={threadFilter}
-            onChange={(e) => setThreadFilter(e.target.value)}
-          />
-        </div>
-        <div className="col-body">
-          {projectThreads.length === 0 && (
-            <div className="empty">
-              {query !== "" ? "No threads match that search." : "No threads yet"}
-            </div>
-          )}
-          {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
-            <div
-              key={t.id}
-              className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""} ${harnessTint(t.harness ?? "")}`}
-              style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
-              {...clickable(() => {
-                if (t.subthreads > 0) toggleSubthreads(t.id);
-                selectThread(t.id);
-              })}
-              onContextMenu={(e) => openThreadMenu(t, e)}
-            >
-              {t.waiting && (
-                <svg className="row-sched-ring" aria-hidden="true" focusable="false">
-                  <rect x="1" y="1" rx="9" pathLength="100" />
-                </svg>
-              )}
-              <div className="t" title={t.title}>
-                {t.title}
-                {t.waiting && (
-                  <span className="row-scheduled" title={`Scheduled — waiting on ${t.waiting.dependsOn.length} thread${t.waiting.dependsOn.length === 1 ? "" : "s"}`}>
-                    ◷ {t.waiting.dependsOn.length}
-                  </span>
-                )}
-                {t.subthreads > 0 && (
-                  <span className="sub-caret" aria-label={collapsedThreads.has(t.id) ? "Show subthreads" : "Hide subthreads"}>
-                    {collapsedThreads.has(t.id) ? "▸" : "▾"} {t.subthreads}
-                  </span>
-                )}
-              </div>
-              <div className="m">
-                {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
-              </div>
-              <div className="thread-row-foot">
-                <ThreadClock t={t} />
-                {t.controlledBy && (
-                  <button
-                    type="button"
-                    className="controlled-chip"
-                    title={`Relaunched by ${threads.find((c) => c.id === t.controlledBy)?.title ?? t.controlledBy}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (t.controlledBy) selectThread(t.controlledBy);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (t.controlledBy) selectThread(t.controlledBy);
-                      }
-                    }}
-                  >
-                    ⌁ controlled
-                  </button>
-                )}
-                {fmtUpdated(t.updatedAt) && <span className="u">{fmtUpdated(t.updatedAt)}</span>}
-              </div>
-            </div>
-          ))}
-        </div>
+        <ThreadList
+          threads={threads}
+          projectId={projectId}
+          activeId={activeId}
+          onSelect={selectThreadStable}
+          onMenu={openThreadMenuStable}
+        />
         <div className="sidebar-foot">
           <LimitsMeter rpc={rpcRef.current} />
           <RemoteSection rpc={rpcRef.current} />
@@ -5565,121 +4895,15 @@ export default function App() {
             />
           </div>
         ) : asideActive === "council" ? (
-          <div className="section council-section">
-            {!activeId && <p className="hint">Open a thread to convene a council.</p>}
-            <div className="council-pane">
-              <label className="field">
-                <span>The question to debate</span>
-                <textarea
-                  rows={2}
-                  value={councilTopic}
-                  onChange={(e) => setCouncilTopic(e.target.value)}
-                  placeholder="e.g. Which approach should we take for the parser rewrite?"
-                />
-              </label>
-              <label className="field">
-                <span>
-                  Debate rounds — every member answers, then sees and challenges the table
-                </span>
-                <input
-                  type="number"
-                  min={1}
-                  max={4}
-                  value={councilRounds}
-                  onChange={(e) =>
-                    setCouncilRounds(Math.max(1, Math.min(4, Number(e.target.value) || 2)))
-                  }
-                  style={{ maxWidth: 100 }}
-                />
-              </label>
-              <div className="council-members">
-                <span className="field-label">Members</span>
-                {councilMembers.map((m, idx) => (
-                  <div className="council-member" key={idx}>
-                    <div className="cm-row">
-                      <input
-                        className="cm-name"
-                        value={m.name}
-                        onChange={(e) => updateCouncilMember(idx, { name: e.target.value })}
-                        placeholder="name"
-                        title="Seat name — how this member shows up in the debate"
-                      />
-                      <Dropdown
-                        value={m.role}
-                        options={roles.map((r) => ({ value: r.id, label: r.name }))}
-                        onChange={(v) => updateCouncilMember(idx, { role: v })}
-                      />
-                      <Dropdown
-                        value={m.harness}
-                        options={harnessOptionsFor(m.harness)}
-                        onChange={(v) => {
-                          updateCouncilMember(idx, { harness: v, model: "" });
-                          if (v) refreshModels(v).catch(() => undefined);
-                        }}
-                      />
-                      <Dropdown
-                        value={m.model}
-                        options={modelOptions(m.harness, m.model)}
-                        searchable
-                        placeholder="model (role default)"
-                        onRefresh={() => refreshModels(m.harness).catch(() => undefined)}
-                        onChange={(v) => updateCouncilMember(idx, { model: v })}
-                      />
-                      {councilMembers.length > 2 && (
-                        <button
-                          className="cm-remove"
-                          title="Remove this seat"
-                          onClick={() =>
-                            setCouncilMembers((prev) => prev.filter((_, i) => i !== idx))
-                          }
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                    <input
-                      className="cm-perspective"
-                      value={m.perspective}
-                      onChange={(e) => updateCouncilMember(idx, { perspective: e.target.value })}
-                      placeholder="Perspective this member argues from (optional)"
-                    />
-                  </div>
-                ))}
-                {councilMembers.length < 6 && (
-                  <button
-                    className="cm-add"
-                    onClick={() =>
-                      setCouncilMembers((prev) => [
-                        ...prev,
-                        {
-                          name: roles[prev.length % Math.max(1, roles.length)]?.id ?? "member",
-                          role: roles[prev.length % Math.max(1, roles.length)]?.id ?? "executor",
-                          harness: "",
-                          model: "",
-                          perspective: "",
-                        },
-                      ])
-                    }
-                  >
-                    + Add seat
-                  </button>
-                )}
-              </div>
-              <p className="hint">
-                Members run in parallel each round. A facilitator — who was not part of the debate —
-                writes the final consensus into this thread, with dissent recorded.
-              </p>
-              <div className="sheet-actions">
-                <button
-                  className="primary"
-                  disabled={!activeId || !councilTopic.trim() || councilMembers.length < 2 || busy}
-                  onClick={startCouncil}
-                >
-                  Convene council
-                </button>
-              </div>
-            </div>
-          </div>
+          <CouncilPanel
+            activeId={activeId}
+            roles={roles}
+            busy={busy}
+            harnessOptionsFor={harnessOptionsFor}
+            modelOptions={modelOptions}
+            refreshModels={refreshModels}
+            onStart={startCouncil}
+          />
         ) : (
           <>
             <div className="section diff-section">

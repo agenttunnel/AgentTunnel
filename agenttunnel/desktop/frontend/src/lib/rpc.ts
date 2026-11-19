@@ -60,29 +60,47 @@ export class Rpc {
   private attempt = 0;
   private retryTimer?: number;
   private retrying = false;
+  /** Settles connect() once the first socket opens. */
+  private firstOpen?: () => void;
+  private onAttemptFailed?: (error: Error) => void;
 
   /**
-   * `rediscover` re-reads the connection before each reconnect attempt: a
-   * restarted daemon may listen on a new port with a new token. It resolves
-   * null to keep the current connection.
+   * `rediscover` re-reads the connection before each attempt: a restarted
+   * daemon may listen on a new port with a new token. It resolves null to
+   * keep the current connection. `conn` is null when the first discovery
+   * failed; attempts then wait on `rediscover`.
    */
   constructor(
-    private conn: Conn,
+    private conn: Conn | null,
     private readonly rediscover?: () => Promise<Conn | null>,
   ) {}
 
-  /** The connection in use; it changes when a reconnect rediscovered one. */
+  /** The connection in use; it changes when a reconnect rediscovered one.
+   * Only read it once connect() resolved. */
   get connection(): Conn {
-    return this.conn;
+    return this.conn as Conn;
   }
 
-  connect(): Promise<void> {
-    return this.open();
+  /**
+   * connect opens the first socket. A failed attempt is reported to
+   * `onFailed` and retried with the reconnect backoff, so a daemon that is
+   * not up yet is picked up once it is; retryNow skips the wait. Resolves
+   * once a socket is open, never rejects.
+   */
+  connect(onFailed?: (error: Error) => void): Promise<void> {
+    this.onAttemptFailed = onFailed;
+    return new Promise((resolve) => {
+      this.firstOpen = resolve;
+      this.status = "reconnecting";
+      void this.reconnect();
+    });
   }
 
   private open(): Promise<void> {
+    const conn = this.conn;
+    if (!conn) return Promise.reject(new Error("No daemon connection to open"));
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`${this.conn.wsUrl}?token=${encodeURIComponent(this.conn.token)}`);
+      const ws = new WebSocket(`${conn.wsUrl}?token=${encodeURIComponent(conn.token)}`);
       this.ws = ws;
       this.subscribedHere.clear();
       let opened = false;
@@ -134,11 +152,20 @@ export class Rpc {
     if (this.status !== "reconnecting" || this.retrying) return;
     this.retrying = true;
     try {
-      const found = this.rediscover ? await this.rediscover().catch(() => null) : null;
+      let lookup: unknown = null;
+      const found = this.rediscover
+        ? await this.rediscover().catch((e) => {
+            lookup = e;
+            return null;
+          })
+        : null;
       if (found) this.conn = found;
+      // Without any connection yet, the failed lookup is the reason to show.
+      if (!this.conn && lookup) throw lookup;
       await this.open();
-    } catch {
+    } catch (e) {
       this.retrying = false;
+      this.onAttemptFailed?.(e instanceof Error ? e : new Error(String(e)));
       this.scheduleReconnect();
       return;
     }
@@ -149,6 +176,15 @@ export class Rpc {
       return;
     }
     this.attempt = 0;
+    const first = this.firstOpen;
+    if (first) {
+      // The first socket: nothing to replay, and nobody to tell it came back.
+      this.firstOpen = undefined;
+      this.onAttemptFailed = undefined;
+      this.status = "online";
+      first();
+      return;
+    }
     for (const threadId of this.subscriptions) {
       this.call("thread.subscribe", { threadId }).catch(() => undefined);
     }

@@ -22,6 +22,7 @@ func imageSpec(paths ...string) SessionSpec {
 }
 
 func TestCodexInvocationAttachesImageFlags(t *testing.T) {
+	fakeCodex(t, "--json")
 	cs, err := codexInvocation(imageSpec("/att/a.png", "/att/b.png"))
 	if err != nil {
 		t.Fatal(err)

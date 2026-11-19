@@ -132,7 +132,7 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
       n.model = p.Selection;
       return n;
     case "thread.seen":
-      if (!n.lastSeenAt || Date.parse(ev.at) > Date.parse(n.lastSeenAt)) n.lastSeenAt = ev.at;
+      if (!n.lastSeenAt || after(ev.at, n.lastSeenAt)) n.lastSeenAt = ev.at;
       return n;
     case "thread.steering-injected":
       return n;
@@ -169,6 +169,7 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
       if (!agents[id]) n.agentOrder = [...(s.agentOrder ?? []), id];
       agents[id] = {
         id,
+        threadId: ev.threadId,
         parentAgentId: str(p.parentAgentId) || undefined,
         name: str(p.name) || undefined,
         role: str(p.role),
@@ -240,6 +241,7 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
         kind: str(p.kind) as AgentQuestion["kind"],
         question: str(p.question),
         options: Array.isArray(p.options) ? (p.options as string[]) : undefined,
+        notify: str(p.notify) || undefined,
         status: "pending",
         at: ev.at,
       };
@@ -270,6 +272,15 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
       // deletion) are left to a refetch rather than mirrored here.
       return null;
   }
+}
+
+/** after compares two daemon timestamps as Go's time.After does: Date.parse
+ * stops at milliseconds, so the nanosecond digits break a tie. */
+function after(a: string, b: string): boolean {
+  const ms = Date.parse(a) - Date.parse(b);
+  if (ms !== 0) return ms > 0;
+  const subMs = (s: string) => Number((/\.(\d+)/.exec(s)?.[1] ?? "").padEnd(9, "0").slice(3, 9));
+  return subMs(a) > subMs(b);
 }
 
 /** Drops the oldest closed questions past the cap; pending ones always stay. */

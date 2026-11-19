@@ -7,6 +7,8 @@ export type AgentQuestion = {
   kind: QuestionKind;
   question: string;
   options?: string[] | null;
+  /** The agent that also hears the answer as a peer message, if any. */
+  notify?: string;
   status: "pending" | "answered" | "closed";
   selected?: string[] | null;
   text?: string;
