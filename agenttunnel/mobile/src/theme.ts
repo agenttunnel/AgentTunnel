@@ -1,5 +1,5 @@
 // Theme tokens ported from the desktop's :root block in
-// desktop/frontend/public/style.css. Fixed dark theme: there is no light mode
+// desktop/frontend/src/style.css. Fixed dark theme: there is no light mode
 // and no second visual language. Names keep the desktop's meaning; the
 // `surface*` names are the desktop's --surface-1..3 (its --panel aliases).
 import { Platform } from "react-native";
