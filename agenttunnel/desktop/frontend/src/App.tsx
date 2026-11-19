@@ -1215,6 +1215,8 @@ export default function App() {
   });
 
   const rpcRef = useRef<Rpc | null>(null);
+  /** The client still making its first connection; the splash's Retry pokes it. */
+  const bootRpcRef = useRef<Rpc | null>(null);
   // The daemon's HTTP origin + token, for image uploads and fetches that must
   // not ride the WebSocket.
   const connRef = useRef<Conn | null>(null);
@@ -1995,19 +1997,34 @@ export default function App() {
   }, []);
 
   // Connect to the embedded daemon once the shell hands us its address.
+  // A daemon that is not up yet (or a web UI loaded before it) keeps the
+  // splash on "Connecting…" with the reason, retrying with the reconnect
+  // backoff; the splash's Retry skips the wait.
   useEffect(() => {
     let cancelled = false;
-    discover().then(async (conn: Conn) => {
+    let boot: Rpc | null = null;
+    const failed = (e: unknown) => {
       if (cancelled) return;
-      const rpc = new Rpc(conn, rediscover);
-      try {
-        await rpc.connect();
-      } catch (e) {
-        setStatus("offline");
-        setError(e instanceof Error ? e.message : String(e));
-        return;
-      }
+      setStatus("offline");
+      setError(e instanceof Error ? e.message : String(e));
+    };
+    const stopWake: { off?: () => void } = {};
+    discover()
+      .catch((e) => {
+        // The web UI's /conn did not answer; the retries ask it again.
+        failed(e);
+        return null;
+      })
+      .then(async (found: Conn | null) => {
       if (cancelled) return;
+      const rpc = new Rpc(found, rediscover);
+      boot = rpc;
+      bootRpcRef.current = rpc;
+      stopWake.off = rpc.retryOnWake();
+      await rpc.connect(failed);
+      if (cancelled) return;
+      const conn = rpc.connection;
+      setError(null);
       rpcRef.current = rpc;
       connRef.current = conn;
       setStatus("online");
@@ -2021,7 +2038,6 @@ export default function App() {
         setResync((n) => n + 1);
         scheduleBoardReloadRef.current();
       });
-      rpc.retryOnWake();
       // Any thread's durable event may change its list row; this replaces polling.
       rpc.onNotification(({ method, params }) => {
         if (method !== "thread.changed") return;
@@ -2100,16 +2116,15 @@ export default function App() {
         }
         Window.Focus().catch(() => undefined);
       });
-    }).catch((e) => {
-      // The daemon never handed us a connection (e.g. the web UI's /conn is
-      // unreachable): fail loudly instead of booting forever.
-      setStatus("offline");
-      setError(e instanceof Error ? e.message : String(e));
-    });
+    })
+      .catch(failed);
     return () => {
       cancelled = true;
+      stopWake.off?.();
+      boot?.close();
     };
   }, []);
+  const retryConnect = useCallback(() => bootRpcRef.current?.retryNow(), []);
 
   const scheduleRefresh = useCallback(
     (id: string) => {
@@ -3451,9 +3466,14 @@ export default function App() {
         <img src="/brand-mark.svg" alt="" />
         <div className="mark">AgentTunnel</div>
         <div className="splash-sub">
-          {status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}
+          {status === "connecting" ? "Starting the daemon…" : "Connecting…"}
         </div>
-        {error && <div className="err-text">{error}</div>}
+        {status === "offline" && (
+          <>
+            {error && <div className="err-text">{error}</div>}
+            <button onClick={retryConnect}>Retry</button>
+          </>
+        )}
       </div>
     );
   }
