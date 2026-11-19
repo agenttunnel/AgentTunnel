@@ -1,4 +1,5 @@
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useMemo, useRef, useState } from "react";
+import { useLatestCallback } from "../lib/store";
 import { wordDiff, type TokSpan } from "../lib/worddiff";
 import {
   ReviewThreads,
@@ -152,7 +153,7 @@ export function DiffView({
   const pickRef = useRef<Picking | null>(null);
   const [picking, setPicking] = useState<Picking | null>(null);
 
-  const press = (file: string, side: Side, n: number, e: React.MouseEvent) => {
+  const press = useLatestCallback((file: string, side: Side, n: number, e: React.MouseEvent) => {
     if (e.button !== 0) return;
     // Keep the browser from selecting code text while the user picks lines.
     e.preventDefault();
@@ -171,15 +172,24 @@ export function DiffView({
       if (p) onLineClick(p.file, Math.min(p.from, p.to), Math.max(p.from, p.to), p.side);
     };
     window.addEventListener("mouseup", up);
-  };
+  });
 
-  const enter = (file: string, side: Side, n: number) => {
+  const enter = useLatestCallback((file: string, side: Side, n: number) => {
     const p = pickRef.current;
     if (!p || p.file !== file || p.side !== side) return;
     const next = { ...p, to: n };
     pickRef.current = next;
     setPicking(next);
-  };
+  });
+  const draftBody = useLatestCallback(onDraftBody);
+  const addComment = useLatestCallback(onAddComment);
+  const cancelDraft = useLatestCallback(onCancelDraft);
+  // Comments by file, so each file only re-renders when its own change.
+  const commentsByFile = useMemo(() => {
+    const m = new Map<string, CommentLike[]>();
+    for (const c of comments) m.set(c.file, [...(m.get(c.file) ?? []), c]);
+    return m;
+  }, [comments]);
 
   return (
     <div className="diff-view">
@@ -216,66 +226,124 @@ export function DiffView({
 
       {diff && diff.empty && <div className="empty">{emptyText}</div>}
 
-      {files.map((f, fi) => {
-        const { hunks } = groupHunks(f.lines ?? []);
-        const ctx: LineCtx = {
-          file: f.path,
-          comments,
-          draft,
-          picking,
-          threads,
-          people,
-          onPress: (side, n, e) => press(f.path, side, n, e),
-          onEnter: (side, n) => enter(f.path, side, n),
-        };
-        return (
-          <div className="diff-file" id={`${idPrefix}diff-file-${fi}`} key={f.path}>
-            <div className="diff-head">
-              <span className={`badge ${fileStatus(f)}`}>{statusLetter[fileStatus(f)]}</span>
-              <span className="path">{f.path}</span>
-              <span className="counts">
-                <span style={{ color: "var(--ok)" }}>+{f.additions}</span>{" "}
-                <span style={{ color: "var(--err)" }}>-{f.deletions}</span>
-              </span>
-            </div>
-            {hunks.map((hunk, hi) => (
-              <div className="diff-hunk" key={hi}>
-                {hunk.header && (
-                  <div className="diff-line hunk">
-                    <span className="ln" />
-                    <span className="ln" />
-                    <span className="code">{hunk.header.text}</span>
-                  </div>
-                )}
-                {renderHunkLines(hunk.lines, ctx)}
-              </div>
-            ))}
-            {draft && draft.file === f.path && (
-              <div className="comment-box">
-                <div className="cb-head">
-                  Commenting on {draft.file}:{lineRange(draft.line, draft.endLine)}
-                </div>
-                <textarea
-                  rows={2}
-                  autoFocus
-                  placeholder="Leave a review comment for the agents…"
-                  value={draft.body}
-                  onChange={(e) => onDraftBody(e.target.value)}
-                />
-                <div className="cb-actions">
-                  <button onClick={onCancelDraft}>Cancel</button>
-                  <button className="primary" onClick={onAddComment}>
-                    Add comment
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {files.map((f, fi) => (
+        <DiffFile
+          key={f.path}
+          f={f}
+          id={`${idPrefix}diff-file-${fi}`}
+          comments={commentsByFile.get(f.path) ?? NO_COMMENTS}
+          draft={draft && draft.file === f.path ? draft : null}
+          picking={picking && picking.file === f.path ? picking : null}
+          threads={threads}
+          people={people}
+          onPress={press}
+          onEnter={enter}
+          onDraftBody={draftBody}
+          onAddComment={addComment}
+          onCancelDraft={cancelDraft}
+        />
+      ))}
     </div>
   );
 }
+
+const NO_COMMENTS: CommentLike[] = [];
+/** Files longer than this start folded: opening Review never builds thousands
+ * of rows at once, and a lockfile does not bury the real changes. */
+const LARGE_FILE_LINES = 400;
+
+/** One file's diff. Memoized: dragging a line range or typing a comment
+ * re-renders only the file it touches. */
+const DiffFile = memo(function DiffFile({
+  f,
+  id,
+  comments,
+  draft,
+  picking,
+  threads,
+  people,
+  onPress,
+  onEnter,
+  onDraftBody,
+  onAddComment,
+  onCancelDraft,
+}: {
+  f: DiffFileLike;
+  id: string;
+  comments: CommentLike[];
+  draft: DraftLike | null;
+  picking: Picking | null;
+  threads: Map<string, ReviewThreadLike[]>;
+  people: ReviewPeople;
+  onPress: (file: string, side: Side, n: number, e: React.MouseEvent) => void;
+  onEnter: (file: string, side: Side, n: number) => void;
+  onDraftBody: (body: string) => void;
+  onAddComment: () => void;
+  onCancelDraft: () => void;
+}) {
+  const lineCount = f.lines?.length ?? 0;
+  const [open, setOpen] = useState(lineCount <= LARGE_FILE_LINES);
+  const hunks = useMemo(() => (open ? groupHunks(f.lines ?? []).hunks : []), [f.lines, open]);
+  const ctx: LineCtx = {
+    file: f.path,
+    comments,
+    draft,
+    picking,
+    threads,
+    people,
+    onPress: (side, n, e) => onPress(f.path, side, n, e),
+    onEnter: (side, n) => onEnter(f.path, side, n),
+  };
+  return (
+    <div className="diff-file" id={id}>
+      <div className="diff-head">
+        <span className={`badge ${fileStatus(f)}`}>{statusLetter[fileStatus(f)]}</span>
+        <span className="path">{f.path}</span>
+        <span className="counts">
+          <span style={{ color: "var(--ok)" }}>+{f.additions}</span>{" "}
+          <span style={{ color: "var(--err)" }}>-{f.deletions}</span>
+        </span>
+      </div>
+      {!open && (
+        <button type="button" className="diff-load" onClick={() => setOpen(true)}>
+          Large diff — {lineCount} lines. Show it
+        </button>
+      )}
+      {hunks.map((hunk, hi) => (
+        <div className="diff-hunk" key={hi}>
+          {hunk.header && (
+            <div className="diff-line hunk">
+              <span className="ln" />
+              <span className="ln" />
+              <span className="code">{hunk.header.text}</span>
+            </div>
+          )}
+          {renderHunkLines(hunk.lines, ctx)}
+        </div>
+      ))}
+      {draft && (
+        <div className="comment-box">
+          <div className="cb-head">
+            Commenting on {draft.file}:{lineRange(draft.line, draft.endLine)}
+          </div>
+          <textarea
+            rows={2}
+            autoFocus
+            placeholder="Leave a review comment for the agents…"
+            value={draft.body}
+            onChange={(e) => onDraftBody(e.target.value)}
+          />
+          <div className="cb-actions">
+            <button onClick={onCancelDraft}>Cancel</button>
+            <button className="primary" onClick={onAddComment}>
+              Add comment
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 type LineCtx = {
   file: string;
