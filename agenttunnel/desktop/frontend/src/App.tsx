@@ -130,7 +130,7 @@ import {
 } from "./lib/composerStore";
 import { useLatestCallback } from "./lib/store";
 import { LiveLog } from "./components/LiveLog";
-import { dropSnapshotOverlap, pushLiveLine, setLive, type LiveLine } from "./lib/liveLog";
+import { dropSnapshotOverlap, pushLiveLine, setLive, setLogs, type LiveLine } from "./lib/liveLog";
 
 type Role = {
   id: string;
@@ -1077,7 +1077,6 @@ export default function App() {
   const [compact, setCompact] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
   // The live log box can be collapsed to a header; the choice persists per viewer.
   const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
   const toggleLogs = () => {
@@ -5800,7 +5799,6 @@ export default function App() {
         <AgentDetail
           agent={detailAgent}
           steps={thread?.steps?.[detailAgent.id] ?? []}
-          logs={logs}
           roleName={rolesById[detailAgent.role] || detailAgent.role}
           onClose={() => setDetailId(null)}
         />

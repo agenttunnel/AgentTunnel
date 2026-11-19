@@ -38,3 +38,8 @@ export function dropSnapshotOverlap(snapshot: LiveLine[], buffered: LiveLine[]):
  */
 export const liveLogStore = createStore({ lines: [] as LiveLine[] });
 export const setLive = liveLogStore.setter("lines");
+
+/** The log of the agent open in the detail panel, polled while it is open. It
+ * is read by AgentDetail alone, so a poll re-renders that sheet and not App. */
+export const agentLogStore = createStore({ entries: [] as { kind: string; text: string }[] });
+export const setLogs = agentLogStore.setter("entries");
