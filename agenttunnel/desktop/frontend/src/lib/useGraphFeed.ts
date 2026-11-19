@@ -1,6 +1,6 @@
 // useGraphFeed keeps the agent graph's event log and folded state for one
 // thread: it loads the thread's graph events once, then applies each live
-// `thread.event` frame as it arrives. Publishing is batched to animation
+// `thread.event` frame as it arrives, and loads again after a reconnect. Publishing is batched to animation
 // frames, so a burst of events re-renders the graph once per frame.
 
 import { useEffect, useState } from "react";
@@ -37,6 +37,10 @@ const EMPTY: GraphFeed = {
 
 export function useGraphFeed(rpc: Rpc | null, threadId: string): GraphFeed {
   const [feed, setFeed] = useState<GraphFeed>(EMPTY);
+  // Frames sent while the socket was down are lost: a reconnect reads the
+  // history again. The old feed stays on screen until the new one loads.
+  const [epoch, setEpoch] = useState(0);
+  useEffect(() => rpc?.onReconnect(() => setEpoch((n) => n + 1)), [rpc]);
 
   useEffect(() => {
     if (!rpc || !threadId) return;
@@ -113,7 +117,7 @@ export function useGraphFeed(rpc: Rpc | null, threadId: string): GraphFeed {
       off();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [rpc, threadId]);
+  }, [rpc, threadId, epoch]);
 
   // A feed from another thread is never shown, even for the one render before
   // the effect swaps it.
