@@ -103,7 +103,7 @@ export function StatusPopover({
           </div>
           <div>
             <dt>Daemon</dt>
-            <dd>{attached ? `Attached · ${host || "remote"}` : "Runs inside this app"}</dd>
+            <dd>{attached ? `Attached · ${host || "remote"}` : `Local${host ? ` · ${host}` : ""}`}</dd>
           </div>
           <div>
             <dt>Harnesses</dt>

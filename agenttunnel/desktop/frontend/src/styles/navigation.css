@@ -295,8 +295,19 @@
   font-size: 11.5px;
   color: var(--faint);
 }
+/* The sidebar clips its overflow, so the footer's panels span the column
+ * instead of their trigger's width. */
+.nav-foot {
+  position: relative;
+}
+.nav-foot .popover-wrap {
+  position: static;
+}
 .nav-foot .popover-panel {
-  width: min(320px, calc(100vw - 24px));
+  left: 8px;
+  right: 8px;
+  min-width: 0;
+  max-width: none;
 }
 .limits-pop .limits {
   padding: 0;
@@ -333,6 +344,7 @@
 /* --- phone width ---------------------------------------------------------- */
 @media (max-width: 720px) {
   .crumb:not(.last),
+  .crumb.last .crumb-sep,
   .crumbs .status-chip,
   .palette-btn-label,
   .palette-btn kbd {
@@ -564,6 +576,12 @@
   width: min(460px, 92vw);
   padding: 22px 22px 18px;
   gap: 10px;
+}
+/* Focus lands on the dialog itself so its buttons are one Tab away; the
+ * container is not a control and draws no ring. */
+.tour:focus,
+.tour:focus-visible {
+  outline: none;
 }
 .tour-count {
   color: var(--faint);
