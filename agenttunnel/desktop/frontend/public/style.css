@@ -7671,3 +7671,22 @@ button.danger-text {
   text-transform: uppercase;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
+
+/* Transcript turns off screen skip layout and paint; `auto` remembers each
+ * turn's last rendered height so the scrollbar stays steady. */
+section.turn {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+/* A dropped daemon socket while the client retries. */
+.conn.reconnecting .led {
+  background: var(--warn);
+}
+.conn-retry {
+  color: var(--warn);
+}
+/* The lead's reply while it is being written; static, no animation. */
+.msg.streaming .who .role::after {
+  content: " · writing…";
+  color: var(--faint);
+}
