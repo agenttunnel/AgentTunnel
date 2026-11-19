@@ -302,6 +302,7 @@ func newApp(conn shellConn, state string, terminateOnClose bool, onWindowClosing
 	}
 
 	installShellEvents(app, conn, state)
+	installAttention(app)
 	return app
 }
 
