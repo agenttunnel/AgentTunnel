@@ -39,7 +39,6 @@ import { copyText as writeClipboard } from "./lib/clipboard";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { ThreadSetup } from "./components/ThreadSetup";
 import { ThreadWizard } from "./components/ThreadWizard";
-import { ApprovedModelsPicker } from "./components/ApprovedModelsPicker";
 import { clickable, switchProps } from "./lib/switchProps";
 import {
   PANEL_BOUNDS,
@@ -54,7 +53,7 @@ import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
-import { Dropdown, type DropdownOption } from "./components/Dropdown";
+import type { DropdownOption } from "./components/Dropdown";
 import { FileEditor } from "./components/FileEditor";
 import { PRPanel, type PRListing } from "./components/PRPanel";
 import {
@@ -80,7 +79,6 @@ import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
-import { BrowserNotifyToggle } from "./components/BrowserNotifyToggle";
 import { useAttention } from "./lib/attention";
 import { useUrlRoute, type Route } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
@@ -93,7 +91,7 @@ import type {
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { getPref, setPref } from "./lib/prefs";
-import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
+import { applyTheme, loadTheme } from "./lib/themes";
 import {
   buildCommands,
   parseSlash,
@@ -133,6 +131,12 @@ import { LiveLog, StreamingReply } from "./components/LiveLog";
 import { InheritedPanel } from "./components/InheritedPanel";
 import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
 import { RenameDialog } from "./components/RenameDialog";
+import {
+  SettingsSheet,
+  fillSettingsForm,
+  flashSaved,
+  setModelsNotice,
+} from "./components/SettingsSheet";
 import { ThreadList, ThreadSearch } from "./components/Sidebar/ThreadList";
 import { ProjectThreads } from "./components/ProjectThreads";
 import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
@@ -292,7 +296,7 @@ type DiffFile = {
   lines: DiffLine[] | null;
 };
 type Diff = { files: DiffFile[] | null; raw: string; empty: boolean };
-type HarnessInfo = {
+export type HarnessInfo = {
   all: string[];
   available: string[];
   enabled: string[] | null;
@@ -1036,9 +1040,9 @@ export default function App() {
   const scanningWorktrees = useRef(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Appearance is shared by every client of this daemon through the prefs store.
-  const [theme, setTheme] = useState<ThemeId>(loadTheme);
-  useEffect(() => applyTheme(theme), [theme]);
+  // Appearance is shared by every client of this daemon through the prefs
+  // store; the settings sheet changes it.
+  useEffect(() => applyTheme(loadTheme()), []);
   // The how-to sheet opens on its own only until it has been seen once; /help reopens it.
   const [cheatSheetOpen, setCheatSheetOpen] = useState(showCheatSheetOnLaunch);
   // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
@@ -1052,15 +1056,6 @@ export default function App() {
   const [conn, setConn] = useState<Conn | null>(null);
   const [keepRunning, setKeepRunningState] = useState(false);
 
-  const [workdirInput, setWorkdirInput] = useState("");
-  const [approvedModels, setApprovedModels] = useState<string[]>([]);
-  const [staleAfterInput, setStaleAfterInput] = useState("30");
-  const [saved, setSaved] = useState(false);
-  const [modelsNotice, setModelsNotice] = useState<string | null>(null);
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [deps, setDeps] = useState<DependencyView[] | null>(null);
-  const [depsBusy, setDepsBusy] = useState(false);
-  const [depsError, setDepsError] = useState<string | null>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -1384,20 +1379,6 @@ export default function App() {
     const rpc = rpcRef.current;
     if (!rpc) return;
     setHarnesses(await rpc.call<HarnessInfo>("harness.list"));
-  }, []);
-
-  const loadDeps = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    setDepsBusy(true);
-    try {
-      setDeps(await rpc.call<DependencyView[]>("deps.check"));
-      setDepsError(null);
-    } catch (e) {
-      setDepsError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setDepsBusy(false);
-    }
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -1872,21 +1853,8 @@ export default function App() {
     if (!rpc) return null;
     const s = await rpc.call<SettingsView>("settings.get");
     setSettings(s);
-    setWorkdirInput(s.workdir ?? "");
-    setApprovedModels(s.approvedModels ?? []);
-    setStaleAfterInput(String(s.staleAfterMinutes ?? 30));
+    fillSettingsForm(s);
     return s;
-  }, []);
-
-  const loadAppInfo = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    try {
-      const info = await rpc.call<{ version?: string }>("app.info");
-      setAppVersion(info?.version || "dev");
-    } catch {
-      setAppVersion("dev");
-    }
   }, []);
 
   // Connect to the embedded daemon once the shell hands us its address.
@@ -2245,12 +2213,6 @@ export default function App() {
     for (const r of roles) map[r.id] = r.name;
     return map;
   }, [roles]);
-
-  // The master orchestrator (lead) runs on the Orchestrator role's runtime
-  // unless it is pinned, in which case the pin is the persisted lead setting.
-  const leadSettings = settings?.lead ?? {};
-  const orchestratorRole = settings?.roles.find((r) => r.id === "orchestrator");
-  const leadHarness = leadSettings.harness || orchestratorRole?.harness || "";
 
   const agents = useMemo<Agent[]>(() => {
     const out: Agent[] = [];
@@ -2625,7 +2587,6 @@ export default function App() {
     return map;
   }, [threads]);
   const enabledHarnesses = harnesses.enabled ?? harnesses.all;
-  const isHarnessEnabled = (h: string) => enabledHarnesses.includes(h);
 
   // Roles only offer enabled harnesses. A role already pointing at a disabled
   // harness keeps it as an option so its current value stays visible.
@@ -3232,25 +3193,19 @@ export default function App() {
   );
 
   /** Makes the view on screen the default for threads that have not set their own. */
-  const saveThreadDefaults = () => {
+  const saveThreadDefaults = useLatestCallback(() => {
     setTabDefault(tab);
     setAsideTabsDefault(asideTabs);
     setAsideActiveDefault(asideActive);
     setLayoutDefault(layout);
     councilSetup.setDefault(councilSetup.get(activeId));
-  };
+  });
 
   const openSettings = () => {
     setSettingsOpen(true);
     (async () => {
       try {
-        const [s] = await Promise.all([
-          loadSettings(),
-          loadHarnesses(),
-          loadProjects(),
-          loadAppInfo(),
-          loadDeps(),
-        ]);
+        const [s] = await Promise.all([loadSettings(), loadHarnesses(), loadProjects()]);
         const used = Array.from(new Set((s?.roles ?? []).map((r) => r.harness)));
         await Promise.all(used.map((h) => refreshModels(h)));
       } catch (e) {
@@ -3258,48 +3213,23 @@ export default function App() {
       }
     })();
   };
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   /** Persists the shell's keep-running preference. */
-  const toggleKeepRunning = (enabled: boolean) => {
+  const toggleKeepRunning = useCallback((enabled: boolean) => {
     setKeepRunningState(enabled);
     emitKeepRunning(enabled);
-  };
+  }, []);
 
-  const flashSaved = () => {
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 1500);
-  };
-
-  const saveEnv = async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      workdir: workdirInput,
-      autoMode: settings?.autoMode ?? false,
-      approvedModels,
-      staleAfterMinutes: staleAfterInput,
-    });
-    setSettings(s);
-    flashSaved();
-  };
-
-  const toggleHarness = async (id: string, enabled: boolean) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    await rpc.call("settings.set", { harness: { id, enabled } });
-    await loadHarnesses();
-    flashSaved();
-  };
-
-  const updateRole = (id: string, patch: Partial<RoleConfigView>) => {
+  const updateRole = useCallback((id: string, patch: Partial<RoleConfigView>) => {
     setSettings((prev) =>
       prev
         ? { ...prev, roles: prev.roles.map((r) => (r.id === id ? { ...r, ...patch } : r)) }
         : prev,
     );
-  };
+  }, []);
 
-  const persistRole = async (row: RoleConfigView) => {
+  const persistRole = useCallback(async (row: RoleConfigView) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
     const s = await rpc.call<SettingsView>("settings.set", {
@@ -3307,22 +3237,7 @@ export default function App() {
     });
     setSettings(s);
     flashSaved();
-  };
-
-  /** Pins the master orchestrator's runtime; empty fields inherit the role. */
-  const persistLeadRuntime = async (runtime: LeadRuntimeView) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      lead: {
-        harness: runtime.harness ?? "",
-        model: runtime.model ?? "",
-        variant: runtime.variant ?? "",
-      },
-    });
-    setSettings(s);
-    flashSaved();
-  };
+  }, []);
 
   // Required roles cannot be disabled; the daemon refuses them too.
   const toggleRoleEnabled = async (row: RoleConfigView, enabled: boolean) => {
@@ -3339,14 +3254,6 @@ export default function App() {
       // Reload so the switch shows what the daemon actually holds.
       loadSettings().catch(() => undefined);
     }
-  };
-
-  const toggleExperimentalRoles = async (enabled: boolean) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", { experimentalRoles: enabled });
-    setSettings(s);
-    flashSaved();
   };
 
   // A dropped socket keeps the app on screen while it reconnects; only a
@@ -3905,306 +3812,24 @@ export default function App() {
   // Rendered on every screen: settings are app-global, so the titlebar gear
   // must open the sheet wherever the user is.
   const settingsSheet = settingsOpen && settings && (
-    <div className="overlay" onClick={() => setSettingsOpen(false)}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-head">
-          <strong>Settings</strong>
-          <div className="sheet-head-right">
-            {saved && <span className="saved">Saved</span>}
-            <button onClick={() => setSettingsOpen(false)}>Close</button>
-          </div>
-        </div>
-        <div className="sheet-body">
-          <section className="set-section">
-            <h4>Appearance</h4>
-            <p className="hint">
-              Color theme for this device. It applies everywhere and is saved locally, not in
-              the daemon config.
-            </p>
-            <div className="theme-grid">
-              {THEMES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={`theme-card ${theme === t.id ? "on" : ""}`}
-                  aria-pressed={theme === t.id}
-                  onClick={() => setTheme(t.id)}
-                >
-                  <span className="theme-swatch" aria-hidden="true">
-                    {t.swatches.map((c, i) => (
-                      <span key={`${t.id}-${i}`} style={{ background: c }} />
-                    ))}
-                  </span>
-                  <span className="theme-name">{t.name}</span>
-                  <span className="theme-note">{t.note}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-          <section className="set-section">
-            <h4>New thread defaults</h4>
-            <p className="hint">
-              New threads open with the tab, panels, layout, and council setup saved here. A
-              thread you change keeps its own view.
-            </p>
-            <div className="sheet-actions">
-              <button onClick={saveThreadDefaults}>Save this view as default</button>
-            </div>
-          </section>
-          {!conn?.attached && (
-            <section className="set-section">
-              <h4>Desktop</h4>
-              <p className="hint">
-                When this is on, closing the window leaves the daemon (and any running
-                turns) alive in the background so <code>at</code> can still reach it.
-                Turn it off to stop the daemon with the window.
-              </p>
-              <div
-                className={`toggle ${keepRunning ? "on" : ""}`}
-                {...switchProps(keepRunning, () => toggleKeepRunning(!keepRunning))}
-              >
-                <span className="sw" /> Keep daemon running after the window closes
-              </div>
-            </section>
-          )}
-          <BrowserNotifyToggle />
-          <section className="set-section">
-            <h4>Environment</h4>
-            <label className="field">
-              <span>Fallback working directory (used when a thread has no project)</span>
-              <input
-                value={workdirInput}
-                onChange={(e) => setWorkdirInput(e.target.value)}
-                placeholder="/path/to/your/repo"
-              />
-            </label>
-            <div
-              className={`toggle ${settings.autoMode ? "on" : ""}`}
-              {...switchProps(settings.autoMode, () =>
-                setSettings({ ...settings, autoMode: !settings.autoMode }),
-              )}
-              style={{ marginTop: 10 }}
-            >
-              <span className="sw" /> Auto mode — orchestrator picks each task's model
-            </div>
-            <div className="field" style={{ marginTop: 12 }}>
-              <span>Approved models for auto mode</span>
-              <ApprovedModelsPicker
-                value={approvedModels}
-                onChange={setApprovedModels}
-                models={harnesses.models}
-                harnessOrder={harnesses.all}
-              />
-            </div>
-            <label className="field" style={{ marginTop: 12 }}>
-              <span>Mark threads stale after this many minutes of inactivity</span>
-              <input
-                value={staleAfterInput}
-                onChange={(e) => setStaleAfterInput(e.target.value)}
-                inputMode="numeric"
-                placeholder="30"
-                style={{ maxWidth: 120 }}
-              />
-            </label>
-            {settings.configPath && (
-              <p className="hint">
-                Config file: <code>{settings.configPath}</code>
-              </p>
-            )}
-            <div className="sheet-actions">
-              <button className="primary" onClick={saveEnv}>
-                Save environment
-              </button>
-            </div>
-          </section>
-
-          <section className="set-section">
-            <h4>Harnesses</h4>
-            <p className="hint">Disable a harness to remove it from every role.</p>
-            {harnesses.all.map((h) => (
-              <div className="harness-row" key={h}>
-                <span className="hn">{h}</span>
-                <span className={`avail ${harnesses.available.includes(h) ? "detected" : ""}`}>
-                  {harnesses.available.includes(h) ? "detected" : "not on PATH"}
-                </span>
-                <div
-                  className={`toggle ${isHarnessEnabled(h) ? "on" : ""}`}
-                  {...switchProps(isHarnessEnabled(h), () =>
-                    toggleHarness(h, !isHarnessEnabled(h)),
-                  )}
-                  aria-label={`${isHarnessEnabled(h) ? "Disable" : "Enable"} ${h}`}
-                >
-                  <span className="sw" />
-                </div>
-              </div>
-            ))}
-          </section>
-
-          <section className="set-section">
-            <h4>Master orchestrator</h4>
-            <p className="hint">
-              The team lead runs on this harness and model. Leave it on the Orchestrator role
-              to inherit that role's default; each thread can still override its own leads.
-            </p>
-            <div className="role-edit">
-              <span className="rn">Lead agent</span>
-              <Dropdown
-                value={leadSettings.harness ?? ""}
-                options={[
-                  {
-                    value: "",
-                    label: `Orchestrator role (${orchestratorRole?.harness ?? "default"})`,
-                  },
-                  ...harnessOptionsFor(leadSettings.harness ?? ""),
-                ]}
-                onChange={(v) => {
-                  persistLeadRuntime({ harness: v, model: "", variant: "" }).catch(
-                    () => undefined,
-                  );
-                  if (v) refreshModels(v).catch(() => undefined);
-                }}
-              />
-              <Dropdown
-                value={leadSettings.model ?? ""}
-                options={modelOptions(leadHarness, leadSettings.model ?? "")}
-                searchable
-                align="end"
-                placeholder="model (default)"
-                footNote="Discovered from the harness CLI"
-                onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
-                addLabel="Add model"
-                onAdd={(m) => {
-                  addModel(leadHarness, m)
-                    .then(() =>
-                      persistLeadRuntime({
-                        harness: leadSettings.harness ?? "",
-                        model: m,
-                        variant: leadSettings.variant ?? "",
-                      }),
-                    )
-                    .catch(() => undefined);
-                }}
-                onChange={(v) =>
-                  persistLeadRuntime({
-                    harness: leadSettings.harness ?? "",
-                    model: v,
-                    variant: leadSettings.variant ?? "",
-                  }).catch(() => undefined)
-                }
-              />
-            </div>
-          </section>
-
-          <section className="set-section">
-            <h4>Dependencies</h4>
-            <p className="hint">
-              The forge CLIs the Pull request tab shells out to. Versions are read from the
-              tools on PATH.
-            </p>
-            {depsError && <p className="hint warn">{depsError}</p>}
-            {deps === null && !depsError && <p className="hint">Checking…</p>}
-            {(deps ?? []).map((d) => (
-              <div className="dep-row" key={d.name}>
-                <span className="dn">{d.name}</span>
-                <span className={`dv ${d.status}`}>
-                  {d.status === "missing"
-                    ? "not installed"
-                    : `${d.version || "unknown version"}${
-                        d.status === "ok" ? "" : ` — ${d.minVersion} or newer required`
-                      }`}
-                </span>
-                <span
-                  className={`dot ${
-                    d.status === "ok" ? "clean" : d.status === "outdated" ? "dirty" : "missing"
-                  }`}
-                  title={d.status}
-                />
-              </div>
-            ))}
-            <div className="sheet-actions">
-              <button onClick={() => loadDeps().catch(() => undefined)} disabled={depsBusy}>
-                {depsBusy ? "Checking…" : "Recheck"}
-              </button>
-            </div>
-          </section>
-
-          <section className="set-section">
-            <h4>Roles</h4>
-            <p className="hint">
-              Each subagent role runs on its own harness and model; the Orchestrator role is the
-              master orchestrator above. Changes apply to the next turn.
-            </p>
-            <div
-              className={`toggle ${settings.experimentalRoles ? "on" : ""}`}
-              {...switchProps(settings.experimentalRoles, () =>
-                toggleExperimentalRoles(!settings.experimentalRoles).catch(() => undefined),
-              )}
-              style={{ marginBottom: 10 }}
-            >
-              <span className="sw" /> Experimental roles
-            </div>
-            <p className="hint">
-              Experimental roles are off by default. Turn this on to dispatch them.
-            </p>
-            {modelsNotice && <p className="hint warn">{modelsNotice}</p>}
-            {settings.roles
-              .filter((r) => r.id !== "orchestrator")
-              .map((r) => (
-                <div className="role-edit" key={r.id}>
-                  <span className="rn">
-                    {r.name}
-                    {r.experimental && <span className="badge experimental">Experimental</span>}
-                  </span>
-                  <Dropdown
-                    value={r.harness}
-                    options={harnessOptionsFor(r.harness)}
-                    onChange={(v) => {
-                      const row = { ...r, harness: v };
-                      updateRole(r.id, { harness: v });
-                      persistRole(row).catch(() => undefined);
-                      refreshModels(v).catch(() => undefined);
-                    }}
-                  />
-                  <Dropdown
-                    value={r.model}
-                    options={modelOptions(r.harness, r.model)}
-                    searchable
-                    align="end"
-                    placeholder="model (default)"
-                    footNote="Discovered from the harness CLI"
-                    onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
-                    addLabel="Add model"
-                    onAdd={(m) => {
-                      addModel(r.harness, m)
-                        .then(() => {
-                          const row = { ...r, model: m };
-                          updateRole(r.id, { model: m });
-                          persistRole(row).catch(() => undefined);
-                        })
-                        .catch(() => undefined);
-                    }}
-                    onChange={(v) => {
-                      const row = { ...r, model: v };
-                      updateRole(r.id, { model: v });
-                      persistRole(row).catch(() => undefined);
-                    }}
-                  />
-                </div>
-              ))}
-          </section>
-
-          <section className="set-section about-section">
-            <h4>About</h4>
-            <p className="hint">
-              AgentTunnel {appVersion ?? "dev"} · Built by Wael Rabah
-            </p>
-            <p className="hint">
-              <a href="https://github.com/WaelRabah">github.com/WaelRabah</a>
-            </p>
-          </section>
-        </div>
-      </div>
-    </div>
+    <SettingsSheet
+      rpc={rpcRef.current}
+      settings={settings}
+      setSettings={setSettings}
+      harnesses={harnesses}
+      loadHarnesses={loadHarnesses}
+      attached={!!conn?.attached}
+      keepRunning={keepRunning}
+      onToggleKeepRunning={toggleKeepRunning}
+      onSaveThreadDefaults={saveThreadDefaults}
+      onClose={closeSettings}
+      harnessOptionsFor={harnessOptionsFor}
+      modelOptions={modelOptions}
+      refreshModels={refreshModels}
+      addModel={addModel}
+      updateRole={updateRole}
+      persistRole={persistRole}
+    />
   );
 
   // The daily scan's question is app-global: it can arrive on any screen, so it
