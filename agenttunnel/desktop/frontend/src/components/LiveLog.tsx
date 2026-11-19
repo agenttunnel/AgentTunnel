@@ -47,7 +47,7 @@ export const StreamingReply = memo(function StreamingReply({
   }, [text, onGrow]);
   if (!line) return null;
   return (
-    <div className="msg streaming">
+    <div className="msg answer streaming" aria-busy="true">
       <div className="who">
         <span className="role">{source.author}</span>
       </div>

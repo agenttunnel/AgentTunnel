@@ -1,10 +1,7 @@
 import {
-  createContext,
   lazy,
-  memo,
   Suspense,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -22,7 +19,6 @@ import {
   Rpc,
   setKeepRunning as emitKeepRunning,
   type Conn,
-  type ImageRef,
 } from "./lib/rpc";
 import {
   addUsage,
@@ -106,7 +102,15 @@ import {
 import type { BtwEntry } from "./components/BtwPanel";
 import { SuperView, isAllThreadsShortcut } from "./components/SuperView";
 import { TERMINAL } from "./lib/graphEvents";
-import { ThreadImage } from "./components/ThreadImage";
+import {
+  groupTurns,
+  MessageActionsContext,
+  MessageImageContext,
+  TurnBlock,
+  type Message,
+  type MessageActions,
+  type MessageImageConn,
+} from "./components/Transcript";
 import { MasterChat } from "./components/MasterChat";
 import type { ToolCall } from "./lib/toolCalls";
 import { Composer } from "./components/Composer";
@@ -123,7 +127,7 @@ import {
   setRecall,
 } from "./lib/composerStore";
 import { useLatestCallback } from "./lib/store";
-import { LiveLog, StreamingReply } from "./components/LiveLog";
+import { TurnActivity } from "./components/TurnActivity";
 import { InheritedPanel } from "./components/InheritedPanel";
 import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
 import { RenameDialog } from "./components/RenameDialog";
@@ -162,20 +166,6 @@ type Agent = {
   endedAt?: string;
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string; tool?: ToolCall };
-type Message = {
-  id: string;
-  author: string;
-  text: string;
-  at: string;
-  images?: ImageRef[];
-  /** Set on a steering message once a pass has consumed it. */
-  consumed?: boolean;
-};
-/** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
-const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
-function isFailedBlock(m: Message): boolean {
-  return m.author === "shell" && SHELL_FAILED.test(m.text.trimEnd());
-}
 /** submitted comments were already handed to the team in a review turn. */
 type ReviewComment = {
   id: string;
@@ -465,263 +455,6 @@ function loadOpenProjects(): string[] {
   return [];
 }
 
-/** Turns a flat message list into turns: each user message opens one block. */
-function groupTurns(messages: Message[]): Message[][] {
-  const turns: Message[][] = [];
-  for (const m of messages) {
-    if (m.author === "user" || turns.length === 0) turns.push([m]);
-    else turns[turns.length - 1].push(m);
-  }
-  return turns;
-}
-
-/** Per-message actions App supplies through a context, so a memoized message
- * row never re-renders because a handler's identity changed. `copyText` writes
- * to the clipboard and resolves whether the write landed; `forkFromMessage`
- * branches the thread off one message; `scrollToMessage` scrolls to the next
- * (1) or previous (-1) message. */
-type MessageActions = {
-  copyText: (text: string) => Promise<boolean>;
-  forkFromMessage: (messageId: string) => void;
-  scrollToMessage: (messageId: string, dir: -1 | 1) => void;
-};
-const MessageActionsContext = createContext<MessageActions | null>(null);
-
-/** Connection details a transcript message needs to fetch its images over
- * HTTP: the daemon's base URL and token plus the thread the message sits in.
- * Provided through a context so memoized message rows never re-render from a
- * handler's identity; null renders no image section. */
-type MessageImageConn = { httpUrl: string; token: string; threadId: string };
-const MessageImageContext = createContext<MessageImageConn | null>(null);
-
-/** The git-branch glyph the fork button carries; inherits currentColor. */
-function BranchIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="11"
-      height="11"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <line x1="6" y1="3" x2="6" y2="15" />
-      <circle cx="18" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
-}
-
-/** The up/down glyph the message nav arrows carry; inherits currentColor. */
-function ChevronIcon({ up }: { up: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="11"
-      height="11"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {up ? <polyline points="6 15 12 9 18 15" /> : <polyline points="6 9 12 15 18 9" />}
-    </svg>
-  );
-}
-
-/** One chat message. Memoized on its message plus its nav edge flags:
- * refreshing a busy thread re-renders only the blocks whose own message (or
- * first/last position) changed, and the action handlers arrive via
- * MessageActionsContext so their identity is free. */
-const MessageBlock = memo(function MessageBlock({
-  m,
-  hasPrev,
-  hasNext,
-}: {
-  m: Message;
-  hasPrev: boolean;
-  hasNext: boolean;
-}) {
-  const actions = useContext(MessageActionsContext);
-  const imageConn = useContext(MessageImageContext);
-  // Copy feedback lives on the row: the button reports "Copied" or "Copy
-  // failed" for a moment, so a click always has a visible result.
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const copyTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
-  const copy = async () => {
-    const ok = (await actions?.copyText(m.text)) ?? false;
-    window.clearTimeout(copyTimer.current);
-    setCopyState(ok ? "copied" : "failed");
-    copyTimer.current = window.setTimeout(() => setCopyState("idle"), ok ? 1400 : 2500);
-  };
-  return (
-    <div
-      data-mid={m.id}
-      className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
-    >
-      <div className="who">
-        <span className="role">
-          {m.author === "user"
-            ? "You"
-            : m.author === "steering"
-              ? m.consumed
-                ? "Steering"
-                : "Steering · queued"
-              : m.author === "system"
-                ? "System"
-                : m.author === "shell"
-                  ? "Shell"
-                  : m.author === "subthread"
-                    ? "Subthread"
-                    : m.author === "status"
-                      ? "Status"
-                      : m.author === "solo"
-                        ? "Solo"
-                        : "Orchestrator"}
-        </span>
-      </div>
-      <div className="msg-actions">
-        {hasPrev && (
-          <button
-            type="button"
-            className="msg-icon-btn"
-            onClick={() => actions?.scrollToMessage(m.id, -1)}
-            aria-label="Previous message"
-            title="Previous message"
-          >
-            <ChevronIcon up />
-          </button>
-        )}
-        {hasNext && (
-          <button
-            type="button"
-            className="msg-icon-btn"
-            onClick={() => actions?.scrollToMessage(m.id, 1)}
-            aria-label="Next message"
-            title="Next message"
-          >
-            <ChevronIcon up={false} />
-          </button>
-        )}
-        <button
-          type="button"
-          className={`msg-copy-btn${copyState === "idle" ? "" : ` ${copyState}`}`}
-          onClick={copy}
-          title={copyState === "failed" ? "Could not copy" : "Copy this block"}
-          aria-label="Copy this block"
-          aria-live="polite"
-        >
-          {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
-        </button>
-        <button
-          className="msg-icon-btn"
-          onClick={() => actions?.forkFromMessage(m.id)}
-          title="Branch from here — new thread with the transcript up to this message"
-          aria-label="Branch from here"
-        >
-          <BranchIcon />
-        </button>
-      </div>
-      <div className="body">
-        <Markdown text={m.text} />
-        {!!m.images?.length && imageConn && (
-          <div className="thread-images">
-            {m.images.map((img) => (
-              <ThreadImage
-                key={img.id}
-                httpUrl={imageConn.httpUrl}
-                token={imageConn.token}
-                threadId={imageConn.threadId}
-                image={img}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-});
-
-/** One turn: the user's prompt heads it, the team's response stacks under it.
- *  The response can be collapsed to a single summary row; collapsed state is
- *  per turn (keyed by the prompt message's instance), so streamed messages
- *  arriving in a collapsed turn never expand it. */
-const TurnBlock = memo(function TurnBlock({
-  turn,
-  index,
-  total,
-  streaming,
-  onStreamGrow,
-}: {
-  turn: Message[];
-  index: Map<string, number>;
-  total: number;
-  /** The reply being written into this turn; only the last turn gets one. */
-  streaming?: ReplySource | null;
-  onStreamGrow: () => void;
-}) {
-  const position = (m: Message) => {
-    const i = index.get(m.id) ?? 0;
-    return { hasPrev: i > 0, hasNext: i < total - 1 };
-  };
-  const [expanded, setExpanded] = useState(true);
-  // An opening block with no prompt (transcript that starts mid-run) has
-  // nothing to toggle: it renders flat, exactly as before.
-  if (turn[0].author !== "user") {
-    return (
-      <section className="turn">
-        {turn.map((m) => {
-          const { hasPrev, hasNext } = position(m);
-          return <MessageBlock key={m.id} m={m} hasPrev={hasPrev} hasNext={hasNext} />;
-        })}
-        {streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
-      </section>
-    );
-  }
-  const response = turn.slice(1);
-  return (
-    <section className="turn">
-      <MessageBlock m={turn[0]} {...position(turn[0])} />
-      {response.length > 0 &&
-        (expanded ? (
-          <button
-            type="button"
-            className="turn-toggle"
-            onClick={() => setExpanded(false)}
-            aria-expanded="true"
-            aria-label="Hide response"
-            title="Hide response"
-          >
-            ▾ Response
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="turn-hidden"
-            onClick={() => setExpanded(true)}
-            aria-expanded="false"
-            aria-label="Show response"
-            title="Show response"
-          >
-            ▸ Response hidden — {response.length} {response.length === 1 ? "message" : "messages"}
-          </button>
-        ))}
-      {expanded &&
-        response.map((m) => (
-          <MessageBlock key={m.id} m={m} {...position(m)} />
-        ))}
-      {expanded && streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
-    </section>
-  );
-});
-
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = getPref("at.asideTabs");
@@ -767,23 +500,6 @@ function loadLayout(): PanelLayout {
   } catch {
     return fallback;
   }
-}
-
-/** Elapsed shows how long the running work has been going; it ticks on its own so
- * only this tiny node re-renders. */
-function Elapsed({ since }: { since?: string }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const started = since ? Date.parse(since) : NaN;
-  if (Number.isNaN(started)) return null;
-  const secs = Math.max(0, Math.round((Date.now() - started) / 1000));
-  const label =
-    secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
-  return <span className="act-elapsed">{label}</span>;
 }
 
 // Release notes for the build that an update just installed. The daemon hands
@@ -1197,13 +913,23 @@ export default function App() {
     },
     [projectId, setError],
   );
+  // Edit-and-resend: the prompt goes back into this thread's draft, caret at
+  // the end, focus in the composer. Nothing is sent until the user does.
+  const editPrompt = useLatestCallback((text: string) => {
+    setDrafts((prev) => ({ ...prev, [draftKeyRef.current]: text }));
+    pendingCaret.current = text.length;
+    taRef.current?.focus();
+  });
+  const openReview = useLatestCallback(() => setTab("review"));
   const messageActions = useMemo<MessageActions>(
     () => ({
       copyText: (text) => writeClipboard(text),
       forkFromMessage,
       scrollToMessage,
+      editPrompt,
+      openReview,
     }),
-    [forkFromMessage, scrollToMessage],
+    [forkFromMessage, scrollToMessage, editPrompt, openReview],
   );
 
   // Flat DOM position and total of the rendered messages, so each row knows
@@ -2276,6 +2002,31 @@ export default function App() {
         : null,
     [replyLeads, replySince, replyAuthor],
   );
+  // The running turn's start, for the status line's timer: the prompt that
+  // opened it, or the first running agent when the transcript has none.
+  const turnStartMs =
+    lastTurn?.[0]?.author === "user"
+      ? Date.parse(lastTurn[0].at)
+      : Date.parse(running[0]?.startedAt ?? "");
+  const pendingQuestions = (thread?.questions ?? []).filter((q) => q.status === "pending").length;
+  const toggleLogsStable = useLatestCallback(() => toggleLogs());
+  const stopTurnStable = useLatestCallback(() => void stopTurn());
+  // Brings the oldest open question into view and focuses its first control.
+  const jumpToQuestion = useCallback(() => {
+    const card = streamRef.current?.querySelector<HTMLElement>(".question-card:not(.closed)");
+    if (!card) return;
+    card.scrollIntoView({ block: "center", behavior: "smooth" });
+    card.querySelector<HTMLElement>("input, textarea, button")?.focus({ preventScroll: true });
+  }, []);
+  // After an answer or skip lands, focus moves to the next open question, or
+  // back to the composer once none is left.
+  const afterQuestion = useCallback(() => {
+    requestAnimationFrame(() => {
+      const next = streamRef.current?.querySelector<HTMLElement>(".question-card.pending");
+      const target = next?.querySelector<HTMLElement>("input, textarea") ?? taRef.current;
+      target?.focus({ preventScroll: !!next });
+    });
+  }, []);
   /** The active thread's list row, where waiting/controlledBy announce
    * themselves; null while the list has not loaded it yet. */
   const activeSummary = activeId ? threads.find((t) => t.id === activeId) ?? null : null;
@@ -4328,47 +4079,53 @@ export default function App() {
                       total={messageTotal}
                       streaming={i === turnBlocks.length - 1 ? reply : null}
                       onStreamGrow={followStream}
+                      changes={i === turnBlocks.length - 1 && running.length === 0 && !busy}
                     />
                   ))}
                 </MessageImageContext.Provider>
               </MessageActionsContext.Provider>
-              {(thread?.questions ?? []).map((q) => (
-                <QuestionCard
-                  key={q.questionId}
-                  question={q}
-                  askedBy={agentLabel(q.agentId)}
-                  onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
-                  onDismiss={() => dismissQuestion(q.questionId)}
-                />
-              ))}
+              {(thread?.questions ?? []).map(
+                (q) =>
+                  q.status !== "pending" && (
+                    <QuestionCard
+                      key={q.questionId}
+                      question={q}
+                      askedBy={agentLabel(q.agentId)}
+                      onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
+                      onDismiss={() => dismissQuestion(q.questionId)}
+                    />
+                  ),
+              )}
               {running.length > 0 && (
-                <div className={`activity agents${logsOpen ? "" : " collapsed"}`}>
-                  <div className="act-head">
-                    <span className="act-led" />
-                    <span className="act-label">
-                      Working —{" "}
-                      {running.map((a) => a.name || rolesById[a.role] || a.role).join(", ")}
-                    </span>
-                    <Elapsed since={running[0]?.startedAt} />
-                    <button
-                      className="act-toggle"
-                      onClick={toggleLogs}
-                      aria-expanded={logsOpen}
-                      aria-label={logsOpen ? "Hide logs" : "Show logs"}
-                      title={logsOpen ? "Hide logs" : "Show logs"}
-                    >
-                      {logsOpen ? "▾" : "▸"} Logs
-                    </button>
-                    <button
-                      className="stop-btn"
-                      onClick={stopTurn}
-                      title="Stop this turn — running agents are cancelled"
-                    >
-                      Stop
-                    </button>
-                  </div>
-                  {logsOpen && <LiveLog onLines={followStream} agents={thread?.agents ?? undefined} reply={reply} />}
-                </div>
+                <TurnActivity
+                  key={`${activeId}:${turnStartMs}`}
+                  leads={replyLeads}
+                  since={turnStartMs}
+                  helpers={running.length - (replyLeads ? replyLeads.split("\u001f").length : 0)}
+                  waiting={pendingQuestions}
+                  logsOpen={logsOpen}
+                  onToggleLogs={toggleLogsStable}
+                  onStop={stopTurnStable}
+                  onJumpToQuestion={jumpToQuestion}
+                  onLines={followStream}
+                  agents={thread?.agents ?? undefined}
+                  reply={reply}
+                />
+              )}
+              {/* Open questions sit last, next to the composer, so the working
+                  log can never push them out of view. */}
+              {(thread?.questions ?? []).map(
+                (q) =>
+                  q.status === "pending" && (
+                    <QuestionCard
+                      key={q.questionId}
+                      question={q}
+                      askedBy={agentLabel(q.agentId)}
+                      onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
+                      onDismiss={() => dismissQuestion(q.questionId)}
+                      onSettled={afterQuestion}
+                    />
+                  ),
               )}
               {shellThread === activeId && shellThread !== null && (
                 <div className="activity">
