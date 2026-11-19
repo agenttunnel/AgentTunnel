@@ -12,6 +12,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import { Window } from "@wailsio/runtime";
 import {
@@ -67,7 +68,6 @@ import { StatsPage } from "./components/StatsPage";
 import { WorktreesPage } from "./components/WorktreesPage";
 import { PrunePrompt } from "./components/PrunePrompt";
 import { pruneReady, worktreeRows, type WorktreeInfo, type WorktreeRow } from "./lib/worktrees";
-import { RemoteSection } from "./components/RemoteSection";
 import { DocLinkContext, Markdown } from "./components/Markdown";
 import type { MarkdownDocLike } from "./components/MarkdownViewer";
 import { docPathFromHref } from "./lib/markdownLinks";
@@ -84,7 +84,10 @@ import { parseRoute, useUrlRoute, type Route } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { AppUpdate } from "./components/UpdateChip";
 import { HarnessUpdates } from "./components/HarnessUpdateChip";
-import { LimitsMeter } from "./components/LimitsMeter";
+import { SidebarFooter } from "./components/SidebarFooter";
+import { Breadcrumb, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
+import { ALT, centerTabFromKey, centerTabHint, isPaletteKey, isTyping } from "./lib/navKeys";
+import { threadStatus } from "./lib/threadStatus";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { getPref, setPref } from "./lib/prefs";
 import { applyTheme, loadTheme } from "./lib/themes";
@@ -282,6 +285,12 @@ export type Project = { id: string; name: string; path: string; threads: number 
 
 /** The top-level pages shown when no project is open. */
 type HomePage = "projects" | "orchestrator" | "worktrees" | "stats";
+const HOME_LABEL: Record<HomePage, string> = {
+  projects: "Projects",
+  orchestrator: "Orchestrator",
+  worktrees: "Worktrees",
+  stats: "Stats",
+};
 
 type DiffLine = { old?: number; new?: number; kind: string; text: string };
 type DiffFile = {
@@ -354,6 +363,55 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
 };
+/** Environment-level pages, left of the open projects in the tab strip. "all"
+ * is the all-threads overlay rather than a page. */
+const ENV_PAGES: { page: HomePage | "all"; label: string; title: string; icon: ReactNode }[] = [
+  {
+    page: "projects",
+    label: "Projects",
+    title: "All projects",
+    icon: (
+      <>
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </>
+    ),
+  },
+  {
+    page: "orchestrator",
+    label: "Orchestrator",
+    title: "Master orchestrator: work across projects",
+    icon: <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+  },
+  {
+    page: "worktrees",
+    label: "Worktrees",
+    title: "Every project's worktrees",
+    icon: (
+      <>
+        <line x1="6" y1="3" x2="6" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </>
+    ),
+  },
+  {
+    page: "stats",
+    label: "Stats",
+    title: "Harness stats across all projects",
+    icon: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
+  },
+  {
+    page: "all",
+    label: "All threads",
+    title: `All threads across projects (${ALT}Tab)`,
+    icon: <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />,
+  },
+];
+
 /** How the project's threads are laid out: the card list or the status board. */
 type ThreadView = "list" | "board";
 function loadThreadView(): ThreadView {
@@ -3060,22 +3118,49 @@ export default function App() {
   const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
 
-  // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
-  // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
-  // stops this listener from reopening it. Shift and Alt combos are left alone.
+  /** Opens the palette; `fromKeys` lets the composer swap in its own features
+   * when that is where the shortcut was pressed. */
+  const openPalette = useCallback((fromKeys: boolean) => {
+    const active = document.activeElement;
+    paletteReturn.current = active instanceof HTMLElement ? active : null;
+    setPaletteFromComposer(fromKeys && active === taRef.current);
+    setPaletteOpen(true);
+  }, []);
+  // Cmd/Ctrl+K (or P) opens the palette from anywhere. The palette's own input
+  // handles the same keys (close) and calls preventDefault, so the
+  // defaultPrevented guard stops this listener from reopening it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return;
-      if (e.key.toLowerCase() !== "p") return;
+      if (e.defaultPrevented || e.isComposing || !isPaletteKey(e)) return;
       e.preventDefault();
-      const active = document.activeElement;
-      paletteReturn.current = active instanceof HTMLElement ? active : null;
-      setPaletteFromComposer(active === taRef.current);
-      setPaletteOpen(true);
+      openPalette(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [openPalette]);
+  // Alt/Option+1..6 picks a center tab, even from the composer; "/" outside
+  // text fields jumps to the thread search.
+  useEffect(() => {
+    if (!activeId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const next = centerTabFromKey(e);
+      if (next) {
+        e.preventDefault();
+        setTab(next);
+        return;
+      }
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+        const search = document.querySelector<HTMLInputElement>(".sidebar .thread-filter");
+        if (!search || search.offsetParent === null) return;
+        e.preventDefault();
+        search.focus();
+        search.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId, setTab]);
   // Cmd/Ctrl+S toggles compact mode on the thread screen. The files editor
   // claims this keystroke for saving (it calls preventDefault), so editing
   // still saves instead of flipping the layout. Preventing the default also
@@ -3198,6 +3283,29 @@ export default function App() {
   };
 
 
+  // Where you are, always: an environment page, or project > thread with the
+  // thread's live status. The open thread is being seen, so it never reads
+  // "Done"; idle and new say nothing.
+  const crumbs: Crumb[] = !projectId
+    ? [{ label: HOME_LABEL[homePage] }]
+    : [
+        { label: "Projects", onClick: showProjects },
+        {
+          label: selectedProject?.name ?? "Project",
+          title: selectedProject?.path || selectedProject?.name,
+          onClick: activeId ? () => selectThread(null) : undefined,
+        },
+        ...(activeId ? [{ label: activeSummary?.title || "Thread" }] : []),
+      ];
+  const liveStatus = activeSummary
+    ? threadStatus({
+        ...activeSummary,
+        unseen: false,
+        runningAgents: running.length > 0 || shellThread === activeId ? 1 : 0,
+        pendingQuestions: thread?.questions?.length ?? activeSummary.pendingQuestions,
+      })
+    : null;
+  const crumbStatus = liveStatus === "idle" || liveStatus === "new" ? null : liveStatus;
   const titlebar = (
     <div className="titlebar">
       <div className="brand">
@@ -3206,37 +3314,18 @@ export default function App() {
           Agent<b>Tunnel</b>
         </span>
       </div>
-      <div className="title-meta">
-        <div className={`conn ${status}`}>
-          <span className="led" />
-          {status === "reconnecting" && <span className="conn-retry">Reconnecting…</span>}
-          <span>
-            {enabledHarnesses.length} harness
-            {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
-          </span>
-        </div>
-        {conn && (
-          <div
-            className={`daemon-badge ${conn.attached ? "attached" : "local"}`}
-            title={
-              conn.attached
-                ? `Attached to a daemon this window did not start (${conn.host || "unknown"})`
-                : "The daemon runs inside this app"
-            }
-          >
-            <span className="led" />
-            {conn.attached ? (
-              <>
-                attached <span className="host">{conn.host || "remote"}</span>
-              </>
-            ) : (
-              "local daemon"
-            )}
-          </div>
-        )}
-      </div>
+      <Breadcrumb crumbs={crumbs} status={crumbStatus} />
       <AppUpdate rpc={rpcRef.current} />
       <HarnessUpdates rpc={rpcRef.current} />
+      <PaletteButton onOpen={() => openPalette(false)} />
+      <StatusPopover
+        status={status}
+        attached={!!conn?.attached}
+        host={conn?.host ?? ""}
+        harnesses={enabledHarnesses}
+        roles={roles.length}
+        onSettings={openSettings}
+      />
       <button
         type="button"
         className="title-gear"
@@ -3268,117 +3357,42 @@ export default function App() {
   const homeTabOn = (page: HomePage) => projectId === null && homePage === page;
   const projectTabs = (
     <div className="project-tabs">
-      <div
-        className={`ptab pt-home${homeTabOn("projects") ? " on" : ""}`}
-        {...tabProps(homeTabOn("projects"), showProjects)}
-        title="All projects"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <rect x="3" y="3" width="7" height="7" rx="1.5" />
-          <rect x="14" y="3" width="7" height="7" rx="1.5" />
-          <rect x="3" y="14" width="7" height="7" rx="1.5" />
-          <rect x="14" y="14" width="7" height="7" rx="1.5" />
-        </svg>
-        Projects
+      <div className="env-switch" role="tablist" aria-label="Environment">
+        {ENV_PAGES.map((pg) => {
+          const on = pg.page !== "all" && homeTabOn(pg.page);
+          const open = pg.page === "all" ? () => setSuperViewOpen(true) : pg.page === "projects" ? showProjects : () => showHome(pg.page as HomePage);
+          return (
+            <div
+              key={pg.page}
+              className={`ptab pt-home${on ? " on" : ""}`}
+              {...tabProps(on, open)}
+              title={pg.title}
+              aria-label={pg.label}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="13"
+                height="13"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                {pg.icon}
+              </svg>
+              <span className="ptab-label">{pg.label}</span>
+              {pg.page === "worktrees" && pruneReadyCount > 0 && (
+                <span className="pt-count ok" title={`${pruneReadyCount} ready to prune`}>
+                  {pruneReadyCount}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
-      <div
-        className={`ptab pt-home${homeTabOn("orchestrator") ? " on" : ""}`}
-        {...tabProps(homeTabOn("orchestrator"), () => showHome("orchestrator"))}
-        title="Master orchestrator"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-        Orchestrator
-      </div>
-      <div
-        className={`ptab pt-home${homeTabOn("worktrees") ? " on" : ""}`}
-        {...tabProps(homeTabOn("worktrees"), () => showHome("worktrees"))}
-        title="Every project's worktrees"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <line x1="6" y1="3" x2="6" y2="15" />
-          <circle cx="18" cy="6" r="3" />
-          <circle cx="6" cy="18" r="3" />
-          <path d="M18 9a9 9 0 0 1-9 9" />
-        </svg>
-        Worktrees
-        {pruneReadyCount > 0 && (
-          <span className="pt-count ok" title={`${pruneReadyCount} ready to prune`}>
-            {pruneReadyCount}
-          </span>
-        )}
-      </div>
-      <div
-        className={`ptab pt-home${homeTabOn("stats") ? " on" : ""}`}
-        {...tabProps(homeTabOn("stats"), () => showHome("stats"))}
-        title="Harness stats across all projects"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
-        </svg>
-        Stats
-      </div>
-      <div
-        className="ptab pt-home"
-        {...tabProps(false, () => setSuperViewOpen(true))}
-        title="All threads across projects"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-        </svg>
-        All threads
-      </div>
+      <span className="pt-divider" aria-hidden="true" />
       <div className="pt-scroll" role="tablist" aria-label="Open projects">
         {openProjects.map((p) => {
           const busy = runningByProject[p.id] ?? 0;
@@ -4069,7 +4083,9 @@ export default function App() {
             open={layout.sidebarOpen}
             onToggle={() => setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))}
           />
-          <button onClick={newThread}>New</button>
+          <button className="new-thread-btn" onClick={newThread} title="New thread in this project (/new)">
+            + New thread
+          </button>
         </div>
         <ThreadList
           threads={threads}
@@ -4078,10 +4094,7 @@ export default function App() {
           onSelect={selectThreadStable}
           onMenu={openThreadMenuStable}
         />
-        <div className="sidebar-foot">
-          <LimitsMeter rpc={rpcRef.current} />
-          <RemoteSection rpc={rpcRef.current} />
-        </div>
+        <SidebarFooter rpc={rpcRef.current} />
       </div>
 
       <SplitHandle
@@ -4100,12 +4113,14 @@ export default function App() {
             <div
               className={`tab ${tab === "chat" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "chat", () => setTab("chat"))}
+              title={`Chat (${centerTabHint("chat")})`}
             >
               Chat
             </div>
             <div
               className={`tab ${tab === "review" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "review", () => setTab("review"))}
+              title={`Review (${centerTabHint("review")})`}
             >
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
@@ -4113,12 +4128,14 @@ export default function App() {
             <div
               className={`tab ${tab === "files" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "files", () => setTab("files"))}
+              title={`Files (${centerTabHint("files")})`}
             >
               Files
             </div>
             <div
               className={`tab ${tab === "graph" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "graph", () => setTab("graph"))}
+              title={`Graph (${centerTabHint("graph")})`}
             >
               Graph
               {(thread?.mailbox?.length ?? 0) > 0 && (
@@ -4128,6 +4145,7 @@ export default function App() {
             <div
               className={`tab ${tab === "p2p" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "p2p", () => setTab("p2p"))}
+              title={`Agent messages (${centerTabHint("p2p")})`}
             >
               P2P
               {(thread?.mailbox?.length ?? 0) > 0 && (
@@ -4137,6 +4155,7 @@ export default function App() {
             <div
               className={`tab ${tab === "board" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "board", () => setTab("board"))}
+              title={`Task board (${centerTabHint("board")})`}
             >
               Board
               {agents.some((a) => a.role !== "orchestrator") && (

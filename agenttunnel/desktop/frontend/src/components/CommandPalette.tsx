@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { filterSections, parseScope, type PaletteItem, type PaletteSection } from "../lib/palette";
+import { isPaletteKey } from "../lib/navKeys";
 
 /** Rows rendered per pane. Filtering is cheap; the DOM is what costs. */
 const PANE_CAP = 60;
@@ -47,7 +48,7 @@ export function CommandPalette({
   }, [cur]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
+    if (isPaletteKey(e)) {
       e.preventDefault();
       onClose();
       return;

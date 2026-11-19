@@ -1,0 +1,343 @@
+/* Navigation, information architecture and flow: the titlebar breadcrumb and
+ * status popover, the environment switcher, the sidebar footer, thread status
+ * chips, first-run moments and the inline next-step actions. Tokens come from
+ * style.css; nothing here sets a fixed width on a layout column. */
+
+/* --- titlebar ------------------------------------------------------------ */
+.titlebar {
+  gap: 10px;
+}
+.titlebar .brand {
+  flex: none;
+}
+.crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.crumb.last {
+  flex-shrink: 1;
+  color: var(--text);
+  font-weight: 550;
+}
+.crumb-sep {
+  color: var(--faint);
+  padding: 0 4px;
+  opacity: 0.7;
+}
+.crumb-text,
+.crumb-link {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb-link {
+  padding: 2px 5px;
+  margin: 0 -1px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+}
+.crumb-link:hover:not(:disabled) {
+  background: var(--hover);
+  border: 0;
+  color: var(--text);
+}
+.crumbs .status-chip {
+  margin-left: 8px;
+  flex: none;
+}
+
+/* Status chips: one honest word per thread. Calm colors; only "needs you"
+ * and "working" carry a signal color. */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  line-height: 17px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--faint);
+  white-space: nowrap;
+}
+.status-chip::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-chip.running {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+.status-chip.asking {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.status-chip.scheduled,
+.status-chip.unseen {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.status-chip.new::before,
+.status-chip.draft::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.palette-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 6px 0 9px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.palette-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.palette-btn kbd,
+.palette-hint kbd {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  color: var(--faint);
+}
+
+/* --- popovers ------------------------------------------------------------ */
+.popover-wrap {
+  position: relative;
+  flex: none;
+}
+.popover-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.popover-trigger:hover:not(:disabled),
+.popover-trigger.on {
+  background: var(--panel);
+  border-color: var(--border-soft);
+  color: var(--text);
+}
+.popover-panel {
+  position: absolute;
+  z-index: 60;
+  min-width: 240px;
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+}
+.popover-panel.below {
+  top: calc(100% + 6px);
+}
+.popover-panel.above {
+  bottom: calc(100% + 6px);
+}
+.popover-panel.end {
+  right: 0;
+}
+.popover-panel.start {
+  left: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .popover-panel {
+    animation: nav-pop var(--dur-fast, 120ms) ease-out;
+  }
+}
+@keyframes nav-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* Status popover: the connection light, plus text only when it matters. */
+.status-pop .led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.status-pop .led.online {
+  background: var(--ok);
+}
+.status-pop .led.online.attached {
+  background: var(--warn);
+}
+.status-pop .led.reconnecting {
+  background: var(--warn);
+}
+.status-pop .led.offline {
+  background: var(--err);
+}
+.status-pop-text.host {
+  font-family: var(--mono);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.status-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.status-list > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+.status-list dt {
+  color: var(--faint);
+}
+.status-list dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.status-settings {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+/* --- environment switcher ------------------------------------------------- */
+.env-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.env-switch .ptab {
+  padding: 5px 8px;
+}
+.pt-divider {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--border-soft);
+}
+/* Labels give way to icons (tooltips keep the names) before the open
+ * project tabs have to scroll. */
+@media (max-width: 1280px) {
+  .env-switch .ptab-label {
+    display: none;
+  }
+}
+
+/* --- sidebar ------------------------------------------------------------- */
+.new-thread-btn {
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.nav-foot {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+}
+.nav-foot .popover-trigger {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.nav-foot .popover-panel {
+  width: min(320px, calc(100vw - 24px));
+}
+.limits-pop .limits {
+  padding: 0;
+}
+.limits-pop .limits + .hint {
+  display: none;
+}
+.limits-pop .hint {
+  margin: 0;
+}
+.thread-row .attn-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+.thread-row.attn .t {
+  color: var(--text);
+  font-weight: 650;
+}
+.thread-row-foot .status-chip {
+  margin-right: auto;
+}
+.tc-foot .status-chip {
+  margin-right: 6px;
+}
+.thread-card.attn {
+  border-color: var(--accent-line);
+}
+
+/* --- phone width ---------------------------------------------------------- */
+@media (max-width: 720px) {
+  .crumb:not(.last),
+  .crumbs .status-chip,
+  .palette-btn-label,
+  .palette-btn kbd {
+    display: none;
+  }
+  .brand span {
+    display: none;
+  }
+  .palette-btn {
+    padding: 0 8px;
+  }
+}
