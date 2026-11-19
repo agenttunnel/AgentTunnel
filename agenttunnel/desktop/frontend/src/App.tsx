@@ -134,6 +134,7 @@ import { useLatestCallback } from "./lib/store";
 import { LiveLog, StreamingReply } from "./components/LiveLog";
 import { InheritedPanel } from "./components/InheritedPanel";
 import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
+import { RenameDialog } from "./components/RenameDialog";
 import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
 import { changesThreadList, foldThreadEvent, parseThreadEvent, stateVersion } from "./lib/threadFold";
 import { useAgentLog } from "./lib/useAgentLog";
@@ -1151,7 +1152,6 @@ export default function App() {
     y: number;
   } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ThreadSummary | null>(null);
-  const [renameValue, setRenameValue] = useState("");
   // Browser fallback for the Add Project flow: no native folder picker there,
   // so the path is typed into a small sheet instead.
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -1766,12 +1766,10 @@ export default function App() {
 
   const beginRename = (t: ThreadSummary) => {
     setRenameTarget(t);
-    setRenameValue(t.title);
   };
 
-  const confirmRename = async () => {
+  const confirmRename = useLatestCallback(async (title: string) => {
     const rpc = rpcRef.current;
-    const title = renameValue.trim();
     if (!rpc || !renameTarget || !title) return;
     try {
       await rpc.call("thread.rename", { threadId: renameTarget.id, title });
@@ -1783,7 +1781,12 @@ export default function App() {
     setRenameTarget(null);
     await reloadThreads();
     if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
-  };
+  });
+  const renameThread = useCallback(
+    (title: string) => void confirmRename(title).catch(() => undefined),
+    [confirmRename],
+  );
+  const cancelRename = useCallback(() => setRenameTarget(null), []);
 
   /** Archives or restores several threads in one go. A failure stops the batch
    * and reports the first error; threads already changed stay changed. */
@@ -3713,30 +3716,12 @@ export default function App() {
         />
       )}
       {renameTarget && (
-        <div className="overlay" onClick={() => setRenameTarget(null)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-head">
-              <strong>Rename thread</strong>
-              <button onClick={() => setRenameTarget(null)}>Cancel</button>
-            </div>
-            <div className="sheet-body">
-              <input
-                autoFocus
-                value={renameValue}
-                placeholder="Thread title"
-                onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") confirmRename().catch(() => undefined);
-                }}
-              />
-              <div className="sheet-actions">
-                <button className="primary" onClick={() => confirmRename().catch(() => undefined)}>
-                  Rename
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <RenameDialog
+          key={renameTarget.id}
+          initial={renameTarget.title}
+          onRename={renameThread}
+          onCancel={cancelRename}
+        />
       )}
       {deleteTarget && (
         <div className="overlay" onClick={() => setDeleteTarget(null)}>
