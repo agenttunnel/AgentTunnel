@@ -451,8 +451,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	emitted := false
 	for ev := range events {
 		emitted = true
-		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: t.AgentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
-		r.publishOutput(threadID, t.AgentID, ev.Kind, ev.Text)
+		r.recordEvent(threadID, t.AgentID, ev)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, t.AgentID, t.Role, false, *ev.Usage)
 		}
@@ -642,8 +641,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 			r.publishOutput(threadID, agentID, contracts.LogTool, ev.Text)
 			continue
 		}
-		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
-		r.publishOutput(threadID, agentID, ev.Kind, ev.Text)
+		r.recordEvent(threadID, agentID, ev)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
 		}
@@ -735,8 +733,7 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 	emitted := false
 	for ev := range events {
 		emitted = true
-		_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agentID, Kind: ev.Kind, Text: ev.Text, At: r.clock()})
-		r.publishOutput(threadID, agentID, ev.Kind, ev.Text)
+		r.recordEvent(threadID, agentID, ev)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
 		}
@@ -1125,15 +1122,26 @@ func (r *Runner) nextID() string { return fmt.Sprintf("cmd-%d", r.seq.Add(1)) }
 // publishOutput streams one agent output line to the thread's subscribers. Only
 // human-meaningful kinds are streamed; usage and raw frames stay in the log.
 func (r *Runner) publishOutput(threadID contracts.ThreadID, agent contracts.AgentID, kind contracts.LogKind, text string) {
-	if text == "" {
+	r.publishAgentOutput(threadID, contracts.AgentOutput{AgentID: agent, Kind: kind, Text: text})
+}
+
+func (r *Runner) publishAgentOutput(threadID contracts.ThreadID, out contracts.AgentOutput) {
+	if out.Text == "" {
 		return
 	}
-	switch kind {
+	switch out.Kind {
 	case contracts.LogText, contracts.LogReasoning, contracts.LogTool, contracts.LogRaw, contracts.LogError:
 	default:
 		return
 	}
-	r.engine.Publish(threadID, contracts.AgentOutput{AgentID: agent, Kind: kind, Text: text})
+	r.engine.Publish(threadID, out)
+}
+
+// recordEvent logs one adapter event and streams it, keeping its structured
+// tool call on both.
+func (r *Runner) recordEvent(threadID contracts.ThreadID, agent contracts.AgentID, ev providers.Event) {
+	_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agent, Kind: ev.Kind, Text: ev.Text, Tool: ev.Tool, At: r.clock()})
+	r.publishAgentOutput(threadID, contracts.AgentOutput{AgentID: agent, Kind: ev.Kind, Text: ev.Text, Tool: ev.Tool})
 }
 
 // toolEnv is the environment that lets an agent call back through `atd tool`.

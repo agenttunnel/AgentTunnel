@@ -178,14 +178,53 @@ func toolEvents(scope map[string]any) []Event {
 	}
 
 	summary := toolText(name, input, firstString(state, "title"))
+	// opencode reports a call once, finished, with its timing, exit code, and
+	// (for edits) a real unified diff under state.metadata.
+	id := firstString(scope, "callID", "callId", "id")
+	if summary == "" {
+		id = ""
+	}
+	failed := strings.EqualFold(firstString(state, "status"), "error")
 	var out []Event
 	if summary != "" {
-		out = append(out, Event{Kind: contracts.LogTool, Text: summary, ToolName: name})
+		call := toolCall(id, name, input, contracts.ToolRunning)
+		if call != nil {
+			call.Status = openCodeStatus(firstString(state, "status"))
+			meta, _ := state["metadata"].(map[string]any)
+			if _, ok := meta["exit"].(float64); ok {
+				exit := int(intField(meta, "exit"))
+				call.ExitCode = &exit
+			}
+			if diff := firstString(meta, "diff"); diff != "" {
+				call.Diff = capDiff(strings.TrimRight(diff, "\n"))
+			}
+			if t, ok := state["time"].(map[string]any); ok {
+				if start, end := intField(t, "start"), intField(t, "end"); start > 0 && end >= start {
+					call.DurationMs = end - start
+				}
+			}
+		}
+		out = append(out, Event{Kind: contracts.LogTool, Text: summary, ToolName: name, Tool: call})
 	}
-	if output := firstString(state, "output", "result"); output != "" {
-		out = append(out, Event{Kind: contracts.LogRaw, Text: truncate(strings.TrimRight(output, "\n"), 4000)})
+	output := firstString(state, "output", "result")
+	if failed && output == "" {
+		output = firstString(state, "error")
+	}
+	if output != "" {
+		out = append(out, toolResult(id, failed, output, nil)...)
 	}
 	return out
+}
+
+// openCodeStatus maps opencode's part state onto a tool status.
+func openCodeStatus(s string) contracts.ToolStatus {
+	switch strings.ToLower(s) {
+	case "completed":
+		return contracts.ToolDone
+	case "error":
+		return contracts.ToolFailed
+	}
+	return contracts.ToolRunning
 }
 
 // toolText renders a tool call for the log: the harness-style summary, then the
@@ -280,12 +319,14 @@ func executionStart(raw map[string]any) []Event {
 	if summary == "" {
 		return nil
 	}
-	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name}}
+	call := toolCall(firstString(raw, "toolCallId"), name, args, contracts.ToolRunning)
+	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name, Tool: call}}
 }
 
 // executionEnd emits the tool's result. Pi puts the readable output under
 // result.structuredContent.output, with a content-block fallback.
 func executionEnd(raw map[string]any) []Event {
+	isErr, _ := raw["isError"].(bool)
 	result, _ := raw["result"].(map[string]any)
 	output := ""
 	if structured, ok := result["structuredContent"].(map[string]any); ok {
@@ -294,10 +335,7 @@ func executionEnd(raw map[string]any) []Event {
 	if output == "" {
 		output = contentText(result["content"])
 	}
-	if strings.TrimSpace(output) == "" {
-		return nil
-	}
-	return []Event{{Kind: contracts.LogRaw, Text: truncate(strings.TrimRight(output, "\n"), 4000)}}
+	return toolResult(firstString(raw, "toolCallId"), isErr, output, nil)
 }
 
 // contentText joins the text blocks of a Pi/Anthropic-style content array.
@@ -360,9 +398,12 @@ func toolUseEvent(block map[string]any) []Event {
 	if summary == "" {
 		return nil
 	}
-	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name}}
+	call := toolCall(firstString(block, "id"), name, input, contracts.ToolRunning)
+	return []Event{{Kind: contracts.LogTool, Text: summary, ToolName: name, Tool: call}}
 }
 
+// toolResultEvent emits an Anthropic tool_result block, folded into its call
+// by tool_use_id.
 func toolResultEvent(block map[string]any) []Event {
 	text := ""
 	switch content := block["content"].(type) {
@@ -371,15 +412,8 @@ func toolResultEvent(block map[string]any) []Event {
 	case []any:
 		text = contentText(content)
 	}
-	text = strings.TrimRight(text, "\n")
-	if text == "" {
-		return nil
-	}
-	kind := contracts.LogRaw
-	if isErr, _ := block["is_error"].(bool); isErr {
-		kind = contracts.LogError
-	}
-	return []Event{{Kind: kind, Text: truncate(text, 4000)}}
+	isErr, _ := block["is_error"].(bool)
+	return toolResult(firstString(block, "tool_use_id"), isErr, text, nil)
 }
 
 func singleText(kind contracts.LogKind, text string) []Event {

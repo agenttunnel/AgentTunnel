@@ -698,9 +698,10 @@ const ReasonQuestionDeclined = "declined by user"
 // runs. It is never appended to the event log — it exists only so a running turn
 // is visible as it happens.
 type AgentOutput struct {
-	AgentID AgentID `json:"agentId"`
-	Kind    LogKind `json:"kind"`
-	Text    string  `json:"text"`
+	AgentID AgentID   `json:"agentId"`
+	Kind    LogKind   `json:"kind"`
+	Text    string    `json:"text"`
+	Tool    *ToolCall `json:"tool,omitempty"`
 }
 
 func (AgentOutput) eventType() EventType { return EvtAgentOutput }

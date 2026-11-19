@@ -20,7 +20,7 @@ func BuiltinDrivers() []Driver {
 	return []Driver{
 		NewGenericDriver(contracts.HarnessOpenCode, "opencode", openCodeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessClaude, "claude", claudeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
-		NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
+		NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, CodexTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCursor, "cursor-agent", cursorInvocation, JSONLineTranslator{}).WithImageSupport(ImagesUnsupported),
 		NewGenericDriver(contracts.HarnessPi, "pi", piInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCommandCode, "commandcode", commandCodeInvocation, CommandCodeTranslator{}).WithImageSupport(ImagesUnsupported),
@@ -141,7 +141,9 @@ func claudeInputFrames(spec SessionSpec) ([]string, error) {
 }
 
 func codexInvocation(spec SessionSpec) (CommandSpec, error) {
-	args := []string{"exec"}
+	// --json streams items (messages, commands, file changes) and the turn's
+	// usage as JSONL; the plain mode prints prose only.
+	args := []string{"exec", "--json"}
 	if spec.Model != "" {
 		args = append(args, "-m", spec.Model)
 	}
