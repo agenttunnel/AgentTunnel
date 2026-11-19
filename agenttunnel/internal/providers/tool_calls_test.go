@@ -2,6 +2,9 @@ package providers
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -173,13 +176,72 @@ func TestCodexMessagesAndUsage(t *testing.T) {
 	}
 }
 
+// fakeCodex puts a codex on PATH whose `exec --help` prints help, and
+// counts how often it ran.
+func fakeCodex(t *testing.T, help string) (runs func() int) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake codex is a shell script")
+	}
+	dir := t.TempDir()
+	count := filepath.Join(dir, "runs")
+	// PATH holds only the fake, so the script sticks to shell builtins.
+	script := "#!/bin/sh\necho x >> '" + count + "'\nprintf '%s\\n' '" + help + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	return func() int {
+		b, _ := os.ReadFile(count)
+		return strings.Count(string(b), "x")
+	}
+}
+
 func TestCodexInvocationStreamsJSON(t *testing.T) {
+	runs := fakeCodex(t, "Usage: codex exec [OPTIONS] [PROMPT]\n      --json  Print events to stdout as JSONL")
+	for range 2 {
+		cs, err := codexInvocation(SessionSpec{Prompt: "hi", Variant: "high"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(cs.Args[:2], []string{"exec", "--json"}) || cs.Args[len(cs.Args)-1] != "hi" {
+			t.Fatalf("args = %v", cs.Args)
+		}
+		if !slices.Contains(cs.Args, `model_reasoning_effort="high"`) {
+			t.Fatalf("variant not passed as reasoning effort: %v", cs.Args)
+		}
+	}
+	if n := runs(); n != 1 {
+		t.Fatalf("help probed %d times, want once", n)
+	}
+}
+
+func TestCodexWithoutJSONRunsPlain(t *testing.T) {
+	fakeCodex(t, "Usage: codex exec [OPTIONS] [PROMPT]\n      --image <FILE>")
 	cs, err := codexInvocation(SessionSpec{Prompt: "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(cs.Args[:2], []string{"exec", "--json"}) || cs.Args[len(cs.Args)-1] != "hi" {
+	if slices.Contains(cs.Args, "--json") || cs.Args[0] != "exec" {
 		t.Fatalf("args = %v", cs.Args)
+	}
+}
+
+// Codex releases before the item schema printed {"id","msg"} events for --json.
+func TestCodexLegacyEnvelope(t *testing.T) {
+	if evs := (CodexTranslator{}).Translate(`{"id":"0","msg":{"type":"agent_message","message":"Done."}}`); len(evs) != 1 || evs[0].Kind != contracts.LogText || evs[0].Text != "Done." {
+		t.Fatalf("message = %+v", evs)
+	}
+	evs := CodexTranslator{}.Translate(`{"id":"0","msg":{"type":"exec_command_begin","call_id":"c1","command":["bash","-lc","ls"],"cwd":"/r"}}`)
+	if len(evs) != 1 || evs[0].Text != "$ bash -lc ls" || evs[0].Tool == nil || evs[0].Tool.ID != "c1" {
+		t.Fatalf("begin = %+v", evs)
+	}
+	evs = CodexTranslator{}.Translate(`{"id":"0","msg":{"type":"exec_command_end","call_id":"c1","stdout":"a\n","stderr":"","exit_code":0}}`)
+	if len(evs) != 1 || evs[0].Text != "a" || evs[0].Tool.Status != contracts.ToolDone {
+		t.Fatalf("end = %+v", evs)
+	}
+	if evs := (CodexTranslator{}).Translate(`{"id":"0","msg":{"type":"agent_message_delta","delta":"Do"}}`); len(evs) != 0 {
+		t.Fatalf("delta = %+v", evs)
 	}
 }
 

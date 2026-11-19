@@ -20,6 +20,9 @@ func (CodexTranslator) Translate(line string) []Event {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &raw); err != nil {
 		return JSONLineTranslator{}.Translate(line)
 	}
+	if msg, ok := raw["msg"].(map[string]any); ok {
+		return codexLegacy(msg)
+	}
 	switch firstString(raw, "type") {
 	case "item.started", "item.updated":
 		item, _ := raw["item"].(map[string]any)
@@ -41,6 +44,48 @@ func (CodexTranslator) Translate(line string) []Event {
 		return nil
 	}
 	return JSONLineTranslator{}.Translate(line)
+}
+
+// codexLegacy reads the {"id","msg"} envelope that Codex releases before the
+// item schema printed for --json. Only whole messages, commands and errors are
+// shown; deltas and bookkeeping events are dropped.
+func codexLegacy(msg map[string]any) []Event {
+	switch firstString(msg, "type") {
+	case "agent_message":
+		return singleText(contracts.LogText, firstString(msg, "message"))
+	case "agent_reasoning":
+		return singleText(contracts.LogReasoning, firstString(msg, "text"))
+	case "exec_command_begin":
+		var parts []string
+		if argv, ok := msg["command"].([]any); ok {
+			for _, a := range argv {
+				if s, ok := a.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+		}
+		command := strings.Join(parts, " ")
+		id := firstString(msg, "call_id")
+		return []Event{{
+			Kind: contracts.LogTool, Text: "$ " + command, ToolName: "shell",
+			Tool: toolCall(id, "shell", map[string]any{"command": command}, contracts.ToolRunning),
+		}}
+	case "exec_command_end":
+		var exit *int
+		failed := false
+		if code, ok := msg["exit_code"].(float64); ok {
+			n := int(code)
+			exit, failed = &n, n != 0
+		}
+		output := firstString(msg, "aggregated_output", "formatted_output")
+		if output == "" {
+			output = firstString(msg, "stdout") + firstString(msg, "stderr")
+		}
+		return toolResult(firstString(msg, "call_id"), failed, output, exit)
+	case "error", "stream_error":
+		return singleText(contracts.LogError, firstString(msg, "message"))
+	}
+	return nil
 }
 
 // codexItemStarted shows a call as it begins. Only the first sighting of a
