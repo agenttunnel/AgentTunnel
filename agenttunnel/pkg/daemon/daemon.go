@@ -276,6 +276,9 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	disp.SetRemoteNotifier(func(st transport.RemoteStatus) {
 		srv.NotifyAll("remote.status.changed", st)
 	})
+	// Every durable event on any thread nudges clients to re-read the thread
+	// list, so no client has to poll it.
+	srv.FollowThreadChanges(ctx)
 	relay.Bind(srv)
 	relay.Start(ctx)
 	bridge.Start(ctx)

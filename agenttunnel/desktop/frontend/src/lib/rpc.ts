@@ -24,10 +24,22 @@ type ThreadEventHandler = (event: unknown) => void;
 type AppOpenHandler = (params: { threadId?: string; projectId?: string }) => void;
 type NotificationHandler = (notification: { method: string; params: unknown }) => void;
 
+/** online: the socket is open. reconnecting: it dropped and a retry is pending
+ * or running. closed: close() was called; nothing reconnects. */
+export type RpcStatus = "online" | "reconnecting" | "closed";
+
+/** Reconnect backoff: the first retry comes quickly, then doubles to a cap. */
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 15_000;
+
 /**
  * Rpc is a tiny JSON-RPC-over-WebSocket client. It is the same surface any
  * client uses: send a typed request, await a matching reply, and receive
  * streamed `thread.event` pushes on the same socket.
+ *
+ * A dropped socket reconnects with backoff. Subscriptions are replayed on the
+ * new socket, and onReconnect handlers resync whatever they show. Calls made
+ * while the socket is down reject at once.
  */
 export class Rpc {
   private ws?: WebSocket;
@@ -37,13 +49,42 @@ export class Rpc {
   private appOpenHandlers = new Set<AppOpenHandler>();
   private notificationHandlers = new Set<NotificationHandler>();
   private closeHandlers = new Set<() => void>();
+  private statusHandlers = new Set<(s: RpcStatus) => void>();
+  private reconnectHandlers = new Set<() => void>();
+  /** Threads this client follows; replayed on every new socket. */
+  private subscriptions = new Set<string>();
+  /** Threads subscribed on the current socket: a repeat subscribe would make
+   * the daemon send every frame twice. */
+  private subscribedHere = new Set<string>();
+  private status: RpcStatus = "online";
+  private attempt = 0;
+  private retryTimer?: number;
+  private retrying = false;
 
-  constructor(private readonly conn: Conn) {}
+  /**
+   * `rediscover` re-reads the connection before each reconnect attempt: a
+   * restarted daemon may listen on a new port with a new token. It resolves
+   * null to keep the current connection.
+   */
+  constructor(
+    private conn: Conn,
+    private readonly rediscover?: () => Promise<Conn | null>,
+  ) {}
+
+  /** The connection in use; it changes when a reconnect rediscovered one. */
+  get connection(): Conn {
+    return this.conn;
+  }
 
   connect(): Promise<void> {
+    return this.open();
+  }
+
+  private open(): Promise<void> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`${this.conn.wsUrl}?token=${encodeURIComponent(this.conn.token)}`);
       this.ws = ws;
+      this.subscribedHere.clear();
       let opened = false;
       ws.onopen = () => {
         opened = true;
@@ -62,16 +103,90 @@ export class Rpc {
         const pending = [...this.pending.values()];
         this.pending.clear();
         pending.forEach((p) => p.reject(lost));
-        if (opened) this.closeHandlers.forEach((h) => h());
+        if (!opened) {
+          reject(new Error("Could not connect to the daemon"));
+          return;
+        }
+        this.closeHandlers.forEach((h) => h());
+        this.scheduleReconnect();
       };
     });
   }
 
-  /** onClose fires once when an open connection drops, whoever closed it. */
+  private setStatus(next: RpcStatus) {
+    if (this.status === next) return;
+    this.status = next;
+    this.statusHandlers.forEach((h) => h(next));
+  }
+
+  private scheduleReconnect() {
+    if (this.status === "closed" || this.retrying || this.retryTimer !== undefined) return;
+    this.setStatus("reconnecting");
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** this.attempt);
+    this.attempt++;
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.reconnect();
+    }, delay);
+  }
+
+  private async reconnect() {
+    if (this.status !== "reconnecting" || this.retrying) return;
+    this.retrying = true;
+    try {
+      const found = this.rediscover ? await this.rediscover().catch(() => null) : null;
+      if (found) this.conn = found;
+      await this.open();
+    } catch {
+      this.retrying = false;
+      this.scheduleReconnect();
+      return;
+    }
+    this.retrying = false;
+    // close() may have run while the attempt was in flight.
+    if ((this.status as RpcStatus) === "closed") {
+      this.ws?.close();
+      return;
+    }
+    this.attempt = 0;
+    for (const threadId of this.subscriptions) {
+      this.call("thread.subscribe", { threadId }).catch(() => undefined);
+    }
+    this.setStatus("online");
+    this.reconnectHandlers.forEach((h) => h());
+  }
+
+  /** retryNow skips the backoff wait: the network came back, or the window
+   * became visible again. A no-op while online. */
+  retryNow() {
+    if (this.status !== "reconnecting" || this.retrying) return;
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    void this.reconnect();
+  }
+
+  /** onClose fires each time an open connection drops, whoever closed it. */
   onClose(handler: () => void): () => void {
     this.closeHandlers.add(handler);
     return () => {
       this.closeHandlers.delete(handler);
+    };
+  }
+
+  /** onStatus fires when the connection goes online, reconnecting, or closed. */
+  onStatus(handler: (s: RpcStatus) => void): () => void {
+    this.statusHandlers.add(handler);
+    return () => {
+      this.statusHandlers.delete(handler);
+    };
+  }
+
+  /** onReconnect fires after a dropped socket is back and its subscriptions
+   * are replayed. Frames sent while it was down are lost: resync here. */
+  onReconnect(handler: () => void): () => void {
+    this.reconnectHandlers.add(handler);
+    return () => {
+      this.reconnectHandlers.delete(handler);
     };
   }
 
@@ -109,6 +224,14 @@ export class Rpc {
   }
 
   call<T = unknown>(method: string, params?: unknown): Promise<T> {
+    if (method === "thread.subscribe") {
+      const threadId = (params as { threadId?: string } | undefined)?.threadId;
+      if (threadId) {
+        // Remembered even while offline: the reconnect replays it.
+        this.subscriptions.add(threadId);
+        if (this.subscribedHere.has(threadId)) return Promise.resolve({ subscribed: threadId } as T);
+      }
+    }
     const id = String(this.nextId++);
     return new Promise<T>((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -119,6 +242,10 @@ export class Rpc {
         resolve: resolve as (v: unknown) => void,
         reject,
       });
+      if (method === "thread.subscribe") {
+        const threadId = (params as { threadId?: string } | undefined)?.threadId;
+        if (threadId) this.subscribedHere.add(threadId);
+      }
       this.ws.send(JSON.stringify({ id, method, params: params ?? null }));
     });
   }
@@ -149,7 +276,25 @@ export class Rpc {
   }
 
   close() {
+    this.setStatus("closed");
+    window.clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     this.ws?.close();
+  }
+
+  /** retryOnWake reconnects at once when the browser comes back online or
+   * the window becomes visible (a laptop waking), instead of waiting out the
+   * backoff. Returns the cleanup. */
+  retryOnWake(): () => void {
+    const wake = () => {
+      if (document.visibilityState === "visible") this.retryNow();
+    };
+    window.addEventListener("online", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("online", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
   }
 }
 
@@ -232,6 +377,18 @@ export function discover(): Promise<Conn> {
     enablePrefMirror(conn);
     return conn;
   });
+}
+
+/**
+ * rediscover re-reads the connection for a reconnect. The web UI asks /conn
+ * again, since a restarted daemon has a new token; the desktop shell's
+ * connection does not change, so it resolves null there.
+ */
+export async function rediscover(): Promise<Conn | null> {
+  if (inDesktopShell()) return null;
+  const conn = await discoverOverHttp();
+  enablePrefMirror(conn);
+  return conn;
 }
 
 /** discoverViaShell is the desktop shell path: ask for an at:connection push. */

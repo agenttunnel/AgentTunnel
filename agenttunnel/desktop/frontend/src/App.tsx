@@ -18,6 +18,7 @@ import {
   discover,
   inDesktopShell,
   pickFolder,
+  rediscover,
   Rpc,
   setKeepRunning as emitKeepRunning,
   type Conn,
@@ -130,9 +131,11 @@ import {
   setRecall,
 } from "./lib/composerStore";
 import { useLatestCallback } from "./lib/store";
-import { LiveLog } from "./components/LiveLog";
+import { LiveLog, StreamingReply } from "./components/LiveLog";
 import { InheritedPanel } from "./components/InheritedPanel";
-import { dropSnapshotOverlap, pushLiveLine, setLive, setLogs, type LiveLine } from "./lib/liveLog";
+import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
+import { changesThreadList, foldThreadEvent, parseThreadEvent, stateVersion } from "./lib/threadFold";
+import { useAgentLog } from "./lib/useAgentLog";
 
 type Role = {
   id: string;
@@ -662,10 +665,15 @@ const TurnBlock = memo(function TurnBlock({
   turn,
   index,
   total,
+  streaming,
+  onStreamGrow,
 }: {
   turn: Message[];
   index: Map<string, number>;
   total: number;
+  /** The reply being written into this turn; only the last turn gets one. */
+  streaming?: ReplySource | null;
+  onStreamGrow: () => void;
 }) {
   const position = (m: Message) => {
     const i = index.get(m.id) ?? 0;
@@ -681,6 +689,7 @@ const TurnBlock = memo(function TurnBlock({
           const { hasPrev, hasNext } = position(m);
           return <MessageBlock key={m.id} m={m} hasPrev={hasPrev} hasNext={hasNext} />;
         })}
+        {streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
       </section>
     );
   }
@@ -716,6 +725,7 @@ const TurnBlock = memo(function TurnBlock({
         response.map((m) => (
           <MessageBlock key={m.id} m={m} {...position(m)} />
         ))}
+      {expanded && streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
     </section>
   );
 });
@@ -936,7 +946,10 @@ const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } 
 const TOP_SHOW = 240;
 
 export default function App() {
-  const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
+  const [status, setStatus] = useState<"connecting" | "online" | "reconnecting" | "offline">("connecting");
+  // Bumped after a dropped socket comes back: views that follow the stream
+  // read their state again, since frames sent while it was down are lost.
+  const [resync, setResync] = useState(0);
   // Errors are kept per thread (key = thread id; "" = environment-wide), so a
   // failure in one thread never shows in another.
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -999,8 +1012,12 @@ export default function App() {
   // turn has appeared and gone quiet again, or after a start grace if it never
   // appeared at all.
   const detachedTurns = useRef<Record<string, { seen: boolean; messages: number; at: number }>>({});
+  const scheduleBoardReloadRef = useRef<() => void>(() => undefined);
   const noteDetachedTurn = useCallback(
     (threadId: string) => {
+      // A turn that never starts sends no event; read the list once the
+      // start grace is over so its busy flag still clears.
+      window.setTimeout(() => scheduleBoardReloadRef.current(), DETACHED_START_GRACE_MS + 500);
       const summary = threads.find((t) => t.id === threadId);
       // Prefer the live thread state for the thread on screen: the summary can
       // lag one refresh behind, and a stale baseline would look like the turn
@@ -1262,11 +1279,14 @@ export default function App() {
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
-    const [state, list, usage] = await Promise.all([
+    const [fetched, list, usage] = await Promise.all([
       rpc.call<ThreadState>("thread.get", { threadId: id }),
       rpc.call<ThreadSummary[]>("thread.list"),
       rpc.call<ThreadUsage>("usage.get"),
     ]);
+    // Events folded while the read was in flight may already be past it.
+    const cached = threadCacheRef.current[id];
+    const state = cached && stateVersion(cached) > stateVersion(fetched) ? cached : fetched;
     threadCacheRef.current[id] = state;
     // A reply for a thread the user has since left must not replace the one on screen.
     if (activeIdRef.current === id) setThread(state);
@@ -1752,19 +1772,22 @@ export default function App() {
     if (!rpc) return;
     setThreads(await rpc.call<ThreadSummary[]>("thread.list"));
   };
-  // The board's copy of the thread list. Stable, so it can sit in the event
-  // effect's deps. A failed read is retried by the next event.
+  // The thread list (sidebar, project tabs, board). Stable, so it can sit in
+  // the event effect's deps. A failed read is retried by the next event.
   const reloadBoardThreads = useCallback(async () => {
     const rpc = rpcRef.current;
     if (!rpc) return;
     try {
-      setThreads(await rpc.call<ThreadSummary[]>("thread.list"));
+      const list = await rpc.call<ThreadSummary[]>("thread.list");
+      setThreads(list);
+      settleDetachedTurns(list);
     } catch {
       /* the next thread event or refresh reads again */
     }
-  }, []);
-  // The board also shows threads other than the open one, so any non-output
-  // event from any thread re-reads the list. Throttled, not debounced: a busy
+  }, [settleDetachedTurns]);
+  // Other threads keep working while not on screen, so a list-changing event
+  // from any thread (the daemon's thread.changed) re-reads the list — no
+  // polling. Throttled, not debounced: a busy
   // turn emits events faster than a quiet-period debounce would ever fire. The
   // first event reads at once; later ones wait for the interval, and one
   // trailing read picks up whatever arrived in between.
@@ -1783,6 +1806,9 @@ export default function App() {
     if (wait <= 0) read();
     else boardReloadTimer.current = window.setTimeout(read, wait);
   }, [reloadBoardThreads]);
+  // For callbacks registered once (the connect effect), which must reach the
+  // latest closure.
+  scheduleBoardReloadRef.current = scheduleBoardReload;
 
   const beginRename = (t: ThreadSummary) => {
     setRenameTarget(t);
@@ -1973,7 +1999,7 @@ export default function App() {
     let cancelled = false;
     discover().then(async (conn: Conn) => {
       if (cancelled) return;
-      const rpc = new Rpc(conn);
+      const rpc = new Rpc(conn, rediscover);
       try {
         await rpc.connect();
       } catch (e) {
@@ -1986,10 +2012,21 @@ export default function App() {
       connRef.current = conn;
       setStatus("online");
       // A dropped socket must not leave the UI claiming "online" while every
-      // call fails. Say so, and keep the state so a reconnect can resume it.
-      rpc.onClose(() => {
-        setStatus("offline");
-        setError("Lost the connection to the daemon.");
+      // call fails. Say so and keep the state: the client reconnects with
+      // backoff, and on its return everything on screen reads again.
+      rpc.onStatus((s) => setStatus(s === "online" ? "online" : "reconnecting"));
+      rpc.onReconnect(() => {
+        connRef.current = rpc.connection;
+        setConn(rpc.connection);
+        setResync((n) => n + 1);
+        scheduleBoardReloadRef.current();
+      });
+      rpc.retryOnWake();
+      // Any thread's durable event may change its list row; this replaces polling.
+      rpc.onNotification(({ method, params }) => {
+        if (method !== "thread.changed") return;
+        const type = (params as { type?: string } | null)?.type ?? "";
+        if (changesThreadList(type)) scheduleBoardReloadRef.current();
       });
       setConn(conn);
       setKeepRunningState(!!conn.keepRunning);
@@ -2084,15 +2121,31 @@ export default function App() {
     [refresh],
   );
 
+  // Environment-wide usage (the titlebar meter) moves only with usage steps;
+  // a burst of them reads it once a second at most.
+  const usageReloadTimer = useRef<number | undefined>(undefined);
+  const scheduleUsageReload = useCallback(() => {
+    if (usageReloadTimer.current !== undefined) return;
+    usageReloadTimer.current = window.setTimeout(() => {
+      usageReloadTimer.current = undefined;
+      rpcRef.current
+        ?.call<ThreadUsage>("usage.get")
+        .then(setGlobalUsage)
+        .catch(() => undefined);
+    }, 1000);
+  }, []);
+
   // Subscribe to the active thread and keep the local view fresh. The activity
   // log box restores this thread's persisted output on switch, then appends
-  // "agent.output" frames for this thread as they stream.
+  // "agent.output" frames for this thread as they stream. Durable events fold
+  // into the thread's state locally (lib/threadFold); only a sequence gap or
+  // an event the fold does not mirror reads thread.get again.
   // Switching threads drops the other thread's data. The new thread paints from
   // its cached state (or nothing if never loaded) while refresh reloads it, and
-  // late replies for the old thread are ignored by the loaders.
+  // late replies for the old thread are ignored by the loaders. A reconnect
+  // (`resync`) runs it again: frames sent while the socket was down are lost.
   useEffect(() => {
     setThread(activeId ? (threadCacheRef.current[activeId] ?? null) : null);
-    setLogs([]);
     setDiff(null);
     setDiffError(null);
     setPRState(null);
@@ -2104,48 +2157,55 @@ export default function App() {
     if (!rpc || !activeId) return;
     let stale = false;
     // Frames that arrive before the snapshot lands wait here, then merge after it.
-    let buffered: LiveLine[] | null = [];
-    setLive([]);
+    let buffered: LogEntry[] | null = [];
+    resetLive([]);
     rpc.call("thread.subscribe", { threadId: activeId }).catch(() => undefined);
     // Opening a thread clears its "finished but unseen" state server-side. The
-    // resulting event and the 4s thread.list poll refresh the badge; the call
-    // is fire-and-forget, so a refused mark never blocks the view.
+    // resulting event re-reads the list and its badge; the call is
+    // fire-and-forget, so a refused mark never blocks the view.
     rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
     // Snapshot and buffered frames are both raw chunks, so overlap is compared
     // before the chunks are merged into display lines.
-    const applyBuffered = (snapshot: LiveLine[]) => {
+    const applyBuffered = (snapshot: LogEntry[]) => {
       const fresh = dropSnapshotOverlap(snapshot, buffered ?? []);
       buffered = null;
-      setLive([...snapshot, ...fresh].reduce<LiveLine[]>(pushLiveLine, []));
+      resetLive([...snapshot, ...fresh]);
     };
     rpc
       .call<LogEntry[]>("thread.logs", { threadId: activeId })
       .then((entries) => {
         if (stale) return;
-        applyBuffered(entries);
+        applyBuffered(entries ?? []);
       })
       .catch(() => {
         if (stale) return;
         applyBuffered([]);
       });
     const off = rpc.onThreadEvent((raw) => {
-      const ev = raw as {
-        type?: string;
-        threadId?: string;
-        payload?: { agentId?: string; kind?: string; status?: string; text?: string; tool?: ToolCall };
-      };
-      if (ev?.type === "agent.output" && ev.payload) {
+      const ev = parseThreadEvent(raw);
+      if (!ev || stale) return;
+      if (ev.type === "agent.output") {
         // Output from another thread belongs to that thread's log; it is
         // restored from the daemon when the user switches back.
-        if (stale || ev.threadId !== activeId) return;
-        const line: LiveLine = {
+        if (ev.threadId !== activeId) return;
+        const line = {
           agentId: String(ev.payload.agentId ?? ""),
           kind: String(ev.payload.kind ?? "text"),
           text: String(ev.payload.text ?? ""),
-          tool: ev.payload.tool,
+          at: ev.at,
+          tool: ev.payload.tool as ToolCall | undefined,
         };
         if (buffered) buffered.push(line);
-        else setLive((prev) => pushLiveLine(prev, line));
+        else appendLive(line);
+        return;
+      }
+      // A thread visited earlier stays subscribed: fold into its cached
+      // state, or drop the cache so its next visit paints only fresh data.
+      const cached = threadCacheRef.current[ev.threadId];
+      const folded = cached ? foldThreadEvent(cached, ev) : null;
+      if (ev.threadId !== activeId) {
+        if (folded?.kind === "applied") threadCacheRef.current[ev.threadId] = folded.state;
+        else if (folded?.kind === "refetch") delete threadCacheRef.current[ev.threadId];
         return;
       }
       // A turn that ends while the user is watching counts as seen the moment
@@ -2153,23 +2213,26 @@ export default function App() {
       // thread switches, so without this the thread would flip to "not seen
       // yet" the instant it finishes. The server drops the call when nothing
       // finished after the last view, so extra calls stay free.
-      if (
-        ev?.type === "agent.status-changed" &&
-        !stale &&
-        ev.threadId === activeId &&
-        TERMINAL.has(String(ev.payload?.status ?? ""))
-      ) {
+      if (ev.type === "agent.status-changed" && TERMINAL.has(String(ev.payload.status ?? ""))) {
         rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
       }
-      if (threadViewRef.current === "board") scheduleBoardReload();
-      scheduleRefresh(activeId);
+      // The daemon's thread.changed covers this too; reading here keeps an
+      // older daemon without it honest about the thread on screen.
+      if (changesThreadList(ev.type)) scheduleBoardReload();
+      if (ev.type === "agent.usage-recorded") scheduleUsageReload();
+      if (folded?.kind === "applied") {
+        threadCacheRef.current[activeId] = folded.state;
+        setThread(folded.state);
+      } else if (folded?.kind !== "stale") {
+        scheduleRefresh(activeId);
+      }
     });
     refresh(activeId).catch(() => undefined);
     return () => {
       stale = true;
       off();
     };
-  }, [activeId, refresh, scheduleRefresh, scheduleBoardReload]);
+  }, [activeId, resync, refresh, scheduleRefresh, scheduleBoardReload, scheduleUsageReload]);
 
   // The diff backs both the center Review tab and the aside Diff panel.
   useEffect(() => {
@@ -2236,19 +2299,6 @@ export default function App() {
     });
   }, [projects]);
 
-  // Other projects keep working while their tab is in the background. Poll the
-  // thread list so their tabs stay honest about running agents and activity.
-  useEffect(() => {
-    if (status !== "online") return;
-    const timer = window.setInterval(() => {
-      rpcRef.current
-        ?.call<ThreadSummary[]>("thread.list")
-        .then(setThreads)
-        .catch(() => undefined);
-    }, 4000);
-    return () => window.clearInterval(timer);
-  }, [status]);
-
   // Single-letter panel shortcuts (shown in the "+" menu), inactive while typing.
   useEffect(() => {
     if (!activeId || cheatSheetOpen) return;
@@ -2278,20 +2328,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeId, openPanel, cheatSheetOpen, setTab, vimKeys]);
 
-  // While an agent is open in the detail panel, poll its log.
-  useEffect(() => {
-    const rpc = rpcRef.current;
-    if (!rpc || !detailId || !activeId) return;
-    const load = async () => {
-      const l = await rpc
-        .call<LogEntry[]>("agents.logs", { threadId: activeId, agentId: detailId })
-        .catch(() => null);
-      if (l && activeIdRef.current === activeId) setLogs(l);
-    };
-    load();
-    const timer = window.setInterval(load, 800);
-    return () => window.clearInterval(timer);
-  }, [detailId, activeId]);
+  // While an agent is open in the detail panel, its log reads once and then
+  // follows the agent's streamed output.
+  useAgentLog(rpcRef.current, activeId, detailId, resync);
 
   const rolesById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -2408,6 +2447,24 @@ export default function App() {
   const pendingComments = useMemo(() => comments.filter((c) => !c.submitted), [comments]);
   const tasks = thread?.tasks ?? [];
   const running = useMemo(() => agents.filter((a) => a.status === "running"), [agents]);
+  // The reply a running lead is writing, shown in the transcript where the
+  // final message lands. The final message replaces it the moment it folds in.
+  const replyLeads = running.filter((a) => !a.parentAgentId).map((a) => a.id).join("\u001f");
+  const replyAuthor = thread?.soloRuntime ? "Solo" : "Orchestrator";
+  const lastTurn = turnBlocks[turnBlocks.length - 1];
+  const replySince =
+    lastTurn && !lastTurn.some((m) => m.author === "orchestrator" || m.author === "solo")
+      ? lastTurn[0].at
+      : undefined;
+  // Stable until the leads, the turn or the author change, so the reply row
+  // (which reads the live log itself) is the only thing a streamed chunk renders.
+  const reply = useMemo<ReplySource | null>(
+    () =>
+      replySince && replyLeads
+        ? { leads: new Set(replyLeads.split("\u001f")), since: replySince, author: replyAuthor }
+        : null,
+    [replyLeads, replySince, replyAuthor],
+  );
   /** The active thread's list row, where waiting/controlledBy announce
    * themselves; null while the list has not loaded it yet. */
   const activeSummary = activeId ? threads.find((t) => t.id === activeId) ?? null : null;
@@ -3386,7 +3443,9 @@ export default function App() {
     flashSaved();
   };
 
-  if (status !== "online") {
+  // A dropped socket keeps the app on screen while it reconnects; only a
+  // daemon that never answered shows the splash.
+  if (status === "connecting" || status === "offline") {
     return (
       <div className="splash">
         <img src="/brand-mark.svg" alt="" />
@@ -3410,6 +3469,7 @@ export default function App() {
       <div className="title-meta">
         <div className={`conn ${status}`}>
           <span className="led" />
+          {status === "reconnecting" && <span className="conn-retry">Reconnecting…</span>}
           <span>
             {enabledHarnesses.length} harness
             {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
@@ -4927,12 +4987,14 @@ export default function App() {
               )}
               <MessageActionsContext.Provider value={messageActions}>
                 <MessageImageContext.Provider value={messageImages}>
-                  {turnBlocks.map((turn) => (
+                  {turnBlocks.map((turn, i) => (
                     <TurnBlock
                       key={turn[0].id}
                       turn={turn}
                       index={messageIndex}
                       total={messageTotal}
+                      streaming={i === turnBlocks.length - 1 ? reply : null}
+                      onStreamGrow={followStream}
                     />
                   ))}
                 </MessageImageContext.Provider>
@@ -4972,7 +5034,7 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  {logsOpen && <LiveLog onLines={followStream} agents={thread?.agents ?? undefined} />}
+                  {logsOpen && <LiveLog onLines={followStream} agents={thread?.agents ?? undefined} reply={reply} />}
                 </div>
               )}
               {shellThread === activeId && shellThread !== null && (

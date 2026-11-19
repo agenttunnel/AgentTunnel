@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { liveLogStore } from "../lib/liveLog";
+import { liveLogStore, useStreamingLine, type LiveLine, type ReplySource } from "../lib/liveLog";
 import { useStoreField } from "../lib/store";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCard";
@@ -10,20 +10,72 @@ const LOGS_TOP_SHOW = 80;
 // Output this close to the end counts as "at the bottom" for the log pills.
 const LOGS_BOTTOM_SHOW = 48;
 
+/** How many of the newest lines the activity box renders. */
+const SHOWN = 60;
+
+type Agents = Record<string, { status?: string } | undefined> | undefined;
+
+/** One log line. Memoized on the line object: only the line a chunk grew gets a
+ * new object, so only its markdown is parsed again. */
+const LiveLogEntry = memo(function LiveLogEntry({ line, agents }: { line: LiveLine; agents: Agents }) {
+  if (line.tool) return <ToolCard line={line} stopped={agentStopped(agents?.[line.agentId]?.status)} />;
+  return line.kind === "text" || line.kind === "reasoning" ? (
+    <div className={`act-md ${line.kind}`}>
+      <Markdown text={line.text} />
+    </div>
+  ) : (
+    <div className={`log-line ${line.kind}`}>{line.text}</div>
+  );
+});
+
+/**
+ * The reply row inside the current turn, where the final message lands. It
+ * uses the message row's markup, so when the final message replaces it the
+ * transcript keeps its place. `onGrow` lets the transcript follow it.
+ */
+export const StreamingReply = memo(function StreamingReply({
+  source,
+  onGrow,
+}: {
+  source: ReplySource;
+  onGrow: () => void;
+}) {
+  const line = useStreamingLine(source);
+  const text = line?.text;
+  useEffect(() => {
+    if (text !== undefined) onGrow();
+  }, [text, onGrow]);
+  if (!line) return null;
+  return (
+    <div className="msg streaming">
+      <div className="who">
+        <span className="role">{source.author}</span>
+      </div>
+      <div className="body">
+        <Markdown text={line.text} />
+      </div>
+    </div>
+  );
+});
+
 /**
  * The body of the "Working" box: the open thread's streamed output. It reads
  * liveLogStore itself, so a streamed chunk re-renders this log and not App.
  * `onLines` runs after the line count changes, so the transcript can follow.
+ * `reply` is the reply streaming into the transcript, which is not repeated here.
  */
 export const LiveLog = memo(function LiveLog({
   onLines,
   agents,
+  reply,
 }: {
   onLines: () => void;
+  reply?: ReplySource | null;
   /** The open thread's agents, so a card still marked running can show "stopped". */
   agents?: Record<string, { status?: string } | undefined>;
 }) {
   const live = useStoreField(liveLogStore, "lines");
+  const replyId = useStreamingLine(reply)?.id;
   // Live log follows the newest output, unless the user scrolled up to read.
   // Opening the box jumps to the newest output.
   const actBodyRef = useRef<HTMLDivElement | null>(null);
@@ -83,21 +135,9 @@ export const LiveLog = memo(function LiveLog({
         )}
       </div>
       {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
-      {live.slice(-60).map((l, i) =>
-        l.tool ? (
-          <ToolCard
-            key={`tool:${l.agentId}:${l.tool.id}`}
-            line={l}
-            stopped={agentStopped(agents?.[l.agentId]?.status)}
-          />
-        ) : l.kind === "text" || l.kind === "reasoning" ? (
-          <div key={i} className={`act-md ${l.kind}`}>
-            <Markdown text={l.text} />
-          </div>
-        ) : (
-          <div key={i} className={`log-line ${l.kind}`}>
-            {l.text}
-          </div>
+      {live.slice(-SHOWN).map((l) =>
+        l.id === replyId ? null : (
+          <LiveLogEntry key={l.tool ? `tool:${l.agentId}:${l.tool.id}` : l.id} line={l} agents={agents} />
         ),
       )}
       {!logsAtBottom && (
