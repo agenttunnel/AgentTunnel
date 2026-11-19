@@ -7671,3 +7671,83 @@ button.danger-text {
   text-transform: uppercase;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
+
+/* === tool cards (src/components/ToolCard.tsx) ============================ */
+/* Structured tool calls in the live log and the agent detail. Static: no
+   animations, so a busy log never costs GPU time. */
+.tool-card {
+  margin: 3px 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.tool-card.failed {
+  border-color: var(--err-line);
+}
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--log-tool);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.tool-head:hover {
+  background: var(--panel-2);
+}
+.tool-caret,
+.tool-icon {
+  flex: none;
+  color: var(--muted);
+}
+.tool-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-state,
+.tool-time {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.tool-card.done .tool-state {
+  color: var(--ok);
+}
+.tool-card.failed .tool-state {
+  color: var(--err);
+}
+.tool-body {
+  border-top: 1px solid var(--border-soft);
+  max-height: 360px;
+  overflow: auto;
+}
+.tool-args,
+.tool-output {
+  padding: 4px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--log-raw);
+}
+.tool-args {
+  color: var(--muted);
+}
+.tool-card.failed .tool-output {
+  color: var(--err);
+}
+.tool-diff .diff-line {
+  grid-template-columns: 1fr;
+}
+.tool-diff .diff-line .code,
+.tool-diff .diff-line .code:hover {
+  cursor: auto;
+  background: transparent;
+}
+/* === end tool cards ====================================================== */

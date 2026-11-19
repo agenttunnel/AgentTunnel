@@ -126,6 +126,8 @@ import { SuperView, isAllThreadsShortcut } from "./components/SuperView";
 import { TERMINAL } from "./lib/graphEvents";
 import { ThreadImage } from "./components/ThreadImage";
 import { MasterChat } from "./components/MasterChat";
+import { ToolCard } from "./components/ToolCard";
+import { agentStopped, pushToolLine, type ToolCall, type ToolFields } from "./lib/toolCalls";
 
 type Role = {
   id: string;
@@ -148,7 +150,7 @@ type Agent = {
   startedAt?: string;
   endedAt?: string;
 };
-type LogEntry = { agentId: string; kind: string; text: string; at: string };
+type LogEntry = { agentId: string; kind: string; text: string; at: string; tool?: ToolCall };
 type Message = {
   id: string;
   author: string;
@@ -774,12 +776,14 @@ function loadDrafts(): Record<string, string> {
 }
 
 /** One line of the activity log box. */
-type LiveLine = { agentId: string; kind: string; text: string };
+type LiveLine = { agentId: string; kind: string; text: string } & ToolFields;
 const LIVE_LIMIT = 400;
 
 /** Appends one output line. Harnesses stream text in chunks, so a text or
- *  reasoning chunk from the same agent grows the last block instead of stacking. */
+ *  reasoning chunk from the same agent grows the last block instead of stacking.
+ *  A tool result folds into its call's card. */
 function pushLiveLine(prev: LiveLine[], line: LiveLine): LiveLine[] {
+  if (line.tool) return pushToolLine(prev, line, LIVE_LIMIT);
   const last = prev[prev.length - 1];
   if (
     last &&
@@ -1162,7 +1166,7 @@ export default function App() {
   const shellRef = useRef<HTMLDivElement>(null);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
+  const [live, setLive] = useState<LiveLine[]>([]);
   // The live log box can be collapsed to a header; the choice persists per viewer.
   const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
   const toggleLogs = () => {
@@ -2330,16 +2334,17 @@ export default function App() {
       const ev = raw as {
         type?: string;
         threadId?: string;
-        payload?: { agentId?: string; kind?: string; status?: string; text?: string };
+        payload?: { agentId?: string; kind?: string; status?: string; text?: string; tool?: ToolCall };
       };
       if (ev?.type === "agent.output" && ev.payload) {
         // Output from another thread belongs to that thread's log; it is
         // restored from the daemon when the user switches back.
         if (stale || ev.threadId !== activeId) return;
-        const line = {
+        const line: LiveLine = {
           agentId: String(ev.payload.agentId ?? ""),
           kind: String(ev.payload.kind ?? "text"),
           text: String(ev.payload.text ?? ""),
+          tool: ev.payload.tool,
         };
         if (buffered) buffered.push(line);
         else setLive((prev) => pushLiveLine(prev, line));
@@ -5490,7 +5495,13 @@ export default function App() {
                       </div>
                       {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
                       {live.slice(-60).map((l, i) =>
-                        l.kind === "text" || l.kind === "reasoning" ? (
+                        l.tool ? (
+                          <ToolCard
+                            key={`tool:${l.agentId}:${l.tool.id}`}
+                            line={l}
+                            stopped={agentStopped(thread?.agents?.[l.agentId]?.status)}
+                          />
+                        ) : l.kind === "text" || l.kind === "reasoning" ? (
                           <div key={i} className={`act-md ${l.kind}`}>
                             <Markdown text={l.text} />
                           </div>

@@ -27,7 +27,7 @@ func TestCodexInvocationAttachesImageFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"exec", "--dangerously-bypass-approvals-and-sandbox",
+		"exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
 		"--image", "/att/a.png", "--image", "/att/b.png",
 		"describe this",
 	}
