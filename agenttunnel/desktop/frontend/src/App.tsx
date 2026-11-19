@@ -3443,21 +3443,6 @@ export default function App() {
     flashSaved();
   };
 
-  // A dropped socket keeps the app on screen while it reconnects; only a
-  // daemon that never answered shows the splash.
-  if (status === "connecting" || status === "offline") {
-    return (
-      <div className="splash">
-        <img src="/brand-mark.svg" alt="" />
-        <div className="mark">AgentTunnel</div>
-        <div className="splash-sub">
-          {status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}
-        </div>
-        {error && <div className="err-text">{error}</div>}
-      </div>
-    );
-  }
-
   const titlebar = (
     <div className="titlebar">
       <div className="brand">
@@ -3913,6 +3898,21 @@ export default function App() {
       return true;
     },
   });
+
+  // A dropped socket keeps the app on screen while it reconnects; only a
+  // daemon that never answered shows the splash.
+  if (status === "connecting" || status === "offline") {
+    return (
+      <div className="splash">
+        <img src="/brand-mark.svg" alt="" />
+        <div className="mark">AgentTunnel</div>
+        <div className="splash-sub">
+          {status === "connecting" ? "Starting the daemon…" : "Daemon unavailable"}
+        </div>
+        {error && <div className="err-text">{error}</div>}
+      </div>
+    );
+  }
   const buildPaletteView = (): { left: PaletteSection[]; right: PaletteSection[]; rightTitle: string } => {
     const left = groupItems(
       buildPaletteCommands<AsideTabId>({
