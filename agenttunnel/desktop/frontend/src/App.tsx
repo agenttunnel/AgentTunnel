@@ -146,6 +146,7 @@ type Role = {
 };
 type Agent = {
   id: string;
+  threadId?: string;
   parentAgentId?: string;
   name?: string;
   role: string;
