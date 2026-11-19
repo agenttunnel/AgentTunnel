@@ -129,6 +129,8 @@ import {
   setRecall,
 } from "./lib/composerStore";
 import { useLatestCallback } from "./lib/store";
+import { LiveLog } from "./components/LiveLog";
+import { dropSnapshotOverlap, pushLiveLine, setLive, type LiveLine } from "./lib/liveLog";
 
 type Role = {
   id: string;
@@ -723,38 +725,6 @@ const TurnBlock = memo(function TurnBlock({
   );
 });
 
-/** One line of the activity log box. */
-type LiveLine = { agentId: string; kind: string; text: string };
-const LIVE_LIMIT = 400;
-
-/** Appends one output line. Harnesses stream text in chunks, so a text or
- *  reasoning chunk from the same agent grows the last block instead of stacking. */
-function pushLiveLine(prev: LiveLine[], line: LiveLine): LiveLine[] {
-  const last = prev[prev.length - 1];
-  if (
-    last &&
-    last.agentId === line.agentId &&
-    last.kind === line.kind &&
-    (line.kind === "text" || line.kind === "reasoning")
-  ) {
-    return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
-  }
-  return [...prev.slice(-(LIVE_LIMIT - 1)), line];
-}
-
-/** Frames published while the snapshot loads may already be in the snapshot:
- *  the daemon appends a line before publishing it. Drop the longest run at the
- *  start of `buffered` that repeats the snapshot's tail, keeping only new lines. */
-function dropSnapshotOverlap(snapshot: LiveLine[], buffered: LiveLine[]): LiveLine[] {
-  const same = (a: LiveLine, b: LiveLine) =>
-    a.agentId === b.agentId && a.kind === b.kind && a.text === b.text;
-  for (let k = Math.min(snapshot.length, buffered.length); k > 0; k--) {
-    const tail = snapshot.slice(snapshot.length - k);
-    if (tail.every((line, i) => same(line, buffered[i]))) return buffered.slice(k);
-  }
-  return buffered;
-}
-
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = getPref("at.asideTabs");
@@ -969,10 +939,6 @@ const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } 
 
 // The jump-to-top pill appears once the stream is scrolled this far down.
 const TOP_SHOW = 240;
-// The log box is much shorter than the transcript, so its pill shows sooner.
-const LOGS_TOP_SHOW = 80;
-// Output this close to the end counts as "at the bottom" for the log pills.
-const LOGS_BOTTOM_SHOW = 48;
 
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
@@ -1112,7 +1078,6 @@ export default function App() {
   const shellRef = useRef<HTMLDivElement>(null);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [live, setLive] = useState<{ agentId: string; kind: string; text: string }[]>([]);
   // The live log box can be collapsed to a header; the choice persists per viewer.
   const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
   const toggleLogs = () => {
@@ -1272,8 +1237,16 @@ export default function App() {
     thread?.messages?.length,
     thread?.messages?.[thread.messages.length - 1]?.text,
     thread?.questions?.length,
-    live.length,
   ]);
+  // The live log reads its own store; it reports new lines so the transcript
+  // keeps following the newest output.
+  const followStream = useCallback(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const near = nearBottom(el);
+    if (near) el.scrollTop = el.scrollHeight;
+    setAtBottom(near);
+  }, []);
 
   const scrollToBottom = () => {
     const el = streamRef.current;
@@ -1300,36 +1273,6 @@ export default function App() {
     },
     [streamRef],
   );
-
-  // Live log follows the newest output, unless the user scrolled up to read.
-  // Reopening a collapsed box jumps back to the newest output.
-  const actBodyRef = useRef<HTMLDivElement | null>(null);
-  const logsWasOpen = useRef(logsOpen);
-  // Only the edges are stored, so scrolling re-renders when a jump pill should
-  // mount or unmount — not on every pixel of the log.
-  const [logsAtTop, setLogsAtTop] = useState(false);
-  const [logsAtBottom, setLogsAtBottom] = useState(true);
-  useEffect(() => {
-    const opening = !logsWasOpen.current && logsOpen;
-    logsWasOpen.current = logsOpen;
-    const el = actBodyRef.current;
-    if (!el) return;
-    if (opening || el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW) {
-      el.scrollTop = el.scrollHeight;
-    }
-    setLogsAtTop(el.scrollTop > LOGS_TOP_SHOW);
-    setLogsAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW);
-  }, [live, logsOpen]);
-
-  const logsScrollToTop = () => {
-    const el = actBodyRef.current;
-    if (el) el.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const logsScrollToBottom = () => {
-    const el = actBodyRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -5095,58 +5038,7 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  {logsOpen && (
-                    <div
-                      className="act-body"
-                      ref={actBodyRef}
-                      onScroll={(e) => {
-                        const el = e.currentTarget;
-                        setLogsAtTop(el.scrollTop > LOGS_TOP_SHOW);
-                        setLogsAtBottom(
-                          el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW,
-                        );
-                      }}
-                    >
-                      {/* Zero-height sticky anchor: the jump-to-top pill
-                          overlays the log instead of pushing lines down. */}
-                      <div className="scroll-top-anchor">
-                        {logsAtTop && (
-                          <button
-                            type="button"
-                            className="scroll-top"
-                            onClick={logsScrollToTop}
-                            aria-label="Jump to start of logs"
-                            title="Jump to start of logs"
-                          >
-                            ↑
-                          </button>
-                        )}
-                      </div>
-                      {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
-                      {live.slice(-60).map((l, i) =>
-                        l.kind === "text" || l.kind === "reasoning" ? (
-                          <div key={i} className={`act-md ${l.kind}`}>
-                            <Markdown text={l.text} />
-                          </div>
-                        ) : (
-                          <div key={i} className={`log-line ${l.kind}`}>
-                            {l.text}
-                          </div>
-                        ),
-                      )}
-                      {!logsAtBottom && (
-                        <button
-                          type="button"
-                          className="scroll-bottom"
-                          onClick={logsScrollToBottom}
-                          aria-label="Jump to latest log output"
-                          title="Jump to latest log output"
-                        >
-                          ↓
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  {logsOpen && <LiveLog onLines={followStream} />}
                 </div>
               )}
               {shellThread === activeId && shellThread !== null && (
