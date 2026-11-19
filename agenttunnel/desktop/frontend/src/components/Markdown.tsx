@@ -1,4 +1,14 @@
-import { createContext, memo, useContext, type ComponentProps, type ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
+import { copyText } from "../lib/clipboard";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -19,7 +29,53 @@ import {
  */
 export const DocLinkContext = createContext<((path: string) => void) | null>(null);
 
+type HastNode = { type: string; value?: string; children?: HastNode[]; properties?: Record<string, unknown> };
+
+/** The plain text under a hast node, for the code block's copy button. */
+function hastText(n: HastNode | undefined): string {
+  if (!n) return "";
+  if (n.type === "text") return n.value ?? "";
+  return (n.children ?? []).map(hastText).join("");
+}
+
+/** A fenced block: language label and copy button over a scrolling body. The
+ * label reads the fence's hint; unlabeled blocks show only the button. */
+function CodeBlock({ node, children }: ComponentProps<"pre"> & ExtraProps) {
+  const code = (node as HastNode | undefined)?.children?.find((c) => c.type === "element");
+  const cls = code?.properties?.className;
+  const lang = (Array.isArray(cls) ? cls : [])
+    .map(String)
+    .find((c) => c.startsWith("language-"))
+    ?.slice("language-".length);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async () => {
+    const ok = await copyText(hastText(code).replace(/\n$/, ""));
+    window.clearTimeout(timer.current);
+    setState(ok ? "copied" : "failed");
+    timer.current = window.setTimeout(() => setState("idle"), ok ? 1400 : 2500);
+  };
+  return (
+    <div className="md-code">
+      <div className="md-code-head">
+        {lang && <span className="md-code-lang">{lang}</span>}
+        <button
+          type="button"
+          className={`md-code-copy${state === "idle" ? "" : ` ${state}`}`}
+          onClick={() => void copy()}
+          aria-label={lang ? `Copy ${lang} code` : "Copy code"}
+        >
+          {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy"}
+        </button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
 const components: Components = {
+  pre: CodeBlock,
   table({ children }: ComponentProps<"table"> & ExtraProps) {
     return (
       <div className="md-table-wrap">
