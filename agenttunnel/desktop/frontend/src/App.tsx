@@ -125,6 +125,7 @@ import {
   setDrafts,
   setPastes,
   setRecall,
+  unqueue,
 } from "./lib/composerStore";
 import { useLatestCallback } from "./lib/store";
 import { TurnActivity } from "./components/TurnActivity";
@@ -2875,6 +2876,18 @@ export default function App() {
   const composerSend = useLatestCallback(() => {
     send();
   });
+  // A queued draft starts as the next turn the moment this thread's turn ends.
+  // Only a transition seen on this thread sends it; a queued draft found on an
+  // idle thread (after switching back) just becomes a plain draft again.
+  const turnIdle = running.length === 0 && !busy;
+  const idleSeen = useRef({ key: draftKey, idle: turnIdle });
+  useEffect(() => {
+    const prev = idleSeen.current;
+    idleSeen.current = { key: draftKey, idle: turnIdle };
+    if (!turnIdle || !composerStore.get().queued[draftKey]) return;
+    unqueue(draftKey);
+    if (prev.key === draftKey && !prev.idle) send();
+  }, [turnIdle, draftKey]);
   const composerError = useLatestCallback((message: string, threadId?: string) =>
     threadId === undefined ? setError(message) : setError(message, threadId),
   );
@@ -4155,7 +4168,9 @@ export default function App() {
             <Composer
               activeId={activeId}
               draftKey={draftKey}
-              agentMode={running.length > 0}
+              agentMode={running.length > 0 || busy}
+              stoppable={running.length > 0 || busy || shellThread === activeId}
+              onStop={stopTurnStable}
               hidden={composerHidden}
               taRef={taRef}
               pendingCaret={pendingCaret}
