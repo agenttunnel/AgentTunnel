@@ -86,11 +86,11 @@ import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
-import {
-  CheatSheet,
-  loadCheatSheetOptedOut,
-  saveCheatSheetOptedOut,
-} from "./components/CheatSheet";
+import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
+import { FolderBrowser } from "./components/FolderBrowser";
+import { BrowserNotifyToggle } from "./components/BrowserNotifyToggle";
+import { useAttention } from "./lib/attention";
+import { useUrlRoute, type Route } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { UpdateChip, type UpdateStatus } from "./components/UpdateChip";
 import { HarnessUpdateChip } from "./components/HarnessUpdateChip";
@@ -265,6 +265,8 @@ export type ThreadSummary = {
   lastSeenAt?: string;
   /** A finished turn ended after the last view (derived by the daemon). */
   unseen?: boolean;
+  /** Agent questions still waiting on the human. */
+  pendingQuestions?: number;
   /** The thread's own worktree; its branch is what a PR is opened from. */
   worktree?: { path: string; branch: string; base: string } | null;
   /** A draft has not had its first turn yet. */
@@ -1214,9 +1216,8 @@ export default function App() {
   // Appearance is shared by every client of this daemon through the prefs store.
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
   useEffect(() => applyTheme(theme), [theme]);
-  // The how-to sheet opens on every launch unless the user opted out (persisted).
-  const [cheatSheetOpen, setCheatSheetOpen] = useState(() => !loadCheatSheetOptedOut());
-  const [cheatSheetOptedOut, setCheatSheetOptedOut] = useState(loadCheatSheetOptedOut);
+  // The how-to sheet opens on its own only until it has been seen once; /help reopens it.
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(showCheatSheetOnLaunch);
   // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
   const [vimKeys, setVimKeys] = useState(loadVimKeys);
   useVimKeys(vimKeys);
@@ -1308,7 +1309,6 @@ export default function App() {
   // Browser fallback for the Add Project flow: no native folder picker there,
   // so the path is typed into a small sheet instead.
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectPath, setNewProjectPath] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
   const [cleanupConfirm, setCleanupConfirm] = useState(false);
   const [cleaningThreads, setCleaningThreads] = useState(false);
@@ -1639,7 +1639,7 @@ export default function App() {
 
   /** Adding a project is the native folder picker; the folder's name is the project name. */
   const addProject = async () => {
-    // Browsers have no native picker: open the typed-path sheet instead.
+    // Browsers have no native picker: open the daemon-backed folder browser.
     if (!inDesktopShell()) {
       setNewProjectOpen(true);
       return;
@@ -1649,8 +1649,8 @@ export default function App() {
     await createProjectAt(path);
   };
 
-  /** Creates a project for a user-supplied path, shared by the picker and the
-   * browser's typed-path sheet. */
+  /** Creates a project for a user-supplied path, shared by the native picker
+   * and the web UI's folder browser. */
   const createProjectAt = async (path: string) => {
     const rpc = rpcRef.current;
     if (!rpc || !path) return;
@@ -1662,7 +1662,6 @@ export default function App() {
       });
       setProjects(res.projects);
       setNewProjectOpen(false);
-      setNewProjectPath("");
       openProject(res.project.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -4318,6 +4317,39 @@ export default function App() {
     if (t.projectId) openWorktreeThread(t.projectId, t.id);
     else selectThread(t.id);
   };
+  // Turns that finish or ask while the user is away: title count, dock badge,
+  // notifications (lib/attention.ts). A click on a notification opens the thread.
+  useAttention({
+    threads,
+    activeId,
+    openThread: (id) => {
+      const t = threads.find((x) => x.id === id);
+      if (t) goToThread(t);
+    },
+  });
+  // Web UI only: the open thread or project lives in the URL (lib/route.ts).
+  useUrlRoute({
+    enabled: !inDesktopShell(),
+    loaded: status === "online" && (threads.length > 0 || projects.length > 0),
+    projectId,
+    threadId: activeId,
+    open: (route: Route) => {
+      if (route.kind === "home") {
+        showProjects();
+        return true;
+      }
+      if (route.kind === "project") {
+        if (!projects.some((p) => p.id === route.id)) return false;
+        openProject(route.id);
+        setActiveId(null);
+        return true;
+      }
+      const t = threads.find((x) => x.id === route.id);
+      if (!t) return false;
+      goToThread(t);
+      return true;
+    },
+  });
   const buildPaletteView = (): { left: PaletteSection[]; right: PaletteSection[]; rightTitle: string } => {
     const left = groupItems(
       buildPaletteCommands<AsideTabId>({
@@ -4403,40 +4435,15 @@ export default function App() {
     />
   );
 
-  // Typed-path fallback for Add Project in a plain browser, where the native
-  // folder picker does not exist. Rendered beside the palette on every screen
-  // the palette's create-project command can run from.
+  // Add Project in a plain browser: the daemon-backed folder browser stands in
+  // for the native picker. Rendered beside the palette on every screen the
+  // palette's create-project command can run from.
   const newProjectDialog = newProjectOpen && (
-    <div className="overlay" onClick={() => setNewProjectOpen(false)}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-head">
-          <strong>Add project</strong>
-          <button onClick={() => setNewProjectOpen(false)}>Cancel</button>
-        </div>
-        <div className="sheet-body">
-          <p className="hint">
-            Browsers cannot open a folder picker — type the project folder's path.
-          </p>
-          <input
-            autoFocus
-            value={newProjectPath}
-            placeholder="/path/to/your/repo"
-            onChange={(e) => setNewProjectPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") createProjectAt(newProjectPath.trim());
-            }}
-          />
-          <div className="sheet-actions">
-            <button
-              className="primary"
-              onClick={() => createProjectAt(newProjectPath.trim())}
-            >
-              Add
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <FolderBrowser
+      rpc={rpcRef.current}
+      onPick={(path) => createProjectAt(path)}
+      onClose={() => setNewProjectOpen(false)}
+    />
   );
 
   // Rendered on every screen: settings are app-global, so the titlebar gear
@@ -4504,6 +4511,7 @@ export default function App() {
               </div>
             </section>
           )}
+          <BrowserNotifyToggle />
           <section className="set-section">
             <h4>Environment</h4>
             <label className="field">
@@ -6387,11 +6395,6 @@ export default function App() {
       {cheatSheetOpen && (
         <CheatSheet
           panels={Object.values(ASIDE_META)}
-          optedOut={cheatSheetOptedOut}
-          onSetOptedOut={(optedOut) => {
-            saveCheatSheetOptedOut(optedOut);
-            setCheatSheetOptedOut(optedOut);
-          }}
           onClose={() => setCheatSheetOpen(false)}
         />
       )}

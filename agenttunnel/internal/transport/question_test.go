@@ -208,6 +208,43 @@ func TestDismissReturnsDeclined(t *testing.T) {
 	}
 }
 
+// thread.list counts a thread's pending questions, so clients can flag a thread
+// that needs an answer without loading it; an answer clears the count.
+func TestThreadListCountsPendingQuestions(t *testing.T) {
+	f := newAskFixture(t)
+	ctx := t.Context()
+	pending := func() int {
+		t.Helper()
+		res, err := f.disp.Handle(ctx, Request{Method: "thread.list"})
+		if err != nil {
+			t.Fatalf("thread.list: %v", err)
+		}
+		for _, s := range res.([]ThreadSummary) {
+			if s.ID == "t1" {
+				return s.PendingQuestions
+			}
+		}
+		t.Fatal("t1 not listed")
+		return 0
+	}
+	if n := pending(); n != 0 {
+		t.Fatalf("pending before ask = %d, want 0", n)
+	}
+	id, reply := f.askAndAwait(t, ctx, "t1", map[string]any{
+		"questionKind": "text", "text": "Which branch?",
+	})
+	if n := pending(); n != 1 {
+		t.Fatalf("pending while asked = %d, want 1", n)
+	}
+	if err := answerRPC(f.disp, "t1", id, nil, "main"); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	mustReply(t, reply)
+	if n := pending(); n != 0 {
+		t.Fatalf("pending after answer = %d, want 0", n)
+	}
+}
+
 // When the caller goes away (its turn stopped, or its command was killed), the
 // question closes rather than staying pending for nobody.
 func TestAskerGoneClosesTheQuestion(t *testing.T) {

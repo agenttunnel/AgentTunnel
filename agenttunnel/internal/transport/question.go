@@ -274,3 +274,14 @@ func answerSummary(q *domain.Question) string {
 	}
 	return strings.Join(parts, "; ")
 }
+
+// pendingQuestions counts the thread's questions still waiting on the human.
+func pendingQuestions(st *domain.ThreadState) int {
+	n := 0
+	for _, q := range st.Questions {
+		if q.Status == domain.QuestionPending {
+			n++
+		}
+	}
+	return n
+}
