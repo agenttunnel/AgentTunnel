@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { Rpc } from "../lib/rpc";
 import { fmtCost, fmtTokens, totalTokens, type TokenUsage } from "../lib/usage";
 
@@ -84,7 +84,7 @@ const SCOPE_LABEL: Record<StatsScope, string> = { thread: "Thread", project: "Pr
  * project to narrow to it offers a picker; with neither (the app-level view) it
  * shows every project.
  */
-export function HarnessStatsView({
+export const HarnessStatsView = memo(function HarnessStatsView({
   rpc,
   threadId,
   projectId,
@@ -168,4 +168,4 @@ export function HarnessStatsView({
       )}
     </>
   );
-}
+});

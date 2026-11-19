@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { Rpc } from "../lib/rpc";
 import { useModelStats } from "../lib/modelStats";
 import { useTeamStats } from "../lib/teamStats";
@@ -12,7 +13,7 @@ import { TeamLeaderboard } from "./TeamLeaderboard";
  * fastest on the fewest tokens. One fetch of the model rollup feeds both the
  * leaderboard and the timing chart.
  */
-export function StatsPage({ rpc }: { rpc: Rpc | null }) {
+export const StatsPage = memo(function StatsPage({ rpc }: { rpc: Rpc | null }) {
   const models = useModelStats(rpc);
   const teams = useTeamStats(rpc);
   return (
@@ -41,4 +42,4 @@ export function StatsPage({ rpc }: { rpc: Rpc | null }) {
       </div>
     </>
   );
-}
+});
