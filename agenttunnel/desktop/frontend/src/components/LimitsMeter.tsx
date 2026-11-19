@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import type { Rpc } from "../lib/rpc";
 import { formatReset, harnessName, levelOf, type HarnessLimits } from "../lib/limits";
 
@@ -12,7 +12,7 @@ const CLOCK_MS = 60_000;
  * renders nothing when no harness is available, which is the common case for
  * users without a subscription.
  */
-export function LimitsMeter({ rpc }: { rpc: Rpc | null }) {
+export const LimitsMeter = memo(function LimitsMeter({ rpc }: { rpc: Rpc | null }) {
   const [limits, setLimits] = useState<HarnessLimits[]>([]);
   const [now, setNow] = useState(() => Date.now());
   // Default expanded; only harnesses the user collapsed are recorded.
@@ -88,4 +88,4 @@ export function LimitsMeter({ rpc }: { rpc: Rpc | null }) {
       })}
     </div>
   );
-}
+});

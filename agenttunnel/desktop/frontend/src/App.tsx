@@ -6,13 +6,10 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent as ReactClipboardEvent,
   type CSSProperties,
-  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from "react";
@@ -23,7 +20,6 @@ import {
   pickFolder,
   Rpc,
   setKeepRunning as emitKeepRunning,
-  uploadImage,
   type Conn,
   type ImageRef,
 } from "./lib/rpc";
@@ -52,17 +48,13 @@ import {
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
 import { PeerChat } from "./components/PeerChat";
-import { HOLD_MOD_LABEL, useHoldToTalk } from "./lib/dictation";
-import { VoiceRecorder } from "./components/VoiceRecorder";
-import { useRotatingPlaceholder } from "./lib/placeholder";
+import { useHoldToTalk } from "./lib/dictation";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { TaskList, type TaskItem } from "./components/TaskList";
 import { DiffView, lineRange, type DraftLike } from "./components/DiffView";
 import { reviewAnchorKey, type ReviewThreadLike } from "./components/ReviewThreads";
 import { Dropdown, type DropdownOption } from "./components/Dropdown";
 import { FileEditor } from "./components/FileEditor";
-import { MentionMenu } from "./components/MentionMenu";
-import { dropMention, mentionAt, MAX_ATTACHMENTS, type Attachment, type FileMatch } from "./lib/mentions";
 import { PRPanel, type PRListing } from "./components/PRPanel";
 import {
   ThreadBoard,
@@ -101,16 +93,13 @@ import type {
 import { LimitsMeter } from "./components/LimitsMeter";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { arrangeThreads, threadSearchScore, visibleThreadRows } from "./lib/threads";
-import { getPref, setLocalPref, setPref } from "./lib/prefs";
+import { getPref, setPref } from "./lib/prefs";
 import { THEMES, applyTheme, loadTheme, type ThemeId } from "./lib/themes";
 import {
   buildCommands,
-  matchCommands,
   parseSlash,
-  slashQuery,
   type SlashCommand,
 } from "./lib/commands";
-import { SlashMenu } from "./components/SlashMenu";
 import { CommandPalette } from "./components/CommandPalette";
 import {
   buildCommands as buildPaletteCommands,
@@ -121,13 +110,29 @@ import {
   type PaletteItem,
   type PaletteSection,
 } from "./lib/palette";
-import { BtwPanel, type BtwEntry } from "./components/BtwPanel";
+import type { BtwEntry } from "./components/BtwPanel";
 import { SuperView, isAllThreadsShortcut } from "./components/SuperView";
 import { TERMINAL } from "./lib/graphEvents";
 import { ThreadImage } from "./components/ThreadImage";
 import { MasterChat } from "./components/MasterChat";
-import { ToolCard } from "./components/ToolCard";
-import { agentStopped, pushToolLine, type ToolCall, type ToolFields } from "./lib/toolCalls";
+import type { ToolCall } from "./lib/toolCalls";
+import { Composer } from "./components/Composer";
+import {
+  composerStore,
+  draftKeyOf,
+  draftText,
+  expandPastes,
+  setAttachments,
+  setCaret,
+  setDraftImages,
+  setDrafts,
+  setPastes,
+  setRecall,
+} from "./lib/composerStore";
+import { useLatestCallback } from "./lib/store";
+import { LiveLog } from "./components/LiveLog";
+import { InheritedPanel } from "./components/InheritedPanel";
+import { dropSnapshotOverlap, pushLiveLine, setLive, setLogs, type LiveLine } from "./lib/liveLog";
 
 type Role = {
   id: string;
@@ -159,24 +164,6 @@ type Message = {
   images?: ImageRef[];
   /** Set on a steering message once a pass has consumed it. */
   consumed?: boolean;
-};
-/** Image caps mirror the daemon's /attachments endpoint so a bad paste fails
- * in the composer, before any turn or tokens are spent. */
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_TURN_IMAGES = 8;
-const MAX_TURN_IMAGE_BYTES = 32 * 1024 * 1024;
-const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-/** One image in a composer draft: the original bytes (kept so a failed send can
- * restore the preview), a local objectURL, and the stored ImageRef once the
- * daemon has accepted the upload. */
-type DraftImage = {
-  localId: number;
-  name: string;
-  file: Blob;
-  previewUrl: string;
-  uploading: boolean;
-  ref?: ImageRef;
-  error?: string;
 };
 /** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
 const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
@@ -289,15 +276,6 @@ export type Project = { id: string; name: string; path: string; threads: number 
 
 /** The top-level pages shown when no project is open. */
 type HomePage = "projects" | "orchestrator" | "worktrees" | "stats";
-
-/** The environment's cross-project memory: guide, learnings log, rules. */
-type InheritedView = {
-  dir: string;
-  guide: string;
-  log: string;
-  rules: { name: string; body: string }[] | null;
-  rendered: string;
-};
 
 /** One editable seat in the council sheet before it is convened. */
 type CouncilMemberRow = {
@@ -492,19 +470,6 @@ function loadOpenProjects(): string[] {
   return [];
 }
 
-/** Long pastes collapse to a `[Pasted text #id +N lines]` token; the full text is
- *  kept per draft and swapped back in on send, persistence, or click. */
-const PASTE_TOKEN = /\[Pasted text #(\d+) \+\d+ lines\]/g;
-function pasteTokens(text: string): { start: number; end: number; id: number }[] {
-  return [...text.matchAll(PASTE_TOKEN)].map((m) => {
-    const start = m.index ?? 0;
-    return { start, end: start + m[0].length, id: Number(m[1]) };
-  });
-}
-function expandPastes(text: string, store?: Record<number, string>): string {
-  if (!store) return text;
-  return text.replace(PASTE_TOKEN, (tok, id: string) => store[Number(id)] ?? tok);
-}
 /** Turns a flat message list into turns: each user message opens one block. */
 function groupTurns(messages: Message[]): Message[][] {
   const turns: Message[][] = [];
@@ -755,62 +720,6 @@ const TurnBlock = memo(function TurnBlock({
   );
 });
 
-/** Composer drafts keyed by project and thread, remembered across restarts. */
-function draftKeyOf(projectId: string | null, threadId: string | null): string {
-  return `${projectId ?? ""}\u001f${threadId ?? ""}`;
-}
-
-function loadDrafts(): Record<string, string> {
-  try {
-    const raw = getPref("at.drafts");
-    if (raw) {
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const out: Record<string, string> = {};
-        for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v;
-        return out;
-      }
-    }
-  } catch {
-    /* corrupt: start with no drafts */
-  }
-  return {};
-}
-
-/** One line of the activity log box. */
-type LiveLine = { agentId: string; kind: string; text: string } & ToolFields;
-const LIVE_LIMIT = 400;
-
-/** Appends one output line. Harnesses stream text in chunks, so a text or
- *  reasoning chunk from the same agent grows the last block instead of stacking.
- *  A tool result folds into its call's card. */
-function pushLiveLine(prev: LiveLine[], line: LiveLine): LiveLine[] {
-  if (line.tool) return pushToolLine(prev, line, LIVE_LIMIT);
-  const last = prev[prev.length - 1];
-  if (
-    last &&
-    last.agentId === line.agentId &&
-    last.kind === line.kind &&
-    (line.kind === "text" || line.kind === "reasoning")
-  ) {
-    return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
-  }
-  return [...prev.slice(-(LIVE_LIMIT - 1)), line];
-}
-
-/** Frames published while the snapshot loads may already be in the snapshot:
- *  the daemon appends a line before publishing it. Drop the longest run at the
- *  start of `buffered` that repeats the snapshot's tail, keeping only new lines. */
-function dropSnapshotOverlap(snapshot: LiveLine[], buffered: LiveLine[]): LiveLine[] {
-  const same = (a: LiveLine, b: LiveLine) =>
-    a.agentId === b.agentId && a.kind === b.kind && a.text === b.text;
-  for (let k = Math.min(snapshot.length, buffered.length); k > 0; k--) {
-    const tail = snapshot.slice(snapshot.length - k);
-    if (tail.every((line, i) => same(line, buffered[i]))) return buffered.slice(k);
-  }
-  return buffered;
-}
-
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = getPref("at.asideTabs");
@@ -1025,10 +934,6 @@ const defaultCouncilSetup = (): { rounds: number; members: CouncilMemberRow[] } 
 
 // The jump-to-top pill appears once the stream is scrolled this far down.
 const TOP_SHOW = 240;
-// The log box is much shorter than the transcript, so its pill shows sooner.
-const LOGS_TOP_SHOW = 80;
-// Output this close to the end counts as "at the bottom" for the log pills.
-const LOGS_BOTTOM_SHOW = 48;
 
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
@@ -1167,8 +1072,6 @@ export default function App() {
   const [compact, setCompact] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [live, setLive] = useState<LiveLine[]>([]);
   // The live log box can be collapsed to a header; the choice persists per viewer.
   const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
   const toggleLogs = () => {
@@ -1190,13 +1093,6 @@ export default function App() {
   const [docLoading, setDocLoading] = useState(false);
   const docReqRef = useRef(0);
 
-  // Inherited context panel state: the environment's shared memory.
-  const [inherited, setInherited] = useState<InheritedView | null>(null);
-  const [inheritedGuide, setInheritedGuide] = useState("");
-  const [inheritedLog, setInheritedLog] = useState("");
-  const [inheritedDirty, setInheritedDirty] = useState(false);
-  const [inheritedRules, setInheritedRules] = useState<{ name: string; body: string }[]>([]);
-  const [newRuleName, setNewRuleName] = useState("");
   // Pull requests the active thread opened; tagged with its thread so a late reply never shows elsewhere.
   const [prState, setPRState] = useState<PRListing | null>(null);
   const [prLoading, setPRLoading] = useState(false);
@@ -1226,22 +1122,6 @@ export default function App() {
   const [vimKeys, setVimKeys] = useState(loadVimKeys);
   useVimKeys(vimKeys);
   const modelsOpen = asideActive === "models" && asideTabs.includes("models");
-  // Pasted text per draft: draftKey -> token id -> full text.
-  const [pastes, setPastes] = useState<Record<string, Record<number, string>>>({});
-  // Files and folders attached per draft through @; sent with the turn as context.
-  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
-  // Image drafts per paste or drop: previewed locally, uploaded over HTTP on
-  // attach, then sent by attachment id. Keyed like attachments.
-  const [draftImages, setDraftImages] = useState<Record<string, DraftImage[]>>({});
-  // Caret in the composer: an @-token is the word ending at the caret.
-  const [caret, setCaret] = useState(0);
-  const [mentionActive, setMentionActive] = useState(0);
-  // Start of an @-token the user dismissed with Escape.
-  const [mentionDismissed, setMentionDismissed] = useState<number | null>(null);
-  // Matches tagged with the query they answer, so an old list never shows for a new query.
-  const [mentionResults, setMentionResults] = useState<{ query: string; matches: FileMatch[] } | null>(
-    null,
-  );
   const [settings, setSettings] = useState<SettingsView | null>(null);
   // Shell capability state: where the daemon lives and whether it should
   // outlive the window. Connection data only — thread data stays on the
@@ -1276,18 +1156,11 @@ export default function App() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
-  // Each (project, thread) keeps its own composer text, so switching threads
-  // swaps the draft instead of carrying it over.
-  const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
+  // Composer text and attachments live in composerStore (see Composer), so a
+  // keystroke does not re-render App. App reads them only when it acts on them.
   const draftKey = draftKeyOf(projectId, activeId);
-  const input = drafts[draftKey] ?? "";
-  // Mirrors send(): a leading "!" (after trimming) runs a shell command.
-  const commandMode = input.trimStart().startsWith("!");
-  // Read by openPanel (a stable callback) to seed the council topic from the draft.
-  const draftRef = useRef("");
-  useEffect(() => {
-    draftRef.current = expandPastes(input, pastes[draftKey]).trim();
-  }, [input, pastes, draftKey]);
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
   const setInput = useCallback(
     (text: string) => {
       if (!activeId) return;
@@ -1349,8 +1222,16 @@ export default function App() {
     thread?.messages?.length,
     thread?.messages?.[thread.messages.length - 1]?.text,
     thread?.questions?.length,
-    live.length,
   ]);
+  // The live log reads its own store; it reports new lines so the transcript
+  // keeps following the newest output.
+  const followStream = useCallback(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const near = nearBottom(el);
+    if (near) el.scrollTop = el.scrollHeight;
+    setAtBottom(near);
+  }, []);
 
   const scrollToBottom = () => {
     const el = streamRef.current;
@@ -1377,36 +1258,6 @@ export default function App() {
     },
     [streamRef],
   );
-
-  // Live log follows the newest output, unless the user scrolled up to read.
-  // Reopening a collapsed box jumps back to the newest output.
-  const actBodyRef = useRef<HTMLDivElement | null>(null);
-  const logsWasOpen = useRef(logsOpen);
-  // Only the edges are stored, so scrolling re-renders when a jump pill should
-  // mount or unmount — not on every pixel of the log.
-  const [logsAtTop, setLogsAtTop] = useState(false);
-  const [logsAtBottom, setLogsAtBottom] = useState(true);
-  useEffect(() => {
-    const opening = !logsWasOpen.current && logsOpen;
-    logsWasOpen.current = logsOpen;
-    const el = actBodyRef.current;
-    if (!el) return;
-    if (opening || el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW) {
-      el.scrollTop = el.scrollHeight;
-    }
-    setLogsAtTop(el.scrollTop > LOGS_TOP_SHOW);
-    setLogsAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW);
-  }, [live, logsOpen]);
-
-  const logsScrollToTop = () => {
-    const el = actBodyRef.current;
-    if (el) el.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const logsScrollToBottom = () => {
-    const el = actBodyRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
 
   const refresh = useCallback(async (id: string) => {
     const rpc = rpcRef.current;
@@ -1604,7 +1455,9 @@ export default function App() {
   }, [tab, docPath, activeId, status, loadDoc]);
 
   const openPanel = useCallback((id: AsideTabId) => {
-    if (id === "council" && draftRef.current) setCouncilTopic(draftRef.current);
+    // Seeds the council topic from the draft.
+    const draft = id === "council" ? draftText(draftKeyRef.current) : "";
+    if (draft) setCouncilTopic(draft);
     setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setAsideActive(id);
   }, []);
@@ -2080,60 +1933,6 @@ export default function App() {
     }
   }, []);
 
-  /** Loads the inherited-context panel: guide, log, and rules. */
-  const loadInherited = useCallback(async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    try {
-      const view = await rpc.call<InheritedView>("context.inherited.get");
-      setInherited(view);
-      setInheritedGuide(view.guide);
-      setInheritedLog(view.log);
-      setInheritedRules(view.rules ?? []);
-      setInheritedDirty(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  /** Saves the guide and log drafts. */
-  const saveInherited = async () => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    try {
-      await rpc.call("context.inherited.save", {
-        guide: inheritedGuide,
-        log: inheritedLog,
-      });
-      setInheritedDirty(false);
-      await loadInherited();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const saveInheritedRule = async (name: string, body: string) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    try {
-      await rpc.call("context.inherited.rule.save", { name, body });
-      await loadInherited();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const deleteInheritedRule = async (name: string) => {
-    const rpc = rpcRef.current;
-    if (!rpc) return;
-    try {
-      await rpc.call("context.inherited.rule.delete", { name });
-      await loadInherited();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   const addModel = useCallback(async (harness: string, model: string) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
@@ -2422,26 +2221,6 @@ export default function App() {
     if (!(asideActive in ASIDE_META)) setAsideActive("agents");
   }, [asideActive, setAsideActive]);
 
-
-  // Inherited context loads when its panel is opened, and stays fresh on
-  // thread changes since agents can record learnings mid-turn.
-  useEffect(() => {
-    if (asideActive === "inherited") loadInherited();
-  }, [asideActive, activeId, loadInherited]);
-
-  // Remember composer drafts across restarts; empty drafts are dropped.
-  useEffect(() => {
-    try {
-      const kept = Object.fromEntries(
-        Object.entries(drafts)
-          .map(([k, v]) => [k, expandPastes(v, pastes[k])] as const)
-          .filter(([, v]) => v !== ""),
-      );
-      setLocalPref("at.drafts", JSON.stringify(kept));
-    } catch {
-      /* stay in memory */
-    }
-  }, [drafts, pastes]);
 
   // Remember which projects are open as tabs.
   useEffect(() => {
@@ -2937,6 +2716,8 @@ export default function App() {
   const send = async () => {
     const rpc = rpcRef.current;
     const threadId = activeId;
+    const { drafts, pastes, attachments, draftImages } = composerStore.get();
+    const input = drafts[draftKey] ?? "";
     const text = expandPastes(input, pastes[draftKey]).trim();
     if (!rpc || !threadId || !text) return;
     setRecall(null);
@@ -3302,9 +3083,6 @@ export default function App() {
   // event or message). Each ask appends an entry; closing clears the list.
   const [btw, setBtw] = useState<Record<string, BtwEntry[]>>({});
   const btwSeq = useRef(0);
-  // Slash popup: highlighted row, and the input it was dismissed on with Esc.
-  const [slashIdx, setSlashIdx] = useState(0);
-  const [slashClosed, setSlashClosed] = useState<string | null>(null);
   // Cmd/Ctrl+P palette: whether it is open, whether it opened from the composer
   // (which swaps the right pane to composer features), and where focus returns.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -3397,11 +3175,6 @@ export default function App() {
         setVimKeys(next);
       },
     });
-  const slashQ = slashQuery(input);
-  const slashMatches: SlashCommand[] =
-    slashQ !== null && slashClosed !== input ? matchCommands(slashCommands(), slashQ) : [];
-  const slashOpen = slashMatches.length > 0;
-  const slashSel = Math.min(slashIdx, slashMatches.length - 1);
   const btwList = activeId ? (btw[activeId] ?? null) : null;
 
   /** Tab and Enter on a command that takes text complete its name; a bare
@@ -3421,10 +3194,6 @@ export default function App() {
   // One playful verb per thread's setup view, picked when the thread changes.
   const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
-  const pasteSeq = useRef(0);
-  // Shell-style prompt history: the index of the sent prompt the composer shows
-  // (null = the live draft), with the draft to restore on ArrowDown past the newest.
-  const [recall, setRecall] = useState<{ key: string; idx: number; draft: string } | null>(null);
 
   // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
   // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
@@ -3458,53 +3227,6 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [projectId, activeId]);
-  // Grow the composer with its text (CSS max-height caps it), then restore any caret we placed.
-  useLayoutEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-    if (pendingCaret.current !== null) {
-      el.setSelectionRange(pendingCaret.current, pendingCaret.current);
-      pendingCaret.current = null;
-    }
-  }, [input]);
-
-  const replacePasteToken = (t: { start: number; end: number; id: number }, text: string) => {
-    setInput(input.slice(0, t.start) + text + input.slice(t.end));
-    pendingCaret.current = t.start + text.length;
-    setPastes((prev) => {
-      const rest = { ...prev[draftKey] };
-      delete rest[t.id];
-      return { ...prev, [draftKey]: rest };
-    });
-  };
-  const onComposerPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
-    // An image on the clipboard becomes a draft chip: uploaded over HTTP as an
-    // attachment, never inlined into the composer text.
-    const imageFiles = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
-    if (imageFiles.length > 0) {
-      e.preventDefault();
-      attachImages(imageFiles);
-      return;
-    }
-    const text = e.clipboardData.getData("text/plain");
-    const lines = text.split("\n").length;
-    if (lines <= 6 && text.length <= 500) return;
-    e.preventDefault();
-    const { selectionStart: start, selectionEnd: end } = e.currentTarget;
-    const id = ++pasteSeq.current;
-    const token = `[Pasted text #${id} +${lines} lines]`;
-    setInput(input.slice(0, start) + token + input.slice(end));
-    pendingCaret.current = start + token.length;
-    setPastes((prev) => ({ ...prev, [draftKey]: { ...prev[draftKey], [id]: text } }));
-  };
-  const onComposerClick = (e: MouseEvent<HTMLTextAreaElement>) => {
-    const pos = e.currentTarget.selectionStart;
-    const t = pasteTokens(input).find((tok) => pos >= tok.start && pos <= tok.end);
-    const text = t && pastes[draftKey]?.[t.id];
-    if (t && text !== undefined) replacePasteToken(t, text);
-  };
   // Dictated text lands after whatever is already typed.
   // Functional update: one onresult can carry several final phrases, and each
   // must build on the previous one rather than the render-time draft.
@@ -3529,247 +3251,22 @@ export default function App() {
     if (wasListening.current && !listening) taRef.current?.focus();
     wasListening.current = listening;
   }, [listening]);
-  useRotatingPlaceholder(taRef, {
-    rotate: tab === "chat" && !!activeId && running.length === 0 && !input,
-    idle:
-      running.length > 0
-        ? "Steer the orchestrator — it lands on the next pass…"
-        : "Ask the team to build something, or ! to run a shell command…",
+  // The memoized composer gets stable handlers that call the latest closures,
+  // so a streamed thread update does not re-render it.
+  const voiceStop = useLatestCallback(() => voice.stop());
+  const voiceCancel = useLatestCallback(() => voice.cancel());
+  const composerToggleModels = useLatestCallback(() => toggleModels());
+  const composerSend = useLatestCallback(() => {
+    send();
   });
-  // The @ menu: an @-token ends at the caret, and is closed for commands.
-  const draftAttachments = attachments[draftKey] ?? [];
-  const draftImageList = draftImages[draftKey] ?? [];
-  const mention = commandMode ? null : mentionAt(input, caret);
-  const openMention = mention && mention.start !== mentionDismissed ? mention : null;
-  const mentionQuery = openMention?.query ?? null;
-  const menuMatches =
-    openMention && mentionResults?.query === openMention.query ? mentionResults.matches : null;
-  useEffect(() => {
-    const rpc = rpcRef.current;
-    if (mentionQuery === null || !rpc || !activeId) return;
-    let stale = false;
-    // Debounced, and any keystroke after this one cancels the request.
-    const timer = window.setTimeout(() => {
-      rpc
-        .call<{ matches: FileMatch[] }>("files.search", {
-          threadId: activeId,
-          query: mentionQuery,
-          limit: 12,
-        })
-        .then((res) => {
-          if (!stale) setMentionResults({ query: mentionQuery, matches: res.matches });
-        })
-        .catch((e) => {
-          if (stale) return;
-          setMentionResults({ query: mentionQuery, matches: [] });
-          setError(e instanceof Error ? e.message : String(e));
-        });
-    }, 60);
-    return () => {
-      stale = true;
-      window.clearTimeout(timer);
-    };
-  }, [mentionQuery, activeId]);
-  const pickMention = (m: FileMatch) => {
-    if (!openMention) return;
-    if (draftAttachments.length >= MAX_ATTACHMENTS) {
-      setError(`Attach at most ${MAX_ATTACHMENTS} files or folders per turn.`);
-      return;
-    }
-    setInput(dropMention(input, openMention, caret));
-    pendingCaret.current = openMention.start;
-    setCaret(openMention.start);
-    setMentionDismissed(null);
-    setAttachments((prev) => {
-      const list = prev[draftKey] ?? [];
-      if (list.some((a) => a.path === m.path)) return prev;
-      return { ...prev, [draftKey]: [...list, { path: m.path, dir: m.dir }] };
-    });
-  };
-  const removeAttachment = (path: string) =>
-    setAttachments((prev) => ({
-      ...prev,
-      [draftKey]: (prev[draftKey] ?? []).filter((a) => a.path !== path),
-    }));
-
-  const imageSeq = useRef(0);
-  /** Adds pasted or dropped image files as draft chips: a local preview shows
-   * at once, the bytes upload over HTTP, and the chip carries the daemon's
-   * attachment id once stored. */
-  const attachImages = (files: File[]) => {
-    const conn = connRef.current;
-    const threadId = activeId;
-    if (!conn || !threadId || files.length === 0) return;
-    const current = draftImages[draftKey] ?? [];
-    const accepted: File[] = [];
-    // ref().size is 0 until the upload finishes, so in-flight images count by
-    // their local bytes: the estimate cannot be beaten by rapid pastes.
-    let total = current.reduce((sum, img) => sum + (img.ref?.size ?? img.file.size), 0);
-    for (const file of files) {
-      if (!IMAGE_MIMES.has(file.type)) {
-        setError(`"${file.name}" is not a PNG, JPEG, WebP, or GIF image.`);
-        continue;
-      }
-      if (file.size > MAX_IMAGE_BYTES) {
-        setError(`"${file.name}" is larger than the 8 MiB image limit.`);
-        continue;
-      }
-      if (current.length + accepted.length >= MAX_TURN_IMAGES) {
-        setError(`Attach at most ${MAX_TURN_IMAGES} images per turn.`);
-        break;
-      }
-      if (total + file.size > MAX_TURN_IMAGE_BYTES) {
-        setError("Images would exceed the 32 MiB per-turn limit.");
-        break;
-      }
-      total += file.size;
-      accepted.push(file);
-    }
-    if (accepted.length === 0) return;
-    const entries: DraftImage[] = accepted.map((file) => ({
-      localId: ++imageSeq.current,
-      name: file.name || "pasted image",
-      file,
-      previewUrl: URL.createObjectURL(file),
-      uploading: true,
-    }));
-    setDraftImages((prev) => ({ ...prev, [draftKey]: [...(prev[draftKey] ?? []), ...entries] }));
-    for (const [file, entry] of accepted.map((f, i) => [f, entries[i]] as const)) {
-      uploadImage(conn.httpUrl, conn.token, threadId, file, entry.name)
-        .then((ref) => {
-          setDraftImages((prev) => ({
-            ...prev,
-            [draftKey]: (prev[draftKey] ?? []).map((img) =>
-              img.localId === entry.localId ? { ...img, uploading: false, ref } : img,
-            ),
-          }));
-        })
-        .catch((e) => {
-          setDraftImages((prev) => ({
-            ...prev,
-            [draftKey]: (prev[draftKey] ?? []).map((img) =>
-              img.localId === entry.localId
-                ? { ...img, uploading: false, error: e instanceof Error ? e.message : String(e) }
-                : img,
-            ),
-          }));
-        });
-    }
-  };
-  const removeDraftImage = (localId: number) =>
-    setDraftImages((prev) => {
-      const list = prev[draftKey] ?? [];
-      const gone = list.find((img) => img.localId === localId);
-      if (gone) URL.revokeObjectURL(gone.previewUrl);
-      return { ...prev, [draftKey]: list.filter((img) => img.localId !== localId) };
-    });
-  const onComposerDragOver = (e: ReactDragEvent<HTMLDivElement>) => {
-    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
-  };
-  const onComposerDrop = (e: ReactDragEvent<HTMLDivElement>) => {
-    const files = [...e.dataTransfer.files];
-    if (files.length === 0) return;
-    // Swallow every file drop: the webview must not navigate away from the
-    // app (and lose drafts) just because a file missed an image filter.
-    e.preventDefault();
-    attachImages(files.filter((f) => f.type.startsWith("image/")));
-  };
-
-  const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter confirms an IME candidate during composition; it must not submit.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (slashOpen) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const n = slashMatches.length;
-        setSlashIdx((slashSel + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setSlashClosed(input);
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        pickSlash(slashMatches[slashSel], e.key === "Enter");
-        return;
-      }
-    }
-    if (openMention && menuMatches && menuMatches.length > 0) {
-      const n = menuMatches.length;
-      // Clamp like the render does: a stale index from a longer list would otherwise stall the wrap.
-      const cur = Math.min(mentionActive, n - 1);
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        setMentionActive(e.key === "ArrowDown" ? (cur + 1) % n : (cur - 1 + n) % n);
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        pickMention(menuMatches[cur]);
-        return;
-      }
-    }
-    if (openMention && e.key === "Escape") {
-      e.preventDefault();
-      setMentionDismissed(openMention.start);
-      return;
-    }
-    // ArrowUp on the first line recalls the previous sent prompt; ArrowDown on
-    // the last line steps forward and restores the draft. Popups keep their arrows.
-    if (
-      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
-      !slashOpen &&
-      !openMention &&
-      !e.shiftKey &&
-      !e.altKey &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      e.currentTarget.selectionStart === e.currentTarget.selectionEnd
-    ) {
-      const { selectionStart: at, value } = e.currentTarget;
-      const up = e.key === "ArrowUp";
-      const cur = recall && recall.key === draftKey ? recall : null;
-      const onEdge = up ? !value.slice(0, at).includes("\n") : !value.slice(at).includes("\n");
-      if (onEdge && (up || cur)) {
-        e.preventDefault();
-        const prompts = (thread?.messages ?? []).filter((m) => m.author === "user").map((m) => m.text);
-        if (up) {
-          const idx = cur ? cur.idx - 1 : prompts.length - 1;
-          if (idx >= 0) {
-            const next = prompts[idx];
-            setRecall({ key: draftKey, idx, draft: cur ? cur.draft : input });
-            if (next !== input) pendingCaret.current = next.length;
-            setInput(next);
-          }
-        } else {
-          const idx = cur!.idx + 1;
-          const next = idx < prompts.length ? prompts[idx] : cur!.draft;
-          setRecall(idx < prompts.length ? { key: draftKey, idx, draft: cur!.draft } : null);
-          if (next !== input) pendingCaret.current = next.length;
-          setInput(next);
-        }
-        return;
-      }
-    }
-    // A token is one unit: Backspace/Delete at its edge removes it whole.
-    const { selectionStart: pos, selectionEnd } = e.currentTarget;
-    if ((e.key === "Backspace" || e.key === "Delete") && pos === selectionEnd) {
-      const t = pasteTokens(input).find((tok) =>
-        e.key === "Backspace" ? tok.end === pos : tok.start === pos,
-      );
-      if (t) {
-        e.preventDefault();
-        replacePasteToken(t, "");
-        return;
-      }
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
-  };
+  const composerError = useLatestCallback((message: string, threadId?: string) =>
+    threadId === undefined ? setError(message) : setError(message, threadId),
+  );
+  const composerSlashCommands = useLatestCallback(() => slashCommands());
+  const composerPickSlash = useLatestCallback((cmd: SlashCommand, runNow: boolean) => pickSlash(cmd, runNow));
+  const composerUserPrompts = useLatestCallback(() =>
+    (thread?.messages ?? []).filter((m) => m.author === "user").map((m) => m.text),
+  );
 
   /** Makes the view on screen the default for threads that have not set their own. */
   const saveThreadDefaults = () => {
@@ -4307,6 +3804,7 @@ export default function App() {
   // an arrow that resolves the current handlers and draft.
   const attachFromPalette = () => {
     if (!activeId) return;
+    const input = composerStore.get().drafts[draftKey] ?? "";
     const sep = input === "" || /\s$/.test(input) ? "" : " ";
     const next = `${input}${sep}@`;
     setInput(next);
@@ -5474,64 +4972,7 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  {logsOpen && (
-                    <div
-                      className="act-body"
-                      ref={actBodyRef}
-                      onScroll={(e) => {
-                        const el = e.currentTarget;
-                        setLogsAtTop(el.scrollTop > LOGS_TOP_SHOW);
-                        setLogsAtBottom(
-                          el.scrollHeight - el.scrollTop - el.clientHeight < LOGS_BOTTOM_SHOW,
-                        );
-                      }}
-                    >
-                      {/* Zero-height sticky anchor: the jump-to-top pill
-                          overlays the log instead of pushing lines down. */}
-                      <div className="scroll-top-anchor">
-                        {logsAtTop && (
-                          <button
-                            type="button"
-                            className="scroll-top"
-                            onClick={logsScrollToTop}
-                            aria-label="Jump to start of logs"
-                            title="Jump to start of logs"
-                          >
-                            ↑
-                          </button>
-                        )}
-                      </div>
-                      {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
-                      {live.slice(-60).map((l, i) =>
-                        l.tool ? (
-                          <ToolCard
-                            key={`tool:${l.agentId}:${l.tool.id}`}
-                            line={l}
-                            stopped={agentStopped(thread?.agents?.[l.agentId]?.status)}
-                          />
-                        ) : l.kind === "text" || l.kind === "reasoning" ? (
-                          <div key={i} className={`act-md ${l.kind}`}>
-                            <Markdown text={l.text} />
-                          </div>
-                        ) : (
-                          <div key={i} className={`log-line ${l.kind}`}>
-                            {l.text}
-                          </div>
-                        ),
-                      )}
-                      {!logsAtBottom && (
-                        <button
-                          type="button"
-                          className="scroll-bottom"
-                          onClick={logsScrollToBottom}
-                          aria-label="Jump to latest log output"
-                          title="Jump to latest log output"
-                        >
-                          ↓
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  {logsOpen && <LiveLog onLines={followStream} agents={thread?.agents ?? undefined} />}
                 </div>
               )}
               {shellThread === activeId && shellThread !== null && (
@@ -5559,134 +5000,30 @@ export default function App() {
               )}
             </div>
 
-            <div
-              className={`composer${commandMode ? " command-mode" : running.length > 0 ? " agent-mode" : ""}`}
-              onDragOver={onComposerDragOver}
-              onDrop={onComposerDrop}
+            <Composer
+              activeId={activeId}
+              draftKey={draftKey}
+              agentMode={running.length > 0}
               hidden={composerHidden}
-            >
-              {btwList && <BtwPanel entries={btwList} onClose={closeBtw} />}
-              {slashOpen && (
-                <SlashMenu
-                  items={slashMatches}
-                  index={slashSel}
-                  onPick={(cmd) => pickSlash(cmd, true)}
-                />
-              )}
-              {openMention && menuMatches && (
-                <MentionMenu
-                  matches={menuMatches}
-                  active={Math.min(mentionActive, Math.max(menuMatches.length - 1, 0))}
-                  onPick={pickMention}
-                  onActive={setMentionActive}
-                />
-              )}
-              {draftAttachments.length > 0 && (
-                <div className="attach-row">
-                  {draftAttachments.map((a) => (
-                    <span key={a.path} className="attach-chip" title={a.path}>
-                      <span className="attach-kind">{a.dir ? "folder" : "file"}</span>
-                      <span className="attach-name">{a.dir ? `${a.path}/` : a.path}</span>
-                      <button
-                        type="button"
-                        className="attach-remove"
-                        onClick={() => removeAttachment(a.path)}
-                        aria-label={`Remove ${a.path}`}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              {draftImageList.length > 0 && (
-                <div className="attach-row img-row">
-                  {draftImageList.map((img) => (
-                    <span
-                      key={img.localId}
-                      className={`img-chip${img.error !== undefined ? " failed" : ""}`}
-                      title={img.error ?? (img.ref ? `${img.name} · ${img.ref.mime}` : img.name)}
-                    >
-                      <img src={img.previewUrl} alt={img.name} />
-                      <span className="img-chip-meta">
-                        <span className="img-chip-name">{img.name}</span>
-                        <span className="img-chip-state">
-                          {img.uploading
-                            ? "uploading…"
-                            : img.error !== undefined
-                              ? img.error
-                              : `${img.ref?.width ?? "?"}×${img.ref?.height ?? "?"}`}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        className="attach-remove"
-                        onClick={() => removeDraftImage(img.localId)}
-                        aria-label={`Remove ${img.name}`}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="box">
-                <textarea
-                  ref={taRef}
-                  rows={1}
-                  hidden={listening}
-                  onPaste={onComposerPaste}
-                  onClick={onComposerClick}
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    setRecall(null);
-                    setSlashIdx(0);
-                    setCaret(e.target.selectionStart);
-                    setMentionActive(0);
-                  }}
-                  onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-                  onKeyDown={onComposerKeyDown}
-                />
-                {listening && (
-                  <VoiceRecorder
-                    hint={`${HOLD_MOD_LABEL} + T`}
-                    onStop={voice.stop}
-                    onCancel={voice.cancel}
-                  />
-                )}
-              </div>
-              <div className="composer-foot">
-                {selectedProject && (
-                  <span className="ctx-chip" title={selectedProject.path}>
-                    {selectedProject.name}
-                  </span>
-                )}
-                <button
-                  className={`model-btn${modelsOpen ? " open" : ""}`}
-                  onClick={toggleModels}
-                  aria-expanded={modelsOpen}
-                  title="Pick the harness and model each role runs on"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    aria-hidden="true"
-                  >
-                    <line x1="4" y1="7" x2="20" y2="7" />
-                    <circle cx="9" cy="7" r="2.2" fill="var(--panel)" />
-                    <line x1="4" y1="17" x2="20" y2="17" />
-                    <circle cx="15" cy="17" r="2.2" fill="var(--panel)" />
-                  </svg>
-                  Model config
-                </button>
-              </div>
-            </div>
+              taRef={taRef}
+              pendingCaret={pendingCaret}
+              rpcRef={rpcRef}
+              connRef={connRef}
+              listening={listening}
+              onVoiceStop={voiceStop}
+              onVoiceCancel={voiceCancel}
+              btwList={btwList}
+              onCloseBtw={closeBtw}
+              projectName={selectedProject?.name ?? null}
+              projectPath={selectedProject?.path ?? null}
+              modelsOpen={modelsOpen}
+              onToggleModels={composerToggleModels}
+              onSend={composerSend}
+              onError={composerError}
+              slashCommands={composerSlashCommands}
+              onPickSlash={composerPickSlash}
+              userPrompts={composerUserPrompts}
+            />
           </>
         ) : tab === "review" ? (
           <div className="stream">
@@ -6146,91 +5483,7 @@ export default function App() {
             )}
           </div>
         ) : asideActive === "inherited" ? (
-          <div className="section inherited-section">
-            <h3>Inherited context</h3>
-            <p className="hint">
-              Cross-project memory injected into every agent prompt. Agents append learnings with{" "}
-              <code>tool learn</code>; everything here is yours to edit.
-            </p>
-            {!inherited ? (
-              <p className="hint">Loading…</p>
-            ) : (
-              <>
-                <div className="inh-block">
-                  <span className="field-label">GUIDE.md — standing guidance</span>
-                  <textarea
-                    className="inh-edit"
-                    rows={6}
-                    value={inheritedGuide}
-                    onChange={(e) => {
-                      setInheritedGuide(e.target.value);
-                      setInheritedDirty(true);
-                    }}
-                  />
-                </div>
-                <div className="inh-block">
-                  <span className="field-label">LOG.md — learnings log</span>
-                  <textarea
-                    className="inh-edit"
-                    rows={6}
-                    value={inheritedLog}
-                    onChange={(e) => {
-                      setInheritedLog(e.target.value);
-                      setInheritedDirty(true);
-                    }}
-                  />
-                </div>
-                <button className="primary" disabled={!inheritedDirty} onClick={saveInherited}>
-                  Save guide &amp; log
-                </button>
-                <div className="inh-block" style={{ marginTop: 14 }}>
-                  <span className="field-label">Rules (rules/*.md)</span>
-                  {inheritedRules.map((rule, idx) => (
-                    <div className="inh-rule" key={rule.name}>
-                      <div className="cm-row">
-                        <span className="inh-rule-name">{rule.name}</span>
-                        <button
-                          className="cm-remove"
-                          title="Delete this rule"
-                          onClick={() => deleteInheritedRule(rule.name)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                      <textarea
-                        className="inh-edit"
-                        rows={4}
-                        defaultValue={rule.body}
-                        onBlur={(e) => {
-                          if (e.target.value !== rule.body) {
-                            saveInheritedRule(rule.name, e.target.value);
-                          }
-                        }}
-                      />
-                    </div>
-                  ))}
-                  <div className="cm-row">
-                    <input
-                      className="cm-name"
-                      placeholder="new rule name"
-                      value={newRuleName}
-                      onChange={(e) => setNewRuleName(e.target.value)}
-                    />
-                    <button
-                      className="cm-add"
-                      disabled={!newRuleName.trim()}
-                      onClick={() => {
-                        if (!newRuleName.trim()) return;
-                        saveInheritedRule(newRuleName.trim(), "").then(() => setNewRuleName(""));
-                      }}
-                    >
-                      + Add rule
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+          <InheritedPanel rpcRef={rpcRef} activeId={activeId} onError={setError} />
         ) : asideActive === "stats" ? (
           <div className="section stats-section">
             <HarnessStatsView
@@ -6397,7 +5650,6 @@ export default function App() {
         <AgentDetail
           agent={detailAgent}
           steps={thread?.steps?.[detailAgent.id] ?? []}
-          logs={logs}
           roleName={rolesById[detailAgent.role] || detailAgent.role}
           onClose={() => setDetailId(null)}
         />

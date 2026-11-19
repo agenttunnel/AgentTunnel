@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { ToolCard } from "./ToolCard";
-import { agentStopped, foldToolLines, type ToolFields } from "../lib/toolCalls";
+import { agentStopped, foldToolLines } from "../lib/toolCalls";
+import { agentLogStore } from "../lib/liveLog";
+import { useStoreField } from "../lib/store";
 
 type Usage = {
   inputTokens: number;
@@ -12,7 +14,6 @@ type Usage = {
 };
 
 type Step = { at: string; usage: Usage };
-type Entry = { kind: string; text: string; at?: string } & ToolFields;
 
 type AgentLike = {
   id: string;
@@ -76,16 +77,16 @@ const add = (steps: Step[]): Usage =>
 export function AgentDetail({
   agent,
   steps,
-  logs,
   roleName,
   onClose,
 }: {
   agent: AgentLike;
   steps: Step[];
-  logs: Entry[];
   roleName: string;
   onClose: () => void;
 }) {
+  // The polled log comes from its store, so a poll re-renders this sheet only.
+  const logs = useStoreField(agentLogStore, "entries");
   const totals = add(steps);
   // Context size is what the latest step was fed, cache reads included.
   const last = steps[steps.length - 1]?.usage;

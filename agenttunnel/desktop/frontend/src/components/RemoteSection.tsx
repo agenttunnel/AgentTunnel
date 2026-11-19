@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { Rpc } from "../lib/rpc";
 import { switchProps } from "../lib/switchProps";
 import {
@@ -49,7 +49,7 @@ function phoneItem(tunnel: TunnelStatus, relay: RelayStatus): RemoteItem {
  * this machine: the phone tunnel and the WhatsApp bridge. The daemon owns all
  * state; a row only mirrors what the RPCs report, and clicking it toggles.
  */
-export function RemoteSection({ rpc }: { rpc: Rpc | null }) {
+export const RemoteSection = memo(function RemoteSection({ rpc }: { rpc: Rpc | null }) {
   const [items, setItems] = useState<RemoteItem[]>([]);
   const [pairing, setPairing] = useState<PhonePairing | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -387,4 +387,4 @@ export function RemoteSection({ rpc }: { rpc: Rpc | null }) {
       {error && <p className="err-text remote-err">{error}</p>}
     </div>
   );
-}
+});
