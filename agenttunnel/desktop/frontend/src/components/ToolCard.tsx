@@ -34,20 +34,11 @@ function ToolCardView({ line, stopped }: Props) {
   const icon = tool.command ? "$" : tool.diff || /edit|write|patch/i.test(tool.name ?? "") ? "±" : "→";
   const ms = status === "running" ? null : toolDuration(line);
 
-  let state: string;
-  switch (status) {
-    case "running":
-      state = "running";
-      break;
-    case "stopped":
-      state = "stopped";
-      break;
-    case "failed":
-      state = tool.exitCode !== undefined ? `exit ${tool.exitCode}` : "failed";
-      break;
-    default:
-      state = "✓";
-  }
+  // One glyph per status, plus a word, so state never rests on colour alone.
+  const glyph = { running: "●", done: "✓", failed: "✕", stopped: "■" }[status] ?? "·";
+  const state =
+    status === "failed" && tool.exitCode !== undefined ? `exit ${tool.exitCode}` : status === "done" ? "" : status;
+  const stats = useMemo(() => (tool.diff ? diffStats(tool.diff) : null), [tool.diff]);
 
   return (
     <div className={`tool-card ${status}`}>
@@ -58,11 +49,23 @@ function ToolCardView({ line, stopped }: Props) {
         aria-expanded={open}
         title={first}
       >
-        <span className="tool-caret">{open ? "▾" : "▸"}</span>
-        <span className="tool-icon">{icon}</span>
+        <span className="tool-glyph" aria-hidden="true">
+          {glyph}
+        </span>
+        <span className="tool-icon" aria-hidden="true">
+          {icon}
+        </span>
         <span className="tool-summary">{summary}</span>
-        <span className="tool-state">{state}</span>
+        {stats && (
+          <span className="tool-stats">
+            <span className="tc-add">+{stats.add}</span> <span className="tc-del">−{stats.del}</span>
+          </span>
+        )}
+        {state && <span className="tool-state">{state}</span>}
         {ms !== null && <span className="tool-time">{formatDuration(ms)}</span>}
+        <span className="tool-caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
       </button>
       {open && (
         <div className="tool-body">
@@ -76,6 +79,16 @@ function ToolCardView({ line, stopped }: Props) {
       )}
     </div>
   );
+}
+
+function diffStats(diff: string): { add: number; del: number } {
+  let add = 0;
+  let del = 0;
+  for (const l of parseToolDiff(diff)) {
+    if (l.kind === "add") add++;
+    else if (l.kind === "delete") del++;
+  }
+  return { add, del };
 }
 
 /** Logs are refetched wholesale, so lines are compared by content. */
@@ -101,9 +114,27 @@ export const ToolCard = memo(ToolCardView, same);
 /** An edit's diff, word-highlighted where a removed line pairs with an added
  *  one. Rendered only while its card is open. */
 function ToolDiff({ diff }: { diff: string }) {
-  const rows = useMemo(() => renderDiff(parseToolDiff(diff)), [diff]);
-  return <div className="tool-diff">{rows}</div>;
+  const lines = useMemo(() => parseToolDiff(diff), [diff]);
+  // A big diff renders its head first; the rest mounts on request, so opening
+  // a card never builds hundreds of rows at once.
+  const [all, setAll] = useState(false);
+  const hidden = all ? 0 : Math.max(0, lines.length - DIFF_WINDOW);
+  const rows = useMemo(
+    () => renderDiff(hidden > 0 ? lines.slice(0, DIFF_WINDOW) : lines),
+    [lines, hidden > 0],
+  );
+  return (
+    <div className="tool-diff">
+      {rows}
+      {hidden > 0 && (
+        <button type="button" className="tool-more" onClick={() => setAll(true)}>
+          Show {hidden} more lines
+        </button>
+      )}
+    </div>
+  );
 }
+const DIFF_WINDOW = 120;
 
 function renderDiff(lines: ToolDiffLine[]) {
   const out: React.ReactNode[] = [];

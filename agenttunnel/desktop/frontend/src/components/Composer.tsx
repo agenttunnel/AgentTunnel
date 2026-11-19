@@ -34,6 +34,9 @@ import {
   setRecall,
   setSlashClosed,
   setSlashIdx,
+  setQueued,
+  setRunMode,
+  unqueue,
   type DraftImage,
 } from "../lib/composerStore";
 import { VoiceRecorder } from "./VoiceRecorder";
@@ -50,8 +53,11 @@ export type ComposerProps = {
   activeId: string | null;
   /** draftKeyOf(projectId, activeId): which draft the composer edits. */
   draftKey: string;
-  /** A turn is running, so Enter steers it. */
+  /** A turn is running, so Enter steers it or queues the next one. */
   agentMode: boolean;
+  /** Something on this thread can be stopped (a turn or a shell command). */
+  stoppable: boolean;
+  onStop: () => void;
   hidden: boolean;
   taRef: RefObject<HTMLTextAreaElement>;
   /** A caret position to restore after the next text change. */
@@ -85,6 +91,8 @@ export const Composer = memo(function Composer({
   activeId,
   draftKey,
   agentMode,
+  stoppable,
+  onStop,
   hidden,
   taRef,
   pendingCaret,
@@ -116,10 +124,14 @@ export const Composer = memo(function Composer({
   const slashIdx = useStoreField(composerStore, "slashIdx");
   const slashClosed = useStoreField(composerStore, "slashClosed");
   const recall = useStoreField(composerStore, "recall");
+  const runMode = useStoreField(composerStore, "runMode");
+  const queuedMap = useStoreField(composerStore, "queued");
 
   const input = drafts[draftKey] ?? "";
   // Mirrors send(): a leading "!" (after trimming) runs a shell command.
   const commandMode = input.trimStart().startsWith("!");
+  const queued = !!queuedMap[draftKey];
+  const queueing = agentMode && runMode === "queue" && !commandMode;
   const setInput = useCallback(
     (text: string) => {
       if (!activeId) return;
@@ -183,9 +195,11 @@ export const Composer = memo(function Composer({
   };
   useRotatingPlaceholder(taRef, {
     rotate: !!activeId && !agentMode && !input,
-    idle: agentMode
-      ? "Steer the orchestrator — it lands on the next pass…"
-      : "Ask the team to build something, or ! to run a shell command…",
+    idle: !agentMode
+      ? "Ask the team to build something, or ! to run a shell command…"
+      : runMode === "queue"
+        ? "Queue the next turn…"
+        : "Steer the running turn…",
   });
   // The @ menu: an @-token ends at the caret, and is closed for commands.
   const draftAttachments = attachments[draftKey] ?? [];
@@ -417,9 +431,23 @@ export const Composer = memo(function Composer({
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      submit();
     }
   };
+
+  /** The one send path: Enter and the send button both land here. While a
+   * turn runs it steers, or in queue mode holds the draft for the next turn. */
+  const submit = () => {
+    if (!input.trim()) return;
+    if (queueing) {
+      setQueued((prev) => ({ ...prev, [draftKey]: true }));
+      return;
+    }
+    unqueue(draftKey);
+    send();
+  };
+  const canSend = input.trim() !== "" && !(queueing && queued);
+  const imageCount = draftImageList.length;
 
   return (
     <div
@@ -501,8 +529,10 @@ export const Composer = memo(function Composer({
           onPaste={onComposerPaste}
           onClick={onComposerClick}
           value={input}
+          aria-label={queueing ? "Queue the next turn" : agentMode ? "Steer the running turn" : "Message"}
           onChange={(e) => {
             setInput(e.target.value);
+            if (!e.target.value.trim()) unqueue(draftKey);
             setRecall(null);
             setSlashIdx(0);
             setCaret(e.target.selectionStart);
@@ -518,8 +548,99 @@ export const Composer = memo(function Composer({
             onCancel={onVoiceCancel}
           />
         )}
+        <div className="composer-actions">
+          {stoppable && (
+            <button
+              type="button"
+              className="composer-stop"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={onStop}
+              title="Stop the running turn"
+              aria-label="Stop the running turn"
+            >
+              <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+              </svg>
+            </button>
+          )}
+          <button
+            type="button"
+            className={`composer-send${queueing ? " queue" : agentMode ? " steer" : ""}`}
+            // Keeps focus in the textarea, so typing continues after a click.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={submit}
+            disabled={!canSend || !activeId}
+            title={
+              queueing
+                ? "Queue as the next turn (Enter)"
+                : agentMode
+                  ? "Steer the running turn (Enter)"
+                  : "Send (Enter) · Shift+Enter for a new line"
+            }
+            aria-label={queueing ? "Queue as the next turn" : agentMode ? "Steer the running turn" : "Send"}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="6 11 12 5 18 11" />
+            </svg>
+          </button>
+        </div>
       </div>
+      {queued && agentMode && (
+        <div className="queued-note" role="status">
+          <span className="queued-dot" aria-hidden="true" />
+          Queued — starts as the next turn when this one ends
+          <button
+            type="button"
+            className="queued-btn"
+            onClick={() => {
+              unqueue(draftKey);
+              send();
+            }}
+            title="Send it now as a steer to the running turn"
+          >
+            Steer now
+          </button>
+          <button type="button" className="queued-btn" onClick={() => unqueue(draftKey)}>
+            Cancel
+          </button>
+        </div>
+      )}
       <div className="composer-foot">
+        {agentMode && (
+          <div className="run-mode" role="radiogroup" aria-label="While a turn runs, Enter">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={runMode === "steer"}
+              className={runMode === "steer" ? "on" : ""}
+              onClick={() => setRunMode("steer")}
+              title="Enter sends the message into the running turn; the lead reads it on its next pass"
+            >
+              Steer running turn
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={runMode === "queue"}
+              className={runMode === "queue" ? "on" : ""}
+              onClick={() => setRunMode("queue")}
+              title="Enter holds the message and starts it as a new turn when this one ends"
+            >
+              Queue next
+            </button>
+          </div>
+        )}
         {projectName !== null && (
           <span className="ctx-chip" title={projectPath ?? undefined}>
             {projectName}
@@ -548,6 +669,15 @@ export const Composer = memo(function Composer({
           </svg>
           Model config
         </button>
+        {imageCount >= MAX_TURN_IMAGES - 2 && (
+          <span className={`composer-limit${imageCount >= MAX_TURN_IMAGES ? " full" : ""}`}>
+            {imageCount}/{MAX_TURN_IMAGES} images
+          </span>
+        )}
+        <span className="composer-hint" aria-hidden="true">
+          <kbd>Enter</kbd> {queueing ? "queue" : agentMode ? "steer" : "send"} · <kbd>Shift</kbd>
+          <kbd>Enter</kbd> newline
+        </span>
       </div>
     </div>
   );

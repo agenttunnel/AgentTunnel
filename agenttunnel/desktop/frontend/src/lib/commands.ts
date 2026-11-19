@@ -5,6 +5,8 @@
  * command never starts or steers a turn.
  */
 
+import { fuzzyScore } from "./fuzzy";
+
 export type CenterTab = "chat" | "review" | "files" | "graph" | "board" | "p2p";
 
 export type SlashCommand = {
@@ -86,15 +88,22 @@ export function slashQuery(input: string): string | null {
   return input.slice(1).toLowerCase();
 }
 
-/** Prefix matches first, then substring matches; both keep registry order. */
+/** Prefix matches first, then substring matches (both in registry order),
+ * then fuzzy matches by score, so "/rvw" still finds /review. */
 export function matchCommands(commands: SlashCommand[], query: string): SlashCommand[] {
   const prefix: SlashCommand[] = [];
   const contains: SlashCommand[] = [];
+  const fuzzy: { cmd: SlashCommand; score: number }[] = [];
   for (const cmd of commands) {
     if (cmd.name.startsWith(query)) prefix.push(cmd);
     else if (cmd.name.includes(query)) contains.push(cmd);
+    else if (query.length > 1) {
+      const score = fuzzyScore(query, cmd.name);
+      if (score !== null) fuzzy.push({ cmd, score });
+    }
   }
-  return prefix.concat(contains);
+  fuzzy.sort((a, b) => b.score - a.score);
+  return prefix.concat(contains, fuzzy.map((f) => f.cmd));
 }
 
 /** Splits `/name rest` into its name and argument; null for anything else. */

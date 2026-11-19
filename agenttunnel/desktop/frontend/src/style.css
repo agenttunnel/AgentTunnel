@@ -76,6 +76,101 @@
   --dur: 140ms;
   --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--border);
 
+  /* --- scale tokens ------------------------------------------------------
+   * Theme-independent scales. Rules reach for these instead of raw numbers so
+   * the app keeps one rhythm; themes only swap colors (and shadows). */
+
+  /* Spacing: a 4px grid with a 2px half-step for hairline gaps. */
+  --sp-0: 2px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* Type: UI sizes, then a mono scale for paths, code, and numbers. */
+  --fs-2xs: 10.5px;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-base: 13.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-mono-xs: 10.5px;
+  --fs-mono-sm: 11.5px;
+  --fs-mono-base: 12.5px;
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-base: 1.55;
+  --fw-regular: 400;
+  --fw-medium: 550;
+  --fw-semibold: 600;
+  --tracking-caps: 0.08em;
+  --tracking-tight: -0.01em;
+
+  /* Radii: --r-sm/md/lg above, plus the larger surfaces and pills. */
+  --r-xl: 14px;
+  --r-2xl: 16px;
+  --r-pill: 999px;
+
+  /* Controls share one height so buttons, inputs, selects and segmented
+   * controls line up in a row. Coarse pointers grow them to a thumb target. */
+  --control-h: 30px;
+  --control-h-sm: 24px;
+  --control-h-lg: 36px;
+  --control-px: 12px;
+  --tap: 40px;
+
+  /* Elevation: 1 lifts a card, 2 floats a popover or menu, 3 is a modal. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-2: var(--shadow-float);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border);
+
+  /* Focus: one ring everywhere, drawn with outline so it never shifts layout. */
+  --focus-color: var(--accent);
+  --focus-w: 2px;
+  --focus-offset: 2px;
+
+  /* Motion: short, transform/opacity only. Reduced motion zeroes these. */
+  --dur-slow: 220ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Stacking: content < drawers < modal overlays < popovers < menus < hints. */
+  --z-raised: 1;
+  --z-sticky: 5;
+  --z-scrim: 29;
+  --z-drawer: 30;
+  --z-overlay: 40;
+  --z-popover: 60;
+  --z-menu: 80;
+  --z-context: 90;
+  --z-hints: 100;
+
+  /* Status: what a thread, agent, task or tool is doing. Every surface that
+   * shows status reads these, so "running" is one color app-wide. */
+  --status-running: var(--accent);
+  --status-running-soft: var(--accent-soft);
+  --status-running-line: var(--accent-line);
+  --status-done: var(--ok);
+  --status-done-soft: var(--ok-soft);
+  --status-done-line: var(--ok-line);
+  --status-failed: var(--err);
+  --status-failed-soft: var(--err-soft);
+  --status-failed-line: var(--err-line);
+  --status-waiting: var(--faint);
+  --status-attention: var(--warn);
+  --status-attention-soft: var(--warn-soft);
+  --status-attention-line: var(--warn-line);
+
+  /* Text on a filled danger button: the page background reads on every
+   * theme's --err, dark or light. */
+  --danger-ink: var(--bg);
+
   /* Aliases for the names the rest of the sheet already uses. */
   --bg-elev: var(--bg);
   --panel: var(--surface-1);
@@ -100,7 +195,7 @@
 
   --text: #efe7f4;
   --dim: #cdbfd8;
-  --faint: #a392b2;
+  --faint: #ad9cbc;
 
   --accent: #db2777;
   --accent-2: #ec4899;
@@ -161,7 +256,7 @@
 
   --text: #eceff4;
   --dim: #c8d0dc;
-  --faint: #94a1b4;
+  --faint: #a3afc0;
 
   --accent: #88c0d0;
   --accent-2: #8fbcbb;
@@ -169,7 +264,7 @@
   --accent-soft: rgba(136, 192, 208, 0.14);
   --accent-line: rgba(136, 192, 208, 0.5);
   --accent-wash: rgba(136, 192, 208, 0.05);
-  --agent: #b48ead;
+  --agent: #c9a3c1;
   --agent-soft: rgba(180, 142, 173, 0.14);
   --agent-line: rgba(180, 142, 173, 0.5);
 
@@ -179,9 +274,9 @@
   --warn: #ebcb8b;
   --warn-soft: rgba(235, 203, 139, 0.1);
   --warn-line: rgba(235, 203, 139, 0.3);
-  --err: #bf616a;
-  --err-soft: rgba(191, 97, 106, 0.1);
-  --err-line: rgba(191, 97, 106, 0.35);
+  --err: #e08a92;
+  --err-soft: rgba(224, 138, 146, 0.1);
+  --err-line: rgba(224, 138, 146, 0.35);
   --on-accent-soft: rgba(29, 37, 48, 0.72);
 
   --hover: rgba(216, 222, 233, 0.08);
@@ -283,25 +378,25 @@
 
   --text: #073642;
   --dim: #4e6470;
-  --faint: #6d8182;
+  --faint: #55696b;
 
-  --accent: #268bd2;
-  --accent-2: #2aa198;
+  --accent: #1b6aa8;
+  --accent-2: #175d93;
   --accent-ink: #fdf6e3;
-  --accent-soft: rgba(38, 139, 210, 0.12);
-  --accent-line: rgba(38, 139, 210, 0.45);
-  --accent-wash: rgba(38, 139, 210, 0.05);
-  --agent: #6c71c4;
+  --accent-soft: rgba(27, 106, 168, 0.12);
+  --accent-line: rgba(27, 106, 168, 0.45);
+  --accent-wash: rgba(27, 106, 168, 0.05);
+  --agent: #575cb0;
   --agent-soft: rgba(108, 113, 196, 0.13);
   --agent-line: rgba(108, 113, 196, 0.5);
 
-  --ok: #859900;
-  --ok-soft: rgba(133, 153, 0, 0.1);
-  --ok-line: rgba(133, 153, 0, 0.35);
-  --warn: #b58900;
-  --warn-soft: rgba(181, 137, 0, 0.1);
-  --warn-line: rgba(181, 137, 0, 0.35);
-  --err: #dc322f;
+  --ok: #5b6b00;
+  --ok-soft: rgba(91, 107, 0, 0.1);
+  --ok-line: rgba(91, 107, 0, 0.35);
+  --warn: #7f6200;
+  --warn-soft: rgba(127, 98, 0, 0.1);
+  --warn-line: rgba(127, 98, 0, 0.35);
+  --err: #c22926;
   --err-soft: rgba(220, 50, 47, 0.08);
   --err-line: rgba(220, 50, 47, 0.3);
   --on-accent-soft: rgba(253, 246, 227, 0.8);
@@ -331,6 +426,8 @@
   --hljs-tag: #dc322f;
   --hljs-meta: #657b83;
   --shadow-float: 0 8px 24px rgba(7, 54, 66, 0.16), 0 0 0 1px var(--border);
+  --shadow-1: 0 1px 2px rgba(7, 54, 66, 0.1);
+  --shadow-3: 0 24px 64px rgba(7, 54, 66, 0.22), 0 0 0 1px var(--border);
 }
 
 * {
@@ -348,10 +445,12 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
   letter-spacing: 0.005em;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: 100%;
   overflow: hidden;
 }
 
@@ -360,17 +459,27 @@ body {
   color: var(--text);
 }
 
+/* Scrollbars: thin, quiet, and theme-aware in every engine. */
+* {
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+@supports selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-color: auto;
+  }
+}
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
   border: 3px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -378,14 +487,35 @@ body {
   background-clip: content-box;
 }
 
-/* --- controls ----------------------------------------------------------- */
+/* Reduced motion: transitions become instant and loops stop after one pass,
+ * so nothing on screen keeps moving. Status still reads from color and text. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur: 0ms;
+    --dur-slow: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* --- controls -----------------------------------------------------------
+ * One family. A bare <button> is the secondary button; .primary, .ghost and
+ * .danger are the variants, .sm the compact size. Inputs, selects and
+ * dropdown triggers share the same height, radius, border and focus ring. */
 button {
   font: inherit;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: 7px 12px;
+  padding: 7px var(--control-px);
   cursor: pointer;
   transition:
     background var(--dur) ease,
@@ -396,6 +526,11 @@ button:hover:not(:disabled) {
   background: var(--panel-3);
   border-color: var(--border-strong);
 }
+button:active:not(:disabled) {
+  background: var(--panel-3);
+  border-color: var(--border-strong);
+  transform: translateY(0.5px);
+}
 button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -403,12 +538,15 @@ button:disabled {
 button:focus-visible,
 [role="tab"]:focus-visible,
 [role="button"]:focus-visible,
+[role="menuitem"]:focus-visible,
+[role="option"]:focus-visible,
+a:focus-visible,
 select:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 .toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: var(--focus-w) solid var(--focus-color);
+  outline-offset: var(--focus-offset);
 }
 /* The composer box shows focus itself; avoid a double ring inside it. */
 .composer textarea:focus-visible {
@@ -418,22 +556,37 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 button.primary:hover:not(:disabled) {
   background: var(--accent-2);
   border-color: var(--accent-2);
 }
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: transparent;
+  color: var(--text);
+}
 button.danger {
   background: var(--err);
   border-color: var(--err);
-  color: var(--accent-ink);
-  font-weight: 600;
+  color: var(--danger-ink);
+  font-weight: var(--fw-semibold);
 }
 button.danger:hover:not(:disabled) {
   filter: brightness(1.08);
   background: var(--err);
   border-color: var(--err);
+}
+button.sm {
+  padding: 3px var(--sp-2);
+  font-size: var(--fs-xs);
+  border-radius: var(--r-sm);
 }
 
 input,
@@ -443,14 +596,32 @@ textarea {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: 8px 10px;
+  padding: 7px 10px;
   outline: none;
   width: 100%;
   transition: border-color var(--dur) ease;
 }
+input:hover:not(:disabled):not(:focus),
+textarea:hover:not(:disabled):not(:focus),
+select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
 input:focus,
 textarea:focus {
   border-color: var(--accent-line);
+}
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Checkboxes and radios keep their native box, tinted to the theme. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  accent-color: var(--accent);
 }
 ::placeholder {
   color: var(--faint);
@@ -461,28 +632,49 @@ select {
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 7px 9px;
+  border-radius: var(--r-md);
+  padding: 6px 9px;
   outline: none;
+}
+
+/* Coarse pointers (phones, tablets): every control is a thumb target. Text
+ * inputs stay at 16px so iOS does not zoom the page on focus. */
+@media (pointer: coarse) {
+  button,
+  select,
+  .tab,
+  .ptab,
+  .toggle,
+  [role="tab"] {
+    min-height: var(--tap);
+  }
+  button.sm {
+    min-height: 32px;
+  }
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: var(--fs-lg);
+  }
 }
 
 .hint {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
-  margin: 0 0 12px;
+  margin: 0 0 var(--sp-3);
 }
 .hint code {
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-mono-sm);
 }
 .hint.warn {
   color: var(--warn);
 }
 .err-text {
   color: var(--err);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* --- shell -------------------------------------------------------------- */
@@ -528,7 +720,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px 0 92px;
+  padding: 0 var(--sp-4) 0 92px;
   height: 46px;
   flex: none;
   border-bottom: 1px solid var(--border-soft);
@@ -540,8 +732,8 @@ select {
   align-items: center;
   gap: 9px;
   font-size: 13px;
-  font-weight: 550;
-  letter-spacing: -0.01em;
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-tight);
 }
 .brand img {
   width: 18px;
@@ -575,7 +767,7 @@ select {
 }
 .conn.online .led {
   background: var(--ok);
-  box-shadow: 0 0 0 3px rgba(95, 211, 155, 0.12);
+  box-shadow: 0 0 0 3px var(--ok-soft);
 }
 .conn.offline .led {
   background: var(--err);
@@ -590,9 +782,9 @@ select {
   height: 22px;
   padding: 0 9px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -612,11 +804,11 @@ select {
 
 .update-chip {
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--accent-2);
   background: var(--accent-soft);
   border: 1px solid var(--accent-line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   padding: 2px 10px;
   cursor: pointer;
 }
@@ -640,17 +832,17 @@ select {
   width: 30px;
   height: 30px;
   padding: 0;
-  margin-left: 8px;
+  margin-left: var(--sp-2);
   flex: none;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   color: var(--muted);
   cursor: pointer;
 }
 .title-gear:hover {
-  background: var(--panel);
-  border-color: var(--border-soft);
+  background: var(--hover);
+  border-color: transparent;
   color: var(--text);
 }
 
@@ -707,7 +899,7 @@ body.is-resizing * {
   width: 26px;
   height: 26px;
   padding: 0;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   color: var(--faint);
 }
 .panel-toggle:hover {
@@ -739,10 +931,10 @@ body.is-resizing * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: var(--sp-2);
+  padding: 10px var(--sp-3);
   border-bottom: 1px solid var(--border-soft);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   min-height: 46px;
 }
@@ -760,7 +952,7 @@ body.is-resizing * {
 .thread-row {
   position: relative;
   padding: 9px 10px;
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   cursor: pointer;
   border: 1px solid transparent;
   transition:
@@ -771,23 +963,23 @@ body.is-resizing * {
   margin-top: 2px;
 }
 .thread-row:hover {
-  background: var(--panel);
+  background: var(--hover);
 }
 .thread-row.active {
   background: var(--panel-2);
   border-color: var(--border);
 }
 .thread-row .t {
-  font-weight: 550;
-  font-size: 12.5px;
-  line-height: 1.4;
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .thread-row .m {
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-top: 3px;
   white-space: nowrap;
   overflow: hidden;
@@ -802,18 +994,16 @@ body.is-resizing * {
 }
 .thread-row .u {
   color: var(--faint);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   margin-left: auto;
   white-space: nowrap;
 }
 .thread-row.stale .t {
   color: var(--muted);
 }
-/* A scheduled thread is intentionally waiting: a marching dashed ring plus a
- * count badge, distinct from stale's warning. The ring is a row-sized SVG
- * overlay animating only stroke-dashoffset (pathLength=100 normalizes the
- * dash period), so the per-frame cost is a thin-stroke repaint on waiting
- * rows only — no layout, no background/box-shadow animation. */
+/* A scheduled thread is intentionally waiting: a still dashed ring plus a
+ * count badge, distinct from stale's warning. Waiting can last hours, so the
+ * ring does not move; motion is kept for work that is actually running. */
 .row-sched-ring {
   position: absolute;
   inset: 0;
@@ -828,17 +1018,6 @@ body.is-resizing * {
   stroke: var(--accent-line);
   stroke-width: 1.5;
   stroke-dasharray: 6 6;
-  animation: row-sched-march 1.8s linear infinite;
-}
-@keyframes row-sched-march {
-  to {
-    stroke-dashoffset: 12;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .thread-row.scheduled .row-sched-ring rect {
-    animation: none;
-  }
 }
 .thread-row .row-scheduled {
   margin-left: 7px;
@@ -867,12 +1046,12 @@ body.is-resizing * {
 /* --- chat --------------------------------------------------------------- */
 .chat-head {
   min-height: 52px;
-  padding: 9px 18px;
+  padding: 9px var(--sp-4);
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 .chat-title {
   font-size: 13px;
@@ -881,17 +1060,17 @@ body.is-resizing * {
 }
 .tabs {
   display: inline-flex;
-  gap: 2px;
+  gap: var(--sp-0);
   padding: 0;
   background: transparent;
   border: 0;
 }
 .tab {
-  padding: 5px 12px;
+  padding: 5px var(--sp-3);
   border-radius: var(--r-md);
   cursor: pointer;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -902,7 +1081,7 @@ body.is-resizing * {
     color var(--dur) ease;
 }
 .tab:hover {
-  background: var(--panel-2);
+  background: var(--hover);
   color: var(--text);
 }
 .tab.on {
@@ -929,15 +1108,20 @@ body.is-resizing * {
   gap: 8px;
   align-items: center;
 }
+.toggles > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   border: 1px solid var(--border-soft);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   padding: 4px 10px 4px 8px;
   cursor: pointer;
   user-select: none;
@@ -958,7 +1142,7 @@ body.is-resizing * {
 .toggle .sw {
   width: 28px;
   height: 16px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--panel-3);
   position: relative;
   transition: background var(--dur) ease;
@@ -1209,7 +1393,8 @@ body.is-resizing * {
   color: var(--faint);
   text-align: center;
   padding: 56px 20px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
 }
 
 .composer {
@@ -2000,8 +2185,8 @@ body.is-resizing * {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--warn);
-  box-shadow: 0 0 0 3px rgba(229, 181, 103, 0.12);
+  background: var(--status-running);
+  box-shadow: 0 0 0 3px var(--status-running-soft);
   animation: act-pulse 1.3s ease-in-out infinite;
 }
 .act-head .act-label {
@@ -2120,11 +2305,11 @@ body.is-resizing * {
   font-size: 10px;
   line-height: 16px;
   padding: 0 7px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border: 1px solid var(--border);
   color: var(--muted);
   white-space: nowrap;
-  font-weight: 550;
+  font-weight: var(--fw-medium);
   letter-spacing: 0.02em;
 }
 .badge.experimental {
@@ -2134,23 +2319,23 @@ body.is-resizing * {
   border-color: var(--accent-line);
 }
 .badge.running {
-  color: var(--warn);
-  border-color: var(--warn-line);
-  background: var(--warn-soft);
+  color: var(--status-running);
+  border-color: var(--status-running-line);
+  background: var(--status-running-soft);
 }
 .badge.succeeded {
-  color: var(--ok);
-  border-color: var(--ok-line);
-  background: var(--ok-soft);
+  color: var(--status-done);
+  border-color: var(--status-done-line);
+  background: var(--status-done-soft);
 }
 .badge.failed {
-  color: var(--err);
-  border-color: var(--err-line);
-  background: var(--err-soft);
+  color: var(--status-failed);
+  border-color: var(--status-failed-line);
+  background: var(--status-failed-soft);
 }
 .badge.pending,
 .badge.cancelled {
-  color: var(--faint);
+  color: var(--status-waiting);
 }
 .badge.added {
   color: var(--ok);
@@ -2183,28 +2368,28 @@ body.is-resizing * {
   align-items: center;
   gap: 5px;
   font-size: 10px;
-  font-weight: 550;
+  font-weight: var(--fw-medium);
   letter-spacing: 0.02em;
   line-height: 17px;
-  padding: 0 7px;
-  border-radius: 999px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
   border: 1px solid var(--border-soft);
   color: var(--faint);
   background: transparent;
   white-space: nowrap;
 }
 .pill.run {
-  color: var(--ok);
-  border-color: var(--ok-line);
-  background: var(--ok-soft);
+  color: var(--status-running);
+  border-color: var(--status-running-line);
+  background: var(--status-running-soft);
 }
 .pill.stale {
-  color: var(--warn);
-  border-color: var(--warn-line);
-  background: var(--warn-soft);
+  color: var(--status-attention);
+  border-color: var(--status-attention-line);
+  background: var(--status-attention-soft);
 }
 .pill.live {
-  color: var(--faint);
+  color: var(--status-waiting);
 }
 /* Scheduled is calm: the thread is intentionally waiting, not working. */
 .pill.wait {
@@ -2284,17 +2469,17 @@ body.is-resizing * {
   margin-top: 5px;
 }
 .dot.running {
-  background: var(--warn);
+  background: var(--status-running);
 }
 .dot.succeeded {
-  background: var(--ok);
+  background: var(--status-done);
 }
 .dot.failed {
-  background: var(--err);
+  background: var(--status-failed);
 }
 .dot.pending,
 .dot.cancelled {
-  background: var(--faint);
+  background: var(--status-waiting);
 }
 .dot.clean {
   background: var(--ok);
@@ -2316,11 +2501,11 @@ body.is-resizing * {
 }
 .section h3 {
   margin: 0 0 12px;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-caps);
   color: var(--faint);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2356,7 +2541,7 @@ body.is-resizing * {
 }
 .aside-tabs .tab {
   padding: 3px 8px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   border-radius: var(--r-sm);
 }
 .aside-body {
@@ -3535,7 +3720,7 @@ table.grid tr.rowlink:hover td {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 22px;
+  margin-bottom: var(--sp-6);
 }
 .screen-title {
   flex: 1;
@@ -3543,16 +3728,16 @@ table.grid tr.rowlink:hover td {
 }
 .screen-title h2 {
   margin: 0;
-  font-size: 22px;
-  line-height: 1.2;
-  font-weight: 600;
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
   letter-spacing: -0.025em;
 }
 .screen-sub {
   color: var(--faint);
   font-family: var(--mono);
-  font-size: 11px;
-  margin: 5px 0 0;
+  font-size: var(--fs-mono-sm);
+  margin: var(--sp-1) 0 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3560,7 +3745,7 @@ table.grid tr.rowlink:hover td {
 .screen-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 /* Prominent jump to the project's board: accent-outlined while the card list
  * is showing, filled once the board is open. Avoids the small layout toggle. */
@@ -3613,9 +3798,9 @@ table.grid tr.rowlink:hover td {
   gap: 7px;
   padding: 5px 9px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   user-select: none;
   transition:
@@ -3624,7 +3809,7 @@ table.grid tr.rowlink:hover td {
     color var(--dur) ease;
 }
 .ptab:hover {
-  background: var(--panel);
+  background: var(--hover);
   color: var(--text);
 }
 .ptab.on {
@@ -3652,14 +3837,14 @@ table.grid tr.rowlink:hover td {
   opacity: 0.5;
 }
 .pt-led.run {
-  background: var(--ok);
+  background: var(--status-running);
   opacity: 1;
-  box-shadow: 0 0 0 3px rgba(95, 211, 155, 0.12);
+  box-shadow: 0 0 0 3px var(--status-running-soft);
 }
 .pt-count {
   flex: none;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--panel-3);
   color: var(--muted);
   font-size: 10px;
@@ -3667,7 +3852,7 @@ table.grid tr.rowlink:hover td {
   font-variant-numeric: tabular-nums;
 }
 .pt-count.ok {
-  background: rgba(95, 211, 155, 0.12);
+  background: var(--ok-soft);
   color: var(--ok);
 }
 .pt-x {
@@ -3702,7 +3887,7 @@ table.grid tr.rowlink:hover td {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   border-color: transparent;
   background: transparent;
   color: var(--faint);
@@ -3719,8 +3904,8 @@ table.grid tr.rowlink:hover td {
   align-items: center;
   justify-content: center;
   min-height: 150px;
-  border: 1px dashed var(--border-soft);
-  border-radius: 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-xl);
   color: var(--faint);
   cursor: pointer;
   transition:
@@ -3741,8 +3926,8 @@ table.grid tr.rowlink:hover td {
 }
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: var(--sp-3);
 }
 .project-card {
   display: flex;
@@ -3752,8 +3937,8 @@ table.grid tr.rowlink:hover td {
   min-height: 150px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
-  border-radius: 14px;
-  padding: 16px;
+  border-radius: var(--r-xl);
+  padding: var(--sp-4);
   background: var(--panel);
   cursor: pointer;
   transition:
@@ -3768,8 +3953,8 @@ table.grid tr.rowlink:hover td {
   border-color: var(--accent-line);
 }
 .pc-name {
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-md);
   letter-spacing: -0.01em;
   padding-right: 28px;
   overflow: hidden;
@@ -3927,9 +4112,34 @@ table.grid tr.rowlink:hover td {
   padding: 1px 6px;
 }
 /* --- thread board (status columns over the project's threads) ---------- */
+/* Segmented control: one tray, the chosen segment raised inside it. The
+ * selected segment keeps its .primary class but reads quieter than a CTA. */
+.view-toggle > button {
+  padding: 4px 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--dim);
+  font-weight: var(--fw-medium);
+}
+.view-toggle > button:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: transparent;
+  color: var(--text);
+}
+.view-toggle > button.primary,
+.view-toggle > button.primary:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
 .view-toggle {
   display: inline-flex;
-  gap: 4px;
+  gap: 0;
+  padding: var(--sp-0);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--r-md) + 2px);
+  background: var(--panel);
 }
 /* Five columns: each keeps a readable floor width and the board scrolls sideways. */
 .thread-board {
@@ -4341,19 +4551,18 @@ button.danger-text {
   position: fixed;
   inset: 0;
   background: var(--overlay);
-  backdrop-filter: blur(5px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 40;
+  z-index: var(--z-overlay);
 }
 .sheet {
   width: min(720px, 92vw);
   max-height: 86vh;
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: var(--shadow-float);
+  border-radius: var(--r-2xl);
+  box-shadow: var(--shadow-3);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4376,24 +4585,24 @@ button.danger-text {
   font-size: 18px;
   line-height: 1;
   padding: 2px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   cursor: pointer;
 }
 .notes-close:hover {
   color: var(--text);
-  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+  background: var(--hover);
 }
 .sheet-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
+  gap: var(--sp-3);
+  padding: 14px var(--sp-5);
   border-bottom: 1px solid var(--border-soft);
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .sheet-head strong {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .sheet-head-right {
   display: flex;
@@ -4406,10 +4615,10 @@ button.danger-text {
 }
 .sheet-body {
   overflow: auto;
-  padding: 4px 18px 18px;
+  padding: var(--sp-1) var(--sp-5) var(--sp-5);
 }
 .set-section {
-  padding: 16px 0;
+  padding: var(--sp-4) 0;
   border-bottom: 1px solid var(--border-soft);
 }
 .set-section:last-child {
@@ -4417,10 +4626,11 @@ button.danger-text {
 }
 .set-section h4 {
   margin: 0 0 10px;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-caps);
   color: var(--faint);
+  font-weight: var(--fw-semibold);
 }
 .theme-grid {
   display: grid;
@@ -4436,7 +4646,7 @@ button.danger-text {
   text-align: left;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   cursor: pointer;
 }
 .theme-card:hover:not(.on) {
@@ -4460,8 +4670,8 @@ button.danger-text {
   flex: 1 1 0;
 }
 .theme-name {
-  font-size: 12.5px;
-  font-weight: 550;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   color: var(--text);
 }
 .theme-note {
@@ -4470,7 +4680,7 @@ button.danger-text {
 }
 .set-section .hint {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin: 0 0 12px;
 }
 .about-section .hint:last-child {
@@ -4488,7 +4698,7 @@ button.danger-text {
 }
 .field > span {
   display: block;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   margin-bottom: 6px;
 }
@@ -4601,10 +4811,10 @@ button.danger-text {
   justify-content: space-between;
   gap: 8px;
   text-align: left;
-  padding: 7px 10px;
+  padding: 6px 10px;
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--r-md);
 }
 .dd-trigger:hover:not(:disabled) {
   background: var(--panel-3);
@@ -4627,14 +4837,14 @@ button.danger-text {
 }
 .dd-pop {
   position: absolute;
-  z-index: 60;
+  z-index: var(--z-popover);
   top: calc(100% + 5px);
   left: 0;
   min-width: 280px;
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 11px;
-  box-shadow: var(--shadow-float);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
   overflow: hidden;
 }
 .dd-pop.end {
@@ -4666,7 +4876,7 @@ button.danger-text {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -4864,8 +5074,8 @@ button.danger-text {
   flex-direction: column;
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow-float);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-3);
   overflow: hidden;
 }
 .palette-input {
@@ -4874,8 +5084,8 @@ button.danger-text {
   border: 0;
   border-bottom: 1px solid var(--border);
   color: var(--text);
-  font-size: 14px;
-  padding: 12px 14px;
+  font-size: var(--fs-md);
+  padding: var(--sp-3) var(--sp-4);
   outline: none;
 }
 .palette-body {
@@ -4902,6 +5112,10 @@ button.danger-text {
   color: var(--faint);
   padding: 8px 9px 4px;
 }
+/* The input is the palette's whole header; its bottom rule shows focus. */
+.palette-input:focus-visible {
+  outline: none;
+}
 .palette-item {
   display: flex;
   align-items: center;
@@ -4910,9 +5124,9 @@ button.danger-text {
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 6px 9px;
   cursor: pointer;
 }
@@ -4955,13 +5169,13 @@ button.danger-text {
 
 .ctx-menu {
   position: fixed;
-  z-index: 90;
+  z-index: var(--z-context);
   min-width: 176px;
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--r-lg);
   padding: 4px;
-  box-shadow: var(--shadow-float);
+  box-shadow: var(--shadow-2);
 }
 .ctx-item {
   display: flex;
@@ -4972,14 +5186,14 @@ button.danger-text {
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 6px 9px;
   cursor: pointer;
 }
 .ctx-item:hover:not(:disabled) {
-  background: var(--panel-3);
+  background: var(--hover);
   border-color: transparent;
 }
 .ctx-item.ctx-danger {
@@ -5752,11 +5966,10 @@ button.danger-text {
   will-change: transform, opacity;
   animation: graph-ring 1350ms ease-out infinite;
 }
-.graph-rings i:nth-child(2) {
-  animation-delay: 450ms;
-}
-.graph-rings i:nth-child(3) {
-  animation-delay: 900ms;
+/* One ring per running node: a busy graph can hold many running agents, and
+ * three staggered infinite layers each cost a composited layer per node. */
+.graph-rings i:nth-child(n + 2) {
+  display: none;
 }
 @keyframes graph-ring {
   from {
@@ -6618,7 +6831,7 @@ button.danger-text {
   outline: none;
 }
 .cheat-body {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .cheat-body .set-section {
@@ -6633,13 +6846,13 @@ button.danger-text {
   line-height: 1.5;
 }
 .cheat-body kbd {
-  font-family: inherit;
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
   padding: 1px 5px;
   border: 1px solid var(--border);
   border-bottom-width: 2px;
-  border-radius: 5px;
-  background: var(--surface-2, transparent);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
   color: var(--text);
 }
 .cheat-keys {
@@ -6652,7 +6865,7 @@ button.danger-text {
 .cheat-actions {
   justify-content: space-between;
   margin-top: 0;
-  padding: 12px 18px;
+  padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--border-soft);
 }
 
@@ -7682,7 +7895,7 @@ button.danger-text {
   overflow: hidden;
 }
 .tool-card.failed {
-  border-color: var(--err-line);
+  border-color: var(--status-failed-line);
 }
 .tool-head {
   display: flex;
@@ -7719,10 +7932,10 @@ button.danger-text {
   color: var(--muted);
 }
 .tool-card.done .tool-state {
-  color: var(--ok);
+  color: var(--status-done);
 }
 .tool-card.failed .tool-state {
-  color: var(--err);
+  color: var(--status-failed);
 }
 .tool-body {
   border-top: 1px solid var(--border-soft);
