@@ -372,3 +372,240 @@
 .next-step button:hover:not(:disabled) {
   color: var(--text);
 }
+
+/* --- first run: no project yet ------------------------------------------- */
+.first-run {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 0 64px;
+  text-align: center;
+}
+.first-run img {
+  width: 44px;
+  height: 44px;
+}
+.first-run h2 {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.first-run p {
+  margin: 0;
+  max-width: 420px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.first-run-cta {
+  margin-top: 8px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+}
+
+/* --- new-thread wizard: a centered, scannable step flow ------------------- */
+.setup-view {
+  max-width: min(680px, 100%);
+  padding-top: 24px;
+}
+.wizard-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.wizard-head p {
+  margin: 4px 0 0;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+.wizard-steps {
+  list-style: none;
+  margin: 18px 0 14px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.wizard-steps li {
+  min-width: 0;
+}
+.wizard-step {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  text-align: left;
+  background: transparent;
+  border-color: var(--border-soft);
+}
+.wizard-step.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.wizard-step.on:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.wizard-step-n {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.wizard-step.on .wizard-step-n {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.wizard-step.done .wizard-step-n {
+  background: var(--panel-3);
+}
+.wizard-step-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.wizard-step-label {
+  font-size: 12.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wizard-step-sub {
+  font-size: 11px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wizard-body {
+  min-height: 0;
+}
+.wizard-foot {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.wizard-foot .setup-back {
+  margin-right: auto;
+}
+.wizard-start {
+  padding: 7px 16px;
+}
+@media (max-width: 560px) {
+  .setup-mode-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wizard-step-sub {
+    display: none;
+  }
+  .wizard-step {
+    padding: 6px;
+    gap: 6px;
+  }
+}
+
+/* --- empty chat: starters and the first keys ----------------------------- */
+.empty-chat .starters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 8px;
+  width: min(560px, 100%);
+  margin-top: 10px;
+}
+.starter {
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--panel);
+  border-color: var(--border-soft);
+}
+.starter:hover:not(:disabled) {
+  color: var(--text);
+}
+.empty-keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 16px;
+  margin: 14px 0 0;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.empty-keys > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.empty-keys dt,
+.empty-keys dd {
+  margin: 0;
+}
+
+/* --- first-run tour ------------------------------------------------------- */
+.tour {
+  width: min(460px, 92vw);
+  padding: 22px 22px 18px;
+  gap: 10px;
+}
+.tour-count {
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.tour-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.tour-body {
+  margin: 0;
+  min-height: 4.8em;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tour-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.tour-dots {
+  display: flex;
+  gap: 5px;
+  margin-right: auto;
+}
+.tour-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.tour-dots span.on {
+  background: var(--accent);
+}
+.tour-skip {
+  background: transparent;
+  border-color: transparent;
+  color: var(--faint);
+}

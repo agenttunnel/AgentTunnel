@@ -86,6 +86,8 @@ import { AppUpdate } from "./components/UpdateChip";
 import { HarnessUpdates } from "./components/HarnessUpdateChip";
 import { SidebarFooter } from "./components/SidebarFooter";
 import { NextStep } from "./components/NextStep";
+import { EmptyChat } from "./components/EmptyChat";
+import { FirstRunTour } from "./components/FirstRunTour";
 import { Breadcrumb, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
 import { ALT, centerTabFromKey, centerTabHint, isPaletteKey, isTyping } from "./lib/navKeys";
 import { threadStatus } from "./lib/threadStatus";
@@ -1078,8 +1080,11 @@ export default function App() {
   // Appearance is shared by every client of this daemon through the prefs
   // store; the settings sheet changes it.
   useEffect(() => applyTheme(loadTheme()), []);
-  // The how-to sheet opens on its own only until it has been seen once; /help reopens it.
-  const [cheatSheetOpen, setCheatSheetOpen] = useState(showCheatSheetOnLaunch);
+  // A short tour opens on its own only until it has been seen once; /help
+  // opens the full how-to sheet.
+  const [tourOpen, setTourOpen] = useState(showCheatSheetOnLaunch);
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
+  const helpOpen = cheatSheetOpen || tourOpen;
   // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
   const [vimKeys, setVimKeys] = useState(loadVimKeys);
   useVimKeys(vimKeys);
@@ -2142,7 +2147,7 @@ export default function App() {
   // has answered for every checkout. One completed pass per 24 hours, whether
   // or not it found anything.
   useEffect(() => {
-    if (status !== "online" || projects.length === 0 || cheatSheetOpen || settingsOpen) return;
+    if (status !== "online" || projects.length === 0 || helpOpen || settingsOpen) return;
     let cancelled = false;
     const check = () => {
       if (cancelled || scanningWorktrees.current || prunePrompt) return;
@@ -2156,7 +2161,7 @@ export default function App() {
       window.clearTimeout(first);
       window.clearInterval(timer);
     };
-  }, [status, projects, cheatSheetOpen, settingsOpen, prunePrompt, scanWorktrees]);
+  }, [status, projects, helpOpen, settingsOpen, prunePrompt, scanWorktrees]);
 
   // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
   // would otherwise render the diff fallback with no tab highlighted.
@@ -2181,7 +2186,7 @@ export default function App() {
 
   // Single-letter panel shortcuts (shown in the "+" menu), inactive while typing.
   useEffect(() => {
-    if (!activeId || cheatSheetOpen) return;
+    if (!activeId || helpOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
       const t = e.target;
@@ -2206,7 +2211,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openPanel, cheatSheetOpen, setTab, vimKeys]);
+  }, [activeId, openPanel, helpOpen, setTab, vimKeys]);
 
   // While an agent is open in the detail panel, its log reads once and then
   // follows the agent's streamed output.
@@ -3162,6 +3167,12 @@ export default function App() {
     pendingTab.current = null;
     setTab(p.tab);
   }, [activeId, setTab]);
+  // A starter prompt from the empty chat lands in the composer, unsent.
+  const pickStarter = useLatestCallback((text: string) => {
+    setInput(text);
+    pendingCaret.current = text.length;
+    taRef.current?.focus();
+  });
   // The Review tab unmounts when left; each thread keeps its place in it.
   const reviewScroll = useScrollMemory(`review:${activeId ?? ""}`);
   const paletteSearchFiles = useLatestCallback(async (query: string): Promise<PaletteItem[]> => {
@@ -3769,6 +3780,11 @@ export default function App() {
     closePalette();
     item.run();
   };
+  const tourDialog = tourOpen && <FirstRunTour onClose={() => setTourOpen(false)} />;
+  // /help, rendered on every screen since the palette can open it from any.
+  const helpSheet = cheatSheetOpen && (
+    <CheatSheet panels={Object.values(ASIDE_META)} onClose={() => setCheatSheetOpen(false)} />
+  );
   const paletteDialog = palette && (
     <CommandPalette
       left={palette.left}
@@ -3886,7 +3902,11 @@ export default function App() {
             onPruneMerged={pruneMergedWorktrees}
           />
         </div>
+        {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -3911,6 +3931,8 @@ export default function App() {
         {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -3940,6 +3962,8 @@ export default function App() {
         {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -3953,13 +3977,26 @@ export default function App() {
         {titlebar}
         {projectTabs}
         <div className="screen-body">
+          {projects.length === 0 ? (
+            // First run: one thing to do.
+            <div className="first-run">
+              <img src="/brand-mark.svg" alt="" />
+              <h2>Open a folder to start</h2>
+              <p>
+                A project is a folder on this machine. Each thread in it gets a team of agents and,
+                in a git repository, its own worktree.
+              </p>
+              <button type="button" className="primary first-run-cta" onClick={() => void addProject()}>
+                Open a folder…
+              </button>
+            </div>
+          ) : (
+          <>
           <div className="screen-head">
             <div className="screen-title">
               <h2>Projects</h2>
               <p className="screen-sub">
-                {projects.length === 0
-                  ? "No projects yet"
-                  : `${projects.length} project${projects.length === 1 ? "" : "s"}`}
+                {`${projects.length} project${projects.length === 1 ? "" : "s"}`}
               </p>
             </div>
           </div>
@@ -4008,10 +4045,14 @@ export default function App() {
               </div>
             ))}
           </div>
+          </>
+          )}
         </div>
         {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -4098,6 +4139,8 @@ export default function App() {
           {superViewDialog}
           {newProjectDialog}
           {paletteDialog}
+          {tourDialog}
+          {helpSheet}
           {settingsSheet}
           {pruneDialog}
         </div>
@@ -4396,13 +4439,7 @@ export default function App() {
                 </div>
               )}
               {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
-                <div className="stream-empty">
-                  <img src="/brand-mark.svg" alt="" />
-                  <div className="stream-empty-title">Start a thread</div>
-                  <div className="stream-empty-sub">
-                    Describe the task. The orchestrator will plan it and dispatch your team.
-                  </div>
-                </div>
+                <EmptyChat solo={!!thread.soloRuntime} onStarter={pickStarter} />
               )}
               <MessageActionsContext.Provider value={messageActions}>
                 <MessageImageContext.Provider value={messageImages}>
@@ -5045,13 +5082,6 @@ export default function App() {
         />
       )}
 
-      {cheatSheetOpen && (
-        <CheatSheet
-          panels={Object.values(ASIDE_META)}
-          onClose={() => setCheatSheetOpen(false)}
-        />
-      )}
-
       {releaseNotes && (
         <div className="overlay" onClick={() => setReleaseNotes(null)}>
           <section
@@ -5091,6 +5121,8 @@ export default function App() {
       {superViewDialog}
       {newProjectDialog}
       {paletteDialog}
+      {tourDialog}
+      {helpSheet}
     </div>
     </DocLinkContext.Provider>
   );
