@@ -118,8 +118,7 @@ func TestThreadOpenCreatesProjectForUnknownDir(t *testing.T) {
 }
 
 // TestThreadOpenReusesProjectByDir: a known directory (or a symlink to it)
-// reuses its project instead of creating a duplicate, and opens a fresh thread
-// each time.
+// reuses its project instead of creating a duplicate.
 func TestThreadOpenReusesProjectByDir(t *testing.T) {
 	d, _, url := newOpenFixture(t)
 	ctx := context.Background()
@@ -130,13 +129,13 @@ func TestThreadOpenReusesProjectByDir(t *testing.T) {
 		t.Fatalf("first open should create: %+v", first)
 	}
 
-	// Same directory: same project, new thread.
+	// Same directory: same project, and the still-blank thread again.
 	second := callOpen(t, url, dir)
 	if second.ProjectCreated || second.ProjectID != first.ProjectID {
 		t.Fatalf("second open = %+v, want project %s reused", second, first.ProjectID)
 	}
-	if second.ThreadID == first.ThreadID {
-		t.Fatalf("each open must be a fresh thread: %s", second.ThreadID)
+	if second.ThreadID != first.ThreadID {
+		t.Fatalf("a blank thread must be reused: got %s, want %s", second.ThreadID, first.ThreadID)
 	}
 
 	// A symlink to the directory resolves to the same project.
@@ -160,8 +159,34 @@ func TestThreadOpenReusesProjectByDir(t *testing.T) {
 		}
 	}
 
-	if ids, _ := d.engine.Threads(ctx); len(ids) != 3 {
-		t.Fatalf("threads = %v", ids)
+	if ids, _ := d.engine.Threads(ctx); len(ids) != 1 {
+		t.Fatalf("threads = %v, want the one blank thread", ids)
+	}
+}
+
+// TestThreadOpenSkipsUsedThreads: a thread something happened to (here,
+// archived) is not blank, so the next open starts a fresh one; a blank thread
+// in another project is never borrowed.
+func TestThreadOpenSkipsUsedThreads(t *testing.T) {
+	d, _, url := newOpenFixture(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	first := callOpen(t, url, dir)
+	other := callOpen(t, url, t.TempDir())
+	if other.ThreadID == first.ThreadID {
+		t.Fatalf("another project's open reused %s", first.ThreadID)
+	}
+
+	archived := true
+	if err := d.engine.Dispatch(ctx, contracts.Command{
+		ID: "archive-1", Type: contracts.CmdArchiveSet, ThreadID: contracts.ThreadID(first.ThreadID), Archived: &archived,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	again := callOpen(t, url, dir)
+	if again.ThreadID == first.ThreadID || again.ProjectID != first.ProjectID {
+		t.Fatalf("open after archive = %+v, want a fresh thread in %s", again, first.ProjectID)
 	}
 }
 

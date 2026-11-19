@@ -4,6 +4,7 @@ import App from "./App";
 import "./style.css";
 import "./styles/agents.css";
 import "./styles/conversation.css";
+import "./styles/navigation.css";
 import "./styles/layout.css";
 import { inDesktopShell, installExternalLinks } from "./lib/rpc";
 

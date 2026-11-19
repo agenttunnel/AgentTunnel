@@ -77,7 +77,7 @@ export function buildCommands<P extends string>(a: SlashActions<P>): SlashComman
     { name: "vim", description: "Turn Vimium-style keys on or off (f hints, j/k scroll, g/G)", run: () => a.toggleVimKeys() },
     { name: "defaults", description: "Save this view as the default for new threads", run: () => a.saveDefaults() },
     { name: "settings", description: "Open settings", run: () => a.openSettings() },
-    { name: "help", description: "Show the how-to sheet", run: () => a.openHelp() },
+    { name: "help", description: "Show the full reference: keys, commands and panels", run: () => a.openHelp() },
   ];
 }
 

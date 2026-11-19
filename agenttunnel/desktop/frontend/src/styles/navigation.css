@@ -1,0 +1,629 @@
+/* Navigation, information architecture and flow: the titlebar breadcrumb and
+ * status popover, the environment switcher, the sidebar footer, thread status
+ * chips, first-run moments and the inline next-step actions. Tokens come from
+ * style.css; nothing here sets a fixed width on a layout column. */
+
+/* --- titlebar ------------------------------------------------------------ */
+.titlebar {
+  gap: 10px;
+}
+.titlebar .brand {
+  flex: none;
+}
+.crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.crumb.last {
+  flex-shrink: 1;
+  color: var(--text);
+  font-weight: 550;
+}
+.crumb-sep {
+  color: var(--faint);
+  padding: 0 4px;
+  opacity: 0.7;
+}
+.crumb-text,
+.crumb-link {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb-link {
+  padding: 2px 5px;
+  margin: 0 -1px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+}
+.crumb-link:hover:not(:disabled) {
+  background: var(--hover);
+  border: 0;
+  color: var(--text);
+}
+.crumbs .status-chip {
+  margin-left: 8px;
+  flex: none;
+}
+
+/* Status chips: one honest word per thread. Calm colors; only "needs you"
+ * and "working" carry a signal color. */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  line-height: 17px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--faint);
+  white-space: nowrap;
+}
+.status-chip::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-chip.running {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+.status-chip.asking {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.status-chip.scheduled,
+.status-chip.unseen {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.status-chip.new::before,
+.status-chip.draft::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.palette-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 6px 0 9px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.palette-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.palette-btn kbd,
+.palette-hint kbd {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  color: var(--faint);
+}
+
+/* --- popovers ------------------------------------------------------------ */
+.popover-wrap {
+  position: relative;
+  flex: none;
+}
+.popover-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.popover-trigger:hover:not(:disabled),
+.popover-trigger.on {
+  background: var(--panel);
+  border-color: var(--border-soft);
+  color: var(--text);
+}
+.popover-panel {
+  position: absolute;
+  z-index: 60;
+  min-width: 240px;
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-float);
+}
+.popover-panel.below {
+  top: calc(100% + 6px);
+}
+.popover-panel.above {
+  bottom: calc(100% + 6px);
+}
+.popover-panel.end {
+  right: 0;
+}
+.popover-panel.start {
+  left: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .popover-panel {
+    animation: nav-pop var(--dur-fast, 120ms) ease-out;
+  }
+}
+@keyframes nav-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* Status popover: the connection light, plus text only when it matters. */
+.status-pop .led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.status-pop .led.online {
+  background: var(--ok);
+}
+.status-pop .led.online.attached {
+  background: var(--warn);
+}
+.status-pop .led.reconnecting {
+  background: var(--warn);
+}
+.status-pop .led.offline {
+  background: var(--err);
+}
+.status-pop-text.host {
+  font-family: var(--mono);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.status-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.status-list > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+.status-list dt {
+  color: var(--faint);
+}
+.status-list dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.status-settings {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+/* --- environment switcher ------------------------------------------------- */
+.env-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.env-switch .ptab {
+  padding: 5px 8px;
+}
+.pt-divider {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--border-soft);
+}
+/* Labels give way to icons (tooltips keep the names) before the open
+ * project tabs have to scroll. */
+@media (max-width: 1280px) {
+  .env-switch .ptab-label,
+  .chat-head .pb-label {
+    display: none;
+  }
+}
+.chat-head .toggles > button {
+  white-space: nowrap;
+}
+
+/* --- sidebar ------------------------------------------------------------- */
+.new-thread-btn {
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.nav-foot {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+}
+.nav-foot .popover-trigger {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+/* The sidebar clips its overflow, so the footer's panels span the column
+ * instead of their trigger's width. */
+.nav-foot {
+  position: relative;
+}
+.nav-foot .popover-wrap {
+  position: static;
+}
+.nav-foot .popover-panel {
+  left: 8px;
+  right: 8px;
+  min-width: 0;
+  max-width: none;
+}
+.limits-pop .limits {
+  padding: 0;
+}
+.limits-pop .limits + .hint {
+  display: none;
+}
+.limits-pop .hint {
+  margin: 0;
+}
+.thread-row .attn-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+.thread-row.attn .t {
+  color: var(--text);
+  font-weight: 650;
+}
+.thread-row-foot .status-chip {
+  margin-right: auto;
+}
+.tc-foot .status-chip {
+  margin-right: 6px;
+}
+.thread-card.attn {
+  border-color: var(--accent-line);
+}
+
+/* --- phone width ---------------------------------------------------------- */
+@media (max-width: 720px) {
+  .crumb:not(.last),
+  .crumb.last .crumb-sep,
+  .crumbs .status-chip,
+  .palette-btn-label,
+  .palette-btn kbd {
+    display: none;
+  }
+  .brand span {
+    display: none;
+  }
+  .palette-btn {
+    padding: 0 8px;
+  }
+}
+
+/* --- flow: the step after a finished turn -------------------------------- */
+.next-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 12px;
+  font-size: 12px;
+}
+.next-step-label {
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+.next-step button {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: transparent;
+  border-color: var(--border-soft);
+  color: var(--muted);
+}
+.next-step button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+/* --- first run: no project yet ------------------------------------------- */
+.first-run {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 0 64px;
+  text-align: center;
+}
+.first-run img {
+  width: 44px;
+  height: 44px;
+}
+.first-run h2 {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.first-run p {
+  margin: 0;
+  max-width: 420px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.first-run-cta {
+  margin-top: 8px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+}
+
+/* --- new-thread wizard: a centered, scannable step flow ------------------- */
+.setup-view {
+  max-width: min(680px, 100%);
+  padding-top: 24px;
+}
+.wizard-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.wizard-head p {
+  margin: 4px 0 0;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+.wizard-steps {
+  list-style: none;
+  margin: 18px 0 14px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.wizard-steps li {
+  min-width: 0;
+}
+.wizard-step {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  text-align: left;
+  background: transparent;
+  border-color: var(--border-soft);
+}
+.wizard-step.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.wizard-step.on:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.wizard-step-n {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.wizard-step.on .wizard-step-n {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.wizard-step.done .wizard-step-n {
+  background: var(--panel-3);
+}
+.wizard-step-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.wizard-step-label {
+  font-size: 12.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wizard-step-sub {
+  font-size: 11px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wizard-body {
+  min-height: 0;
+}
+.wizard-foot {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.wizard-foot .setup-back {
+  margin-right: auto;
+}
+.wizard-start {
+  padding: 7px 16px;
+}
+@media (max-width: 560px) {
+  .setup-mode-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wizard-step-sub {
+    display: none;
+  }
+  .wizard-step {
+    padding: 6px;
+    gap: 6px;
+  }
+}
+
+/* --- empty chat: starters and the first keys ----------------------------- */
+.empty-chat .starters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 8px;
+  width: min(560px, 100%);
+  margin-top: 10px;
+}
+.starter {
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--panel);
+  border-color: var(--border-soft);
+}
+.starter:hover:not(:disabled) {
+  color: var(--text);
+}
+.empty-keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 16px;
+  margin: 14px 0 0;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.empty-keys > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.empty-keys dt,
+.empty-keys dd {
+  margin: 0;
+}
+
+/* --- first-run tour ------------------------------------------------------- */
+.tour {
+  width: min(460px, 92vw);
+  padding: 22px 22px 18px;
+  gap: 10px;
+}
+/* Focus lands on the dialog itself so its buttons are one Tab away; the
+ * container is not a control and draws no ring. */
+.tour:focus,
+.tour:focus-visible {
+  outline: none;
+}
+.tour-count {
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.tour-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.tour-body {
+  margin: 0;
+  min-height: 4.8em;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tour-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.tour-dots {
+  display: flex;
+  gap: 5px;
+  margin-right: auto;
+}
+.tour-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.tour-dots span.on {
+  background: var(--accent);
+}
+.tour-skip {
+  background: transparent;
+  border-color: transparent;
+  color: var(--faint);
+}
