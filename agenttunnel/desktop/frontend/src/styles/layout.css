@@ -1,0 +1,298 @@
+/* Responsive shell: how the three panes (sidebar / thread / aside) fold as the
+ * window narrows. style.css lays out the docked desktop shell; this file only
+ * changes it below a breakpoint, so wide windows render exactly as before.
+ *
+ *   >= 1100px  sidebar, thread and aside all dock (resizable).
+ *   768-1099   the aside becomes a slide-over drawer from the right.
+ *   < 768      both side panels are drawers; the thread fills the window.
+ *
+ * The drawer breakpoints are mirrored in src/lib/useDrawers.ts. Drawers move
+ * with transform only and keep their DOM mounted, so opening one never
+ * re-renders or re-lays-out the thread. */
+
+/* The web UI has no macOS traffic lights to clear. */
+:root[data-shell="web"] .titlebar {
+  padding-left: var(--sp-4);
+}
+
+/* Drawer toggles exist in the DOM at every width; only a drawer side shows one. */
+.drawer-toggle {
+  display: none;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+}
+.drawer-toggle:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: transparent;
+  color: var(--text);
+}
+.drawer-toggle[aria-expanded="true"] {
+  color: var(--accent);
+}
+
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: var(--overlay);
+  animation: drawer-scrim-in var(--dur-slow) var(--ease-out);
+}
+@keyframes drawer-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A drawer is a fixed panel parked off-screen. visibility drops it from the tab
+ * order and the accessibility tree while closed; the delayed visibility
+ * transition lets the slide-out finish before it hides. */
+.app.as-drawer:not(.compact) > .col.aside,
+.app.sb-drawer:not(.compact) > .col.sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: var(--z-drawer);
+  display: flex;
+  background: var(--bg);
+  box-shadow: var(--shadow-3);
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  visibility: hidden;
+  contain: layout paint;
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    visibility 0s linear var(--dur-slow);
+}
+.app.as-drawer:not(.compact) > .col.aside {
+  right: 0;
+  width: min(var(--aside-w, 360px), 420px, 92vw);
+  padding-right: env(safe-area-inset-right);
+  border-left: 1px solid var(--border);
+  transform: translateX(100%);
+}
+.app.sb-drawer:not(.compact) > .col.sidebar {
+  left: 0;
+  width: min(320px, 86vw);
+  padding-left: env(safe-area-inset-left);
+  border-right: 1px solid var(--border);
+  transform: translateX(-100%);
+}
+.app.as-drawer.drawer-open-aside:not(.compact) > .col.aside,
+.app.sb-drawer.drawer-open-sidebar:not(.compact) > .col.sidebar {
+  visibility: visible;
+  transform: none;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+.app > .col.aside:focus,
+.app > .col.sidebar:focus {
+  outline: none;
+}
+
+/* --- tablet: the aside slides over --------------------------------------- */
+@media (max-width: 1099px) {
+  .app.as-drawer:not(.compact) {
+    grid-template-columns: var(--sb-track) 6px minmax(0, 1fr);
+  }
+  .app.as-drawer:not(.compact) > .split-right {
+    display: none;
+  }
+  .app.as-drawer:not(.compact) .drawer-toggle-right {
+    display: inline-flex;
+  }
+  /* Secondary chips leave the titlebar before anything overlaps. */
+  .daemon-badge {
+    display: none;
+  }
+  .update-chip {
+    max-width: 30vw;
+    min-height: 30px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The view tabs give way first: they scroll under a fade, while the
+   * header's toggles and the drawer button keep their size. */
+  .chat-head .tabs {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  }
+  .chat-head .tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .chat-head .toggles > * {
+    white-space: nowrap;
+  }
+}
+
+/* Portrait tablets: the header's secondary toggles (project board, peer chat)
+ * step aside so the view tabs stay readable; both stay reachable from the
+ * project tab and the /peers command. */
+@media (max-width: 899px) {
+  .chat-head .toggles {
+    display: none;
+  }
+}
+
+/* --- phone: both sides slide over, the thread owns the window ------------- */
+@media (max-width: 767px) {
+  .app.sb-drawer:not(.compact) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .app.sb-drawer:not(.compact) > .split {
+    display: none;
+  }
+  .app.sb-drawer:not(.compact) .drawer-toggle-left {
+    display: inline-flex;
+  }
+
+  /* Titlebar: brand, connection dot, the gear. Counts and badges drop first;
+   * the brand keeps its mark and loses the wordmark if space runs out. */
+  .titlebar {
+    height: 44px;
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-2);
+    padding-top: env(safe-area-inset-top);
+    box-sizing: content-box;
+    gap: var(--sp-2);
+  }
+  :root[data-shell="web"] .titlebar {
+    padding-left: var(--sp-3);
+  }
+  .brand {
+    min-width: 0;
+  }
+  .brand span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .title-meta {
+    flex: 1;
+    justify-content: flex-end;
+  }
+  .conn > span:not(.led):not(.conn-retry) {
+    display: none;
+  }
+  .update-chip {
+    max-width: 38vw;
+  }
+
+  /* Project tabs scroll sideways; the home tabs keep only their icon (the
+   * label stays in the accessibility tree and the title tooltip). */
+  .project-tabs {
+    padding: 0 var(--sp-2);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .project-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .ptab.pt-home {
+    font-size: 0;
+    gap: 0;
+    padding-inline: 10px;
+  }
+  .ptab.pt-home .pt-count {
+    margin-left: var(--sp-1);
+  }
+
+  /* Thread header: the view tabs scroll, secondary toggles step aside. */
+  .chat-head {
+    min-height: 48px;
+    padding: 6px var(--sp-2);
+    gap: var(--sp-1);
+  }
+
+  .stream {
+    padding: var(--sp-4) var(--sp-3) var(--sp-2);
+  }
+  /* The composer stays pinned at the bottom of the thread column and clears
+   * the home indicator. */
+  .composer {
+    padding: var(--sp-2) var(--sp-3) max(var(--sp-3), env(safe-area-inset-bottom));
+  }
+  /* The composer text grows to 16px on touch (no focus zoom); a long
+   * placeholder ellipsizes instead of wrapping under the box edge. */
+  .composer textarea::placeholder {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Home screens: tighter gutters, the header wraps instead of overflowing. */
+  .screen-body {
+    padding: var(--sp-5) var(--sp-4) var(--sp-8);
+  }
+  .screen-head {
+    flex-wrap: wrap;
+    margin-bottom: var(--sp-4);
+  }
+  .screen-title h2 {
+    font-size: var(--fs-xl);
+  }
+  .screen-actions {
+    flex-wrap: wrap;
+  }
+  .new-card,
+  .project-card {
+    min-height: 112px;
+  }
+
+  /* Sheets and dialogs rise from the bottom edge, full width. */
+  .overlay {
+    align-items: flex-end;
+  }
+  .sheet,
+  .sheet.wide {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    border-radius: var(--r-2xl) var(--r-2xl) 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .sheet-head {
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .sheet-body {
+    padding: var(--sp-1) var(--sp-4) var(--sp-4);
+  }
+  .theme-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The palette stacks its two panes and sits near the top for the keyboard. */
+  .palette-overlay {
+    align-items: flex-start;
+    padding-top: calc(var(--sp-2) + env(safe-area-inset-top));
+  }
+  .palette {
+    width: calc(100% - var(--sp-4));
+    max-height: 80dvh;
+  }
+  .palette-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    max-height: 64dvh;
+    overflow: auto;
+  }
+}
+
+/* --- very wide: the composer keeps a readable measure ---------------------- */
+/* Messages hold a 900px column; on a 2K+ window the composer would otherwise
+ * stretch two thousand pixels. It stays centered at a comfortable width. */
+@media (min-width: 1600px) {
+  .composer {
+    padding-inline: max(20px, calc((100% - 1100px) / 2));
+  }
+}

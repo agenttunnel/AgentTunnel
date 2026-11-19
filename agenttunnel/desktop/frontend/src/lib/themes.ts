@@ -51,7 +51,7 @@ export const THEMES: Theme[] = [
     name: "Solarized Light",
     note: "Warm paper with a blue accent.",
     chrome: "#fdf6e3",
-    swatches: ["#fdf6e3", "#eee8d5", "#268bd2"],
+    swatches: ["#fdf6e3", "#eee8d5", "#1b6aa8"],
   },
 ];
 
