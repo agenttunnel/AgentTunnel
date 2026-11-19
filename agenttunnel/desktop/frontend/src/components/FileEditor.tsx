@@ -215,10 +215,32 @@ function CodeEditor({
  * text editor on the right. It stays mounted while another center tab is up
  * so unsaved edits survive a tab switch; `active` gates the first load.
  */
-export function FileEditor({ rpc, threadId, active }: { rpc: Rpc | null; threadId: string; active: boolean }) {
+/** Each thread's place in the Files tab, kept for the session: the editor
+ * remounts per thread, and coming back should land where you were. */
+const places = new Map<string, { expanded: string[]; selected: string | null; scroll: number }>();
+
+/** The folders above a path: "a/b/c.ts" gives "a" and "a/b". */
+function ancestors(path: string): string[] {
+  const parts = path.split("/").slice(0, -1);
+  return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+}
+
+export function FileEditor({
+  rpc,
+  threadId,
+  active,
+  reveal,
+}: {
+  rpc: Rpc | null;
+  threadId: string;
+  active: boolean;
+  /** A file to open (from the palette); a new seq opens it again. */
+  reveal?: { path: string; seq: number } | null;
+}) {
+  const [place] = useState(() => places.get(threadId));
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [selected, setSelected] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(place?.expanded));
+  const [selected, setSelected] = useState<string | null>(place?.selected ?? null);
   const [open, setOpen] = useState<Record<string, OpenFile>>({});
   const [opening, setOpening] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -356,6 +378,34 @@ export function FileEditor({ rpc, threadId, active }: { rpc: Rpc | null; threadI
     [rpc, threadId],
   );
 
+  // Remember the place; reopen the file it had open and the tree's scroll.
+  const treeRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef(place?.scroll ?? 0);
+  useEffect(() => {
+    places.set(threadId, { expanded: [...expanded], selected, scroll: scrollRef.current });
+  }, [threadId, expanded, selected]);
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!active || restored.current) return;
+    restored.current = true;
+    if (selected) openFile(selected);
+  }, [active, selected, openFile]);
+  useEffect(() => {
+    const el = treeRef.current;
+    if (active && el && scrollRef.current > 0 && el.scrollTop === 0) el.scrollTop = scrollRef.current;
+  }, [active, rows]);
+
+  const revealSeq = useRef(0);
+  useEffect(() => {
+    if (!reveal || reveal.seq === revealSeq.current) return;
+    revealSeq.current = reveal.seq;
+    setExpanded((prev) => {
+      const up = ancestors(reveal.path).filter((d) => !prev.has(d));
+      return up.length ? new Set([...prev, ...up]) : prev;
+    });
+    openFile(reveal.path);
+  }, [reveal, openFile]);
+
   const refresh = useCallback(() => setDirs({}), []);
 
   const saveSelected = useCallback(() => {
@@ -384,7 +434,15 @@ export function FileEditor({ rpc, threadId, active }: { rpc: Rpc | null; threadI
             Refresh
           </button>
         </div>
-        <div className="files-tree" role="tree">
+        <div
+          className="files-tree"
+          role="tree"
+          ref={treeRef}
+          onScroll={(e) => {
+            scrollRef.current = e.currentTarget.scrollTop;
+            places.set(threadId, { expanded: [...expanded], selected, scroll: scrollRef.current });
+          }}
+        >
           <FileTree
             rows={rows}
             expanded={expanded}

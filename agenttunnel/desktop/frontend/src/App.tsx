@@ -80,14 +80,18 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
 import { useAttention } from "./lib/attention";
-import { parseRoute, useUrlRoute, type Route } from "./lib/route";
+import { parseRoute, useUrlRoute, type Route, type RouteTab } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { AppUpdate } from "./components/UpdateChip";
 import { HarnessUpdates } from "./components/HarnessUpdateChip";
 import { SidebarFooter } from "./components/SidebarFooter";
+import { NextStep } from "./components/NextStep";
 import { Breadcrumb, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
 import { ALT, centerTabFromKey, centerTabHint, isPaletteKey, isTyping } from "./lib/navKeys";
 import { threadStatus } from "./lib/threadStatus";
+import { recentIds, recordRecent } from "./lib/recent";
+import type { FileMatch } from "./lib/mentions";
+import { useScrollMemory } from "./lib/scrollMemory";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { getPref, setPref } from "./lib/prefs";
 import { applyTheme, loadTheme } from "./lib/themes";
@@ -103,6 +107,7 @@ import {
   groupItems,
   projectItems,
   threadItems,
+  withRecent,
   type PaletteItem,
   type PaletteSection,
 } from "./lib/palette";
@@ -3138,6 +3143,46 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openPalette]);
+  // Where the user goes, for the palette's Recent group. The project is
+  // recorded first so a jump into another project's thread puts the thread on top.
+  useEffect(() => {
+    if (projectId) recordRecent(`project:${projectId}`);
+  }, [projectId]);
+  useEffect(() => {
+    if (activeId) recordRecent(`thread:${activeId}`);
+  }, [activeId]);
+  // A file picked in the palette: the Files tab opens it (FileEditor reveal).
+  const [fileReveal, setFileReveal] = useState<{ threadId: string; path: string; seq: number } | null>(null);
+  // A deep link's tab, applied once its thread is the active one (the tab
+  // setter writes to whichever thread is active when it runs).
+  const pendingTab = useRef<{ threadId: string; tab: RouteTab } | null>(null);
+  useEffect(() => {
+    const p = pendingTab.current;
+    if (!p || p.threadId !== activeId) return;
+    pendingTab.current = null;
+    setTab(p.tab);
+  }, [activeId, setTab]);
+  // The Review tab unmounts when left; each thread keeps its place in it.
+  const reviewScroll = useScrollMemory(`review:${activeId ?? ""}`);
+  const paletteSearchFiles = useLatestCallback(async (query: string): Promise<PaletteItem[]> => {
+    const rpc = rpcRef.current;
+    const threadId = activeId;
+    if (!rpc || !threadId) return [];
+    const res = await rpc.call<{ matches: FileMatch[] }>("files.search", { threadId, query, limit: 20 });
+    return res.matches
+      .filter((m) => !m.dir)
+      .map((m) => ({
+        id: `file:${m.path}`,
+        kind: "file" as const,
+        group: "Files",
+        label: m.path.slice(m.path.lastIndexOf("/") + 1),
+        detail: m.path.includes("/") ? m.path.slice(0, m.path.lastIndexOf("/")) : undefined,
+        run: () => {
+          setTab("files");
+          setFileReveal({ threadId, path: m.path, seq: Date.now() });
+        },
+      }));
+  });
   // Alt/Option+1..6 picks a center tab, even from the composer; "/" outside
   // text fields jumps to the thread search.
   useEffect(() => {
@@ -3622,6 +3667,7 @@ export default function App() {
     loaded: status === "online" && (threads.length > 0 || projects.length > 0),
     projectId,
     threadId: activeId,
+    tab,
     open: (route: Route) => {
       if (route.kind === "home") {
         showProjects();
@@ -3635,6 +3681,8 @@ export default function App() {
       }
       const t = threads.find((x) => x.id === route.id);
       if (!t) return false;
+      if (t.id === activeId) setTab(route.tab ?? "chat");
+      else pendingTab.current = { threadId: t.id, tab: route.tab ?? "chat" };
       goToThread(t);
       return true;
     },
@@ -3682,7 +3730,8 @@ export default function App() {
         toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
         togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
         toggleCompact: () => setCompact((v) => !v),
-        goToWorktrees: () => showHome("worktrees"),
+        goToPage: (page) => showHome(page),
+        openHelp: () => setCheatSheetOpen(true),
       }),
     );
     if (paletteFromComposer && activeId) {
@@ -3697,17 +3746,22 @@ export default function App() {
       return { left, right, rightTitle: "Composer" };
     }
     const names = new Map(projects.map((p) => [p.id, p.name]));
+    // Every place, wherever the palette opens: the current project's threads
+    // lead, and the places opened last lead everything.
     const threadRows: PaletteItem[] = threadItems(
-      projectId ? threads.filter((t) => t.projectId === projectId) : threads,
+      threads.filter((t) => t.id !== activeId && !t.archived),
       names,
-      !projectId,
+      projectId,
       goToThread,
     );
-    const projectRows: PaletteItem[] = projectId ? [] : projectItems(projects, (id) => openProject(id));
+    const projectRows: PaletteItem[] = projectItems(
+      projects.filter((p) => p.id !== projectId),
+      (id) => openProject(id),
+    );
     return {
       left,
-      right: groupItems([...threadRows, ...projectRows]),
-      rightTitle: projectId ? "Threads" : "Threads & projects",
+      right: groupItems(withRecent([...threadRows, ...projectRows], recentIds())),
+      rightTitle: "Go to",
     };
   };
   const palette = paletteOpen ? buildPaletteView() : null;
@@ -3720,6 +3774,7 @@ export default function App() {
       left={palette.left}
       right={palette.right}
       rightTitle={palette.rightTitle}
+      searchFiles={activeId && !paletteFromComposer ? paletteSearchFiles : undefined}
       onRun={runPalette}
       onClose={closePalette}
     />
@@ -4056,6 +4111,17 @@ export default function App() {
     tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
   const setupMode = setupPending && setupReadyId !== activeId;
   const composerHidden = setupMode;
+  // A finished turn in a thread with its own worktree points at what comes
+  // next. Only once the turn has ended and nothing waits on the user.
+  const lastMsg = lastTurn?.[lastTurn.length - 1];
+  const showNextStep =
+    !!activeSummary?.worktree &&
+    running.length === 0 &&
+    shellThread !== activeId &&
+    !!lastMsg &&
+    lastMsg.author !== "user" &&
+    lastMsg.author !== "shell" &&
+    (thread?.questions?.length ?? 0) === 0;
   const asideCollapsed = !layout.asideOpen || setupMode;
   // Solo threads tint the chat-head tabs with their harness color, like the
   // thread card and the graph node do.
@@ -4202,7 +4268,7 @@ export default function App() {
                   <rect x="10" y="4" width="5" height="11" rx="1.5" />
                   <rect x="17" y="4" width="4" height="7" rx="1.5" />
                 </svg>
-                Project board
+                <span className="pb-label">Project board</span>
               </button>
             )}
             <div
@@ -4226,6 +4292,7 @@ export default function App() {
               rpc={rpcRef.current}
               threadId={activeId}
               active={tab === "files"}
+              reveal={fileReveal?.threadId === activeId ? fileReveal : null}
             />
           </div>
         )}
@@ -4360,6 +4427,21 @@ export default function App() {
                   onDismiss={() => dismissQuestion(q.questionId)}
                 />
               ))}
+              {showNextStep && (
+                <NextStep
+                  hasPR={!!(activeId && threadStates[activeId]?.pr)}
+                  onReview={() => setTab("review")}
+                  onFiles={() => setTab("files")}
+                  onPR={() => {
+                    if (activeId && threadStates[activeId]?.pr) {
+                      openPanel("pr");
+                      return;
+                    }
+                    setInput("Open a pull request for these changes.");
+                    taRef.current?.focus();
+                  }}
+                />
+              )}
               {running.length > 0 && (
                 <div className={`activity agents${logsOpen ? "" : " collapsed"}`}>
                   <div className="act-head">
@@ -4440,7 +4522,7 @@ export default function App() {
             />
           </>
         ) : tab === "review" ? (
-          <div className="stream">
+          <div className="stream" key={activeId ?? ""} ref={reviewScroll.ref} onScroll={reviewScroll.onScroll}>
             {diffError && <div className="empty err-text">{diffError}</div>}
             <DiffView
               diff={diff}

@@ -271,9 +271,13 @@
 /* Labels give way to icons (tooltips keep the names) before the open
  * project tabs have to scroll. */
 @media (max-width: 1280px) {
-  .env-switch .ptab-label {
+  .env-switch .ptab-label,
+  .chat-head .pb-label {
     display: none;
   }
+}
+.chat-head .toggles > button {
+  white-space: nowrap;
 }
 
 /* --- sidebar ------------------------------------------------------------- */
@@ -340,4 +344,31 @@
   .palette-btn {
     padding: 0 8px;
   }
+}
+
+/* --- flow: the step after a finished turn -------------------------------- */
+.next-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 12px;
+  font-size: 12px;
+}
+.next-step-label {
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+.next-step button {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: transparent;
+  border-color: var(--border-soft);
+  color: var(--muted);
+}
+.next-step button:hover:not(:disabled) {
+  color: var(--text);
 }
