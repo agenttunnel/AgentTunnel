@@ -1,9 +1,10 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { liveLogStore, useStreamingLine, type LiveLine, type ReplySource } from "../lib/liveLog";
 import { useStoreField } from "../lib/store";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCard";
 import { agentStopped } from "../lib/toolCalls";
+import { setAgentFocus, useFocusedAgent } from "../lib/agentLive";
 
 // The log box is much shorter than the transcript, so its pill shows sooner.
 const LOGS_TOP_SHOW = 80;
@@ -13,7 +14,7 @@ const LOGS_BOTTOM_SHOW = 48;
 /** How many of the newest lines the activity box renders. */
 const SHOWN = 60;
 
-type Agents = Record<string, { status?: string } | undefined> | undefined;
+type Agents = Record<string, { status?: string; name?: string; role?: string } | undefined> | undefined;
 
 /** One log line. Memoized on the line object: only the line a chunk grew gets a
  * new object, so only its markdown is parsed again. */
@@ -68,13 +69,19 @@ export const LiveLog = memo(function LiveLog({
   onLines,
   agents,
   reply,
+  threadId,
 }: {
   onLines: () => void;
   reply?: ReplySource | null;
   /** The open thread's agents, so a card still marked running can show "stopped". */
-  agents?: Record<string, { status?: string } | undefined>;
+  agents?: Agents;
+  /** The open thread, so an agent selected in the Agents panel narrows the log to it. */
+  threadId?: string | null;
 }) {
-  const live = useStoreField(liveLogStore, "lines");
+  const all = useStoreField(liveLogStore, "lines");
+  const only = useFocusedAgent(threadId);
+  const live = useMemo(() => (only ? all.filter((l) => l.agentId === only) : all), [all, only]);
+  const onlyAgent = only ? agents?.[only] : undefined;
   const replyId = useStreamingLine(reply)?.id;
   // Live log follows the newest output, unless the user scrolled up to read.
   // Opening the box jumps to the newest output.
@@ -134,6 +141,16 @@ export const LiveLog = memo(function LiveLog({
           </button>
         )}
       </div>
+      {only && (
+        <div className="log-only">
+          <span>
+            Only <b>{onlyAgent?.name || onlyAgent?.role || only}</b>
+          </span>
+          <button type="button" onClick={() => setAgentFocus(null)}>
+            Show all agents
+          </button>
+        </div>
+      )}
       {live.length === 0 && <div className="log-line raw">Waiting for output…</div>}
       {live.slice(-SHOWN).map((l) =>
         l.id === replyId ? null : (

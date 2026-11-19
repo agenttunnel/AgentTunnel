@@ -76,6 +76,8 @@ const MarkdownViewer = lazy(() => import("./components/MarkdownViewer"));
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
+import { AgentTree, type DetailTab } from "./components/AgentTree";
+import { TeamProgress } from "./components/TeamProgress";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
@@ -948,6 +950,14 @@ export default function App() {
   /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
   const [shellThread, setShellThread] = useState<string | null>(null);
   const [detailId, setDetailId] = useThreadScoped<string | null>(activeId, null);
+  const [detailTab, setDetailTab] = useState<DetailTab>("output");
+  const openAgent = useCallback(
+    (id: string, tab?: DetailTab) => {
+      setDetailTab(tab ?? "output");
+      setDetailId(id);
+    },
+    [setDetailId],
+  );
   // Aside panel tabs: agents + usage are pinned; context, files, and diff can
   // be added via the "+" menu (or single-letter shortcuts) and closed again.
   const [asideTabs, setAsideTabs, setAsideTabsDefault] = useThreadScoped<AsideTabId[]>(
@@ -2191,28 +2201,6 @@ export default function App() {
       cost: all.costUsd,
     };
   }, [threadUsage]);
-  // Agents grouped into their pipelines, the way the orchestrator dispatched them.
-  const lanes = useMemo(() => {
-    const order: string[] = [];
-    const grouped: Record<string, Agent[]> = {};
-    for (const a of agents) {
-      const lane = a.pipelineId && a.pipelineId.length > 0 ? a.pipelineId : "work";
-      if (!grouped[lane]) {
-        grouped[lane] = [];
-        order.push(lane);
-      }
-      grouped[lane].push(a);
-    }
-    return order.map((name) => {
-      const members = grouped[name];
-      return {
-        name,
-        agents: members,
-        done: members.filter((x) => x.status !== "running" && x.status !== "pending").length,
-      };
-    });
-  }, [agents]);
-  const settled = agents.filter((a) => a.status !== "running" && a.status !== "pending").length;
   // Each role's effective runtime from settings, with what it is doing in this thread.
   const roleRows = useMemo(
     () =>
@@ -2239,6 +2227,7 @@ export default function App() {
     [settings, agents, thread],
   );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
+  const closeAgent = useCallback(() => setDetailId(null), [setDetailId]);
   const comments = thread?.reviewComments ?? [];
   /** Review threads by file|side|line so each diff line finds its thread without a scan. */
   const reviewAnchors = useMemo(() => {
@@ -2856,6 +2845,7 @@ export default function App() {
     }
     if (activeId) refresh(activeId).catch(() => undefined);
   };
+  const stopAgentStable = useLatestCallback(stopAgent);
 
   /** Convenes the council: members debate in parallel rounds, then a
    *  facilitator synthesizes the outcome into the thread. */
@@ -4166,6 +4156,12 @@ export default function App() {
             )}
           </div>
           <div className="toggles">
+            <TeamProgress
+              agents={agents}
+              questions={thread?.questions}
+              tasks={thread?.tasks}
+              onClick={() => openPanel("agents")}
+            />
             {projectId && (
               <button title="Open this project's board" onClick={showProjectBoard}>
                 <svg
@@ -4367,7 +4363,14 @@ export default function App() {
                       Stop
                     </button>
                   </div>
-                  {logsOpen && <LiveLog onLines={followStream} agents={thread?.agents ?? undefined} reply={reply} />}
+                  {logsOpen && (
+                    <LiveLog
+                      onLines={followStream}
+                      agents={thread?.agents ?? undefined}
+                      reply={reply}
+                      threadId={activeId}
+                    />
+                  )}
                 </div>
               )}
               {shellThread === activeId && shellThread !== null && (
@@ -4445,7 +4448,7 @@ export default function App() {
         ) : tab === "board" ? (
           <div className="board-view">
             {tasks.length > 0 && <TaskList tasks={tasks} />}
-            <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
+            <KanbanBoard agents={agents} roleNames={rolesById} questions={thread?.questions} onOpenAgent={openAgent} />
           </div>
         ) : tab === "doc" && docPath !== null ? (
           <Suspense fallback={<div className="stream empty">Loading…</div>}>
@@ -4479,7 +4482,8 @@ export default function App() {
             usage={thread?.usage ?? null}
             mailbox={thread?.mailbox ?? null}
             peerMailbox={thread?.peerMailbox ?? false}
-            onOpenAgent={setDetailId}
+            onOpenAgent={openAgent}
+            questions={thread?.questions}
             onSubmitGroup={sendGroup}
           />
         )}
@@ -4605,56 +4609,18 @@ export default function App() {
             <>
               <div className="section">
                 <h3>
-                  Workflow{" "}
-                  <span>
-                    {settled}/{agents.length} settled
-                  </span>
+                  Team <span>Σ {fmtTokens(totals.total)} tok</span>
                 </h3>
-                {lanes.length === 0 && <p className="hint">No agents yet.</p>}
-                {lanes.map((lane) => (
-                  <div className="lane" key={lane.name}>
-                    <div className="lane-head">
-                      <span className="lane-name">{lane.name}</span>
-                      <span className="lane-count">
-                        {lane.done}/{lane.agents.length}
-                      </span>
-                    </div>
-                    {lane.agents.map((a) => {
-                      const entry = thread?.usage?.[a.id];
-                      return (
-                        <div className="wf-row" key={a.id} {...clickable(() => setDetailId(a.id))}>
-                          <span className={`dot ${a.status}`} />
-                          <div className="wf-main">
-                            <div className="wf-name">{a.name || rolesById[a.role] || a.role}</div>
-                            <div className="wf-task">{a.task}</div>
-                          </div>
-                          <div className="wf-side">
-                            <div className="wf-role">{a.role}</div>
-                            <div className="wf-meta">
-                              {entry ? `${fmtTokens(totalTokens(entry.usage))} tok` : a.status}
-                            </div>
-                            {a.status === "running" && (
-                              <button
-                                className="stop-btn mini"
-                                title="Stop this agent — the rest of the turn keeps running"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  stopAgent(a.id);
-                                }}
-                              >
-                                Stop
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-                <div className="wf-foot">
-                  <span>{settled} settled</span>
-                  <span>Σ {fmtTokens(totals.total)} tok</span>
-                </div>
+                <TeamProgress agents={agents} questions={thread?.questions} tasks={thread?.tasks} />
+                <AgentTree
+                  threadId={activeId ?? ""}
+                  agents={agents}
+                  questions={thread?.questions}
+                  usage={thread?.usage}
+                  roleNames={rolesById}
+                  onOpen={openAgent}
+                  onStop={stopAgentStable}
+                />
               </div>
               <div className="section">
                 <h3>
@@ -4669,7 +4635,7 @@ export default function App() {
                     <li
                       key={r.id}
                       className={r.latestId ? "clickable" : undefined}
-                      {...(r.latestId ? clickable(() => setDetailId(r.latestId)) : {})}
+                      {...(r.latestId ? clickable(() => openAgent(r.latestId!)) : {})}
                     >
                       <div className="role-head">
                         <span className={`dot ${r.running.length > 0 ? "running" : r.off ? "off" : r.latestStatus}`} />
@@ -4826,7 +4792,7 @@ export default function App() {
                       const u = thread?.usage?.[a.id]?.usage;
                       if (!u) return null;
                       return (
-                        <tr key={a.id} className="rowlink" onClick={() => setDetailId(a.id)}>
+                        <tr key={a.id} className="rowlink" onClick={() => openAgent(a.id)}>
                           <td>
                             <span className={`dot ${a.status}`} />
                             {a.name || rolesById[a.role] || a.role}
@@ -4940,7 +4906,12 @@ export default function App() {
           agent={detailAgent}
           steps={thread?.steps?.[detailAgent.id] ?? []}
           roleName={rolesById[detailAgent.role] || detailAgent.role}
-          onClose={() => setDetailId(null)}
+          agents={agents}
+          roleNames={rolesById}
+          questions={thread?.questions}
+          initialTab={detailTab}
+          onOpenAgent={openAgent}
+          onClose={closeAgent}
         />
       )}
 

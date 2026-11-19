@@ -173,8 +173,8 @@ export function aggregateMailbox(mailbox: MailboxMessage[] | null): Map<string, 
 /** Computes the full graph: layered nodes, spawn edges, dashed dependency
  * edges, and message arcs. Row 0 holds the orchestrator (the parentless
  * agent leading agentOrder, falling back to the conventional
- * "agent-orchestrator" id); each parent's children stack in the row beneath,
- * in agentOrder sequence. A missing or cyclic parent demotes the agent to a
+ * "agent-orchestrator" id); each parent's children sit in the row beneath,
+ * in agentOrder sequence, with the parent centered over them. A missing or cyclic parent demotes the agent to a
  * root so it is never dropped. */
 /** `positions` pins nodes the user dragged; every other node keeps its row slot. */
 export function computeGraph(input: {
@@ -219,51 +219,61 @@ export function computeGraph(input: {
     .filter((a) => (depths.get(a.id) ?? 0) === 0)
     .sort((a, b) => rootRank(a.id) - rootRank(b.id));
 
-  const rows: string[][] = [];
+  // A tidy tree: every leaf takes the next column slot, and a parent sits
+  // centered over its children, so each subtree reads as one block under the
+  // agent that dispatched it.
+  const slots = new Map<string, number>();
+  const placed: string[] = [];
+  let nextSlot = 0;
   const visited = new Set<string>();
-  const visit = (id: string) => {
-    if (visited.has(id)) return;
+  const visit = (id: string): number => {
+    if (visited.has(id)) return slots.get(id) ?? nextSlot;
     visited.add(id);
-    const depth = depths.get(id) ?? 0;
-    const row = rows[depth] ?? (rows[depth] = []);
-    row.push(id);
-    for (const child of childrenOf.get(id) ?? []) visit(child);
+    placed.push(id);
+    const kids = (childrenOf.get(id) ?? []).filter((c) => !visited.has(c));
+    let slot: number;
+    if (kids.length === 0) slot = nextSlot++;
+    else {
+      const childSlots = kids.map(visit);
+      slot = (childSlots[0] + childSlots[childSlots.length - 1]) / 2;
+    }
+    slots.set(id, slot);
+    return slot;
   };
   for (const r of roots) visit(r.id);
   // Orphans the walk never reached (broken/cyclic parent chains) still get a
-  // deterministic spot on their depth row.
+  // deterministic slot of their own.
   for (const a of agents) {
     if (visited.has(a.id)) continue;
-    const depth = depths.get(a.id) ?? 0;
-    const row = rows[depth] ?? (rows[depth] = []);
-    row.push(a.id);
+    visited.add(a.id);
+    placed.push(a.id);
+    slots.set(a.id, nextSlot++);
   }
 
   const rects = new Map<string, Rect>();
   const nodes: GraphNode[] = [];
-  rows.forEach((row, depth) => {
-    row.forEach((id, col) => {
-      const a = byId.get(id)!;
-      const pinned = positions?.[id];
-      const x = pinned ? pinned.x : PAD + col * (NODE_W + COL_GAP);
-      const y = pinned ? pinned.y : PAD_TOP + depth * (NODE_H + ROW_GAP);
-      rects.set(id, { x, y, w: NODE_W, h: NODE_H, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
-      const u = usage?.[id]?.usage;
-      nodes.push({
-        id,
-        x,
-        y,
-        width: NODE_W,
-        height: NODE_H,
-        name: a.name || roleNames[a.role] || a.role,
-        role: roleNames[a.role] || a.role,
-        status: a.status,
-        harness: a.harness ?? "",
-        model: a.model ?? "",
-        tokens: u ? totalTokens(u) : 0,
-      });
+  for (const id of placed) {
+    const a = byId.get(id)!;
+    const depth = depths.get(id) ?? 0;
+    const pinned = positions?.[id];
+    const x = pinned ? pinned.x : PAD + (slots.get(id) ?? 0) * (NODE_W + COL_GAP);
+    const y = pinned ? pinned.y : PAD_TOP + depth * (NODE_H + ROW_GAP);
+    rects.set(id, { x, y, w: NODE_W, h: NODE_H, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
+    const u = usage?.[id]?.usage;
+    nodes.push({
+      id,
+      x,
+      y,
+      width: NODE_W,
+      height: NODE_H,
+      name: a.name || roleNames[a.role] || a.role,
+      role: roleNames[a.role] || a.role,
+      status: a.status,
+      harness: a.harness ?? "",
+      model: a.model ?? "",
+      tokens: u ? totalTokens(u) : 0,
     });
-  });
+  }
 
   const spawnEdges: SpawnEdge[] = [];
   for (const a of agents) {
