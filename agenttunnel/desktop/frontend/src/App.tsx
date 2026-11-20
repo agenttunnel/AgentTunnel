@@ -3121,7 +3121,7 @@ export default function App() {
         ...activeSummary,
         unseen: false,
         runningAgents: running.length > 0 || shellThread === activeId ? 1 : 0,
-        pendingQuestions: thread?.questions?.length ?? activeSummary.pendingQuestions,
+        pendingQuestions: thread ? pendingQuestions : activeSummary.pendingQuestions,
       })
     : null;
   const crumbStatus = liveStatus === "idle" || liveStatus === "new" ? null : liveStatus;
@@ -3931,7 +3931,7 @@ export default function App() {
     !!lastMsg &&
     lastMsg.author !== "user" &&
     lastMsg.author !== "shell" &&
-    (thread?.questions?.length ?? 0) === 0;
+    pendingQuestions === 0;
   const asideCollapsed = !layout.asideOpen || setupMode;
   // Solo threads tint the chat-head tabs with their harness color, like the
   // thread card and the graph node do.
