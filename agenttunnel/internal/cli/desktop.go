@@ -8,12 +8,10 @@ import (
 )
 
 func init() {
-	// Registered under its flag spelling: parseGlobal leaves `--desktop` as the
-	// first non-global argument, so it dispatches like any command name.
 	Register(Command{
-		Name:    "--desktop",
+		Name:    "desktop",
 		Summary: "Open the AgentTunnel desktop app, on a project directory when given",
-		Usage:   "agenttunnel --desktop [dir]",
+		Usage:   "agenttunnel desktop [dir]",
 		Run:     runDesktop,
 	})
 }
@@ -24,12 +22,12 @@ func init() {
 // a closed one boots onto it.
 func runDesktop(ctx context.Context, env *Env, args []string) error {
 	if len(args) > 1 {
-		return usageError("usage: agenttunnel --desktop [dir]")
+		return usageError("usage: agenttunnel desktop [dir]")
 	}
 	dir := ""
 	if len(args) == 1 {
 		if args[0] == "" || strings.HasPrefix(args[0], "-") {
-			return usageError("usage: agenttunnel --desktop [dir]")
+			return usageError("usage: agenttunnel desktop [dir]")
 		}
 		dir = args[0]
 	}

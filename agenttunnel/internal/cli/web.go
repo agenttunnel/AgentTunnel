@@ -1,7 +1,7 @@
-// Web mode: `agenttunnel --web <dir>` (and its `agenttunnel web <dir>`
-// spelling) serves the AgentTunnel web UI from a loopback HTTP server, backed
-// either by an in-process daemon it owns or by a daemon someone else already
-// left running — the same two shapes the desktop app uses.
+// Web mode: `agenttunnel web [dir]` serves the AgentTunnel web UI from a
+// loopback HTTP server, backed either by an in-process daemon it owns or by a
+// daemon someone else already left running — the same two shapes the desktop
+// app uses.
 
 package cli
 
@@ -62,11 +62,14 @@ func openBrowserForOS(raw string) error {
 	return cmd.Start()
 }
 
-// runWebCommand is the `agenttunnel web [dir]` command spelling; the arguments
-// follow the desktop rule: at most one directory, never a flag.
+// runWebCommand is `agenttunnel web [dir]`: at most one directory, never a
+// flag. It owns the whole invocation, so it refuses a daemon flag it cannot honor.
 func runWebCommand(ctx context.Context, env *Env, args []string) error {
 	if len(args) > 1 {
 		return usageError("usage: agenttunnel web [dir]")
+	}
+	if env.DaemonURL != "" {
+		return usageError("web cannot be combined with --daemon")
 	}
 	dir := "."
 	if len(args) == 1 {
