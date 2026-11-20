@@ -22,12 +22,13 @@ func imageSpec(paths ...string) SessionSpec {
 }
 
 func TestCodexInvocationAttachesImageFlags(t *testing.T) {
+	fakeCodex(t, "--json")
 	cs, err := codexInvocation(imageSpec("/att/a.png", "/att/b.png"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"exec", "--dangerously-bypass-approvals-and-sandbox",
+		"exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
 		"--image", "/att/a.png", "--image", "/att/b.png",
 		"describe this",
 	}

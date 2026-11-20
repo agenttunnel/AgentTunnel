@@ -1,41 +1,35 @@
 import { useEffect, useRef } from "react";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
-import { getPref, removePref, setPref } from "../lib/prefs";
+import { getPref, setPref } from "../lib/prefs";
 
-const OPT_OUT_KEY = "at.cheatSheetOptedOut";
+const SEEN_KEY = "at.cheatSheetSeen";
+// Before the sheet became first-run only, users could opt out of it showing on
+// every launch. That choice still means "already seen".
+const LEGACY_OPT_OUT_KEY = "at.cheatSheetOptedOut";
 
-/** Whether the user chose "Do not show this again". Private mode reads as not opted out. */
-export function loadCheatSheetOptedOut(): boolean {
-  return getPref(OPT_OUT_KEY) === "1";
+/** Whether the sheet should open on its own at launch: only until it has been
+ * seen once. The seen mark is a daemon-synced pref, so every client of one
+ * daemon shares it. Private mode reads as unseen and shows it each session. */
+export function showCheatSheetOnLaunch(): boolean {
+  return getPref(SEEN_KEY) !== "1" && getPref(LEGACY_OPT_OUT_KEY) !== "1";
 }
 
-export function saveCheatSheetOptedOut(optedOut: boolean) {
-  if (optedOut) setPref(OPT_OUT_KEY, "1");
-  else removePref(OPT_OUT_KEY);
+function markCheatSheetSeen() {
+  if (getPref(SEEN_KEY) !== "1") setPref(SEEN_KEY, "1");
 }
 
 type Panel = { label: string; key: string };
 
 /**
- * CheatSheet is the how-to-use sheet shown on launch and reopened with /help.
- * Closing hides it for this launch only; the opt-out is a separate choice that
- * the parent persists. Focus moves into the sheet and returns to the previous
- * element when it closes.
+ * CheatSheet is the how-to-use sheet: shown on first run and reopened with
+ * /help. Showing it marks it seen, so it does not open on its own again. Focus
+ * moves into the sheet and returns to the previous element when it closes.
  */
-export function CheatSheet({
-  panels,
-  optedOut,
-  onSetOptedOut,
-  onClose,
-}: {
-  panels: Panel[];
-  optedOut: boolean;
-  onSetOptedOut: (optedOut: boolean) => void;
-  onClose: () => void;
-}) {
+export function CheatSheet({ panels, onClose }: { panels: Panel[]; onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    markCheatSheetSeen();
     const previous = document.activeElement;
     dialogRef.current?.focus();
     return () => {
@@ -156,15 +150,6 @@ export function CheatSheet({
           </section>
         </div>
         <div className="sheet-actions cheat-actions">
-          <button
-            type="button"
-            onClick={() => {
-              onSetOptedOut(!optedOut);
-              if (!optedOut) onClose();
-            }}
-          >
-            {optedOut ? "Show on every launch" : "Do not show this again"}
-          </button>
           <button type="button" onClick={onClose}>
             Close
           </button>

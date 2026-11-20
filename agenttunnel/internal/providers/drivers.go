@@ -1,10 +1,15 @@
 package providers
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"sync"
+	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -20,7 +25,7 @@ func BuiltinDrivers() []Driver {
 	return []Driver{
 		NewGenericDriver(contracts.HarnessOpenCode, "opencode", openCodeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessClaude, "claude", claudeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
-		NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
+		NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, CodexTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCursor, "cursor-agent", cursorInvocation, JSONLineTranslator{}).WithImageSupport(ImagesUnsupported),
 		NewGenericDriver(contracts.HarnessPi, "pi", piInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCommandCode, "commandcode", commandCodeInvocation, CommandCodeTranslator{}).WithImageSupport(ImagesUnsupported),
@@ -141,12 +146,18 @@ func claudeInputFrames(spec SessionSpec) ([]string, error) {
 }
 
 func codexInvocation(spec SessionSpec) (CommandSpec, error) {
+	// --json streams items (messages, commands, file changes) and the turn's
+	// usage as JSONL; the plain mode prints prose only. A Codex too old to
+	// have --json runs plain: CodexTranslator reads prose lines as text.
 	args := []string{"exec"}
+	if codexSupportsJSON() {
+		args = append(args, "--json")
+	}
 	if spec.Model != "" {
 		args = append(args, "-m", spec.Model)
 	}
 	if spec.Variant != "" {
-		args = append(args, "-c", `model_reasoning="`+spec.Variant+`"`)
+		args = append(args, "-c", `model_reasoning_effort="`+spec.Variant+`"`)
 	}
 	args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	// --image attaches a file the model sees; it is repeatable.
@@ -155,6 +166,33 @@ func codexInvocation(spec SessionSpec) (CommandSpec, error) {
 	}
 	args = append(args, spec.Prompt)
 	return CommandSpec{Binary: "codex", Args: args, PromptVia: "arg"}, nil
+}
+
+// codexJSON remembers, per resolved codex binary, whether its `exec --help`
+// lists --json. An upgrade in place keeps the old answer until the daemon
+// restarts.
+var codexJSON sync.Map
+
+// codexSupportsJSON asks `codex exec --help` once per binary. A missing
+// binary reads as supported: the spawn then fails with its own error. A probe
+// that fails is not remembered, and that run falls back to plain.
+func codexSupportsJSON() bool {
+	path, err := exec.LookPath("codex")
+	if err != nil {
+		return true
+	}
+	if known, ok := codexJSON.Load(path); ok {
+		return known.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "exec", "--help").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	supported := bytes.Contains(out, []byte("--json"))
+	codexJSON.Store(path, supported)
+	return supported
 }
 
 func piInvocation(spec SessionSpec) (CommandSpec, error) {

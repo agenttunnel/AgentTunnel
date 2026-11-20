@@ -43,6 +43,11 @@ func TestHandlerFallbacksAndRealFiles(t *testing.T) {
 		// so the frontend router can resolve them.
 		{name: "client-side route", path: "/threads/xyz", want: indexHTML},
 		{name: "nested client-side route", path: "/threads/xyz/review", want: indexHTML},
+		// The routes the frontend pushes: a project board and a thread whose id
+		// may look like a file name.
+		{name: "project route", path: "/projects/p-1a2b", want: indexHTML},
+		{name: "thread id with a dot", path: "/threads/t-01.json", want: indexHTML},
+		{name: "escaped thread id", path: "/threads/t%2F01", want: indexHTML},
 		{name: "index by name", path: "/index.html", want: indexHTML},
 		// A real file is served byte-identical, never shadowed by the index.
 		{name: "hashed js asset", path: "/assets/app-DGz3kW9L.js", want: "console.log('app')"},

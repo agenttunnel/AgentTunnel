@@ -387,6 +387,9 @@ type ThreadSummary struct {
 	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
 	// Unseen is derived: the newest completed turn ended after the last view.
 	Unseen bool `json:"unseen"`
+	// PendingQuestions counts agent questions still waiting on the human, so
+	// clients can flag a thread that needs an answer without loading it.
+	PendingQuestions int `json:"pendingQuestions,omitempty"`
 }
 
 // soleHarness names the harness of a thread's only agent, or "" when the
@@ -1155,6 +1158,7 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 					Waiting: st.Waiting, TriggeredFrom: st.TriggeredFrom, ControlledBy: st.ControlledBy,
 					RunningAgents: running, StaleAfterSeconds: staleAfter, Stale: stale,
 					LastSeenAt: st.LastSeenAt, Unseen: unseen,
+					PendingQuestions: pendingQuestions(st),
 				},
 				createdAt: st.CreatedAt,
 			})
@@ -2083,6 +2087,16 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 
 	case "fs.list", "fs.read", "fs.write":
 		return d.fileEdit(ctx, req)
+
+	case "fs.browse":
+		var p struct {
+			Path   string `json:"path"`
+			Hidden bool   `json:"hidden"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return browseDirs(p.Path, p.Hidden)
 
 	case "review.comment":
 		var p struct {

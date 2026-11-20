@@ -1,3 +1,9 @@
+import { useMemo } from "react";
+import { ToolCard } from "./ToolCard";
+import { agentStopped, foldToolLines } from "../lib/toolCalls";
+import { agentLogStore } from "../lib/liveLog";
+import { useStoreField } from "../lib/store";
+
 type Usage = {
   inputTokens: number;
   outputTokens: number;
@@ -8,7 +14,6 @@ type Usage = {
 };
 
 type Step = { at: string; usage: Usage };
-type Entry = { kind: string; text: string };
 
 type AgentLike = {
   id: string;
@@ -72,19 +77,21 @@ const add = (steps: Step[]): Usage =>
 export function AgentDetail({
   agent,
   steps,
-  logs,
   roleName,
   onClose,
 }: {
   agent: AgentLike;
   steps: Step[];
-  logs: Entry[];
   roleName: string;
   onClose: () => void;
 }) {
+  // The polled log comes from its store, so a poll re-renders this sheet only.
+  const logs = useStoreField(agentLogStore, "entries");
   const totals = add(steps);
   // Context size is what the latest step was fed, cache reads included.
   const last = steps[steps.length - 1]?.usage;
+  // A tool result folds into its call's card, as in the live log.
+  const lines = useMemo(() => foldToolLines(logs), [logs]);
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -198,11 +205,19 @@ export function AgentDetail({
             <h4>Output</h4>
             <div className="detail-logs">
               {logs.length === 0 && <div className="log-line raw">No output yet…</div>}
-              {logs.map((l, i) => (
-                <div key={i} className={`log-line ${l.kind}`}>
-                  {l.text}
-                </div>
-              ))}
+              {lines.map((l, i) =>
+                l.tool ? (
+                  <ToolCard
+                    key={`tool:${l.tool.id}`}
+                    line={l}
+                    stopped={agentStopped(agent.status)}
+                  />
+                ) : (
+                  <div key={i} className={`log-line ${l.kind}`}>
+                    {l.text}
+                  </div>
+                ),
+              )}
             </div>
           </section>
         </div>

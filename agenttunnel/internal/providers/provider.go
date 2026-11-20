@@ -12,6 +12,7 @@ type Event struct {
 	Kind     contracts.LogKind     `json:"kind"`
 	Text     string                `json:"text,omitempty"`
 	ToolName string                `json:"toolName,omitempty"`
+	Tool     *contracts.ToolCall   `json:"tool,omitempty"`
 	Usage    *contracts.TokenUsage `json:"usage,omitempty"`
 }
 
