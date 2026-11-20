@@ -7,10 +7,15 @@ type Entry = { close: () => void };
 const stack: Entry[] = [];
 let listening = false;
 
+// Deferred: an overlay's own Escape handler may run after this one on the same
+// event. Waiting lets it claim the key (preventDefault) so only its overlay closes.
 function onKeyDown(e: KeyboardEvent) {
-  if (e.key !== "Escape" || e.defaultPrevented || stack.length === 0) return;
-  e.preventDefault();
-  stack[stack.length - 1].close();
+  if (e.key !== "Escape" || e.isComposing || stack.length === 0) return;
+  setTimeout(() => {
+    if (e.defaultPrevented || stack.length === 0) return;
+    e.preventDefault();
+    stack[stack.length - 1].close();
+  }, 0);
 }
 
 /** useEscapeClose calls `close` on Escape while this overlay is the topmost one. */
