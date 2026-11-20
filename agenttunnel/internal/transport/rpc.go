@@ -887,6 +887,35 @@ func (d *Dispatcher) stopTurn(threadID contracts.ThreadID) bool {
 	return running
 }
 
+// CancelStaleAgents ends every agent a previous daemon run left pending or
+// running. Their processes died with it, so nothing would ever finish them and
+// the thread would show a turn working forever that Stop cannot reach. Call
+// it once, before the daemon serves.
+func (d *Dispatcher) CancelStaleAgents(ctx context.Context) error {
+	threads, err := d.engine.Threads(ctx)
+	if err != nil {
+		return err
+	}
+	for _, threadID := range threads {
+		st, err := d.engine.State(ctx, threadID)
+		if err != nil {
+			return err
+		}
+		for _, id := range st.AgentOrder {
+			if s := st.Agents[id].Status; s != contracts.AgentRunning && s != contracts.AgentPending {
+				continue
+			}
+			if err := d.engine.Dispatch(ctx, contracts.Command{
+				ID: d.nextID(), Type: contracts.CmdAgentStatusSet, ThreadID: threadID,
+				Status: &contracts.AgentStatusChanged{AgentID: id, Status: contracts.AgentCancelled, Reason: "daemon restarted"},
+			}); err != nil {
+				return fmt.Errorf("cancel stale agent %s: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
 // turnRun is a thread's claimed turn slot: its context ends when the turn is
 // stopped or finishes, and cancel ends it.
 type turnRun struct {

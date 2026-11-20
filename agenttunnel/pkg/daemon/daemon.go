@@ -263,6 +263,12 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	// boot recovery here, before the server exists, so no schedule can be
 	// armed — and no dependency can finish — past its back. Closing the daemon
 	// stops the loop; trigger turns already running unwind through it.
+	// Agents a previous run left working died with it. End them before the
+	// scheduler's recovery, so it sees those turns as over and no turn it
+	// starts can be swept.
+	if err := disp.CancelStaleAgents(ctx); err != nil {
+		return nil, fmt.Errorf("cancel stale agents: %w", err)
+	}
 	stopScheduler := disp.StartScheduler(ctx)
 	// Questions left open by a previous run have no caller to answer them.
 	if err := disp.CloseStaleQuestions(ctx); err != nil {
