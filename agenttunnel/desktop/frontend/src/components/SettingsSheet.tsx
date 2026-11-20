@@ -18,6 +18,7 @@ import { THEMES, applyTheme, loadTheme, type ThemeId } from "../lib/themes";
 import { ApprovedModelsPicker } from "./ApprovedModelsPicker";
 import { BrowserNotifyToggle } from "./BrowserNotifyToggle";
 import { Dropdown, type DropdownOption } from "./Dropdown";
+import { useEscapeClose } from "../lib/escape";
 
 /** The sheet's form fields and notices. App writes them (loadSettings,
  * refreshModels, any saved setting); only the sheet reads them. */
@@ -177,6 +178,7 @@ export const SettingsSheet = memo(function SettingsSheet({
     flashSaved();
   };
 
+  useEscapeClose(onClose);
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>

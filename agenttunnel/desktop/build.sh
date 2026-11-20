@@ -21,6 +21,12 @@ echo "› building frontend"
 # internal/webui serves the real assets instead of the committed placeholder.
 echo "› syncing SPA into ../internal/webui/dist"
 mkdir -p ../internal/webui/dist
+# index.html is the committed "needs building" placeholder, so the sync must not
+# leave it changed: put it back on exit. The binary already embeds the real app.
+PLACEHOLDER=../internal/webui/dist/index.html
+SAVED="$(mktemp)"
+[ -f "$PLACEHOLDER" ] && cp "$PLACEHOLDER" "$SAVED"
+trap 'if [ -s "$SAVED" ]; then cp "$SAVED" "$PLACEHOLDER"; fi; rm -f "$SAVED"' EXIT
 cp -R frontend/dist/. ../internal/webui/dist/
 
 echo "› linking bin/agenttunnel-desktop"

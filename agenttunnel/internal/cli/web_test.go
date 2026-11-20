@@ -852,3 +852,30 @@ func TestStartWebResolvesLaunchDirThroughSymlink(t *testing.T) {
 		t.Fatalf("launchDir = %q, want %q", got, resolvedDir(t, real))
 	}
 }
+
+func TestWebListenPrefersStablePortThenFallsBack(t *testing.T) {
+	hold, err := net.Listen("tcp", webPreferredAddr)
+	if err != nil {
+		t.Skipf("preferred web port %s is busy on this machine: %v", webPreferredAddr, err)
+	}
+	// Taken: the server still gets a working listener on another port.
+	fallback, err := webListen()
+	if err != nil {
+		t.Fatalf("webListen with the preferred port taken: %v", err)
+	}
+	if fallback.Addr().String() == webPreferredAddr {
+		t.Fatalf("webListen returned the held port %s", webPreferredAddr)
+	}
+	fallback.Close()
+
+	// Free: the server takes the stable port, so the browser origin is unchanged.
+	hold.Close()
+	ln, err := webListen()
+	if err != nil {
+		t.Fatalf("webListen with the preferred port free: %v", err)
+	}
+	defer ln.Close()
+	if got := ln.Addr().String(); got != webPreferredAddr {
+		t.Fatalf("webListen = %s, want the stable port %s", got, webPreferredAddr)
+	}
+}

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useEscapeClose } from "../lib/escape";
 
 /**
  * DraftEditor edits a draft thread before its first turn: the title and the
@@ -36,6 +37,7 @@ export function DraftEditor({
     onDescribe(text);
   };
 
+  useEscapeClose(onClose);
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>

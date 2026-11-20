@@ -8,6 +8,7 @@ import {
   type UsageEntry,
   type UsageStep,
 } from "../lib/usage";
+import { useEscapeClose } from "../lib/escape";
 
 // Local structural types: the wire shape of a thread state, without importing
 // the app component (same approach as AgentDetail).
@@ -68,6 +69,7 @@ export function ThreadInfoDialog({
     .map((id) => thread?.agents?.[id])
     .filter((a): a is AgentLike => Boolean(a));
 
+  useEscapeClose(onClose);
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet wide" onClick={(e) => e.stopPropagation()}>

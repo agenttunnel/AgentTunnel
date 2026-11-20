@@ -80,6 +80,7 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
 import { useAttention } from "./lib/attention";
+import { useEscapeClose } from "./lib/escape";
 import { parseRoute, useUrlRoute, type Route, type RouteTab } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { AppUpdate } from "./components/UpdateChip";
@@ -1111,13 +1112,16 @@ export default function App() {
     if (tab === "doc" && docPath && status === "online") loadDoc(activeId, docPath).catch(() => undefined);
   }, [tab, docPath, activeId, status, loadDoc]);
 
+  const revealAside = drawers.reveal;
   const openPanel = useCallback((id: AsideTabId) => {
     // Seeds the council topic from the draft.
     const draft = id === "council" ? draftText(draftKeyRef.current) : "";
     if (draft) councilTopic.set(activeIdRef.current, draft);
     setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setAsideActive(id);
-  }, []);
+    // On a narrow window the aside is a drawer: show it, or the panel opens unseen.
+    revealAside("aside");
+  }, [revealAside]);
 
   const closePanel = useCallback((id: AsideTabId) => {
     if (ASIDE_PINNED.includes(id)) return;
@@ -3431,6 +3435,10 @@ export default function App() {
       if (t) goToThread(t);
     },
   });
+  // Escape closes the topmost of these confirmations and sheets.
+  useEscapeClose(() => setDeleteTarget(null), !!deleteTarget);
+  useEscapeClose(() => !cleaningThreads && setCleanupConfirm(false), cleanupConfirm);
+  useEscapeClose(() => setReleaseNotes(null), !!releaseNotes);
   // Web UI only: the open thread or project lives in the URL (lib/route.ts).
   useUrlRoute({
     enabled: !inDesktopShell(),
