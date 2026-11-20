@@ -80,6 +80,7 @@ import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
 import { useAttention } from "./lib/attention";
+import { useEscapeClose } from "./lib/escape";
 import { parseRoute, useUrlRoute, type Route, type RouteTab } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { AppUpdate } from "./components/UpdateChip";
@@ -176,6 +177,7 @@ type Agent = {
   task: string;
   dependsOn?: string[];
   status: string;
+  reason?: string;
   pipelineId?: string;
   startedAt?: string;
   endedAt?: string;
@@ -883,6 +885,10 @@ export default function App() {
   // Only the edge is stored, so scrolling re-renders when the user crosses it.
   const [atBottom, setAtBottom] = useState(true);
   const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  // Where the user was before the stream last grew: measured after a tall
+  // block (a question card) lands, the distance to the bottom says the user
+  // scrolled away when they did not.
+  const pinnedRef = useRef(true);
   // Jump-to-top pill shows once the stream is scrolled this far down.
   const [atTop, setAtTop] = useState(false);
 
@@ -891,8 +897,9 @@ export default function App() {
     if (!el) return;
     // Follow the stream only when the user is near the bottom; reading history
     // wins over jumping.
-    const near = nearBottom(el);
+    const near = pinnedRef.current || nearBottom(el);
     if (near) el.scrollTop = el.scrollHeight;
+    pinnedRef.current = near;
     setAtBottom(near);
   }, [
     thread?.messages?.length,
@@ -904,8 +911,9 @@ export default function App() {
   const followStream = useCallback(() => {
     const el = streamRef.current;
     if (!el) return;
-    const near = nearBottom(el);
+    const near = pinnedRef.current || nearBottom(el);
     if (near) el.scrollTop = el.scrollHeight;
+    pinnedRef.current = near;
     setAtBottom(near);
   }, []);
 
@@ -1111,13 +1119,16 @@ export default function App() {
     if (tab === "doc" && docPath && status === "online") loadDoc(activeId, docPath).catch(() => undefined);
   }, [tab, docPath, activeId, status, loadDoc]);
 
+  const revealAside = drawers.reveal;
   const openPanel = useCallback((id: AsideTabId) => {
     // Seeds the council topic from the draft.
     const draft = id === "council" ? draftText(draftKeyRef.current) : "";
     if (draft) councilTopic.set(activeIdRef.current, draft);
     setAsideTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
     setAsideActive(id);
-  }, []);
+    // On a narrow window the aside is a drawer: show it, or the panel opens unseen.
+    revealAside("aside");
+  }, [revealAside]);
 
   const closePanel = useCallback((id: AsideTabId) => {
     if (ASIDE_PINNED.includes(id)) return;
@@ -2056,6 +2067,25 @@ export default function App() {
     lastTurn && !lastTurn.some((m) => m.author === "orchestrator" || m.author === "solo")
       ? lastTurn[0].at
       : undefined;
+  // A last turn that ended with no reply says how it ended, so a Stop or a
+  // failed harness never leaves the prompt with nothing under it.
+  const endedLead =
+    replySince && running.length === 0
+      ? agents.find(
+          (a) =>
+            !a.parentAgentId &&
+            (a.status === "cancelled" || a.status === "failed") &&
+            !!a.endedAt &&
+            Date.parse(a.endedAt) >= Date.parse(replySince),
+        )
+      : undefined;
+  const turnOutcome = !endedLead
+    ? undefined
+    : endedLead.status === "failed"
+      ? `Failed${endedLead.reason ? ` — ${endedLead.reason}` : ""}`
+      : endedLead.reason === "daemon restarted"
+        ? "Stopped — the daemon restarted"
+        : "Stopped";
   // Stable until the leads, the turn or the author change, so the reply row
   // (which reads the live log itself) is the only thing a streamed chunk renders.
   const reply = useMemo<ReplySource | null>(
@@ -3117,7 +3147,7 @@ export default function App() {
         ...activeSummary,
         unseen: false,
         runningAgents: running.length > 0 || shellThread === activeId ? 1 : 0,
-        pendingQuestions: thread?.questions?.length ?? activeSummary.pendingQuestions,
+        pendingQuestions: thread ? pendingQuestions : activeSummary.pendingQuestions,
       })
     : null;
   const crumbStatus = liveStatus === "idle" || liveStatus === "new" ? null : liveStatus;
@@ -3431,6 +3461,10 @@ export default function App() {
       if (t) goToThread(t);
     },
   });
+  // Escape closes the topmost of these confirmations and sheets.
+  useEscapeClose(() => setDeleteTarget(null), !!deleteTarget);
+  useEscapeClose(() => !cleaningThreads && setCleanupConfirm(false), cleanupConfirm);
+  useEscapeClose(() => setReleaseNotes(null), !!releaseNotes);
   // Web UI only: the open thread or project lives in the URL (lib/route.ts).
   useUrlRoute({
     enabled: !inDesktopShell(),
@@ -3923,7 +3957,7 @@ export default function App() {
     !!lastMsg &&
     lastMsg.author !== "user" &&
     lastMsg.author !== "shell" &&
-    (thread?.questions?.length ?? 0) === 0;
+    pendingQuestions === 0;
   const asideCollapsed = !layout.asideOpen || setupMode;
   // Solo threads tint the chat-head tabs with their harness color, like the
   // thread card and the graph node do.
@@ -4120,7 +4154,8 @@ export default function App() {
               className="stream"
               ref={streamRef}
               onScroll={(e) => {
-                setAtBottom(nearBottom(e.currentTarget));
+                pinnedRef.current = nearBottom(e.currentTarget);
+                setAtBottom(pinnedRef.current);
                 setAtTop(e.currentTarget.scrollTop > TOP_SHOW);
               }}
             >
@@ -4226,6 +4261,7 @@ export default function App() {
                       streaming={i === turnBlocks.length - 1 ? reply : null}
                       onStreamGrow={followStream}
                       changes={i === turnBlocks.length - 1 && running.length === 0 && !busy}
+                      outcome={i === turnBlocks.length - 1 ? turnOutcome : undefined}
                     />
                   ))}
                 </MessageImageContext.Provider>

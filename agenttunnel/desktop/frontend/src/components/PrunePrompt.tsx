@@ -1,4 +1,5 @@
 import type { WorktreeRow } from "../lib/worktrees";
+import { useEscapeClose } from "../lib/escape";
 
 /**
  * PrunePrompt is the once-a-day question: the background scan found checkouts
@@ -24,6 +25,7 @@ export function PrunePrompt({
   onReview: () => void;
   onDismiss: () => void;
 }) {
+  useEscapeClose(onDismiss);
   return (
     <div className="overlay" onClick={onDismiss}>
       <section

@@ -400,6 +400,51 @@ func TestRestartClosesQuestionsLeftPending(t *testing.T) {
 	}
 }
 
+// An agent that was running when the daemon went down died with it: the
+// restart sweep ends it, so the turn is over instead of working forever, and
+// agents that already finished keep their status.
+func TestRestartCancelsAgentsLeftRunning(t *testing.T) {
+	ctx := context.Background()
+	store := domain.NewMemoryStore()
+
+	first := domain.NewEngine(store, nil)
+	first.Start(ctx)
+	for _, cmd := range []contracts.Command{
+		{ID: "c1", Type: contracts.CmdThreadCreate, ThreadID: "t1"},
+		{ID: "m1", Type: contracts.CmdTurnStart, ThreadID: "t1", Text: "go"},
+		{ID: "d1", Type: contracts.CmdTaskDispatch, ThreadID: "t1", Dispatch: &contracts.DispatchTask{AgentID: "lead", Name: "orchestrator", Role: contracts.RoleOrchestrator, Task: "go"}},
+		{ID: "d2", Type: contracts.CmdTaskDispatch, ThreadID: "t1", Dispatch: &contracts.DispatchTask{AgentID: "done", Name: "helper", Role: contracts.RoleExecutor, Task: "x"}},
+		{ID: "s1", Type: contracts.CmdAgentStatusSet, ThreadID: "t1", Status: &contracts.AgentStatusChanged{AgentID: "lead", Status: contracts.AgentRunning}},
+		{ID: "s2", Type: contracts.CmdAgentStatusSet, ThreadID: "t1", Status: &contracts.AgentStatusChanged{AgentID: "done", Status: contracts.AgentSucceeded}},
+	} {
+		if err := first.Dispatch(ctx, cmd); err != nil {
+			t.Fatalf("dispatch %s: %v", cmd.Type, err)
+		}
+	}
+	first.Close()
+
+	second := domain.NewEngine(store, nil)
+	second.Start(ctx)
+	t.Cleanup(second.Close)
+	disp := NewDispatcher(DispatcherDeps{Engine: second})
+	if err := disp.CancelStaleAgents(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st, err := second.State(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := st.Agents["lead"]; a.Status != contracts.AgentCancelled {
+		t.Fatalf("lead after restart = %s, want cancelled", a.Status)
+	}
+	if a := st.Agents["done"]; a.Status != contracts.AgentSucceeded {
+		t.Fatalf("finished agent after restart = %s, want succeeded", a.Status)
+	}
+	if st.LastTurnEndedAt().IsZero() {
+		t.Fatal("the turn the restart ended was never stamped ended")
+	}
+}
+
 // Bad requests are refused before the caller is held.
 func TestAskRefusesBadRequests(t *testing.T) {
 	f := newAskFixture(t)

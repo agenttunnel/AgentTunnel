@@ -38,6 +38,9 @@ export function useDrawers(shellRef: RefObject<HTMLElement | null>, closeKey: un
     want === "sidebar" && sidebarDrawer ? "sidebar" : want === "aside" && asideDrawer ? "aside" : null;
 
   const close = useCallback(() => setWant(null), []);
+  // Opens a drawer from code (a panel opened by key or palette). A side that
+  // docks is not a drawer, so this is a no-op there.
+  const reveal = useCallback((side: DrawerSide) => setWant(side), []);
   const toggle = useCallback((side: DrawerSide) => {
     if (document.activeElement instanceof HTMLElement) opener.current = document.activeElement;
     setWant((cur) => (cur === side ? null : side));
@@ -77,5 +80,5 @@ export function useDrawers(shellRef: RefObject<HTMLElement | null>, closeKey: un
     (asideDrawer ? " as-drawer" : "") +
     (open ? ` drawer-open drawer-open-${open}` : "");
 
-  return { sidebarDrawer, asideDrawer, open, toggle, close, className };
+  return { sidebarDrawer, asideDrawer, open, toggle, close, reveal, className };
 }

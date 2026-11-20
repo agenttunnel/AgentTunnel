@@ -276,6 +276,7 @@ export const TurnBlock = memo(function TurnBlock({
   streaming,
   onStreamGrow,
   changes,
+  outcome,
 }: {
   turn: Message[];
   index: Map<string, number>;
@@ -285,6 +286,8 @@ export const TurnBlock = memo(function TurnBlock({
   onStreamGrow: () => void;
   /** Show what this turn changed: the last turn, once it has finished. */
   changes?: boolean;
+  /** How a turn that ended without a reply ended ("Stopped", "Failed — …"). */
+  outcome?: string;
 }) {
   const position = (m: Message) => {
     const i = index.get(m.id) ?? 0;
@@ -332,6 +335,11 @@ export const TurnBlock = memo(function TurnBlock({
         ))}
       {expanded && response.map((m) => <MessageBlock key={m.id} m={m} {...position(m)} />)}
       {expanded && streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
+      {outcome && (
+        <div className="turn-outcome" role="status">
+          {outcome}
+        </div>
+      )}
       {expanded && summary}
     </section>
   );

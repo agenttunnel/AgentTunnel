@@ -106,10 +106,7 @@
   .app.as-drawer:not(.compact) .drawer-toggle-right {
     display: inline-flex;
   }
-  /* Secondary chips leave the titlebar before anything overlaps. */
-  .daemon-badge {
-    display: none;
-  }
+  /* The titlebar keeps only the update chip and the connection dot on a phone. */
   .update-chip {
     max-width: 30vw;
     min-height: 30px;
@@ -177,13 +174,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .title-meta {
-    flex: 1;
-    justify-content: flex-end;
-  }
-  .conn > span:not(.led):not(.conn-retry) {
-    display: none;
   }
   .update-chip {
     max-width: 38vw;

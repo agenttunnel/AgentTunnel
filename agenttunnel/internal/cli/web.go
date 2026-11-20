@@ -138,6 +138,19 @@ func startWeb(ctx context.Context, env *Env, dir string) (*webServer, error) {
 	return startWebOwned(ctx, env, resolved, lock)
 }
 
+// webPreferredAddr is the loopback address the web UI tries first. A browser
+// keys notification permission to the origin, port included, so a stable port
+// keeps the permission the user granted across runs. Any other free port is
+// the fallback.
+const webPreferredAddr = "127.0.0.1:7878"
+
+func webListen() (net.Listener, error) {
+	if ln, err := net.Listen("tcp", webPreferredAddr); err == nil {
+		return ln, nil
+	}
+	return net.Listen("tcp", "127.0.0.1:0")
+}
+
 // startWebOwned boots an in-process daemon and serves the web UI and the
 // daemon's own routes from one loopback listener, so the browser's WebSocket
 // and uploads stay same-origin. The lock is released as soon as discovery
@@ -170,7 +183,7 @@ func startWebOwned(ctx context.Context, env *Env, resolved string, lock *daemonl
 		return nil, err
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := webListen()
 	if err != nil {
 		cancel()
 		lock.Release()
@@ -254,7 +267,7 @@ func startWebOwned(ctx context.Context, env *Env, resolved string, lock *daemonl
 func startWebAttached(ctx context.Context, info discovery.Info, resolved string) (*webServer, error) {
 	webCtx, cancel := context.WithCancel(ctx)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := webListen()
 	if err != nil {
 		cancel()
 		return nil, err

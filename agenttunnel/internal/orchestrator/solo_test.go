@@ -116,6 +116,38 @@ func TestSoloTurnRunsOneAgent(t *testing.T) {
 	}
 }
 
+// TestSoloReplyKeepsBlocksApartAcrossToolCalls: Claude sends each text block
+// whole, so the narration before a tool call and the answer after it must not
+// run together ("first.Done."), while streamed deltas of one block still join
+// as-is.
+func TestSoloReplyKeepsBlocksApartAcrossToolCalls(t *testing.T) {
+	r, eng, ctx := newHarness(t, `printf '%s\n' \
+'{"type":"assistant","message":{"content":[{"type":"text","text":"Let me look first."}]}}' \
+'{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}' \
+'{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a.txt"}]}}' \
+'{"type":"text","text":"Done, "}' \
+'{"type":"text","text":"all good."}'`)
+	setSoloRuntime(t, eng, ctx, contracts.LeadRuntime{Harness: contracts.HarnessOpenCode})
+	beginTurn(t, eng, ctx, "turn", "look")
+
+	if err := New(r).RunTurn(ctx, "t1", "look"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+	state, err := eng.State(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	for _, m := range state.Messages {
+		if m.Author == "solo" {
+			got = m.Text
+		}
+	}
+	if want := "Let me look first.\n\nDone, all good."; got != want {
+		t.Fatalf("solo reply = %q, want %q", got, want)
+	}
+}
+
 // TestSoloPromptIsPlain pins the solo prompt's shape: history, the request,
 // and nothing from the orchestrator protocol — no AT_TOOL, no roster, no peer
 // section — and no AT_* environment at all.

@@ -2,6 +2,7 @@
 // re-renders this sheet only.
 
 import { memo, useState } from "react";
+import { useEscapeClose } from "../lib/escape";
 
 export const RenameDialog = memo(function RenameDialog({
   initial,
@@ -18,6 +19,7 @@ export const RenameDialog = memo(function RenameDialog({
     const title = renameValue.trim();
     if (title) onRename(title);
   };
+  useEscapeClose(onCancel);
   return (
     <div className="overlay" onClick={onCancel}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>

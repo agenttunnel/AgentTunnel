@@ -447,7 +447,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		return "", err
 	}
 
-	var text []string
+	var text replyText
 	emitted := false
 	for ev := range events {
 		emitted = true
@@ -461,11 +461,12 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 			if frame, ok := ParseToolLine(ev.Text); ok {
 				if call, ok := frameCall(frame); ok {
 					r.postAgentCall(threadID, t.AgentID, call)
+					text.toolCall()
 					continue
 				}
 			}
-			text = append(text, ev.Text)
 		}
+		text.add(ev)
 	}
 	werr := adapter.Wait(ctx)
 	r.auditLog("agent.exit", map[string]any{
@@ -495,7 +496,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	// call; everything else stays the agent's findings. Text deltas are
 	// arbitrary chunks, so a printed command can straddle two events — join
 	// without separators, the real newlines are already in the deltas.
-	raw := strings.Join(text, "")
+	raw := text.String()
 	var findings []string
 	for _, line := range strings.Split(raw, "\n") {
 		if call, ok := toolbox.ParseCommandLine(line); ok && routedPrintedKind(call.Kind) {
@@ -625,10 +626,11 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		return "", nil, err
 	}
 
-	var text []string
+	var text replyText
 	var calls []ToolCall
 	for ev := range events {
 		if call, ok := ParseToolLine(ev.Text); ok {
+			text.toolCall()
 			// A protocol action frame is delivered through the same inbox
 			// drain as a printed command line; only dispatch frames are
 			// minted directly into the pass's task set here.
@@ -645,9 +647,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
 		}
-		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
-			text = append(text, ev.Text)
-		}
+		text.add(ev)
 	}
 	werr := adapter.Wait(ctx)
 	r.auditLog("agent.exit", map[string]any{
@@ -661,7 +661,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 	// call that was both executed and printed.
 	// Text deltas are arbitrary chunks, so a command can straddle two events.
 	// Join without adding separators; real newlines are already in the deltas.
-	raw := strings.Join(text, "")
+	raw := text.String()
 	var kept []string
 	for _, line := range strings.Split(raw, "\n") {
 		if call, ok := toolbox.ParseCommandLine(line); ok {
@@ -729,7 +729,7 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 		return "", err
 	}
 
-	var text []string
+	var text replyText
 	emitted := false
 	for ev := range events {
 		emitted = true
@@ -737,9 +737,7 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
 		}
-		if ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "" {
-			text = append(text, ev.Text)
-		}
+		text.add(ev)
 	}
 	werr := adapter.Wait(ctx)
 	r.auditLog("agent.exit", map[string]any{
@@ -757,10 +755,36 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 		return "", errors.New(msg)
 	}
 
-	// Text deltas are arbitrary chunks, so join without separators; real
-	// newlines are already in the deltas.
-	return strings.TrimSpace(strings.Join(text, "")), werr
+	return strings.TrimSpace(text.String()), werr
 }
+
+// replyText collects an agent's prose. Text deltas are arbitrary chunks of one
+// block, so back-to-back chunks join without separators (real newlines are
+// already in them). A tool call ends the block: the text after it is a new
+// block (Claude sends each one whole) and starts a new paragraph instead of
+// running into the last sentence.
+type replyText struct {
+	parts []string
+	gap   bool
+}
+
+func (t *replyText) add(ev providers.Event) {
+	switch {
+	case ev.Kind == contracts.LogTool:
+		t.toolCall()
+	case ev.Kind == contracts.LogText && strings.TrimSpace(ev.Text) != "":
+		if t.gap {
+			t.parts = append(t.parts, "\n\n")
+		}
+		t.gap = false
+		t.parts = append(t.parts, ev.Text)
+	}
+}
+
+// toolCall ends the current text block.
+func (t *replyText) toolCall() { t.gap = len(t.parts) > 0 }
+
+func (t *replyText) String() string { return strings.Join(t.parts, "") }
 
 // auditLog records one action for post-hoc debugging.
 func (r *Runner) auditLog(kind string, fields map[string]any) {
