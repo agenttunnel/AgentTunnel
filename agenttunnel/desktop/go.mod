@@ -12,6 +12,7 @@ replace github.com/agenttunnel/agenttunnel-go => ../
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
+	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
@@ -31,6 +32,7 @@ require (
 	go.mau.fi/whatsmeow v0.0.0-20261110152934-c88388f983b4 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
+	golang.org/x/image v0.41.0 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
