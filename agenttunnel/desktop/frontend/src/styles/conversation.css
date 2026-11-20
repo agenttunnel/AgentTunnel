@@ -106,6 +106,15 @@
   color: var(--text);
 }
 
+/* --- a turn that ended without a reply ------------------------------------ */
+.turn-outcome {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--dim);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 /* --- changes this turn ---------------------------------------------------- */
 .turn-changes {
   margin: 0;

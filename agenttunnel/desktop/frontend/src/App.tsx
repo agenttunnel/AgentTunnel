@@ -177,6 +177,7 @@ type Agent = {
   task: string;
   dependsOn?: string[];
   status: string;
+  reason?: string;
   pipelineId?: string;
   startedAt?: string;
   endedAt?: string;
@@ -2060,6 +2061,25 @@ export default function App() {
     lastTurn && !lastTurn.some((m) => m.author === "orchestrator" || m.author === "solo")
       ? lastTurn[0].at
       : undefined;
+  // A last turn that ended with no reply says how it ended, so a Stop or a
+  // failed harness never leaves the prompt with nothing under it.
+  const endedLead =
+    replySince && running.length === 0
+      ? agents.find(
+          (a) =>
+            !a.parentAgentId &&
+            (a.status === "cancelled" || a.status === "failed") &&
+            !!a.endedAt &&
+            Date.parse(a.endedAt) >= Date.parse(replySince),
+        )
+      : undefined;
+  const turnOutcome = !endedLead
+    ? undefined
+    : endedLead.status === "failed"
+      ? `Failed${endedLead.reason ? ` — ${endedLead.reason}` : ""}`
+      : endedLead.reason === "daemon restarted"
+        ? "Stopped — the daemon restarted"
+        : "Stopped";
   // Stable until the leads, the turn or the author change, so the reply row
   // (which reads the live log itself) is the only thing a streamed chunk renders.
   const reply = useMemo<ReplySource | null>(
@@ -4234,6 +4254,7 @@ export default function App() {
                       streaming={i === turnBlocks.length - 1 ? reply : null}
                       onStreamGrow={followStream}
                       changes={i === turnBlocks.length - 1 && running.length === 0 && !busy}
+                      outcome={i === turnBlocks.length - 1 ? turnOutcome : undefined}
                     />
                   ))}
                 </MessageImageContext.Provider>
