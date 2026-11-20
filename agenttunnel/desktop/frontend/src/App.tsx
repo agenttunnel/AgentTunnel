@@ -885,6 +885,10 @@ export default function App() {
   // Only the edge is stored, so scrolling re-renders when the user crosses it.
   const [atBottom, setAtBottom] = useState(true);
   const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  // Where the user was before the stream last grew: measured after a tall
+  // block (a question card) lands, the distance to the bottom says the user
+  // scrolled away when they did not.
+  const pinnedRef = useRef(true);
   // Jump-to-top pill shows once the stream is scrolled this far down.
   const [atTop, setAtTop] = useState(false);
 
@@ -893,8 +897,9 @@ export default function App() {
     if (!el) return;
     // Follow the stream only when the user is near the bottom; reading history
     // wins over jumping.
-    const near = nearBottom(el);
+    const near = pinnedRef.current || nearBottom(el);
     if (near) el.scrollTop = el.scrollHeight;
+    pinnedRef.current = near;
     setAtBottom(near);
   }, [
     thread?.messages?.length,
@@ -906,8 +911,9 @@ export default function App() {
   const followStream = useCallback(() => {
     const el = streamRef.current;
     if (!el) return;
-    const near = nearBottom(el);
+    const near = pinnedRef.current || nearBottom(el);
     if (near) el.scrollTop = el.scrollHeight;
+    pinnedRef.current = near;
     setAtBottom(near);
   }, []);
 
@@ -4148,7 +4154,8 @@ export default function App() {
               className="stream"
               ref={streamRef}
               onScroll={(e) => {
-                setAtBottom(nearBottom(e.currentTarget));
+                pinnedRef.current = nearBottom(e.currentTarget);
+                setAtBottom(pinnedRef.current);
                 setAtTop(e.currentTarget.scrollTop > TOP_SHOW);
               }}
             >
