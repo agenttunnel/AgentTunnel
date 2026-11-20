@@ -122,13 +122,17 @@ shows a PARENT column; `attach` names the parent in its header.
 
 ## Desktop
 
-- `--desktop [dir]`: start the desktop app. With a directory, it opens that
+- `desktop [dir]`: start the desktop app. With a directory, it opens that
   project: a registered project (matched by its symlink-resolved path) is reused,
   and an unknown directory is registered first. A running app is focused over the
   daemon; a closed one boots onto the project. Relative paths resolve, and a
   non-directory is an error. Like `open`, it needs `agenttunnel-desktop` on PATH
   and reports how to install it if missing.
 - `open <thread>`: show a thread in the desktop app, the same way.
+- `web [dir]`: serve the web UI on localhost and open it in the browser. It
+  attaches to a daemon that is already running, or starts one it owns. It takes
+  no `--daemon`. `--web` and `--desktop` are retired; the error names the
+  command to use.
 
 ## Client
 

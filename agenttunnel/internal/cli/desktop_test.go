@@ -171,10 +171,13 @@ func TestDesktopFlagDirectoryRegistersOnceAcrossSpellings(t *testing.T) {
 	}
 }
 
-func TestDesktopFlagDispatchesThroughRun(t *testing.T) {
+func TestDesktopCommandDispatchesThroughRun(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	var out, errOut bytes.Buffer
-	if code := Run([]string{"--desktop", "-x"}, "dev", &out, &errOut); code != 2 {
-		t.Fatalf("Run(--desktop -x) = %d, want 2; stderr %q", code, errOut.String())
+	if code := Run([]string{"desktop", "-x"}, "dev", &out, &errOut); code != 2 {
+		t.Fatalf("Run(desktop -x) = %d, want 2; stderr %q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "usage: agenttunnel desktop [dir]") {
+		t.Fatalf("stderr = %q, want the new usage line", errOut.String())
 	}
 }

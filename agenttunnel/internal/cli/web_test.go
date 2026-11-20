@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -164,44 +163,19 @@ func wsProjectList(ctx context.Context, ws *websocket.Conn) error {
 	}
 }
 
-func TestParseGlobalWebFlagForms(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		web  string
-		json bool
-		rest []string
-	}{
-		{"bare", []string{"--web"}, ".", false, nil},
-		{"bare with dir", []string{"--web", "."}, ".", false, nil},
-		{"equals", []string{"--web=x"}, "x", false, nil},
-		{"equals empty", []string{"--web="}, ".", false, nil},
-		{"bare before flag", []string{"--web", "--json"}, ".", true, nil},
-		{"dir then command", []string{"--web", ".", "ps"}, ".", false, []string{"ps"}},
-		{"command wins over path", []string{"--web", "ps"}, ".", false, []string{"ps"}},
-	}
-	for _, tc := range cases {
-		env := &Env{}
-		rest, help, err := parseGlobal(tc.args, env)
-		if err != nil || help {
-			t.Fatalf("%s: err=%v help=%v", tc.name, err, help)
+func TestRetiredModeFlagsNameTheCommand(t *testing.T) {
+	for flag, want := range map[string]string{"--web": "web", "--desktop": "desktop"} {
+		var out, errOut bytes.Buffer
+		if code := Run([]string{flag}, "dev", &out, &errOut); code != 2 {
+			t.Fatalf("Run(%s) = %d, want 2", flag, code)
 		}
-		if env.Web != tc.web || env.JSON != tc.json || !reflect.DeepEqual(rest, tc.rest) {
-			t.Fatalf("%s: web=%q json=%v rest=%v, want %q %v %v", tc.name, env.Web, env.JSON, rest, tc.web, tc.json, tc.rest)
+		if msg := "is now `agenttunnel " + want + "`"; !strings.Contains(errOut.String(), msg) {
+			t.Fatalf("Run(%s) stderr = %q, want it to contain %q", flag, errOut.String(), msg)
 		}
-	}
-
-	// The global flags help block documents the new spelling.
-	var out bytes.Buffer
-	if code := Run([]string{"--help"}, "dev", &out, &out); code != 0 {
-		t.Fatalf("Run(--help) = %d", code)
-	}
-	if !strings.Contains(out.String(), "--web <dir>") {
-		t.Fatalf("help is missing the --web line:\n%s", out.String())
 	}
 }
 
-func TestRunWebFlagWithCommandIsUsageError(t *testing.T) {
+func TestWebCommandUsageErrors(t *testing.T) {
 	opened := stubOpenBrowser(t)
 	state := t.TempDir()
 
@@ -211,20 +185,14 @@ func TestRunWebFlagWithCommandIsUsageError(t *testing.T) {
 		return code, errOut.String()
 	}
 
-	code, stderr := run("--web", "--home-dir", state, ".", "ps")
-	if code != 2 || !strings.Contains(stderr, "takes no command") {
-		t.Fatalf("Run(--web . ps) = %d, stderr %q", code, stderr)
+	// A second directory or a command after it is a usage error, not a command.
+	code, stderr := run("--home-dir", state, "web", ".", "ps")
+	if code != 2 || !strings.Contains(stderr, "usage: agenttunnel web [dir]") {
+		t.Fatalf("Run(web . ps) = %d, stderr %q", code, stderr)
 	}
-	// A directory landing after other flags is a flag-ordering mistake, not a
-	// command: the error must name the --web spelling instead of quoting the
-	// directory as if it were one.
-	code, stderr = run("--web", "--home-dir", state, ".")
-	if code != 2 || !strings.Contains(stderr, "takes no command") || !strings.Contains(stderr, "--web=<dir>") {
-		t.Fatalf("Run(--web --home-dir X .) = %d, stderr %q", code, stderr)
-	}
-	code, stderr = run("--web", "--home-dir", state, "--daemon", "ws://127.0.0.1:1/ws")
+	code, stderr = run("--home-dir", state, "web", "--daemon", "ws://127.0.0.1:1/ws")
 	if code != 2 || !strings.Contains(stderr, "--daemon") {
-		t.Fatalf("Run(--web --daemon …) = %d, stderr %q", code, stderr)
+		t.Fatalf("Run(web --daemon …) = %d, stderr %q", code, stderr)
 	}
 	if len(*opened) != 0 {
 		t.Fatalf("a web server booted on a usage error: %v", *opened)

@@ -39,13 +39,9 @@ type Env struct {
 	JSON      bool
 	DaemonURL string
 	HomeDir   string
-	// Web is the project directory `--web <dir>` was given (empty means the
-	// flag was absent; an empty value normalizes to "."). A non-empty Web turns
-	// the whole invocation into web mode.
-	Web     string
-	Out     io.Writer
-	Err     io.Writer
-	Version string
+	Out       io.Writer
+	Err       io.Writer
+	Version   string
 }
 
 // StateDir is the daemon's state directory: --home-dir when given, else the
@@ -145,17 +141,6 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 		}
 		return 0
 	}
-	// `--web <dir>` is a mode, not a command: it takes no command alongside
-	// and no explicit daemon, and never falls through to dispatch.
-	if env.Web != "" {
-		if env.DaemonURL != "" {
-			return exitCode(env, usageError("--web cannot be combined with --daemon"))
-		}
-		if len(rest) > 0 {
-			return exitCode(env, usageError("agenttunnel --web takes no command (saw %q); --web takes its directory directly after the flag, or as --web=<dir>", rest[0]))
-		}
-		return exitCode(env, runWeb(context.Background(), env, env.Web))
-	}
 	if len(rest) == 0 {
 		printHelp(env.Out, nil)
 		return 2
@@ -163,6 +148,12 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 	if rest[0] == "help" {
 		printCommandHelp(env.Out, rest[1:])
 		return 0
+	}
+	// The mode flags became commands. Name the new spelling rather than
+	// reporting an unknown command.
+	if to, ok := renamedFlags[rest[0]]; ok {
+		fmt.Fprintf(env.Err, "agenttunnel: %s is now `agenttunnel %s`\n", rest[0], to)
+		return 2
 	}
 
 	cmd, ok := findCommand(registry, rest[0])
@@ -252,20 +243,6 @@ func parseGlobal(args []string, env *Env) (rest []string, help bool, err error) 
 			}
 			i++
 			env.HomeDir = args[i]
-		case strings.HasPrefix(arg, "--web="):
-			env.Web = strings.TrimPrefix(arg, "--web=")
-			if env.Web == "" {
-				env.Web = "."
-			}
-		case arg == "--web":
-			env.Web = "."
-			// The next arg is the directory only when it is neither a flag
-			// nor a registered command: `agenttunnel --web ps` runs ps rather
-			// than serving an unlikely project named "ps".
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && !isCommandName(args[i+1]) {
-				i++
-				env.Web = args[i]
-			}
 		default:
 			rest = append(rest, arg)
 		}
@@ -273,14 +250,10 @@ func parseGlobal(args []string, env *Env) (rest []string, help bool, err error) 
 	return rest, help, nil
 }
 
-// isCommandName reports whether name is a registered top-level command.
-func isCommandName(name string) bool {
-	for _, c := range registry {
-		if c.Name == name {
-			return true
-		}
-	}
-	return false
+// renamedFlags maps the retired mode flags to the commands that replace them.
+var renamedFlags = map[string]string{
+	"--web":     "web",
+	"--desktop": "desktop",
 }
 
 // printHelp writes the top-level help, or a group's help when cmd is set.
@@ -309,7 +282,6 @@ func printHelp(w io.Writer, cmd *Command) {
 	fmt.Fprintln(w, "  --json                 Print machine-readable JSON")
 	fmt.Fprintln(w, "  --daemon <ws-url>      Talk to this daemon instead of <state>/daemon.json")
 	fmt.Fprintln(w, "  --home-dir <dir>       Daemon state directory (default ~/.agenttunnel)")
-	fmt.Fprintln(w, "  --web <dir>            Serve the AgentTunnel web UI on localhost (default dir .)")
 	fmt.Fprintln(w, "  -h, --help             Show this help")
 }
 

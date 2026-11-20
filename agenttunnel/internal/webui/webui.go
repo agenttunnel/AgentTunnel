@@ -1,5 +1,5 @@
 // Package webui serves the desktop frontend's built SPA from the daemon
-// process, so an HTTP-speaking client (the `agenttunnel --web` browser mode)
+// process, so an HTTP-speaking client (the `agenttunnel web` browser mode)
 // gets the same UI the Wails shell embeds. The dist/ tree is produced by the
 // frontend build and copied in by desktop/build.sh; a committed placeholder
 // index.html keeps `go:embed` valid on a fresh checkout.
