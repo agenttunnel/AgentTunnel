@@ -1,10 +1,7 @@
 import {
-  createContext,
   lazy,
-  memo,
   Suspense,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -12,6 +9,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import { Window } from "@wailsio/runtime";
 import {
@@ -22,7 +20,6 @@ import {
   Rpc,
   setKeepRunning as emitKeepRunning,
   type Conn,
-  type ImageRef,
 } from "./lib/rpc";
 import {
   addUsage,
@@ -47,6 +44,8 @@ import {
   clampWidth,
 } from "./components/PanelSplit";
 import { AgentGraph } from "./components/AgentGraph";
+import { DrawerToggle } from "./components/DrawerToggle";
+import { useDrawers } from "./lib/useDrawers";
 import { PeerChat } from "./components/PeerChat";
 import { useHoldToTalk } from "./lib/dictation";
 import { KanbanBoard } from "./components/KanbanBoard";
@@ -67,7 +66,6 @@ import { StatsPage } from "./components/StatsPage";
 import { WorktreesPage } from "./components/WorktreesPage";
 import { PrunePrompt } from "./components/PrunePrompt";
 import { pruneReady, worktreeRows, type WorktreeInfo, type WorktreeRow } from "./lib/worktrees";
-import { RemoteSection } from "./components/RemoteSection";
 import { DocLinkContext, Markdown } from "./components/Markdown";
 import type { MarkdownDocLike } from "./components/MarkdownViewer";
 import { docPathFromHref } from "./lib/markdownLinks";
@@ -76,15 +74,26 @@ const MarkdownViewer = lazy(() => import("./components/MarkdownViewer"));
 import { QuestionCard } from "./components/QuestionCard";
 import type { AgentQuestion } from "./lib/questions";
 import { AgentDetail } from "./components/AgentDetail";
+import { AgentTree, type DetailTab } from "./components/AgentTree";
+import { TeamProgress } from "./components/TeamProgress";
 import { ThreadInfoDialog } from "./components/ThreadInfoDialog";
 import { CheatSheet, showCheatSheetOnLaunch } from "./components/CheatSheet";
 import { FolderBrowser } from "./components/FolderBrowser";
 import { useAttention } from "./lib/attention";
-import { parseRoute, useUrlRoute, type Route } from "./lib/route";
+import { parseRoute, useUrlRoute, type Route, type RouteTab } from "./lib/route";
 import { loadVimKeys, saveVimKeys, useVimKeys } from "./lib/vimKeys";
 import { AppUpdate } from "./components/UpdateChip";
 import { HarnessUpdates } from "./components/HarnessUpdateChip";
-import { LimitsMeter } from "./components/LimitsMeter";
+import { SidebarFooter } from "./components/SidebarFooter";
+import { NextStep } from "./components/NextStep";
+import { EmptyChat } from "./components/EmptyChat";
+import { FirstRunTour } from "./components/FirstRunTour";
+import { Breadcrumb, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
+import { ALT, centerTabFromKey, centerTabHint, isPaletteKey, isTyping } from "./lib/navKeys";
+import { threadStatus } from "./lib/threadStatus";
+import { recentIds, recordRecent } from "./lib/recent";
+import type { FileMatch } from "./lib/mentions";
+import { useScrollMemory } from "./lib/scrollMemory";
 import { harnessTint, type MailboxMessage } from "./lib/graph";
 import { getPref, setPref } from "./lib/prefs";
 import { applyTheme, loadTheme } from "./lib/themes";
@@ -100,13 +109,22 @@ import {
   groupItems,
   projectItems,
   threadItems,
+  withRecent,
   type PaletteItem,
   type PaletteSection,
 } from "./lib/palette";
 import type { BtwEntry } from "./components/BtwPanel";
 import { SuperView, isAllThreadsShortcut } from "./components/SuperView";
 import { TERMINAL } from "./lib/graphEvents";
-import { ThreadImage } from "./components/ThreadImage";
+import {
+  groupTurns,
+  MessageActionsContext,
+  MessageImageContext,
+  TurnBlock,
+  type Message,
+  type MessageActions,
+  type MessageImageConn,
+} from "./components/Transcript";
 import { MasterChat } from "./components/MasterChat";
 import type { ToolCall } from "./lib/toolCalls";
 import { Composer } from "./components/Composer";
@@ -121,9 +139,10 @@ import {
   setDrafts,
   setPastes,
   setRecall,
+  unqueue,
 } from "./lib/composerStore";
 import { useLatestCallback } from "./lib/store";
-import { LiveLog, StreamingReply } from "./components/LiveLog";
+import { TurnActivity } from "./components/TurnActivity";
 import { InheritedPanel } from "./components/InheritedPanel";
 import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
 import { RenameDialog } from "./components/RenameDialog";
@@ -162,20 +181,6 @@ type Agent = {
   endedAt?: string;
 };
 type LogEntry = { agentId: string; kind: string; text: string; at: string; tool?: ToolCall };
-type Message = {
-  id: string;
-  author: string;
-  text: string;
-  at: string;
-  images?: ImageRef[];
-  /** Set on a steering message once a pass has consumed it. */
-  consumed?: boolean;
-};
-/** A shell block ends with its status line: `exit N`, `stopped`, or `timed out after …`. */
-const SHELL_FAILED = /\n(?:exit [1-9]\d*|stopped|timed out after .+?)(?: · .*)?$/;
-function isFailedBlock(m: Message): boolean {
-  return m.author === "shell" && SHELL_FAILED.test(m.text.trimEnd());
-}
 /** submitted comments were already handed to the team in a review turn. */
 type ReviewComment = {
   id: string;
@@ -282,6 +287,12 @@ export type Project = { id: string; name: string; path: string; threads: number 
 
 /** The top-level pages shown when no project is open. */
 type HomePage = "projects" | "orchestrator" | "worktrees" | "stats";
+const HOME_LABEL: Record<HomePage, string> = {
+  projects: "Projects",
+  orchestrator: "Orchestrator",
+  worktrees: "Worktrees",
+  stats: "Stats",
+};
 
 type DiffLine = { old?: number; new?: number; kind: string; text: string };
 type DiffFile = {
@@ -354,6 +365,55 @@ const ASIDE_META: Record<AsideTabId, { label: string; key: string }> = {
   models: { label: "Models", key: "L" },
   council: { label: "Council", key: "O" },
 };
+/** Environment-level pages, left of the open projects in the tab strip. "all"
+ * is the all-threads overlay rather than a page. */
+const ENV_PAGES: { page: HomePage | "all"; label: string; title: string; icon: ReactNode }[] = [
+  {
+    page: "projects",
+    label: "Projects",
+    title: "All projects",
+    icon: (
+      <>
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </>
+    ),
+  },
+  {
+    page: "orchestrator",
+    label: "Orchestrator",
+    title: "Master orchestrator: work across projects",
+    icon: <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+  },
+  {
+    page: "worktrees",
+    label: "Worktrees",
+    title: "Every project's worktrees",
+    icon: (
+      <>
+        <line x1="6" y1="3" x2="6" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </>
+    ),
+  },
+  {
+    page: "stats",
+    label: "Stats",
+    title: "Harness stats across all projects",
+    icon: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
+  },
+  {
+    page: "all",
+    label: "All threads",
+    title: `All threads across projects (${ALT}Tab)`,
+    icon: <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />,
+  },
+];
+
 /** How the project's threads are laid out: the card list or the status board. */
 type ThreadView = "list" | "board";
 function loadThreadView(): ThreadView {
@@ -465,263 +525,6 @@ function loadOpenProjects(): string[] {
   return [];
 }
 
-/** Turns a flat message list into turns: each user message opens one block. */
-function groupTurns(messages: Message[]): Message[][] {
-  const turns: Message[][] = [];
-  for (const m of messages) {
-    if (m.author === "user" || turns.length === 0) turns.push([m]);
-    else turns[turns.length - 1].push(m);
-  }
-  return turns;
-}
-
-/** Per-message actions App supplies through a context, so a memoized message
- * row never re-renders because a handler's identity changed. `copyText` writes
- * to the clipboard and resolves whether the write landed; `forkFromMessage`
- * branches the thread off one message; `scrollToMessage` scrolls to the next
- * (1) or previous (-1) message. */
-type MessageActions = {
-  copyText: (text: string) => Promise<boolean>;
-  forkFromMessage: (messageId: string) => void;
-  scrollToMessage: (messageId: string, dir: -1 | 1) => void;
-};
-const MessageActionsContext = createContext<MessageActions | null>(null);
-
-/** Connection details a transcript message needs to fetch its images over
- * HTTP: the daemon's base URL and token plus the thread the message sits in.
- * Provided through a context so memoized message rows never re-render from a
- * handler's identity; null renders no image section. */
-type MessageImageConn = { httpUrl: string; token: string; threadId: string };
-const MessageImageContext = createContext<MessageImageConn | null>(null);
-
-/** The git-branch glyph the fork button carries; inherits currentColor. */
-function BranchIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="11"
-      height="11"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <line x1="6" y1="3" x2="6" y2="15" />
-      <circle cx="18" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
-}
-
-/** The up/down glyph the message nav arrows carry; inherits currentColor. */
-function ChevronIcon({ up }: { up: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="11"
-      height="11"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {up ? <polyline points="6 15 12 9 18 15" /> : <polyline points="6 9 12 15 18 9" />}
-    </svg>
-  );
-}
-
-/** One chat message. Memoized on its message plus its nav edge flags:
- * refreshing a busy thread re-renders only the blocks whose own message (or
- * first/last position) changed, and the action handlers arrive via
- * MessageActionsContext so their identity is free. */
-const MessageBlock = memo(function MessageBlock({
-  m,
-  hasPrev,
-  hasNext,
-}: {
-  m: Message;
-  hasPrev: boolean;
-  hasNext: boolean;
-}) {
-  const actions = useContext(MessageActionsContext);
-  const imageConn = useContext(MessageImageContext);
-  // Copy feedback lives on the row: the button reports "Copied" or "Copy
-  // failed" for a moment, so a click always has a visible result.
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const copyTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
-  const copy = async () => {
-    const ok = (await actions?.copyText(m.text)) ?? false;
-    window.clearTimeout(copyTimer.current);
-    setCopyState(ok ? "copied" : "failed");
-    copyTimer.current = window.setTimeout(() => setCopyState("idle"), ok ? 1400 : 2500);
-  };
-  return (
-    <div
-      data-mid={m.id}
-      className={`msg ${m.author === "user" ? "user" : m.author === "steering" ? "steering" : m.author === "shell" ? "shell" : m.author === "status" ? "status" : ""}${m.author === "steering" && !m.consumed ? " pending" : ""}${isFailedBlock(m) ? " failed" : ""}`}
-    >
-      <div className="who">
-        <span className="role">
-          {m.author === "user"
-            ? "You"
-            : m.author === "steering"
-              ? m.consumed
-                ? "Steering"
-                : "Steering · queued"
-              : m.author === "system"
-                ? "System"
-                : m.author === "shell"
-                  ? "Shell"
-                  : m.author === "subthread"
-                    ? "Subthread"
-                    : m.author === "status"
-                      ? "Status"
-                      : m.author === "solo"
-                        ? "Solo"
-                        : "Orchestrator"}
-        </span>
-      </div>
-      <div className="msg-actions">
-        {hasPrev && (
-          <button
-            type="button"
-            className="msg-icon-btn"
-            onClick={() => actions?.scrollToMessage(m.id, -1)}
-            aria-label="Previous message"
-            title="Previous message"
-          >
-            <ChevronIcon up />
-          </button>
-        )}
-        {hasNext && (
-          <button
-            type="button"
-            className="msg-icon-btn"
-            onClick={() => actions?.scrollToMessage(m.id, 1)}
-            aria-label="Next message"
-            title="Next message"
-          >
-            <ChevronIcon up={false} />
-          </button>
-        )}
-        <button
-          type="button"
-          className={`msg-copy-btn${copyState === "idle" ? "" : ` ${copyState}`}`}
-          onClick={copy}
-          title={copyState === "failed" ? "Could not copy" : "Copy this block"}
-          aria-label="Copy this block"
-          aria-live="polite"
-        >
-          {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
-        </button>
-        <button
-          className="msg-icon-btn"
-          onClick={() => actions?.forkFromMessage(m.id)}
-          title="Branch from here — new thread with the transcript up to this message"
-          aria-label="Branch from here"
-        >
-          <BranchIcon />
-        </button>
-      </div>
-      <div className="body">
-        <Markdown text={m.text} />
-        {!!m.images?.length && imageConn && (
-          <div className="thread-images">
-            {m.images.map((img) => (
-              <ThreadImage
-                key={img.id}
-                httpUrl={imageConn.httpUrl}
-                token={imageConn.token}
-                threadId={imageConn.threadId}
-                image={img}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-});
-
-/** One turn: the user's prompt heads it, the team's response stacks under it.
- *  The response can be collapsed to a single summary row; collapsed state is
- *  per turn (keyed by the prompt message's instance), so streamed messages
- *  arriving in a collapsed turn never expand it. */
-const TurnBlock = memo(function TurnBlock({
-  turn,
-  index,
-  total,
-  streaming,
-  onStreamGrow,
-}: {
-  turn: Message[];
-  index: Map<string, number>;
-  total: number;
-  /** The reply being written into this turn; only the last turn gets one. */
-  streaming?: ReplySource | null;
-  onStreamGrow: () => void;
-}) {
-  const position = (m: Message) => {
-    const i = index.get(m.id) ?? 0;
-    return { hasPrev: i > 0, hasNext: i < total - 1 };
-  };
-  const [expanded, setExpanded] = useState(true);
-  // An opening block with no prompt (transcript that starts mid-run) has
-  // nothing to toggle: it renders flat, exactly as before.
-  if (turn[0].author !== "user") {
-    return (
-      <section className="turn">
-        {turn.map((m) => {
-          const { hasPrev, hasNext } = position(m);
-          return <MessageBlock key={m.id} m={m} hasPrev={hasPrev} hasNext={hasNext} />;
-        })}
-        {streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
-      </section>
-    );
-  }
-  const response = turn.slice(1);
-  return (
-    <section className="turn">
-      <MessageBlock m={turn[0]} {...position(turn[0])} />
-      {response.length > 0 &&
-        (expanded ? (
-          <button
-            type="button"
-            className="turn-toggle"
-            onClick={() => setExpanded(false)}
-            aria-expanded="true"
-            aria-label="Hide response"
-            title="Hide response"
-          >
-            ▾ Response
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="turn-hidden"
-            onClick={() => setExpanded(true)}
-            aria-expanded="false"
-            aria-label="Show response"
-            title="Show response"
-          >
-            ▸ Response hidden — {response.length} {response.length === 1 ? "message" : "messages"}
-          </button>
-        ))}
-      {expanded &&
-        response.map((m) => (
-          <MessageBlock key={m.id} m={m} {...position(m)} />
-        ))}
-      {expanded && streaming && <StreamingReply source={streaming} onGrow={onStreamGrow} />}
-    </section>
-  );
-});
-
 function loadAsideTabs(): AsideTabId[] {
   try {
     const raw = getPref("at.asideTabs");
@@ -767,23 +570,6 @@ function loadLayout(): PanelLayout {
   } catch {
     return fallback;
   }
-}
-
-/** Elapsed shows how long the running work has been going; it ticks on its own so
- * only this tiny node re-renders. */
-function Elapsed({ since }: { since?: string }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const started = since ? Date.parse(since) : NaN;
-  if (Number.isNaN(started)) return null;
-  const secs = Math.max(0, Math.round((Date.now() - started) / 1000));
-  const label =
-    secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, "0")}s`;
-  return <span className="act-elapsed">{label}</span>;
 }
 
 // Release notes for the build that an update just installed. The daemon hands
@@ -948,6 +734,14 @@ export default function App() {
   /** The thread whose "! cmd" is running, so its Stop bar only shows there. */
   const [shellThread, setShellThread] = useState<string | null>(null);
   const [detailId, setDetailId] = useThreadScoped<string | null>(activeId, null);
+  const [detailTab, setDetailTab] = useState<DetailTab>("output");
+  const openAgent = useCallback(
+    (id: string, tab?: DetailTab) => {
+      setDetailTab(tab ?? "output");
+      setDetailId(id);
+    },
+    [setDetailId],
+  );
   // Aside panel tabs: agents + usage are pinned; context, files, and diff can
   // be added via the "+" menu (or single-letter shortcuts) and closed again.
   const [asideTabs, setAsideTabs, setAsideTabsDefault] = useThreadScoped<AsideTabId[]>(
@@ -970,6 +764,9 @@ export default function App() {
   // and drops the titlebar, project tabs, and side panes (Cmd/Ctrl+S).
   const [compact, setCompact] = useState(false);
   const shellRef = useRef<HTMLDivElement>(null);
+  // Narrow windows turn the side panels into slide-over drawers; opening a
+  // thread closes them.
+  const drawers = useDrawers(shellRef, activeId);
   const [panelMenu, setPanelMenu] = useState<{ x: number; y: number } | null>(null);
   // The live log box can be collapsed to a header; the choice persists per viewer.
   const [logsOpen, setLogsOpen] = useState(loadLogsOpen);
@@ -1015,8 +812,11 @@ export default function App() {
   // Appearance is shared by every client of this daemon through the prefs
   // store; the settings sheet changes it.
   useEffect(() => applyTheme(loadTheme()), []);
-  // The how-to sheet opens on its own only until it has been seen once; /help reopens it.
-  const [cheatSheetOpen, setCheatSheetOpen] = useState(showCheatSheetOnLaunch);
+  // A short tour opens on its own only until it has been seen once; /help
+  // opens the full how-to sheet.
+  const [tourOpen, setTourOpen] = useState(showCheatSheetOnLaunch);
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
+  const helpOpen = cheatSheetOpen || tourOpen;
   // /vim turns on Vimium-style keys (see lib/vimKeys.ts). Off by default so the single-letter panel keys keep working.
   const [vimKeys, setVimKeys] = useState(loadVimKeys);
   useVimKeys(vimKeys);
@@ -1197,13 +997,23 @@ export default function App() {
     },
     [projectId, setError],
   );
+  // Edit-and-resend: the prompt goes back into this thread's draft, caret at
+  // the end, focus in the composer. Nothing is sent until the user does.
+  const editPrompt = useLatestCallback((text: string) => {
+    setDrafts((prev) => ({ ...prev, [draftKeyRef.current]: text }));
+    pendingCaret.current = text.length;
+    taRef.current?.focus();
+  });
+  const openReview = useLatestCallback(() => setTab("review"));
   const messageActions = useMemo<MessageActions>(
     () => ({
       copyText: (text) => writeClipboard(text),
       forkFromMessage,
       scrollToMessage,
+      editPrompt,
+      openReview,
     }),
-    [forkFromMessage, scrollToMessage],
+    [forkFromMessage, scrollToMessage, editPrompt, openReview],
   );
 
   // Flat DOM position and total of the rendered messages, so each row knows
@@ -2079,7 +1889,7 @@ export default function App() {
   // has answered for every checkout. One completed pass per 24 hours, whether
   // or not it found anything.
   useEffect(() => {
-    if (status !== "online" || projects.length === 0 || cheatSheetOpen || settingsOpen) return;
+    if (status !== "online" || projects.length === 0 || helpOpen || settingsOpen) return;
     let cancelled = false;
     const check = () => {
       if (cancelled || scanningWorktrees.current || prunePrompt) return;
@@ -2093,7 +1903,7 @@ export default function App() {
       window.clearTimeout(first);
       window.clearInterval(timer);
     };
-  }, [status, projects, cheatSheetOpen, settingsOpen, prunePrompt, scanWorktrees]);
+  }, [status, projects, helpOpen, settingsOpen, prunePrompt, scanWorktrees]);
 
   // A stored aside tab that no longer exists (e.g. the removed Worktrees tab)
   // would otherwise render the diff fallback with no tab highlighted.
@@ -2118,7 +1928,7 @@ export default function App() {
 
   // Single-letter panel shortcuts (shown in the "+" menu), inactive while typing.
   useEffect(() => {
-    if (!activeId || cheatSheetOpen) return;
+    if (!activeId || helpOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
       const t = e.target;
@@ -2143,7 +1953,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, openPanel, cheatSheetOpen, setTab, vimKeys]);
+  }, [activeId, openPanel, helpOpen, setTab, vimKeys]);
 
   // While an agent is open in the detail panel, its log reads once and then
   // follows the agent's streamed output.
@@ -2191,28 +2001,6 @@ export default function App() {
       cost: all.costUsd,
     };
   }, [threadUsage]);
-  // Agents grouped into their pipelines, the way the orchestrator dispatched them.
-  const lanes = useMemo(() => {
-    const order: string[] = [];
-    const grouped: Record<string, Agent[]> = {};
-    for (const a of agents) {
-      const lane = a.pipelineId && a.pipelineId.length > 0 ? a.pipelineId : "work";
-      if (!grouped[lane]) {
-        grouped[lane] = [];
-        order.push(lane);
-      }
-      grouped[lane].push(a);
-    }
-    return order.map((name) => {
-      const members = grouped[name];
-      return {
-        name,
-        agents: members,
-        done: members.filter((x) => x.status !== "running" && x.status !== "pending").length,
-      };
-    });
-  }, [agents]);
-  const settled = agents.filter((a) => a.status !== "running" && a.status !== "pending").length;
   // Each role's effective runtime from settings, with what it is doing in this thread.
   const roleRows = useMemo(
     () =>
@@ -2239,6 +2027,7 @@ export default function App() {
     [settings, agents, thread],
   );
   const detailAgent = agents.find((a) => a.id === detailId) ?? null;
+  const closeAgent = useCallback(() => setDetailId(null), [setDetailId]);
   const comments = thread?.reviewComments ?? [];
   /** Review threads by file|side|line so each diff line finds its thread without a scan. */
   const reviewAnchors = useMemo(() => {
@@ -2276,6 +2065,31 @@ export default function App() {
         : null,
     [replyLeads, replySince, replyAuthor],
   );
+  // The running turn's start, for the status line's timer: the prompt that
+  // opened it, or the first running agent when the transcript has none.
+  const turnStartMs =
+    lastTurn?.[0]?.author === "user"
+      ? Date.parse(lastTurn[0].at)
+      : Date.parse(running[0]?.startedAt ?? "");
+  const pendingQuestions = (thread?.questions ?? []).filter((q) => q.status === "pending").length;
+  const toggleLogsStable = useLatestCallback(() => toggleLogs());
+  const stopTurnStable = useLatestCallback(() => void stopTurn());
+  // Brings the oldest open question into view and focuses its first control.
+  const jumpToQuestion = useCallback(() => {
+    const card = streamRef.current?.querySelector<HTMLElement>(".question-card:not(.closed)");
+    if (!card) return;
+    card.scrollIntoView({ block: "center", behavior: "smooth" });
+    card.querySelector<HTMLElement>("input, textarea, button")?.focus({ preventScroll: true });
+  }, []);
+  // After an answer or skip lands, focus moves to the next open question, or
+  // back to the composer once none is left.
+  const afterQuestion = useCallback(() => {
+    requestAnimationFrame(() => {
+      const next = streamRef.current?.querySelector<HTMLElement>(".question-card.pending");
+      const target = next?.querySelector<HTMLElement>("input, textarea") ?? taRef.current;
+      target?.focus({ preventScroll: !!next });
+    });
+  }, []);
   /** The active thread's list row, where waiting/controlledBy announce
    * themselves; null while the list has not loaded it yet. */
   const activeSummary = activeId ? threads.find((t) => t.id === activeId) ?? null : null;
@@ -2856,6 +2670,7 @@ export default function App() {
     }
     if (activeId) refresh(activeId).catch(() => undefined);
   };
+  const stopAgentStable = useLatestCallback(stopAgent);
 
   /** Convenes the council: members debate in parallel rounds, then a
    *  facilitator synthesizes the outcome into the thread. */
@@ -3060,22 +2875,95 @@ export default function App() {
   const startVerb = useMemo(() => START_VERBS[Math.floor(Math.random() * START_VERBS.length)], [activeId]);
   const pendingCaret = useRef<number | null>(null);
 
-  // Cmd/Ctrl+P opens the palette from anywhere. The palette's own input handles
-  // Cmd/Ctrl+P (close) and calls preventDefault, so the defaultPrevented guard
-  // stops this listener from reopening it. Shift and Alt combos are left alone.
+  /** Opens the palette; `fromKeys` lets the composer swap in its own features
+   * when that is where the shortcut was pressed. */
+  const openPalette = useCallback((fromKeys: boolean) => {
+    const active = document.activeElement;
+    paletteReturn.current = active instanceof HTMLElement ? active : null;
+    setPaletteFromComposer(fromKeys && active === taRef.current);
+    setPaletteOpen(true);
+  }, []);
+  // Cmd/Ctrl+K (or P) opens the palette from anywhere. The palette's own input
+  // handles the same keys (close) and calls preventDefault, so the
+  // defaultPrevented guard stops this listener from reopening it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return;
-      if (e.key.toLowerCase() !== "p") return;
+      if (e.defaultPrevented || e.isComposing || !isPaletteKey(e)) return;
       e.preventDefault();
-      const active = document.activeElement;
-      paletteReturn.current = active instanceof HTMLElement ? active : null;
-      setPaletteFromComposer(active === taRef.current);
-      setPaletteOpen(true);
+      openPalette(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [openPalette]);
+  // Where the user goes, for the palette's Recent group. The project is
+  // recorded first so a jump into another project's thread puts the thread on top.
+  useEffect(() => {
+    if (projectId) recordRecent(`project:${projectId}`);
+  }, [projectId]);
+  useEffect(() => {
+    if (activeId) recordRecent(`thread:${activeId}`);
+  }, [activeId]);
+  // A file picked in the palette: the Files tab opens it (FileEditor reveal).
+  const [fileReveal, setFileReveal] = useState<{ threadId: string; path: string; seq: number } | null>(null);
+  // A deep link's tab, applied once its thread is the active one (the tab
+  // setter writes to whichever thread is active when it runs).
+  const pendingTab = useRef<{ threadId: string; tab: RouteTab } | null>(null);
+  useEffect(() => {
+    const p = pendingTab.current;
+    if (!p || p.threadId !== activeId) return;
+    pendingTab.current = null;
+    setTab(p.tab);
+  }, [activeId, setTab]);
+  // A starter prompt from the empty chat lands in the composer, unsent.
+  const pickStarter = useLatestCallback((text: string) => {
+    setInput(text);
+    pendingCaret.current = text.length;
+    taRef.current?.focus();
+  });
+  // The Review tab unmounts when left; each thread keeps its place in it.
+  const reviewScroll = useScrollMemory(`review:${activeId ?? ""}`);
+  const paletteSearchFiles = useLatestCallback(async (query: string): Promise<PaletteItem[]> => {
+    const rpc = rpcRef.current;
+    const threadId = activeId;
+    if (!rpc || !threadId) return [];
+    const res = await rpc.call<{ matches: FileMatch[] }>("files.search", { threadId, query, limit: 20 });
+    return res.matches
+      .filter((m) => !m.dir)
+      .map((m) => ({
+        id: `file:${m.path}`,
+        kind: "file" as const,
+        group: "Files",
+        label: m.path.slice(m.path.lastIndexOf("/") + 1),
+        detail: m.path.includes("/") ? m.path.slice(0, m.path.lastIndexOf("/")) : undefined,
+        run: () => {
+          setTab("files");
+          setFileReveal({ threadId, path: m.path, seq: Date.now() });
+        },
+      }));
+  });
+  // Alt/Option+1..6 picks a center tab, even from the composer; "/" outside
+  // text fields jumps to the thread search.
+  useEffect(() => {
+    if (!activeId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const next = centerTabFromKey(e);
+      if (next) {
+        e.preventDefault();
+        setTab(next);
+        return;
+      }
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+        const search = document.querySelector<HTMLInputElement>(".sidebar .thread-filter");
+        if (!search || search.offsetParent === null) return;
+        e.preventDefault();
+        search.focus();
+        search.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId, setTab]);
   // Cmd/Ctrl+S toggles compact mode on the thread screen. The files editor
   // claims this keystroke for saving (it calls preventDefault), so editing
   // still saves instead of flipping the layout. Preventing the default also
@@ -3124,6 +3012,18 @@ export default function App() {
   const composerSend = useLatestCallback(() => {
     send();
   });
+  // A queued draft starts as the next turn the moment this thread's turn ends.
+  // Only a transition seen on this thread sends it; a queued draft found on an
+  // idle thread (after switching back) just becomes a plain draft again.
+  const turnIdle = running.length === 0 && !busy;
+  const idleSeen = useRef({ key: draftKey, idle: turnIdle });
+  useEffect(() => {
+    const prev = idleSeen.current;
+    idleSeen.current = { key: draftKey, idle: turnIdle };
+    if (!turnIdle || !composerStore.get().queued[draftKey]) return;
+    unqueue(draftKey);
+    if (prev.key === draftKey && !prev.idle) send();
+  }, [turnIdle, draftKey]);
   const composerError = useLatestCallback((message: string, threadId?: string) =>
     threadId === undefined ? setError(message) : setError(message, threadId),
   );
@@ -3198,6 +3098,29 @@ export default function App() {
   };
 
 
+  // Where you are, always: an environment page, or project > thread with the
+  // thread's live status. The open thread is being seen, so it never reads
+  // "Done"; idle and new say nothing.
+  const crumbs: Crumb[] = !projectId
+    ? [{ label: HOME_LABEL[homePage] }]
+    : [
+        { label: "Projects", onClick: showProjects },
+        {
+          label: selectedProject?.name ?? "Project",
+          title: selectedProject?.path || selectedProject?.name,
+          onClick: activeId ? () => selectThread(null) : undefined,
+        },
+        ...(activeId ? [{ label: activeSummary?.title || "Thread" }] : []),
+      ];
+  const liveStatus = activeSummary
+    ? threadStatus({
+        ...activeSummary,
+        unseen: false,
+        runningAgents: running.length > 0 || shellThread === activeId ? 1 : 0,
+        pendingQuestions: thread?.questions?.length ?? activeSummary.pendingQuestions,
+      })
+    : null;
+  const crumbStatus = liveStatus === "idle" || liveStatus === "new" ? null : liveStatus;
   const titlebar = (
     <div className="titlebar">
       <div className="brand">
@@ -3206,37 +3129,18 @@ export default function App() {
           Agent<b>Tunnel</b>
         </span>
       </div>
-      <div className="title-meta">
-        <div className={`conn ${status}`}>
-          <span className="led" />
-          {status === "reconnecting" && <span className="conn-retry">Reconnecting…</span>}
-          <span>
-            {enabledHarnesses.length} harness
-            {enabledHarnesses.length === 1 ? "" : "es"} · {roles.length} roles
-          </span>
-        </div>
-        {conn && (
-          <div
-            className={`daemon-badge ${conn.attached ? "attached" : "local"}`}
-            title={
-              conn.attached
-                ? `Attached to a daemon this window did not start (${conn.host || "unknown"})`
-                : "The daemon runs inside this app"
-            }
-          >
-            <span className="led" />
-            {conn.attached ? (
-              <>
-                attached <span className="host">{conn.host || "remote"}</span>
-              </>
-            ) : (
-              "local daemon"
-            )}
-          </div>
-        )}
-      </div>
+      <Breadcrumb crumbs={crumbs} status={crumbStatus} />
       <AppUpdate rpc={rpcRef.current} />
       <HarnessUpdates rpc={rpcRef.current} />
+      <PaletteButton onOpen={() => openPalette(false)} />
+      <StatusPopover
+        status={status}
+        attached={!!conn?.attached}
+        host={conn?.host ?? ""}
+        harnesses={enabledHarnesses}
+        roles={roles.length}
+        onSettings={openSettings}
+      />
       <button
         type="button"
         className="title-gear"
@@ -3268,117 +3172,42 @@ export default function App() {
   const homeTabOn = (page: HomePage) => projectId === null && homePage === page;
   const projectTabs = (
     <div className="project-tabs">
-      <div
-        className={`ptab pt-home${homeTabOn("projects") ? " on" : ""}`}
-        {...tabProps(homeTabOn("projects"), showProjects)}
-        title="All projects"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <rect x="3" y="3" width="7" height="7" rx="1.5" />
-          <rect x="14" y="3" width="7" height="7" rx="1.5" />
-          <rect x="3" y="14" width="7" height="7" rx="1.5" />
-          <rect x="14" y="14" width="7" height="7" rx="1.5" />
-        </svg>
-        Projects
+      <div className="env-switch" role="tablist" aria-label="Environment">
+        {ENV_PAGES.map((pg) => {
+          const on = pg.page !== "all" && homeTabOn(pg.page);
+          const open = pg.page === "all" ? () => setSuperViewOpen(true) : pg.page === "projects" ? showProjects : () => showHome(pg.page as HomePage);
+          return (
+            <div
+              key={pg.page}
+              className={`ptab pt-home${on ? " on" : ""}`}
+              {...tabProps(on, open)}
+              title={pg.title}
+              aria-label={pg.label}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="13"
+                height="13"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                {pg.icon}
+              </svg>
+              <span className="ptab-label">{pg.label}</span>
+              {pg.page === "worktrees" && pruneReadyCount > 0 && (
+                <span className="pt-count ok" title={`${pruneReadyCount} ready to prune`}>
+                  {pruneReadyCount}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
-      <div
-        className={`ptab pt-home${homeTabOn("orchestrator") ? " on" : ""}`}
-        {...tabProps(homeTabOn("orchestrator"), () => showHome("orchestrator"))}
-        title="Master orchestrator"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-        Orchestrator
-      </div>
-      <div
-        className={`ptab pt-home${homeTabOn("worktrees") ? " on" : ""}`}
-        {...tabProps(homeTabOn("worktrees"), () => showHome("worktrees"))}
-        title="Every project's worktrees"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <line x1="6" y1="3" x2="6" y2="15" />
-          <circle cx="18" cy="6" r="3" />
-          <circle cx="6" cy="18" r="3" />
-          <path d="M18 9a9 9 0 0 1-9 9" />
-        </svg>
-        Worktrees
-        {pruneReadyCount > 0 && (
-          <span className="pt-count ok" title={`${pruneReadyCount} ready to prune`}>
-            {pruneReadyCount}
-          </span>
-        )}
-      </div>
-      <div
-        className={`ptab pt-home${homeTabOn("stats") ? " on" : ""}`}
-        {...tabProps(homeTabOn("stats"), () => showHome("stats"))}
-        title="Harness stats across all projects"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
-        </svg>
-        Stats
-      </div>
-      <div
-        className="ptab pt-home"
-        {...tabProps(false, () => setSuperViewOpen(true))}
-        title="All threads across projects"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="13"
-          height="13"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-        </svg>
-        All threads
-      </div>
+      <span className="pt-divider" aria-hidden="true" />
       <div className="pt-scroll" role="tablist" aria-label="Open projects">
         {openProjects.map((p) => {
           const busy = runningByProject[p.id] ?? 0;
@@ -3608,6 +3437,7 @@ export default function App() {
     loaded: status === "online" && (threads.length > 0 || projects.length > 0),
     projectId,
     threadId: activeId,
+    tab,
     open: (route: Route) => {
       if (route.kind === "home") {
         showProjects();
@@ -3621,6 +3451,8 @@ export default function App() {
       }
       const t = threads.find((x) => x.id === route.id);
       if (!t) return false;
+      if (t.id === activeId) setTab(route.tab ?? "chat");
+      else pendingTab.current = { threadId: t.id, tab: route.tab ?? "chat" };
       goToThread(t);
       return true;
     },
@@ -3668,7 +3500,8 @@ export default function App() {
         toggleAutoMode: () => thread && toggle("autoMode", !thread.autoMode),
         togglePeerMailbox: () => thread && toggle("peerMailbox", !thread.peerMailbox),
         toggleCompact: () => setCompact((v) => !v),
-        goToWorktrees: () => showHome("worktrees"),
+        goToPage: (page) => showHome(page),
+        openHelp: () => setCheatSheetOpen(true),
       }),
     );
     if (paletteFromComposer && activeId) {
@@ -3683,17 +3516,22 @@ export default function App() {
       return { left, right, rightTitle: "Composer" };
     }
     const names = new Map(projects.map((p) => [p.id, p.name]));
+    // Every place, wherever the palette opens: the current project's threads
+    // lead, and the places opened last lead everything.
     const threadRows: PaletteItem[] = threadItems(
-      projectId ? threads.filter((t) => t.projectId === projectId) : threads,
+      threads.filter((t) => t.id !== activeId && !t.archived),
       names,
-      !projectId,
+      projectId,
       goToThread,
     );
-    const projectRows: PaletteItem[] = projectId ? [] : projectItems(projects, (id) => openProject(id));
+    const projectRows: PaletteItem[] = projectItems(
+      projects.filter((p) => p.id !== projectId),
+      (id) => openProject(id),
+    );
     return {
       left,
-      right: groupItems([...threadRows, ...projectRows]),
-      rightTitle: projectId ? "Threads" : "Threads & projects",
+      right: groupItems(withRecent([...threadRows, ...projectRows], recentIds())),
+      rightTitle: "Go to",
     };
   };
   const palette = paletteOpen ? buildPaletteView() : null;
@@ -3701,11 +3539,17 @@ export default function App() {
     closePalette();
     item.run();
   };
+  const tourDialog = tourOpen && <FirstRunTour onClose={() => setTourOpen(false)} />;
+  // /help, rendered on every screen since the palette can open it from any.
+  const helpSheet = cheatSheetOpen && (
+    <CheatSheet panels={Object.values(ASIDE_META)} onClose={() => setCheatSheetOpen(false)} />
+  );
   const paletteDialog = palette && (
     <CommandPalette
       left={palette.left}
       right={palette.right}
       rightTitle={palette.rightTitle}
+      searchFiles={activeId && !paletteFromComposer ? paletteSearchFiles : undefined}
       onRun={runPalette}
       onClose={closePalette}
     />
@@ -3817,7 +3661,11 @@ export default function App() {
             onPruneMerged={pruneMergedWorktrees}
           />
         </div>
+        {superViewDialog}
+        {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -3842,6 +3690,8 @@ export default function App() {
         {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -3871,6 +3721,8 @@ export default function App() {
         {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -3884,13 +3736,26 @@ export default function App() {
         {titlebar}
         {projectTabs}
         <div className="screen-body">
+          {projects.length === 0 ? (
+            // First run: one thing to do.
+            <div className="first-run">
+              <img src="/brand-mark.svg" alt="" />
+              <h2>Open a folder to start</h2>
+              <p>
+                A project is a folder on this machine. Each thread in it gets a team of agents and,
+                in a git repository, its own worktree.
+              </p>
+              <button type="button" className="primary first-run-cta" onClick={() => void addProject()}>
+                Open a folder…
+              </button>
+            </div>
+          ) : (
+          <>
           <div className="screen-head">
             <div className="screen-title">
               <h2>Projects</h2>
               <p className="screen-sub">
-                {projects.length === 0
-                  ? "No projects yet"
-                  : `${projects.length} project${projects.length === 1 ? "" : "s"}`}
+                {`${projects.length} project${projects.length === 1 ? "" : "s"}`}
               </p>
             </div>
           </div>
@@ -3939,10 +3804,14 @@ export default function App() {
               </div>
             ))}
           </div>
+          </>
+          )}
         </div>
         {superViewDialog}
         {newProjectDialog}
         {paletteDialog}
+        {tourDialog}
+        {helpSheet}
         {settingsSheet}
         {pruneDialog}
       </div>
@@ -4029,6 +3898,8 @@ export default function App() {
           {superViewDialog}
           {newProjectDialog}
           {paletteDialog}
+          {tourDialog}
+          {helpSheet}
           {settingsSheet}
           {pruneDialog}
         </div>
@@ -4042,6 +3913,17 @@ export default function App() {
     tab === "chat" && !!thread && (thread.messages?.length ?? 0) === 0 && running.length === 0;
   const setupMode = setupPending && setupReadyId !== activeId;
   const composerHidden = setupMode;
+  // A finished turn in a thread with its own worktree points at what comes
+  // next. Only once the turn has ended and nothing waits on the user.
+  const lastMsg = lastTurn?.[lastTurn.length - 1];
+  const showNextStep =
+    !!activeSummary?.worktree &&
+    running.length === 0 &&
+    shellThread !== activeId &&
+    !!lastMsg &&
+    lastMsg.author !== "user" &&
+    lastMsg.author !== "shell" &&
+    (thread?.questions?.length ?? 0) === 0;
   const asideCollapsed = !layout.asideOpen || setupMode;
   // Solo threads tint the chat-head tabs with their harness color, like the
   // thread card and the graph node do.
@@ -4050,7 +3932,7 @@ export default function App() {
   return (
     <DocLinkContext.Provider value={openChatDoc}>
     <div
-      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}`}
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}${drawers.className}`}
       ref={shellRef}
       style={
         {
@@ -4061,15 +3943,22 @@ export default function App() {
     >
       {titlebar}
       {projectTabs}
+      {drawers.open && <div className="drawer-scrim" onClick={drawers.close} aria-hidden="true" />}
 
-      <div className={`col sidebar${layout.sidebarOpen ? "" : " collapsed"}`}>
+      <div className={`col sidebar${layout.sidebarOpen || drawers.sidebarDrawer ? "" : " collapsed"}`}>
         <div className="col-head">
           <PanelToggle
             side="left"
-            open={layout.sidebarOpen}
-            onToggle={() => setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))}
+            open={layout.sidebarOpen || drawers.sidebarDrawer}
+            onToggle={() =>
+              drawers.sidebarDrawer
+                ? drawers.close()
+                : setLayout((l) => ({ ...l, sidebarOpen: !l.sidebarOpen }))
+            }
           />
-          <button onClick={newThread}>New</button>
+          <button className="new-thread-btn" onClick={newThread} title="New thread in this project (/new)">
+            + New thread
+          </button>
         </div>
         <ThreadList
           threads={threads}
@@ -4078,10 +3967,7 @@ export default function App() {
           onSelect={selectThreadStable}
           onMenu={openThreadMenuStable}
         />
-        <div className="sidebar-foot">
-          <LimitsMeter rpc={rpcRef.current} />
-          <RemoteSection rpc={rpcRef.current} />
-        </div>
+        <SidebarFooter rpc={rpcRef.current} />
       </div>
 
       <SplitHandle
@@ -4096,16 +3982,19 @@ export default function App() {
 
       <div className="col">
         <div className="chat-head">
+          <DrawerToggle side="sidebar" open={drawers.open === "sidebar"} onToggle={drawers.toggle} />
           <div className="tabs" role="tablist" aria-label="Thread view">
             <div
               className={`tab ${tab === "chat" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "chat", () => setTab("chat"))}
+              title={`Chat (${centerTabHint("chat")})`}
             >
               Chat
             </div>
             <div
               className={`tab ${tab === "review" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "review", () => setTab("review"))}
+              title={`Review (${centerTabHint("review")})`}
             >
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
@@ -4113,12 +4002,14 @@ export default function App() {
             <div
               className={`tab ${tab === "files" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "files", () => setTab("files"))}
+              title={`Files (${centerTabHint("files")})`}
             >
               Files
             </div>
             <div
               className={`tab ${tab === "graph" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "graph", () => setTab("graph"))}
+              title={`Graph (${centerTabHint("graph")})`}
             >
               Graph
               {(thread?.mailbox?.length ?? 0) > 0 && (
@@ -4128,6 +4019,7 @@ export default function App() {
             <div
               className={`tab ${tab === "p2p" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "p2p", () => setTab("p2p"))}
+              title={`Agent messages (${centerTabHint("p2p")})`}
             >
               P2P
               {(thread?.mailbox?.length ?? 0) > 0 && (
@@ -4137,6 +4029,7 @@ export default function App() {
             <div
               className={`tab ${tab === "board" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "board", () => setTab("board"))}
+              title={`Task board (${centerTabHint("board")})`}
             >
               Board
               {agents.some((a) => a.role !== "orchestrator") && (
@@ -4166,6 +4059,12 @@ export default function App() {
             )}
           </div>
           <div className="toggles">
+            <TeamProgress
+              agents={agents}
+              questions={thread?.questions}
+              tasks={thread?.tasks}
+              onClick={() => openPanel("agents")}
+            />
             {projectId && (
               <button title="Open this project's board" onClick={showProjectBoard}>
                 <svg
@@ -4183,7 +4082,7 @@ export default function App() {
                   <rect x="10" y="4" width="5" height="11" rx="1.5" />
                   <rect x="17" y="4" width="4" height="7" rx="1.5" />
                 </svg>
-                Project board
+                <span className="pb-label">Project board</span>
               </button>
             )}
             <div
@@ -4196,6 +4095,9 @@ export default function App() {
               <span className="sw" /> Peer chat
             </div>
           </div>
+          {!setupMode && (
+            <DrawerToggle side="aside" open={drawers.open === "aside"} onToggle={drawers.toggle} />
+          )}
         </div>
 
         {/* Kept mounted while hidden so unsaved buffers survive a tab switch.
@@ -4207,6 +4109,7 @@ export default function App() {
               rpc={rpcRef.current}
               threadId={activeId}
               active={tab === "files"}
+              reveal={fileReveal?.threadId === activeId ? fileReveal : null}
             />
           </div>
         )}
@@ -4310,13 +4213,7 @@ export default function App() {
                 </div>
               )}
               {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
-                <div className="stream-empty">
-                  <img src="/brand-mark.svg" alt="" />
-                  <div className="stream-empty-title">Start a thread</div>
-                  <div className="stream-empty-sub">
-                    Describe the task. The orchestrator will plan it and dispatch your team.
-                  </div>
-                </div>
+                <EmptyChat solo={!!thread.soloRuntime} onStarter={pickStarter} />
               )}
               <MessageActionsContext.Provider value={messageActions}>
                 <MessageImageContext.Provider value={messageImages}>
@@ -4328,47 +4225,68 @@ export default function App() {
                       total={messageTotal}
                       streaming={i === turnBlocks.length - 1 ? reply : null}
                       onStreamGrow={followStream}
+                      changes={i === turnBlocks.length - 1 && running.length === 0 && !busy}
                     />
                   ))}
                 </MessageImageContext.Provider>
               </MessageActionsContext.Provider>
-              {(thread?.questions ?? []).map((q) => (
-                <QuestionCard
-                  key={q.questionId}
-                  question={q}
-                  askedBy={agentLabel(q.agentId)}
-                  onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
-                  onDismiss={() => dismissQuestion(q.questionId)}
+              {(thread?.questions ?? []).map(
+                (q) =>
+                  q.status !== "pending" && (
+                    <QuestionCard
+                      key={q.questionId}
+                      question={q}
+                      askedBy={agentLabel(q.agentId)}
+                      onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
+                      onDismiss={() => dismissQuestion(q.questionId)}
+                    />
+                  ),
+              )}
+              {showNextStep && (
+                <NextStep
+                  hasPR={!!(activeId && threadStates[activeId]?.pr)}
+                  onFiles={() => setTab("files")}
+                  onPR={() => {
+                    if (activeId && threadStates[activeId]?.pr) {
+                      openPanel("pr");
+                      return;
+                    }
+                    setInput("Open a pull request for these changes.");
+                    taRef.current?.focus();
+                  }}
                 />
-              ))}
+              )}
               {running.length > 0 && (
-                <div className={`activity agents${logsOpen ? "" : " collapsed"}`}>
-                  <div className="act-head">
-                    <span className="act-led" />
-                    <span className="act-label">
-                      Working —{" "}
-                      {running.map((a) => a.name || rolesById[a.role] || a.role).join(", ")}
-                    </span>
-                    <Elapsed since={running[0]?.startedAt} />
-                    <button
-                      className="act-toggle"
-                      onClick={toggleLogs}
-                      aria-expanded={logsOpen}
-                      aria-label={logsOpen ? "Hide logs" : "Show logs"}
-                      title={logsOpen ? "Hide logs" : "Show logs"}
-                    >
-                      {logsOpen ? "▾" : "▸"} Logs
-                    </button>
-                    <button
-                      className="stop-btn"
-                      onClick={stopTurn}
-                      title="Stop this turn — running agents are cancelled"
-                    >
-                      Stop
-                    </button>
-                  </div>
-                  {logsOpen && <LiveLog onLines={followStream} agents={thread?.agents ?? undefined} reply={reply} />}
-                </div>
+                <TurnActivity
+                  key={`${activeId}:${turnStartMs}`}
+                  leads={replyLeads}
+                  since={turnStartMs}
+                  helpers={running.length - (replyLeads ? replyLeads.split("\u001f").length : 0)}
+                  waiting={pendingQuestions}
+                  logsOpen={logsOpen}
+                  onToggleLogs={toggleLogsStable}
+                  onStop={stopTurnStable}
+                  onJumpToQuestion={jumpToQuestion}
+                  onLines={followStream}
+                  agents={thread?.agents ?? undefined}
+                  reply={reply}
+                  threadId={activeId}
+                />
+              )}
+              {/* Open questions sit last, next to the composer, so the working
+                  log can never push them out of view. */}
+              {(thread?.questions ?? []).map(
+                (q) =>
+                  q.status === "pending" && (
+                    <QuestionCard
+                      key={q.questionId}
+                      question={q}
+                      askedBy={agentLabel(q.agentId)}
+                      onAnswer={(selected, text) => answerQuestion(q.questionId, selected, text)}
+                      onDismiss={() => dismissQuestion(q.questionId)}
+                      onSettled={afterQuestion}
+                    />
+                  ),
               )}
               {shellThread === activeId && shellThread !== null && (
                 <div className="activity">
@@ -4398,7 +4316,9 @@ export default function App() {
             <Composer
               activeId={activeId}
               draftKey={draftKey}
-              agentMode={running.length > 0}
+              agentMode={running.length > 0 || busy}
+              stoppable={running.length > 0 || busy || shellThread === activeId}
+              onStop={stopTurnStable}
               hidden={composerHidden}
               taRef={taRef}
               pendingCaret={pendingCaret}
@@ -4421,7 +4341,7 @@ export default function App() {
             />
           </>
         ) : tab === "review" ? (
-          <div className="stream">
+          <div className="stream" key={activeId ?? ""} ref={reviewScroll.ref} onScroll={reviewScroll.onScroll}>
             {diffError && <div className="empty err-text">{diffError}</div>}
             <DiffView
               diff={diff}
@@ -4445,7 +4365,7 @@ export default function App() {
         ) : tab === "board" ? (
           <div className="board-view">
             {tasks.length > 0 && <TaskList tasks={tasks} />}
-            <KanbanBoard agents={agents} roleNames={rolesById} onOpenAgent={setDetailId} />
+            <KanbanBoard agents={agents} roleNames={rolesById} questions={thread?.questions} onOpenAgent={openAgent} />
           </div>
         ) : tab === "doc" && docPath !== null ? (
           <Suspense fallback={<div className="stream empty">Loading…</div>}>
@@ -4479,7 +4399,8 @@ export default function App() {
             usage={thread?.usage ?? null}
             mailbox={thread?.mailbox ?? null}
             peerMailbox={thread?.peerMailbox ?? false}
-            onOpenAgent={setDetailId}
+            onOpenAgent={openAgent}
+            questions={thread?.questions}
             onSubmitGroup={sendGroup}
           />
         )}
@@ -4495,13 +4416,14 @@ export default function App() {
         onCommit={(px) => setLayout((l) => ({ ...l, asideW: px }))}
       />
 
-      <div className={`col aside${asideCollapsed ? " collapsed" : ""}`}>
+      <div className={`col aside${asideCollapsed && !drawers.asideDrawer ? " collapsed" : ""}`}>
         <div className="aside-tabs" role="tablist" aria-label="Thread details">
           <PanelToggle
             side="right"
-            open={!asideCollapsed}
+            open={!asideCollapsed || drawers.asideDrawer}
             onToggle={() => {
-              if (!setupMode) setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }));
+              if (drawers.asideDrawer) drawers.close();
+              else if (!setupMode) setLayout((l) => ({ ...l, asideOpen: !l.asideOpen }));
             }}
           />
           {asideTabs.map((id) => (
@@ -4605,56 +4527,18 @@ export default function App() {
             <>
               <div className="section">
                 <h3>
-                  Workflow{" "}
-                  <span>
-                    {settled}/{agents.length} settled
-                  </span>
+                  Team <span>Σ {fmtTokens(totals.total)} tok</span>
                 </h3>
-                {lanes.length === 0 && <p className="hint">No agents yet.</p>}
-                {lanes.map((lane) => (
-                  <div className="lane" key={lane.name}>
-                    <div className="lane-head">
-                      <span className="lane-name">{lane.name}</span>
-                      <span className="lane-count">
-                        {lane.done}/{lane.agents.length}
-                      </span>
-                    </div>
-                    {lane.agents.map((a) => {
-                      const entry = thread?.usage?.[a.id];
-                      return (
-                        <div className="wf-row" key={a.id} {...clickable(() => setDetailId(a.id))}>
-                          <span className={`dot ${a.status}`} />
-                          <div className="wf-main">
-                            <div className="wf-name">{a.name || rolesById[a.role] || a.role}</div>
-                            <div className="wf-task">{a.task}</div>
-                          </div>
-                          <div className="wf-side">
-                            <div className="wf-role">{a.role}</div>
-                            <div className="wf-meta">
-                              {entry ? `${fmtTokens(totalTokens(entry.usage))} tok` : a.status}
-                            </div>
-                            {a.status === "running" && (
-                              <button
-                                className="stop-btn mini"
-                                title="Stop this agent — the rest of the turn keeps running"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  stopAgent(a.id);
-                                }}
-                              >
-                                Stop
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-                <div className="wf-foot">
-                  <span>{settled} settled</span>
-                  <span>Σ {fmtTokens(totals.total)} tok</span>
-                </div>
+                <TeamProgress agents={agents} questions={thread?.questions} tasks={thread?.tasks} />
+                <AgentTree
+                  threadId={activeId ?? ""}
+                  agents={agents}
+                  questions={thread?.questions}
+                  usage={thread?.usage}
+                  roleNames={rolesById}
+                  onOpen={openAgent}
+                  onStop={stopAgentStable}
+                />
               </div>
               <div className="section">
                 <h3>
@@ -4669,7 +4553,7 @@ export default function App() {
                     <li
                       key={r.id}
                       className={r.latestId ? "clickable" : undefined}
-                      {...(r.latestId ? clickable(() => setDetailId(r.latestId)) : {})}
+                      {...(r.latestId ? clickable(() => openAgent(r.latestId!)) : {})}
                     >
                       <div className="role-head">
                         <span className={`dot ${r.running.length > 0 ? "running" : r.off ? "off" : r.latestStatus}`} />
@@ -4826,7 +4710,7 @@ export default function App() {
                       const u = thread?.usage?.[a.id]?.usage;
                       if (!u) return null;
                       return (
-                        <tr key={a.id} className="rowlink" onClick={() => setDetailId(a.id)}>
+                        <tr key={a.id} className="rowlink" onClick={() => openAgent(a.id)}>
                           <td>
                             <span className={`dot ${a.status}`} />
                             {a.name || rolesById[a.role] || a.role}
@@ -4940,14 +4824,12 @@ export default function App() {
           agent={detailAgent}
           steps={thread?.steps?.[detailAgent.id] ?? []}
           roleName={rolesById[detailAgent.role] || detailAgent.role}
-          onClose={() => setDetailId(null)}
-        />
-      )}
-
-      {cheatSheetOpen && (
-        <CheatSheet
-          panels={Object.values(ASIDE_META)}
-          onClose={() => setCheatSheetOpen(false)}
+          agents={agents}
+          roleNames={rolesById}
+          questions={thread?.questions}
+          initialTab={detailTab}
+          onOpenAgent={openAgent}
+          onClose={closeAgent}
         />
       )}
 
@@ -4990,6 +4872,8 @@ export default function App() {
       {superViewDialog}
       {newProjectDialog}
       {paletteDialog}
+      {tourDialog}
+      {helpSheet}
     </div>
     </DocLinkContext.Provider>
   );

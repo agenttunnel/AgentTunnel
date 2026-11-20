@@ -1,4 +1,7 @@
 import { useMemo } from "react";
+import { agentName, agentPhase, askingAgents, resolveDeps } from "../lib/agentTree";
+import type { AgentQuestion } from "../lib/questions";
+import { PhaseGlyph } from "./AgentStatus";
 
 /** The fields the board reads from a thread agent. */
 export type BoardAgent = {
@@ -48,16 +51,24 @@ export function groupTasks<T extends BoardAgent>(agents: T[]): Record<BoardColum
   return out;
 }
 
+/**
+ * The dispatched work as a board. A to-do card names what it waits on and
+ * whether that is blocking it (✓ for a dependency that already succeeded), so
+ * a dependency chain reads at a glance.
+ */
 export function KanbanBoard({
   agents,
   roleNames,
+  questions,
   onOpenAgent,
 }: {
   agents: BoardAgent[];
   roleNames: Record<string, string>;
+  questions?: AgentQuestion[] | null;
   onOpenAgent: (id: string) => void;
 }) {
   const columns = useMemo(() => groupTasks(agents), [agents]);
+  const asking = useMemo(() => askingAgents(questions), [questions]);
 
   return (
     <div className="board" role="region" aria-label="Task board">
@@ -70,21 +81,38 @@ export function KanbanBoard({
               <span className="pill">{cards.length}</span>
             </header>
             <ul className="board-cards">
-              {cards.map((a) => (
-                <li key={a.id}>
-                  <button type="button" className="board-card" onClick={() => onOpenAgent(a.id)}>
-                    <span className="board-card-top">
-                      <span className={`dot ${a.status}`} />
-                      <span className="board-card-name">{a.name || a.id}</span>
-                      <span className="board-card-role">{roleNames[a.role] || a.role}</span>
-                    </span>
-                    <span className="board-card-task">{a.task}</span>
-                    {(a.dependsOn?.length ?? 0) > 0 && (
-                      <span className="board-card-deps">after {a.dependsOn?.join(", ")}</span>
-                    )}
-                  </button>
-                </li>
-              ))}
+              {cards.map((a) => {
+                const phase = agentPhase(a, agents, asking);
+                const deps = resolveDeps(a, agents);
+                return (
+                  <li key={a.id}>
+                    <button
+                      type="button"
+                      className={`board-card${phase === "blocked" ? " blocked" : ""}`}
+                      onClick={() => onOpenAgent(a.id)}
+                    >
+                      <span className="board-card-top">
+                        <PhaseGlyph phase={phase} />
+                        <span className="board-card-name">{a.name || a.id}</span>
+                        <span className="board-card-role">{roleNames[a.role] || a.role}</span>
+                      </span>
+                      <span className="board-card-task">{a.task}</span>
+                      {deps.length > 0 && (
+                        <span className="board-card-deps">
+                          {phase === "blocked" ? "blocked by " : "after "}
+                          {deps.map((d, i) => (
+                            <span key={d.id} className={d.status === "succeeded" ? "dep-ok" : "dep-wait"}>
+                              {i > 0 && ", "}
+                              {agentName(d, roleNames)}
+                              {d.status === "succeeded" ? " ✓" : ""}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         );

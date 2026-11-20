@@ -28,7 +28,7 @@ function fmtIdleDuration(ms: number): string {
 export function ThreadClock({
   t,
 }: {
-  t: { runningAgents?: number; updatedAt?: string; staleAfterSeconds?: number };
+  t: { runningAgents?: number; updatedAt?: string; staleAfterSeconds?: number; messages?: number };
 }) {
   const [, bump] = useState(0);
   useEffect(() => {
@@ -39,6 +39,8 @@ export function ThreadClock({
   if ((t.runningAgents ?? 0) > 0) {
     return <span className="pill run">● Working</span>;
   }
+  // A thread with no history has nothing to go stale.
+  if (t.messages === 0) return null;
   const at = t.updatedAt ? Date.parse(t.updatedAt) : NaN;
   if (Number.isNaN(at)) return null;
   const idleMs = Date.now() - at;

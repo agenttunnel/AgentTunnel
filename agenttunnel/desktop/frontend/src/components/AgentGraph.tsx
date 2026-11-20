@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   computeGraph,
   type GraphNode,
@@ -34,6 +34,11 @@ import {
 import type { Rpc } from "../lib/rpc";
 import { fmtTokens, type TokenUsage } from "../lib/usage";
 import { Markdown } from "./Markdown";
+import { PhaseGlyph } from "./AgentStatus";
+import { agentPhase, askingAgents, PHASE_LABEL, type AgentPhase } from "../lib/agentTree";
+import { setAgentFocus, useFocusedAgent } from "../lib/agentLive";
+import { useLatestCallback } from "../lib/store";
+import type { AgentQuestion } from "../lib/questions";
 
 type GraphAgent = {
   id: string;
@@ -72,7 +77,88 @@ const ms = (iso: string) => Date.parse(iso);
 const GROUP_PAD = 12;
 const GROUP_HEAD = 30;
 
+/** Fit-to-view never shrinks the graph below this; past it the canvas scrolls. */
+const MIN_FIT = 0.4;
+/** Roughly what the playback bar and legend take above the canvas. */
+const GRAPH_CHROME_H = 96;
+
 type Proximity = { from: string; to: string; snapped: boolean };
+
+type NodeProps = {
+  n: GraphNode;
+  phase: AgentPhase;
+  selected: boolean;
+  /** Another node is selected and this one is not linked to it. */
+  dim: boolean;
+  near: boolean;
+  snap: boolean;
+  born: boolean;
+  onDown: (e: ReactPointerEvent<HTMLButtonElement>, n: GraphNode) => void;
+  onMove: (e: ReactPointerEvent<HTMLButtonElement>) => void;
+  onUp: (e: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPick: (id: string) => void;
+};
+
+/** One agent node. Memoized on what it draws, so a drag or a usage step
+ * re-renders only the nodes that changed. */
+const GraphNodeView = memo(
+  function GraphNodeView({ n, phase, selected, dim, near, snap, born, onDown, onMove, onUp, onPick }: NodeProps) {
+    const tint = harnessTint(n.harness);
+    return (
+      <button
+        className={`graph-node enter ag-${phase}${tint ? ` ${tint}` : ""}${near ? " near" : ""}${snap ? " snap" : ""}${
+          born ? " born" : ""
+        }${selected ? " selected" : ""}${dim ? " dim" : ""}`}
+        style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
+        onPointerDown={(e) => onDown(e, n)}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+        onClick={() => onPick(n.id)}
+        aria-pressed={selected}
+        aria-label={`${n.name} (${n.role}), ${PHASE_LABEL[phase]}${n.model ? ` · ${n.model}` : ""} — open details`}
+      >
+        {near && (
+          <span className="graph-rings" aria-hidden>
+            <i />
+            <i />
+            <i />
+          </span>
+        )}
+        <div className="graph-node-head">
+          <PhaseGlyph phase={phase} />
+          <span className="graph-node-name">{n.name}</span>
+          {n.tokens > 0 && <span className="graph-node-tokens">{fmtTokens(n.tokens)}</span>}
+        </div>
+        <div className="graph-node-sub">
+          <span className="graph-node-role">{n.role}</span>
+          <span className="graph-node-phase">{PHASE_LABEL[phase]}</span>
+        </div>
+        {n.model && <div className="graph-node-model">{n.model}</div>}
+      </button>
+    );
+  },
+  (a, b) =>
+    a.phase === b.phase &&
+    a.selected === b.selected &&
+    a.dim === b.dim &&
+    a.near === b.near &&
+    a.snap === b.snap &&
+    a.born === b.born &&
+    a.onDown === b.onDown &&
+    a.onMove === b.onMove &&
+    a.onUp === b.onUp &&
+    a.onPick === b.onPick &&
+    a.n.x === b.n.x &&
+    a.n.y === b.n.y &&
+    a.n.width === b.n.width &&
+    a.n.height === b.n.height &&
+    a.n.name === b.n.name &&
+    a.n.role === b.n.role &&
+    a.n.model === b.n.model &&
+    a.n.harness === b.n.harness &&
+    a.n.tokens === b.n.tokens,
+);
 const sameProximity = (a: Proximity | null, b: Proximity | null) =>
   a === b || (!!a && !!b && a.to === b.to && a.snapped === b.snapped);
 
@@ -96,6 +182,7 @@ export function AgentGraph({
   usage,
   mailbox,
   peerMailbox,
+  questions,
   onOpenAgent,
   onSubmitGroup,
 }: {
@@ -106,6 +193,8 @@ export function AgentGraph({
   usage: Record<string, { usage: TokenUsage }> | null;
   mailbox: MailboxMessage[] | null;
   peerMailbox: boolean;
+  /** Open questions mark their agents as waiting on you. */
+  questions?: AgentQuestion[] | null;
   onOpenAgent: (id: string) => void;
   /** Sends a group prompt to the thread: a new turn, or a steer while one runs. */
   onSubmitGroup: (threadId: string, text: string) => void;
@@ -198,6 +287,52 @@ export function AgentGraph({
     [folded, agents, roleNames, usage, mailbox, positions],
   );
   const byId = useMemo(() => new Map(members.map((a) => [a.id, a])), [members]);
+  const phases = useMemo(() => {
+    const asking = askingAgents(questions);
+    return new Map(members.map((a) => [a.id, agentPhase(a, members, asking)]));
+  }, [members, questions]);
+  // The agent selected here or in the Agents panel; its edges stay lit and
+  // unrelated nodes recede.
+  const selected = useFocusedAgent(threadId);
+  const linked = useMemo(() => {
+    if (!selected || !byId.has(selected)) return null;
+    const ids = new Set([selected]);
+    for (const e of [...layout.spawnEdges, ...layout.dependEdges, ...layout.messageEdges]) {
+      if (e.from === selected) ids.add(e.to);
+      if (e.to === selected) ids.add(e.from);
+    }
+    return ids;
+  }, [selected, byId, layout]);
+  const touches = (e: { from: string; to: string }) =>
+    linked && selected ? (e.from === selected || e.to === selected ? " lit" : " dim") : "";
+
+  // Fit-to-view: the canvas scales down (never up) to the visible area, measured
+  // only when the container resizes.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+  const [fit, setFit] = useState(true);
+  // The empty state renders a different scroll box, so observe again when it swaps.
+  const isEmpty = members.length === 0;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => {
+      const w = Math.round(entry.contentRect.width);
+      const h = Math.round(entry.contentRect.height);
+      setBox((b) => (b && b.w === w && b.h === h ? b : { w, h }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isEmpty]);
+  const scale =
+    fit && box
+      ? Math.max(
+          MIN_FIT,
+          Math.min(1, (box.w - 8) / layout.width, Math.max(160, box.h - GRAPH_CHROME_H) / layout.height),
+        )
+      : 1;
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   // Groups are read pruned: an agent that vanished in replay drops out of its group.
   const liveGroups = useMemo(
     () => pruneGroups(groups, new Set(members.map((a) => a.id))),
@@ -252,8 +387,8 @@ export function AgentGraph({
   const moveDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const d = drag.current;
     if (!d || e.pointerId !== d.pointer) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
+    const dx = (e.clientX - d.startX) / scaleRef.current;
+    const dy = (e.clientY - d.startY) / scaleRef.current;
     if (!d.moved && Math.hypot(dx, dy) < DRAG_SLOP) return;
     d.moved = true;
     let x = Math.max(0, d.x + dx);
@@ -312,6 +447,17 @@ export function AgentGraph({
     proxRef.current = null;
     setProx(null);
   };
+  const onNodeDown = useLatestCallback(startDrag);
+  const onNodeMove = useLatestCallback(moveDrag);
+  const onNodeUp = useLatestCallback(endDrag);
+  const onNodePick = useLatestCallback((id: string) => {
+    if (dragEnded.current === id) {
+      dragEnded.current = null;
+      return;
+    }
+    setAgentFocus({ threadId, agentId: id });
+    onOpenAgent(id);
+  });
   const nameOf = (id: string) => {
     const a = byId.get(id);
     return a ? a.name || roleNames[a.role] || a.role : id;
@@ -461,7 +607,7 @@ export function AgentGraph({
   // point in history, so the playback bar must stay mounted to scrub forward.
   if (members.length === 0 && !replay) {
     return (
-      <div className="graph-scroll">
+      <div className="graph-scroll" ref={scrollRef}>
         <div className="empty">
           No agents yet. Describe a task in Chat and the team appears here.
         </div>
@@ -481,7 +627,7 @@ export function AgentGraph({
     : undefined;
 
   return (
-    <div className="graph-scroll">
+    <div className="graph-scroll" ref={scrollRef}>
       {feed.loaded && total > 0 && (
         <div className="graph-bar" role="group" aria-label="Graph playback">
           <button
@@ -605,11 +751,24 @@ export function AgentGraph({
         <span>
           <i className="graph-lg message" /> message
         </span>
+        {selected && linked && (
+          <button className="graph-reset" onClick={() => setAgentFocus(null)}>
+            Clear selection
+          </button>
+        )}
         {Object.keys(positions).length > 0 && (
           <button className="graph-reset" onClick={() => setPositions({})}>
             Reset layout
           </button>
         )}
+        <button
+          className={`graph-reset graph-fit${fit ? " on" : ""}`}
+          aria-pressed={fit}
+          title={fit ? "Show at full size" : "Fit the graph to the view"}
+          onClick={() => setFit((f) => !f)}
+        >
+          {fit && scale < 1 ? `Fit · ${Math.round(scale * 100)}%` : fit ? "Fit" : "100%"}
+        </button>
       </div>
       {composeGroup && (
         <div className="graph-composer">
@@ -654,7 +813,15 @@ export function AgentGraph({
         </div>
       )}
       {/* A press that moves past the slop drags the node; one that does not is a click. */}
-      <div className="graph-canvas" style={{ width: layout.width, height: layout.height }}>
+      <div className="graph-fit-box" style={{ width: layout.width * scale, height: layout.height * scale }}>
+      <div
+        className="graph-canvas"
+        style={{
+          width: layout.width,
+          height: layout.height,
+          transform: scale < 1 ? `scale(${scale})` : undefined,
+        }}
+      >
         <svg className="graph-edges" width={layout.width} height={layout.height}>
           <defs>
             <marker
@@ -670,13 +837,13 @@ export function AgentGraph({
             </marker>
           </defs>
           {layout.spawnEdges.map((e) => (
-            <path key={e.key} className="graph-spawn" d={e.path} />
+            <path key={e.key} className={`graph-spawn${touches(e)}`} d={e.path} />
           ))}
           {layout.dependEdges.map((e) => (
-            <path key={e.key} className="graph-depends" d={e.path} />
+            <path key={e.key} className={`graph-depends${touches(e)}`} d={e.path} />
           ))}
           {layout.messageEdges.map((e) => (
-            <g key={e.key} className={onPair(e.from, e.to) ? "graph-pair on" : "graph-pair"}>
+            <g key={e.key} className={`${onPair(e.from, e.to) ? "graph-pair on" : "graph-pair"}${touches(e)}`}>
               <path className="graph-msg" d={e.path} markerEnd="url(#ag-arrow)" />
               <text className="graph-msg-count" x={e.labelX} y={e.labelY} textAnchor="middle">
                 {e.count === 1 ? "1 msg" : `${e.count} msgs`}
@@ -733,47 +900,22 @@ export function AgentGraph({
             </div>
           </div>
         ))}
-        {layout.nodes.map((n) => {
-          const tint = harnessTint(n.harness);
-          return (
-            <button
-              key={n.id}
-              className={`graph-node enter${tint ? ` ${tint}` : ""}${
-                prox?.to === n.id ? " near" : ""
-              }${prox?.from === n.id && prox.snapped ? " snap" : ""}${
-                birth?.members.includes(n.id) ? " born" : ""
-              }`}
-            style={{ left: n.x, top: n.y, width: n.width, height: n.height }}
-            onPointerDown={(e) => startDrag(e, n)}
-            onPointerMove={moveDrag}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
-            onClick={() => {
-              if (dragEnded.current === n.id) {
-                dragEnded.current = null;
-                return;
-              }
-              onOpenAgent(n.id);
-            }}
-            aria-label={`${n.name} (${n.role})${n.model ? ` · ${n.model}` : ""} — open details`}
-          >
-            {prox?.to === n.id && (
-              <span className="graph-rings" aria-hidden>
-                <i />
-                <i />
-                <i />
-              </span>
-            )}
-            <div className="graph-node-head">
-              <span className={`dot ${n.status}`} />
-              <span className="graph-node-name">{n.name}</span>
-              {n.tokens > 0 && <span className="graph-node-tokens">{fmtTokens(n.tokens)}</span>}
-            </div>
-            <div className="graph-node-role">{n.role}</div>
-            {n.model && <div className="graph-node-model">{n.model}</div>}
-            </button>
-          );
-        })}
+        {layout.nodes.map((n) => (
+          <GraphNodeView
+            key={n.id}
+            n={n}
+            phase={phases.get(n.id) ?? "queued"}
+            selected={n.id === selected}
+            dim={!!linked && !linked.has(n.id)}
+            near={prox?.to === n.id}
+            snap={prox?.from === n.id && prox.snapped}
+            born={!!birth?.members.includes(n.id)}
+            onDown={onNodeDown}
+            onMove={onNodeMove}
+            onUp={onNodeUp}
+            onPick={onNodePick}
+          />
+        ))}
         {unlinks.map((u) => (
           <button
             key={`unlink-${u.id}`}
@@ -786,6 +928,7 @@ export function AgentGraph({
             ×
           </button>
         ))}
+      </div>
       </div>
 
       {conversation && talk.length > 0 && (

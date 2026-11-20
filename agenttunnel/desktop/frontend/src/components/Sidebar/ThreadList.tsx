@@ -9,6 +9,7 @@ import { createStore, useStoreField } from "../../lib/store";
 import { clickable } from "../../lib/switchProps";
 import { arrangeThreads, threadSearchScore, visibleThreadRows } from "../../lib/threads";
 import { ThreadClock, fmtUpdated } from "../ThreadClock";
+import { needsAttention, STATUS_LABEL, threadStatus } from "../../lib/threadStatus";
 
 /** The thread search text, one for every screen that lists threads. */
 export const threadSearch = createStore({ query: "" });
@@ -20,7 +21,16 @@ export function ThreadSearch() {
   return (
     <input
       className="thread-filter"
-      placeholder="Search threads…"
+      type="search"
+      aria-label="Search threads"
+      title="Search threads (/)"
+      placeholder="Search threads…  /"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && threadFilter) {
+          e.stopPropagation();
+          setQuery("");
+        }
+      }}
       value={threadFilter}
       onChange={(e) => setQuery(e.target.value)}
     />
@@ -82,15 +92,20 @@ export const ThreadList = memo(function ThreadList({
             {query !== "" ? "No threads match that search." : "No threads yet"}
           </div>
         )}
-        {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => (
+        {visibleThreadRows(projectThreads, collapsedThreads, (t) => t.id).map((t) => {
+          const status = threadStatus(t);
+          const label = STATUS_LABEL[status];
+          const attn = needsAttention(status);
+          return (
           <div
             key={t.id}
-            className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""} ${harnessTint(t.harness ?? "")}`}
+            className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""}${attn ? " attn" : ""} ${harnessTint(t.harness ?? "")}`}
             style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
             {...clickable(() => {
               if (t.subthreads > 0) toggleSubthreads(t.id);
               onSelect(t.id);
             })}
+            aria-current={t.id === activeId ? "true" : undefined}
             onContextMenu={(e) => onMenu(t, e)}
           >
             {t.waiting && (
@@ -99,6 +114,7 @@ export const ThreadList = memo(function ThreadList({
               </svg>
             )}
             <div className="t" title={t.title}>
+              {attn && <span className="attn-dot" aria-label={label} />}
               {t.title}
               {t.waiting && (
                 <span className="row-scheduled" title={`Scheduled — waiting on ${t.waiting.dependsOn.length} thread${t.waiting.dependsOn.length === 1 ? "" : "s"}`}>
@@ -111,10 +127,15 @@ export const ThreadList = memo(function ThreadList({
                 </span>
               )}
             </div>
-            <div className="m">
-              {t.messages} msgs · {t.agents} agents{t.autoMode ? " · auto" : ""}
-            </div>
+            {t.messages > 0 && (
+              <div className="m">
+                {t.messages} msg{t.messages === 1 ? "" : "s"}
+                {t.agents > 0 ? ` · ${t.agents} agent${t.agents === 1 ? "" : "s"}` : ""}
+                {t.autoMode ? " · auto" : ""}
+              </div>
+            )}
             <div className="thread-row-foot">
+              {status !== "running" && label && <span className={`status-chip ${status}`}>{label}</span>}
               <ThreadClock t={t} />
               {t.controlledBy && (
                 <button
@@ -139,7 +160,8 @@ export const ThreadList = memo(function ThreadList({
               {fmtUpdated(t.updatedAt) && <span className="u">{fmtUpdated(t.updatedAt)}</span>}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </>
   );

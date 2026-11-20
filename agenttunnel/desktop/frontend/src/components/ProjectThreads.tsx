@@ -9,6 +9,7 @@ import { clickable } from "../lib/switchProps";
 import { useProjectThreads } from "./Sidebar/ThreadList";
 import { ThreadBoard, type BoardIssue, type BoardIssues, type ThreadState as BoardThreadState } from "./ThreadBoard";
 import { ThreadClock, fmtUpdated } from "./ThreadClock";
+import { needsAttention, STATUS_LABEL, threadStatus } from "../lib/threadStatus";
 
 export const ProjectThreads = memo(function ProjectThreads({
   threads,
@@ -72,9 +73,11 @@ export const ProjectThreads = memo(function ProjectThreads({
           </div>
           {projectThreads.map((t) => {
             const tint = t.soloRuntime ? harnessTint(t.soloRuntime.harness ?? "") : "";
+            const status = threadStatus(t);
+            const label = STATUS_LABEL[status];
             return (
               <div
-                className={`thread-card${t.stale ? " is-stale" : ""}${tint ? ` ${tint}` : ""}`}
+                className={`thread-card${t.stale ? " is-stale" : ""}${needsAttention(status) ? " attn" : ""}${tint ? ` ${tint}` : ""}`}
                 key={t.id}
                 style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
                 {...clickable(() => onSelect(t.id))}
@@ -91,9 +94,12 @@ export const ProjectThreads = memo(function ProjectThreads({
                   )}
                 </div>
                 <div className="tc-meta">
-                  {t.messages} messages · {t.agents} agents{t.autoMode ? " · auto" : ""}
+                  {t.messages > 0
+                    ? `${t.messages} message${t.messages === 1 ? "" : "s"} · ${t.agents} agent${t.agents === 1 ? "" : "s"}${t.autoMode ? " · auto" : ""}`
+                    : "No messages yet"}
                 </div>
                 <div className="tc-foot">
+                  {status !== "running" && label && <span className={`status-chip ${status}`}>{label}</span>}
                   <ThreadClock t={t} />
                   {fmtUpdated(t.updatedAt) && (
                     <span className="tc-updated">Updated {fmtUpdated(t.updatedAt)}</span>

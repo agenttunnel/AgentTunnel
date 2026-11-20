@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
 import { getPref, setPref } from "../lib/prefs";
+import { ALT, CENTER_TAB_KEYS, MOD } from "../lib/navKeys";
 
 const SEEN_KEY = "at.cheatSheetSeen";
 // Before the sheet became first-run only, users could opt out of it showing on
@@ -14,7 +15,7 @@ export function showCheatSheetOnLaunch(): boolean {
   return getPref(SEEN_KEY) !== "1" && getPref(LEGACY_OPT_OUT_KEY) !== "1";
 }
 
-function markCheatSheetSeen() {
+export function markCheatSheetSeen() {
   if (getPref(SEEN_KEY) !== "1") setPref(SEEN_KEY, "1");
 }
 
@@ -60,7 +61,7 @@ export function CheatSheet({ panels, onClose }: { panels: Panel[]; onClose: () =
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sheet-head">
-          <strong id="cheat-sheet-title">How to use AgentTunnel</strong>
+          <strong id="cheat-sheet-title">AgentTunnel reference</strong>
           <span className="hint">Esc closes · reopen with /help</span>
         </div>
         <div className="sheet-body cheat-body">
@@ -94,6 +95,33 @@ export function CheatSheet({ panels, onClose }: { panels: Panel[]; onClose: () =
               <li>
                 <kbd>Option</kbd>/<kbd>Alt</kbd>+<kbd>Tab</kbd> opens All threads;
                 press <kbd>Tab</kbd> again to step through the list.
+              </li>
+            </ul>
+          </section>
+
+          <section className="set-section">
+            <h4>Getting around</h4>
+            <ul className="cheat-list">
+              <li>
+                <kbd>{MOD}K</kbd> (or <kbd>{MOD}P</kbd>) opens the palette: any thread, project, file
+                or command. Start with <kbd>&gt;</kbd> for commands only, <kbd>@</kbd> for places.
+              </li>
+              <li>
+                {CENTER_TAB_KEYS.map((t, i) => (
+                  <span key={t.tab}>
+                    {i > 0 && ", "}
+                    <kbd>
+                      {ALT}
+                      {i + 1}
+                    </kbd>{" "}
+                    {t.label}
+                  </span>
+                ))}{" "}
+                switch the thread view, even while typing.
+              </li>
+              <li>
+                <kbd>/</kbd> outside a text field searches the thread list. The header names the
+                project and thread; click the project to see all its threads.
               </li>
             </ul>
           </section>

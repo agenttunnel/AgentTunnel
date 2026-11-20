@@ -1,6 +1,6 @@
 import type { ImageRef } from "./rpc";
 import type { Attachment, FileMatch } from "./mentions";
-import { getPref, setLocalPref } from "./prefs";
+import { getPref, setLocalPref, setPref } from "./prefs";
 import { createStore } from "./store";
 
 /** Image caps mirror the daemon's /attachments endpoint so a bad paste fails
@@ -88,7 +88,30 @@ export const composerStore = createStore({
   // Shell-style prompt history: the index of the sent prompt the composer shows
   // (null = the live draft), with the draft to restore on ArrowDown past the newest.
   recall: null as { key: string; idx: number; draft: string } | null,
+  // What Enter does while a turn runs: steer it now, or hold the draft and
+  // start it as the next turn the moment this one ends.
+  runMode: (getPref("at.runMode") === "queue" ? "queue" : "steer") as RunMode,
+  // Drafts held for the next turn, by draft key. The text stays in the draft
+  // (editable) until App sends it when the turn ends.
+  queued: {} as Record<string, true>,
 });
+
+export type RunMode = "steer" | "queue";
+export const setQueued = composerStore.setter("queued");
+const setRunModeState = composerStore.setter("runMode");
+export function setRunMode(mode: RunMode) {
+  setRunModeState(mode);
+  setPref("at.runMode", mode);
+}
+/** Drops a draft's queued mark; the text itself stays. */
+export function unqueue(key: string) {
+  setQueued((prev) => {
+    if (!prev[key]) return prev;
+    const rest = { ...prev };
+    delete rest[key];
+    return rest;
+  });
+}
 
 export const setDrafts = composerStore.setter("drafts");
 export const setPastes = composerStore.setter("pastes");

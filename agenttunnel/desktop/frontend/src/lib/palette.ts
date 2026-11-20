@@ -1,12 +1,15 @@
 /**
- * Command palette (Cmd/Ctrl+P): pure data, fuzzy matching, and grouping. No
- * React. Items are built per open from the handlers App already has, so a
+ * Command palette (Cmd/Ctrl+K or P): pure data, fuzzy matching, and grouping.
+ * No React. Items are built per open from the handlers App already has, so a
  * palette row never starts or steers a turn on its own.
  */
 
 import type { CenterTab, SlashCommand } from "./commands";
+import { fuzzyScore } from "./fuzzy";
+import { ALT, centerTabHint, MOD } from "./navKeys";
+import { STATUS_LABEL, threadStatus } from "./threadStatus";
 
-export type PaletteKind = "command" | "composer" | "thread" | "project";
+export type PaletteKind = "command" | "composer" | "thread" | "project" | "file";
 
 export type PaletteItem = {
   id: string;
@@ -44,8 +47,9 @@ export type PaletteActions<P extends string> = {
   toggleAutoMode: () => void;
   togglePeerMailbox: () => void;
   toggleCompact: () => void;
-  /** Opens the environment-wide Worktrees page; omitted where there is none. */
-  goToWorktrees?: () => void;
+  /** Opens an environment page: Projects, Orchestrator, Worktrees or Stats. */
+  goToPage: (page: "projects" | "orchestrator" | "worktrees" | "stats") => void;
+  openHelp: () => void;
 };
 
 const CENTER_TABS: { tab: CenterTab; label: string }[] = [
@@ -53,9 +57,16 @@ const CENTER_TABS: { tab: CenterTab; label: string }[] = [
   { tab: "review", label: "Show review" },
   { tab: "files", label: "Show files" },
   { tab: "graph", label: "Show agent graph" },
-  { tab: "board", label: "Show task board" },
   { tab: "p2p", label: "Show agent chat" },
+  { tab: "board", label: "Show task board" },
 ];
+
+const PAGES = [
+  { page: "projects", label: "Go to Projects" },
+  { page: "orchestrator", label: "Go to Orchestrator" },
+  { page: "worktrees", label: "Go to Worktrees" },
+  { page: "stats", label: "Go to Stats" },
+] as const;
 
 /** Generic over the aside panel ids, like commands.ts buildCommands. Callers
  * pass arrow-wrapped actions, so handlers resolve at call time. */
@@ -65,9 +76,12 @@ export function buildCommands<P extends string>(a: PaletteActions<P>): PaletteIt
     out.push({ id, kind: "command", group, label, run, ...extra });
 
   if (a.hasThread) {
-    for (const { tab, label } of CENTER_TABS) cmd(`tab:${tab}`, "Navigate", label, () => a.setTab(tab));
-    cmd("view:compact", "Navigate", "Toggle compact mode", a.toggleCompact, {
+    for (const { tab, label } of CENTER_TABS) {
+      cmd(`tab:${tab}`, "Thread view", label, () => a.setTab(tab), { hint: centerTabHint(tab) });
+    }
+    cmd("view:compact", "Thread view", "Toggle compact mode", a.toggleCompact, {
       detail: a.compact ? "on" : "off",
+      hint: `${MOD}S`,
     });
     for (const id of Object.keys(a.panels) as P[]) {
       if (a.pinned.includes(id)) continue;
@@ -88,11 +102,12 @@ export function buildCommands<P extends string>(a: PaletteActions<P>): PaletteIt
     cmd("thread:new", "Thread", "Create thread", a.newThread);
   }
 
-  cmd("view:super", "Navigate", "All threads across projects", a.openSuperView);
-  cmd("project:new", "Project", "Create project", a.createProject);
-  if (a.goToWorktrees) cmd("home:worktrees", "Navigate", "Go to worktrees", a.goToWorktrees);
+  for (const { page, label } of PAGES) cmd(`home:${page}`, "Go to", label, () => a.goToPage(page));
+  cmd("view:super", "Go to", "All threads across projects", a.openSuperView, { hint: `${ALT}Tab` });
+  cmd("project:new", "Project", "Open a folder as a project", a.createProject);
   cmd("app:refresh", "App", "Refresh", a.refresh);
   cmd("app:settings", "App", "Open settings", a.openSettings);
+  cmd("app:help", "App", "Keyboard shortcuts and help", a.openHelp, { detail: "/help" });
   return out;
 }
 
@@ -123,22 +138,30 @@ export function composerItems(a: {
   return out;
 }
 
-export type ThreadLike = { id: string; title: string; projectId?: string };
+export type ThreadLike = Parameters<typeof threadStatus>[0] & { id: string; title: string; projectId?: string };
 
+/** Every thread, the current project's first; the detail names the project
+ * (outside the current one) and any status worth a glance. */
 export function threadItems(
   list: ThreadLike[],
   projectNames: Map<string, string>,
-  showProject: boolean,
+  currentProject: string | null,
   goTo: (t: ThreadLike) => void,
 ): PaletteItem[] {
-  return list.map((t) => ({
-    id: `thread:${t.id}`,
-    kind: "thread",
-    group: "Go to thread",
-    label: t.title || "Untitled thread",
-    detail: showProject && t.projectId ? projectNames.get(t.projectId) : undefined,
-    run: () => goTo(t),
-  }));
+  const here = list.filter((t) => t.projectId === currentProject);
+  const there = list.filter((t) => t.projectId !== currentProject);
+  return [...here, ...there].map((t) => {
+    const status = STATUS_LABEL[threadStatus(t)];
+    const project = t.projectId !== currentProject && t.projectId ? projectNames.get(t.projectId) : undefined;
+    return {
+      id: `thread:${t.id}`,
+      kind: "thread",
+      group: "Threads",
+      label: t.title || "Untitled thread",
+      detail: [status, project].filter(Boolean).join(" · ") || undefined,
+      run: () => goTo(t),
+    };
+  });
 }
 
 export function projectItems(
@@ -148,11 +171,26 @@ export function projectItems(
   return projects.map((p) => ({
     id: `project:${p.id}`,
     kind: "project",
-    group: "Go to project",
+    group: "Projects",
     label: p.name,
     detail: p.path,
     run: () => goTo(p.id),
   }));
+}
+
+/** Moves the recently opened items (by id, newest first) into a leading
+ * "Recent" group; the rest keep their order. */
+export function withRecent(items: PaletteItem[], recent: string[], max = 6): PaletteItem[] {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const lead: PaletteItem[] = [];
+  for (const id of recent) {
+    const item = byId.get(id);
+    if (!item) continue;
+    lead.push({ ...item, group: "Recent" });
+    byId.delete(id);
+    if (lead.length >= max) break;
+  }
+  return [...lead, ...items.filter((i) => byId.has(i.id))];
 }
 
 /** Groups keep the order of their first item. */
@@ -166,7 +204,7 @@ export function groupItems(items: PaletteItem[]): PaletteSection[] {
   return [...byTitle].map(([title, list]) => ({ title, items: list }));
 }
 
-/** ">" limits the palette to commands, "@" to threads and projects. */
+/** ">" limits the palette to commands, "@" to threads, projects and files. */
 export type PaletteScope = "all" | "commands" | "targets";
 
 export function parseScope(raw: string): { scope: PaletteScope; text: string } {
@@ -176,31 +214,10 @@ export function parseScope(raw: string): { scope: PaletteScope; text: string } {
   return { scope: "all", text: t.trim().toLowerCase() };
 }
 
-/** -1 when the query is not a subsequence of text. Substring hits outrank
- * scattered ones; consecutive and word-start hits score higher. */
-export function fuzzyScore(query: string, text: string): number {
-  if (!query) return 0;
-  const t = text.toLowerCase();
-  const at = t.indexOf(query);
-  if (at >= 0) return 1000 - at;
-  let score = 0;
-  let from = 0;
-  let prev = -2;
-  for (const ch of query) {
-    const idx = t.indexOf(ch, from);
-    if (idx < 0) return -1;
-    score += idx === prev + 1 ? 3 : 1;
-    if (idx === 0 || /[\s\-_/.]/.test(t[idx - 1])) score += 2;
-    prev = idx;
-    from = idx + 1;
-  }
-  return score;
-}
-
 const KIND_IN_SCOPE: Record<PaletteScope, (k: PaletteKind) => boolean> = {
   all: () => true,
   commands: (k) => k === "command" || k === "composer",
-  targets: (k) => k === "thread" || k === "project",
+  targets: (k) => k === "thread" || k === "project" || k === "file",
 };
 
 /** Filters and ranks sections, rendering at most `cap` rows across them. With
@@ -218,8 +235,9 @@ export function filterSections(
     const scored: { item: PaletteItem; score: number }[] = [];
     for (const item of s.items) {
       if (!KIND_IN_SCOPE[scope](item.kind)) continue;
-      const score = fuzzyScore(text, `${item.label} ${item.detail ?? ""}`);
-      if (score >= 0) scored.push({ item, score });
+      // The label decides the rank; the detail (project, path) can still match.
+      const score = fuzzyScore(text, item.label) ?? fuzzyScore(text, `${item.label} ${item.detail ?? ""}`);
+      if (score !== null) scored.push({ item, score });
     }
     if (text) scored.sort((a, b) => b.score - a.score);
     const shown = scored.slice(0, Math.max(budget, 0)).map((x) => x.item);
