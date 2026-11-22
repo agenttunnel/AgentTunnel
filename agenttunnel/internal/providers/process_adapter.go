@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -26,7 +27,24 @@ type ProcessAdapter struct {
 	waitDone chan struct{}
 	waitErr  error
 	closed   bool
+
+	// killTree signals the child's whole process group. A field so a test can
+	// model a signal that misses a grandchild still forking.
+	killTree func(*exec.Cmd)
+	// kill is closed by Stop, asking the reaper to sweep the group.
+	kill     chan struct{}
+	killOnce sync.Once
 }
+
+// The reaper re-signals a stopped child's process group until its pipes close.
+// It starts at reapInterval and doubles up to reapIntervalMax, and gives up
+// after reapBudget: a grandchild that left the group (setsid) keeps the pipe
+// open with no process left to signal, so an unbounded sweep would only spin.
+const (
+	reapInterval    = 10 * time.Millisecond
+	reapIntervalMax = 250 * time.Millisecond
+	reapBudget      = 10 * time.Second
+)
 
 // NewProcessAdapter builds an adapter for a driver.
 func NewProcessAdapter(driver Driver) *ProcessAdapter {
@@ -35,6 +53,8 @@ func NewProcessAdapter(driver Driver) *ProcessAdapter {
 		events:   make(chan Event, 256),
 		stop:     make(chan struct{}),
 		waitDone: make(chan struct{}),
+		killTree: killProcessGroup,
+		kill:     make(chan struct{}),
 	}
 }
 
@@ -57,7 +77,7 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 	setProcessGroup(cmd)
 	// Context cancellation must reap the whole process group, or an orphaned
 	// grandchild keeps the stdout pipe open and blocks streaming forever.
-	cmd.Cancel = func() error { killProcessGroup(cmd); return nil }
+	cmd.Cancel = func() error { p.killTree(cmd); return nil }
 	if spec.Workdir != "" {
 		cmd.Dir = spec.Workdir
 	}
@@ -118,9 +138,12 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 	wg.Add(2)
 	go func() { defer wg.Done(); p.pump(stdout, tr, contracts.LogText) }()
 	go func() { defer wg.Done(); p.pump(stderr, tr, contracts.LogRaw) }()
+	drained := make(chan struct{})
+	go func() { wg.Wait(); close(drained) }()
+	go p.reap(ctx, cmd, drained)
 
 	go func() {
-		wg.Wait() // drain pipes fully before reaping
+		<-drained // drain pipes fully before reaping
 		err := cmd.Wait()
 		if err != nil {
 			p.emit(Event{Kind: contracts.LogError, Text: err.Error()})
@@ -128,6 +151,43 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 		p.finish(err)
 	}()
 	return nil
+}
+
+// reap keeps a stopped child's process group signalled until its pipes close.
+// One signal can miss a grandchild that is still forking when it lands; that
+// grandchild is then reparented and holds the stdout pipe open, so the drain
+// (and with it the turn's unwind) would wait for it to exit on its own. The
+// leader stays unreaped until drained, so its pgid cannot be reused meanwhile.
+func (p *ProcessAdapter) reap(ctx context.Context, cmd *exec.Cmd, drained <-chan struct{}) {
+	select {
+	case <-drained:
+		return
+	case <-ctx.Done():
+	case <-p.kill:
+	}
+	deadline := time.Now().Add(reapBudget)
+	gap := reapInterval
+	for {
+		// Check drained before each signal, so a sweep that starts after the
+		// pipes closed (and possibly after cmd.Wait reaped the leader) stops.
+		select {
+		case <-drained:
+			return
+		default:
+		}
+		p.killTree(cmd)
+		if time.Now().After(deadline) {
+			return
+		}
+		t := time.NewTimer(gap)
+		select {
+		case <-drained:
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		gap = min(gap*2, reapIntervalMax)
+	}
 }
 
 // Stream returns the normalized event channel for the running session.
@@ -173,7 +233,8 @@ func (p *ProcessAdapter) Stop(_ context.Context) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	killProcessGroup(cmd)
+	p.killOnce.Do(func() { close(p.kill) })
+	p.killTree(cmd)
 	return nil
 }
 
