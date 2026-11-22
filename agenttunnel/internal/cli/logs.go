@@ -28,10 +28,11 @@ const (
 	// without a status event we saw.
 	followPollInterval = 2 * time.Second
 	// followStartGrace bounds how long a follower waits for a turn to appear
-	// before giving up. A detached turn that fails before it records an agent
-	// (a dead harness, a refused worktree) writes an error line and no agent;
-	// without this the follower would wait forever and look like a hang.
-	followStartGrace = 15 * time.Second
+	// before giving up. It is a last resort, the same as run --wait's
+	// runStartBound: a detached start cuts the worktree in the background, so a
+	// healthy start on a large repo can take minutes. Reaching the bound only
+	// fails the follow when the daemon also shows no turn for the thread.
+	followStartGrace = 5 * time.Minute
 )
 
 // logsOptions is the parsed `agenttunnel logs` invocation.
@@ -301,7 +302,6 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, e
 		statuses = map[string]contracts.AgentStatus{}
 	}
 	tracker := newTurnTracker(statuses, opts.requireActivity)
-	started := time.Now()
 	for _, ev := range early {
 		printFollowEvent(env, ev, row.ID, opts, tracker)
 	}
@@ -309,29 +309,47 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, e
 		return turnOutcome(tracker)
 	}
 
-	interval, grace := followPollInterval, followStartGrace
+	interval, bound := followPollInterval, followStartGrace
 	if opts.pollEvery > 0 {
 		interval = opts.pollEvery
 	}
 	if opts.startGrace > 0 {
-		grace = opts.startGrace
+		bound = opts.startGrace
 	}
+	noTurn := time.NewTimer(bound)
+	defer noTurn.Stop()
+	noTurnC := noTurn.C
 	poll := time.NewTicker(interval)
 	defer poll.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-poll.C:
+		case <-noTurnC:
+			// The bound is a last resort. Ask the daemon first: a fresh roster,
+			// then whether the thread recorded a turn at all. A turn that has
+			// begun keeps the follower waiting, as run --wait does.
 			if fresh, err := fetchAgentStatuses(ctx, c, row.ID); err == nil {
 				tracker.update(fresh)
 			}
-			if !tracker.started() && time.Since(started) >= grace {
+			if tracker.started() {
+				noTurnC = nil
+				break
+			}
+			begun, err := threadTurnBegun(ctx, c, row.ID)
+			switch {
+			case err != nil:
+				// A failed read is not evidence that the turn never started.
+				noTurn.Reset(bound)
+			case begun:
+				noTurnC = nil
+			default:
 				fmt.Fprintln(env.Err, "no turn started; see `agenttunnel logs` for errors")
 				return failure()
 			}
-			if tracker.ended() {
-				return turnOutcome(tracker)
+		case <-poll.C:
+			if fresh, err := fetchAgentStatuses(ctx, c, row.ID); err == nil {
+				tracker.update(fresh)
 			}
 		case ev, ok := <-c.Events():
 			if !ok {
@@ -341,9 +359,9 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, e
 				return failure()
 			}
 			printFollowEvent(env, ev, row.ID, opts, tracker)
-			if tracker.ended() {
-				return turnOutcome(tracker)
-			}
+		}
+		if tracker.ended() {
+			return turnOutcome(tracker)
 		}
 	}
 }
