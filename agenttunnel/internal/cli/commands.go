@@ -16,7 +16,9 @@ func init() {
 		Summary: "Manage the background AgentTunnel daemon",
 		Subcommands: []Command{
 			{Name: "start", Summary: "Start a detached daemon if one is not running", Usage: "agenttunnel daemon start", Run: runDaemonStart},
-			{Name: "status", Summary: "Show whether a daemon is running", Usage: "agenttunnel daemon status", Run: runDaemonStatus},
+			{Name: "status", Summary: "Show whether a daemon is running and whether the always-on service is installed", Usage: "agenttunnel daemon status", Run: runDaemonStatusService},
+			{Name: "install", Summary: "Run atd in the background from login (launchd, systemd --user, or Task Scheduler)", Usage: "agenttunnel daemon install", Run: runDaemonInstall},
+			{Name: "uninstall", Summary: "Remove the always-on atd service", Usage: "agenttunnel daemon uninstall", Run: runDaemonUninstall},
 			{Name: "stop", Summary: "Stop the running daemon and wait for it to exit", Usage: "agenttunnel daemon stop", Run: runDaemonStop},
 		},
 	})
