@@ -8007,3 +8007,24 @@ section.turn {
   content: " · writing…";
   color: var(--faint);
 }
+
+/* Shown after a dropped daemon socket outlasts its grace period. Centered
+ * pill under the 46px titlebar: no grid row, no animation, and it never
+ * reaches the composer at the bottom edge. Above drawers, below popovers. */
+.link-banner {
+  position: fixed;
+  top: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-overlay);
+  max-width: min(520px, calc(100vw - 24px));
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--warn-line);
+  background: var(--surface-2);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+}
