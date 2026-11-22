@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useEscapeClose } from "../lib/escape";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 /**
  * DraftEditor edits a draft thread before its first turn: the title and the
@@ -38,9 +39,10 @@ export function DraftEditor({
   };
 
   useEscapeClose(onClose);
+  const boxRef = useDialogFocus<HTMLDivElement>();
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="Edit draft" tabIndex={-1} ref={boxRef} onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
           <strong>Draft</strong>
           <button onClick={onClose}>Close</button>

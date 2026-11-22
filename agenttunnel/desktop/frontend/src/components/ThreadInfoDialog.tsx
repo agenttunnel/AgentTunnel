@@ -9,6 +9,7 @@ import {
   type UsageStep,
 } from "../lib/usage";
 import { useEscapeClose } from "../lib/escape";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 // Local structural types: the wire shape of a thread state, without importing
 // the app component (same approach as AgentDetail).
@@ -70,9 +71,10 @@ export function ThreadInfoDialog({
     .filter((a): a is AgentLike => Boolean(a));
 
   useEscapeClose(onClose);
+  const boxRef = useDialogFocus<HTMLDivElement>();
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="sheet wide" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet wide" role="dialog" aria-modal="true" aria-label="Thread info" tabIndex={-1} ref={boxRef} onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
           <div className="detail-title">
             <strong>{thread?.title ?? "Thread"}</strong>
