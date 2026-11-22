@@ -200,8 +200,14 @@ export function AgentGraph({
   onSubmitGroup: (threadId: string, text: string) => void;
 }) {
   const feed = useGraphFeed(rpc, threadId);
-  const { events, checkpoints } = feed;
-  const total = events.length;
+  const { checkpoints } = feed;
+  // The feed's log grows in place, so this snapshot is its first `count` entries.
+  // The slice only runs on the rare render where a newer frame has already landed.
+  const total = feed.count;
+  const events = useMemo(
+    () => (feed.events.length === total ? feed.events : feed.events.slice(0, total)),
+    [feed.events, total],
+  );
   const [conversation, setConversation] = useState<{ a: string; b: string } | null>(null);
   // Playback: `cursor` is how many events are applied; null means live.
   // `turn` bounds playback to one user turn; null means the whole thread.
@@ -245,8 +251,9 @@ export function AgentGraph({
   } | null>(null);
   const birthToken = useRef(0);
 
-  const ranges = useMemo(() => turnRanges(events), [events]);
-  const markers = useMemo(() => markersOf(events), [events]);
+  // `events` keeps its identity as the log grows, so the count keys these memos.
+  const ranges = useMemo(() => turnRanges(events), [events, total]);
+  const markers = useMemo(() => markersOf(events), [events, total]);
   const range = turn === null ? null : (ranges.find((r) => r.turn === turn) ?? null);
   const lo = range?.start ?? 0;
   const hi = range?.end ?? total;

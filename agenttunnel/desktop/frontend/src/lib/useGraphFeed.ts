@@ -20,10 +20,11 @@ export type GraphFeed = {
   threadId: string | null;
   /** False until the history has loaded; the graph falls back to thread state. */
   loaded: boolean;
-  /** Append-only log of applied events. Each publish is a copy of it. */
-  events: GraphEvent[];
-  /** Fold snapshots every CHECKPOINT_EVERY events, aligned with `events`. */
-  checkpoints: GraphState[];
+  /** Append-only log shared with the fold. Only the first `count` entries belong to this snapshot. */
+  events: readonly GraphEvent[];
+  count: number;
+  /** Fold snapshots every CHECKPOINT_EVERY events, aligned with `events`; also append-only. */
+  checkpoints: readonly GraphState[];
   state: GraphState;
 };
 
@@ -31,9 +32,44 @@ const EMPTY: GraphFeed = {
   threadId: null,
   loaded: false,
   events: [],
+  count: 0,
   checkpoints: [emptyGraph()],
   state: emptyGraph(),
 };
+
+/** The fold behind one feed. The log and checkpoints grow in place; a publish
+ * hands out the same arrays plus a count, so a frame costs the same whatever
+ * the thread's length. States are immutable: each applied event makes a new one. */
+export class GraphFold {
+  readonly events: GraphEvent[] = [];
+  checkpoints: GraphState[] = [emptyGraph()];
+  state: GraphState = emptyGraph();
+
+  /** Folds one live event. Returns false when it was already applied. */
+  accept(ev: GraphEvent): boolean {
+    const next = reduceGraph(this.state, ev);
+    if (next === this.state) return false;
+    this.state = next;
+    this.events.push(ev);
+    if (this.events.length % CHECKPOINT_EVERY === 0) this.checkpoints.push(next);
+    return true;
+  }
+
+  /** Seeds from the loaded history, then the frames buffered during the load.
+   * Only strictly increasing seqs are kept, so overlap is dropped once. */
+  seed(history: readonly unknown[], buffered: readonly GraphEvent[]): void {
+    let tail = 0;
+    const take = (ev: GraphEvent | null) => {
+      if (!ev || ev.seq <= tail) return;
+      tail = ev.seq;
+      this.events.push(ev);
+    };
+    for (const row of history) take(toGraphEvent(row));
+    for (const ev of buffered) take(ev);
+    this.checkpoints = buildCheckpoints(this.events);
+    this.state = stateAt(this.events, this.checkpoints, this.events.length);
+  }
+}
 
 export function useGraphFeed(rpc: Rpc | null, threadId: string): GraphFeed {
   const [feed, setFeed] = useState<GraphFeed>(EMPTY);
@@ -44,27 +80,24 @@ export function useGraphFeed(rpc: Rpc | null, threadId: string): GraphFeed {
 
   useEffect(() => {
     if (!rpc || !threadId) return;
-    // Mutable only inside this effect; published copies are immutable.
-    const log: GraphEvent[] = [];
-    let checkpoints: GraphState[] = [emptyGraph()];
-    let state = emptyGraph();
+    const fold = new GraphFold();
     let loaded = false;
     let historyFailed = false;
     let buffered: GraphEvent[] = [];
     let frame = 0;
     let cancelled = false;
 
-    const accept = (ev: GraphEvent) => {
-      const next = reduceGraph(state, ev);
-      if (next === state) return;
-      state = next;
-      log.push(ev);
-      if (log.length % CHECKPOINT_EVERY === 0) checkpoints.push(next);
-    };
     const publish = () => {
       frame = 0;
       if (cancelled) return;
-      setFeed({ threadId, loaded, events: log.slice(), checkpoints: checkpoints.slice(), state });
+      setFeed({
+        threadId,
+        loaded,
+        events: fold.events,
+        count: fold.events.length,
+        checkpoints: fold.checkpoints,
+        state: fold.state,
+      });
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(publish);
@@ -81,7 +114,7 @@ export function useGraphFeed(rpc: Rpc | null, threadId: string): GraphFeed {
         if (!historyFailed) buffered.push(ev);
         return;
       }
-      accept(ev);
+      fold.accept(ev);
       schedule();
     });
 
@@ -89,21 +122,10 @@ export function useGraphFeed(rpc: Rpc | null, threadId: string): GraphFeed {
       .call<unknown[]>("thread.events", { threadId })
       .then((rows) => {
         if (cancelled) return;
-        // Seed in one pass: history and the frames buffered during the load,
-        // keeping only strictly increasing seqs so overlap is dropped once.
         // The log is empty here, so the fold runs once over the whole history
         // rather than copying the state per event.
-        let tail = 0;
-        const take = (ev: GraphEvent | null) => {
-          if (!ev || ev.seq <= tail) return;
-          tail = ev.seq;
-          log.push(ev);
-        };
-        for (const row of rows) take(toGraphEvent(row));
-        for (const ev of buffered) take(ev);
+        fold.seed(rows, buffered);
         buffered = [];
-        checkpoints = buildCheckpoints(log);
-        state = stateAt(log, checkpoints, log.length);
         loaded = true;
         publish();
       })
