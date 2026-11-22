@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
 import { getPref, setPref } from "../lib/prefs";
 import { ALT, CENTER_TAB_KEYS, MOD } from "../lib/navKeys";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 const SEEN_KEY = "at.cheatSheetSeen";
 // Before the sheet became first-run only, users could opt out of it showing on
@@ -27,15 +28,10 @@ type Panel = { label: string; key: string };
  * moves into the sheet and returns to the previous element when it closes.
  */
 export function CheatSheet({ panels, onClose }: { panels: Panel[]; onClose: () => void }) {
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useDialogFocus<HTMLDivElement>();
 
   useEffect(() => {
     markCheatSheetSeen();
-    const previous = document.activeElement;
-    dialogRef.current?.focus();
-    return () => {
-      if (previous instanceof HTMLElement) previous.focus();
-    };
   }, []);
 
   useEffect(() => {
@@ -56,7 +52,7 @@ export function CheatSheet({ panels, onClose }: { panels: Panel[]; onClose: () =
         className="sheet cheat-sheet"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="cheat-sheet-title"
+        aria-label="AgentTunnel reference"
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
