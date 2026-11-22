@@ -18,6 +18,7 @@ import { THEMES, applyTheme, loadTheme, type ThemeId } from "../lib/themes";
 import { ApprovedModelsPicker } from "./ApprovedModelsPicker";
 import { BrowserNotifyToggle } from "./BrowserNotifyToggle";
 import { Dropdown, type DropdownOption } from "./Dropdown";
+import { ThinkingPicker } from "./ThinkingPicker";
 import { useEscapeClose } from "../lib/escape";
 
 /** The sheet's form fields and notices. App writes them (loadSettings,
@@ -367,6 +368,17 @@ export const SettingsSheet = memo(function SettingsSheet({
                   }).catch(() => undefined)
                 }
               />
+              <ThinkingPicker
+                harness={leadHarness}
+                value={leadSettings.variant ?? ""}
+                onChange={(v) =>
+                  persistLeadRuntime({
+                    harness: leadSettings.harness ?? "",
+                    model: leadSettings.model ?? "",
+                    variant: v,
+                  }).catch(() => undefined)
+                }
+              />
             </div>
           </section>
 
@@ -434,8 +446,9 @@ export const SettingsSheet = memo(function SettingsSheet({
                     value={r.harness}
                     options={harnessOptionsFor(r.harness)}
                     onChange={(v) => {
-                      const row = { ...r, harness: v };
-                      updateRole(r.id, { harness: v });
+                      // A thinking level belongs to one harness; a new harness starts at its default.
+                      const row = { ...r, harness: v, variant: "" };
+                      updateRole(r.id, { harness: v, variant: "" });
                       persistRole(row).catch(() => undefined);
                       refreshModels(v).catch(() => undefined);
                     }}
@@ -461,6 +474,15 @@ export const SettingsSheet = memo(function SettingsSheet({
                     onChange={(v) => {
                       const row = { ...r, model: v };
                       updateRole(r.id, { model: v });
+                      persistRole(row).catch(() => undefined);
+                    }}
+                  />
+                  <ThinkingPicker
+                    harness={r.harness}
+                    value={r.variant}
+                    onChange={(v) => {
+                      const row = { ...r, variant: v };
+                      updateRole(r.id, { variant: v });
                       persistRole(row).catch(() => undefined);
                     }}
                   />

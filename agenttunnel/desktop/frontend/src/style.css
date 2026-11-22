@@ -1771,11 +1771,11 @@ body.is-resizing * {
   font-size: 11.5px;
 }
 .setup-view .role-edit {
-  grid-template-columns: 1fr 130px 1fr;
+  grid-template-columns: 1fr 130px 1fr 96px;
   padding: 3px 0;
 }
 .setup-view .role-edit.has-switch {
-  grid-template-columns: 1fr 130px 1fr auto;
+  grid-template-columns: 1fr 130px 1fr 96px auto;
 }
 .setup-view .role-edit .role-switch {
   margin: 0;
@@ -2021,7 +2021,7 @@ body.is-resizing * {
 
 .role-edit {
   display: grid;
-  grid-template-columns: 1fr 150px 1fr;
+  grid-template-columns: 1fr 150px 1fr 110px;
   gap: 10px;
   align-items: center;
   padding: 7px 0;
@@ -2041,7 +2041,7 @@ body.is-resizing * {
   opacity: 0.45;
 }
 .aside-models .role-edit.has-switch {
-  grid-template-columns: 1fr 150px 1fr auto;
+  grid-template-columns: 1fr 150px 1fr 110px auto;
 }
 .aside-models .role-edit .role-switch {
   margin: 0;
