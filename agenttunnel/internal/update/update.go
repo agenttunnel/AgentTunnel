@@ -25,6 +25,16 @@ import (
 // DefaultRepo is the GitHub repository whose releases are installed.
 const DefaultRepo = "agenttunnel/AgentTunnel"
 
+// planTTL bounds how long a release lookup is reused by Check. Every connected
+// client polls update.check, and GitHub's unauthenticated API allows 60 calls
+// an hour per IP, so the lookup is shared across clients rather than repeated.
+const planTTL = 10 * time.Minute
+
+// planLookupTimeout bounds one shared lookup. It outlives the caller that
+// started it, so it needs its own limit; it covers the release list (30s) and
+// the on-disk version probe (5s).
+const planLookupTimeout = 45 * time.Second
+
 // Install kinds. A macOS desktop build replaces its whole app bundle; every
 // other build replaces the AgentTunnel binaries beside the running one.
 const (
@@ -107,7 +117,39 @@ type Updater struct {
 	// Check detect an update the install script applied out of band.
 	probeOnDisk func(context.Context) string
 
+	// now is the clock the plan cache reads. nil means time.Now; tests set it.
+	now func() time.Time
+
 	notesMu sync.Mutex
+
+	// planMu guards the Check cache: the last successful lookup, the lookup in
+	// flight that concurrent callers join, and gen, which forgetPlan bumps so a
+	// lookup started before an install cannot repopulate the cache afterwards.
+	planMu   sync.Mutex
+	planHit  *planEntry
+	planWait *planCall
+	gen      uint64
+}
+
+type planResult struct {
+	st  Status
+	rel Release
+}
+
+type planEntry struct {
+	key string
+	res planResult
+	at  time.Time
+}
+
+// planCall is one release lookup that concurrent Check calls wait on. waiting
+// counts the callers that joined it after the one that started it.
+type planCall struct {
+	key     string
+	done    chan struct{}
+	res     planResult
+	err     error
+	waiting int
 }
 
 // New describes the running executable as an update target. version is the
@@ -131,15 +173,91 @@ func New(version string) (*Updater, error) {
 	}, nil
 }
 
-// Check reports whether a newer build is available. It makes no changes.
+// Check reports whether a newer build is available. It makes no changes. The
+// release lookup is reused for planTTL, and concurrent callers share one lookup.
 func (u *Updater) Check(ctx context.Context) (Status, error) {
-	st, _, err := u.plan(ctx)
-	return st, err
+	res, err := u.cachedPlan(ctx)
+	return res.st, err
 }
 
-// Apply installs the newest available build if there is one. Errors leave
-// the installed files untouched, except a failure partway through replacing
-// several binaries, which is reported as an error.
+// cachedPlan returns the memoized lookup while it is fresh, joins a lookup
+// already in flight, and otherwise starts one. Every caller, the one that
+// started the lookup included, waits on its own ctx: the lookup itself is
+// detached from any caller so a cancelled caller cannot fail the others.
+// Errors are never cached.
+func (u *Updater) cachedPlan(ctx context.Context) (planResult, error) {
+	// The lookup depends on the channel and platform fields, so a changed
+	// configuration never reuses another configuration's result.
+	key := u.planKey()
+	u.planMu.Lock()
+	if e := u.planHit; e != nil && e.key == key && u.clock().Sub(e.at) < planTTL {
+		u.planMu.Unlock()
+		return e.res, nil
+	}
+	c := u.planWait
+	if c != nil && c.key == key {
+		c.waiting++
+	} else {
+		c = &planCall{key: key, done: make(chan struct{})}
+		u.planWait = c
+		go u.runPlan(ctx, c, u.gen)
+	}
+	u.planMu.Unlock()
+
+	select {
+	case <-c.done:
+		return c.res, c.err
+	case <-ctx.Done():
+		return planResult{}, ctx.Err()
+	}
+}
+
+// runPlan performs the lookup for c and publishes its result. It runs on a
+// context detached from the caller that started it (values kept, cancellation
+// dropped) under its own bound, so the result reaches every joined caller even
+// if the starter has gone away.
+func (u *Updater) runPlan(ctx context.Context, c *planCall, gen uint64) {
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), planLookupTimeout)
+	defer cancel()
+	st, rel, err := u.plan(lookupCtx)
+	c.res, c.err = planResult{st: st, rel: rel}, err
+
+	u.planMu.Lock()
+	if u.planWait == c {
+		u.planWait = nil
+	}
+	if err == nil && u.gen == gen {
+		u.planHit = &planEntry{key: c.key, res: c.res, at: u.clock()}
+	}
+	u.planMu.Unlock()
+	close(c.done)
+}
+
+// forgetPlan drops the memoized lookup after an install, so the next Check
+// reads the new on-disk state instead of the pre-install result.
+func (u *Updater) forgetPlan() {
+	u.planMu.Lock()
+	defer u.planMu.Unlock()
+	u.planHit = nil
+	u.planWait = nil
+	u.gen++
+}
+
+func (u *Updater) planKey() string {
+	return u.Repo + "|" + u.APIBase + "|" + u.Version + "|" + u.assetName()
+}
+
+func (u *Updater) clock() time.Time {
+	if u.now != nil {
+		return u.now()
+	}
+	return time.Now()
+}
+
+// Apply installs the newest available build if there is one. It always asks
+// GitHub afresh rather than reusing the Check cache. Errors leave the installed
+// files untouched, except a failure partway through replacing several binaries,
+// which is reported as an error.
 func (u *Updater) Apply(ctx context.Context) (Status, error) {
 	st, rel, err := u.plan(ctx)
 	if err != nil || !st.Available {
@@ -147,7 +265,11 @@ func (u *Updater) Apply(ctx context.Context) (Status, error) {
 	}
 	// plan reports Available only when this asset exists.
 	asset, _ := findAsset(rel, u.assetName())
-	if err := u.install(ctx, asset); err != nil {
+	err = u.install(ctx, asset)
+	// A failed install may still have replaced some binaries, so the cached
+	// lookup is stale either way.
+	u.forgetPlan()
+	if err != nil {
 		return st, err
 	}
 	st.Installed = st.Latest
