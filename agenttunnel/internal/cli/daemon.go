@@ -12,6 +12,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/daemonlock"
 	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
+	"github.com/agenttunnel/agenttunnel-go/internal/logrotate"
 )
 
 // atdEnvVars are the variables a spawned daemon must never inherit: agent
@@ -60,24 +61,34 @@ func atdBinary() (string, error) {
 // detached, so a boot failure has nowhere else to say why.
 func atdLogPath(stateDir string) string { return filepath.Join(stateDir, "atd.log") }
 
-// openAtdLog appends to atd.log, marking where this start begins. It returns nil
-// when the file cannot be opened: a daemon that can boot without a log file
-// must still boot.
+// openAtdLog returns the file the spawned daemon's stdio goes to, after writing
+// a start marker through the same rotating writer the daemon uses (--log-file).
+// It returns nil when the log cannot be opened: a daemon that can boot without
+// a log file must still boot, so spawnDaemon then omits --log-file.
 func openAtdLog(stateDir string) *os.File {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil
 	}
-	f, err := os.OpenFile(atdLogPath(stateDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	path := atdLogPath(stateDir)
+	w, err := logrotate.New(path, logrotate.DefaultMaxBytes)
 	if err != nil {
 		return nil
 	}
-	fmt.Fprintf(f, "--- %s agenttunnel started atd\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(w, "--- %s agenttunnel started atd\n", time.Now().UTC().Format(time.RFC3339))
+	_ = w.Close()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil
+	}
 	return f
 }
 
 // spawnDaemon starts `atd --port 0 --home-dir <state>` detached from this
 // process: it keeps running after the CLI exits and has no inherited agent
-// environment. Its output goes to atd.log in the state dir.
+// environment. Its log output goes to atd.log in the state dir through the
+// daemon's own rotating writer (--log-file), so autostart output stays bounded.
+// Stdio also points at atd.log to catch anything written before logging is set
+// up; that handle is not rotated, so such stray output is only the boot window.
 func spawnDaemon(stateDir string) error {
 	bin, err := atdBinary()
 	if err != nil {
@@ -93,6 +104,7 @@ func spawnDaemon(stateDir string) error {
 		defer logFile.Close()
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
+		cmd.Args = append(cmd.Args, "--log-file", atdLogPath(stateDir))
 	}
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
