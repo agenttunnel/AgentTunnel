@@ -307,8 +307,10 @@ func startWebAttached(ctx context.Context, info discovery.Info, resolved string)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/conn", conn.serveHTTP)
-	mux.Handle("/prefs", proxy)
-	mux.Handle("/attachments", proxy)
+	// The proxy adds the daemon's bearer, so it gets the same cross-site refusal
+	// /conn has: a page on another origin must not drive these writes.
+	mux.Handle("/prefs", sameSiteOnly(proxy))
+	mux.Handle("/attachments", sameSiteOnly(proxy))
 	// The daemon-owned routes are served by the existing daemon, not this
 	// server: they 404 rather than falling into the SPA, so a client pointed at
 	// the wrong origin sees a dead route instead of a page.
@@ -447,6 +449,18 @@ func (c webConn) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(c.payload())
+}
+
+// sameSiteOnly refuses browser requests a page on another origin initiated
+// before they reach next. It is for routes that act with the daemon's identity.
+func sameSiteOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !sameSiteRequest(r) {
+			http.Error(w, "cross-site requests are refused", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // sameSiteRequest rejects browser requests a page on another origin initiated.
