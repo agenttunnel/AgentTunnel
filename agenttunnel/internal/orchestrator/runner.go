@@ -1047,49 +1047,71 @@ func (r *Runner) teammateMessages(threadID contracts.ThreadID, id contracts.Agen
 // Anything else falls back to the role's model.
 func (r *Runner) resolveModel(role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
 	roleHarness, model, _ := r.roleRuntime(role)
-	return r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+	resolved, _ := r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+	return resolved
 }
 
-// resolveModelFor is resolveModel with the thread's role override applied.
+// resolveModelFor is resolveModel with the thread's role override applied. When
+// the requested model is dropped for the role or harness default, it leaves one
+// model.fallback audit line so the choice can be read back later.
 func (r *Runner) resolveModelFor(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
 	roleHarness, model, _ := r.roleRuntimeFor(ctx, threadID, role)
-	return r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+	resolved, reason := r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+	if reason != "" && requested != "" && resolved != requested {
+		shown := resolved
+		if shown == "" {
+			shown = "harness default"
+		}
+		r.auditLog("model.fallback", map[string]any{
+			"threadId": string(threadID), "role": string(role.ID), "harness": string(harness),
+			"requested": requested, "resolved": shown, "reason": reason,
+		})
+	}
+	return resolved
 }
 
-func (r *Runner) resolveModelAgainst(roleHarness contracts.Harness, model string, harness contracts.Harness, requested string, auto, override bool) string {
+// resolveModelAgainst returns the model to run and, when it is not the one
+// requested, the reason it was dropped. An empty result means the harness default.
+func (r *Runner) resolveModelAgainst(roleHarness contracts.Harness, model string, harness contracts.Harness, requested string, auto, override bool) (string, string) {
 	sameHarness := harness == roleHarness
 	if !sameHarness {
 		model = ""
 	}
 	if requested == "" {
-		return model
+		return model, ""
 	}
 	if override {
-		return requested
+		return requested, ""
 	}
 	if !sameHarness {
-		if auto && r.autoAllowed(harness, requested) {
-			return requested
+		if !auto {
+			return "", "auto mode off"
 		}
-		return ""
+		if r.autoAllowed(harness, requested) {
+			return requested, ""
+		}
+		return "", "model not allowed in auto mode"
 	}
 	if model == "" {
-		return requested
+		return requested, ""
 	}
-	if !auto || !r.autoAllowed(harness, requested) {
-		return model
+	if !auto {
+		return model, "auto mode off"
 	}
-	return requested
+	if !r.autoAllowed(harness, requested) {
+		return model, "model not allowed in auto mode"
+	}
+	return requested, ""
 }
 
-// autoAllowed reports whether a model may run in auto mode: inside the
-// approved list when one exists, otherwise any model the chosen harness
+// autoAllowed reports whether a model may run in auto mode on a harness: inside
+// that harness's approved list when it has one, otherwise any model the harness
 // actually reports.
 func (r *Runner) autoAllowed(harness contracts.Harness, requested string) bool {
 	if r.settings == nil {
 		return true
 	}
-	if approved := r.settings.ApprovedModels(); len(approved) > 0 {
+	if approved := r.settings.ApprovedModelsFor(harness); len(approved) > 0 {
 		_, ok := approved[requested]
 		return ok
 	}
