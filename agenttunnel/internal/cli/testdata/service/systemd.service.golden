@@ -1,0 +1,12 @@
+[Unit]
+Description=AgentTunnel daemon (atd)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+ExecStart="/Applications/AgentTunnel/atd" "--port" "0" "--home-dir" "/Users/test/.agenttunnel" "--log-file" "/Users/test/.agenttunnel/atd.log"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
