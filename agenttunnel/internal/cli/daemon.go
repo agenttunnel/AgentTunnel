@@ -56,9 +56,28 @@ func atdBinary() (string, error) {
 	return exec.LookPath("atd")
 }
 
+// atdLogPath is where an autostarted daemon writes its output. The daemon is
+// detached, so a boot failure has nowhere else to say why.
+func atdLogPath(stateDir string) string { return filepath.Join(stateDir, "atd.log") }
+
+// openAtdLog appends to atd.log, marking where this start begins. It returns nil
+// when the file cannot be opened: a daemon that can boot without a log file
+// must still boot.
+func openAtdLog(stateDir string) *os.File {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(atdLogPath(stateDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil
+	}
+	fmt.Fprintf(f, "--- %s agenttunnel started atd\n", time.Now().UTC().Format(time.RFC3339))
+	return f
+}
+
 // spawnDaemon starts `atd --port 0 --home-dir <state>` detached from this
 // process: it keeps running after the CLI exits and has no inherited agent
-// environment.
+// environment. Its output goes to atd.log in the state dir.
 func spawnDaemon(stateDir string) error {
 	bin, err := atdBinary()
 	if err != nil {
@@ -69,8 +88,12 @@ func spawnDaemon(stateDir string) error {
 	// must not wait on that lock before binding.
 	cmd.Env = append(scrubEnv(os.Environ()), "AT_AUTOSTART=1")
 	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	// A nil io.Writer (not a nil *os.File) discards output when no log opens.
+	if logFile := openAtdLog(stateDir); logFile != nil {
+		defer logFile.Close()
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", bin, err)
@@ -81,22 +104,57 @@ func spawnDaemon(stateDir string) error {
 	return nil
 }
 
-// connectExisting dials the daemon in <state>/daemon.json and pings it. A
-// missing, unreadable, or unresponsive file reports ErrNoDaemon.
-func (e *Env) connectExisting(ctx context.Context) (*Client, discovery.Info, error) {
+// Causes a read-only command can report when the daemon in daemon.json is not
+// usable. errNotRunning is ErrNoDaemon, so callers that only ask "is there a
+// daemon" keep working.
+var (
+	errRejected    = errors.New("the daemon rejected the token in daemon.json")
+	errUnreachable = errors.New("the daemon in daemon.json is not answering")
+)
+
+// errNotRunning reports that no daemon.json exists.
+var errNotRunning = ErrNoDaemon
+
+// unauthorizedDial reports whether a dial failed on the HTTP handshake with 401.
+// coder/websocket returns no typed error for a non-101 handshake, so the status
+// is matched on its message. daemon_test pins this against a real server.
+func unauthorizedDial(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "expected handshake response status code 101 but got 401")
+}
+
+// dialExisting reads <state>/daemon.json, dials the daemon it names, and pings
+// it. The error names the cause: no file, a rejected token, or a file whose
+// daemon does not answer (stale, exited, or hung).
+func (e *Env) dialExisting(ctx context.Context) (*Client, discovery.Info, error) {
 	info, err := discovery.Read(e.StateDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, discovery.Info{}, errNotRunning
+	}
 	if err != nil {
-		return nil, discovery.Info{}, ErrNoDaemon
+		return nil, discovery.Info{}, errUnreachable
 	}
 	dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	c, err := Dial(dctx, info.WSURL, info.Token)
 	if err != nil {
-		return nil, info, ErrNoDaemon
+		if unauthorizedDial(err) {
+			return nil, info, errRejected
+		}
+		return nil, info, errUnreachable
 	}
 	if err := c.Ping(dctx); err != nil {
 		c.Close()
-		return nil, info, ErrNoDaemon
+		return nil, info, errUnreachable
+	}
+	return c, info, nil
+}
+
+// connectExisting dials the daemon in <state>/daemon.json and pings it. Every
+// failure reports ErrNoDaemon; connectReadOnly keeps the cause.
+func (e *Env) connectExisting(ctx context.Context) (*Client, discovery.Info, error) {
+	c, info, err := e.dialExisting(ctx)
+	if err != nil {
+		return nil, discovery.Info{}, ErrNoDaemon
 	}
 	return c, info, nil
 }
@@ -153,7 +211,7 @@ func (e *Env) Connect(ctx context.Context) (*Client, discovery.Info, error) {
 	}
 	c, info, err := e.waitForDaemon(ctx, 10*time.Second)
 	if err != nil {
-		return nil, info, fmt.Errorf("started atd but it did not answer within 10s: %w", err)
+		return nil, info, fmt.Errorf("started atd but it did not answer within 10s (its output is in %s): %w", atdLogPath(e.StateDir()), err)
 	}
 	return c, info, nil
 }
