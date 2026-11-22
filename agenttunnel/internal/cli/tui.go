@@ -510,8 +510,10 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 
 		case err := <-starts:
 			starting = false
-			if err != nil && m.screen == tuiScreenThread {
-				m.appendLogLines("thread.turn.start: " + err.Error())
+			if err != nil {
+				// m.notify writes to the transcript on the thread, or to the
+				// flash line once the user has left it.
+				m.notify("thread.turn.start: " + err.Error())
 				dirty = true
 			}
 
@@ -564,6 +566,8 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			if m.screen == tuiScreenThread {
 				if reopened, err := tuiReopenThread(ctx, c, m); err == nil {
 					tracker = reopened
+				} else {
+					m.notify("reopen after reconnect: " + err.Error())
 				}
 			}
 			dirty = true
@@ -576,6 +580,9 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				if m.screen == tuiScreenThread {
 					if reopened, err := tuiReopenThread(ctx, c, m); err == nil {
 						tracker = reopened
+						dirty = true
+					} else {
+						m.notify("reopen after a dropped frame: " + err.Error())
 						dirty = true
 					}
 				}
