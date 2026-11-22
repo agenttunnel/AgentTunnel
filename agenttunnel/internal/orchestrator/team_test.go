@@ -39,34 +39,46 @@ func startLead(t *testing.T, r *Runner, ctx context.Context, n int) {
 	}
 }
 
-// TestTeamLeadsDiscussAcrossOneRound runs a two-lead team. Lead one messages
-// lead two during its pass, and lead two must see that message in the same
-// round, because leads speak in order. Lead two replies, so lead one owes a
-// second round and must see the reply in its prompt. The fake harness asserts
-// both prompts and fails the turn if either is missing.
-func TestTeamLeadsDiscussAcrossOneRound(t *testing.T) {
-	script := `case "$AT_AGENT_ID:$AT_PASS" in
+// TestTeamLeadsSpeakAtOnceAndDiscussAcrossRounds runs a two-lead team whose
+// leads both post a message in round one. The round-one passes rendezvous on
+// files: each announces itself, then waits for the other, so the turn only
+// finishes if both passes are in flight at once. Each lead's round-two prompt
+// must carry the other's message, and the turn ends in round two once the
+// team has nothing left to say.
+func TestTeamLeadsSpeakAtOnceAndDiscussAcrossRounds(t *testing.T) {
+	dir := t.TempDir()
+	script := strings.ReplaceAll(`rendezvous() {
+  touch "@DIR@/$1"
+  n=0
+  while [ ! -f "@DIR@/$2" ]; do
+    n=$((n+1)); [ $n -gt 1000 ] && { printf '{"type":"error","text":"peer lead never started its pass"}\n'; exit 1; }
+    sleep 0.01
+  done
+}
+case "$AT_AGENT_ID:$AT_PASS" in
   agent-orchestrator:0)
+    rendezvous lead1 lead2
     printf '%s\n' 'tool message --to orchestrator-2 --text "agree on the plan"'
     printf '{"type":"text","text":"lead one proposed a plan"}\n' ;;
   agent-orchestrator-lead2:0)
-    case "$1" in *"from agent-orchestrator: agree on the plan"*) ;;
-      *) printf '{"type":"error","text":"lead two missed the same-round peer message"}\n'; exit 1 ;;
-    esac
-    case "$1" in *"lead 2 of 2"*) ;;
-      *) printf '{"type":"error","text":"lead two prompt lacks its team brief"}\n'; exit 1 ;;
-    esac
+    rendezvous lead2 lead1
     printf '%s\n' 'tool message --to orchestrator --text "agreed, dispatch on your word"'
     printf '{"type":"text","text":"lead two agreed"}\n' ;;
   agent-orchestrator:1)
     case "$1" in *"from agent-orchestrator-lead2: agreed, dispatch on your word"*) ;;
-      *) printf '{"type":"error","text":"lead one missed the reply in round two"}\n'; exit 1 ;;
+      *) printf '{"type":"error","text":"lead one missed the round-one reply"}\n'; exit 1 ;;
     esac
     printf '{"type":"text","text":"lead one confirms the plan"}\n' ;;
   agent-orchestrator-lead2:1)
+    case "$1" in *"from agent-orchestrator: agree on the plan"*) ;;
+      *) printf '{"type":"error","text":"lead two missed the round-one proposal"}\n'; exit 1 ;;
+    esac
+    case "$1" in *"lead 2 of 2"*) ;;
+      *) printf '{"type":"error","text":"lead two prompt lacks its team brief"}\n'; exit 1 ;;
+    esac
     printf '{"type":"text","text":"team agreed, nothing to dispatch"}\n' ;;
   *) printf '{"type":"text","text":"ok"}\n' ;;
-esac`
+esac`, "@DIR@", dir)
 
 	r, eng, ctx := newPromptHarness(t, script)
 	startLead(t, r, ctx, 2)
@@ -88,8 +100,12 @@ esac`
 	if len(state.Mailbox) != 2 {
 		t.Fatalf("mailbox = %+v, want the two lead messages", state.Mailbox)
 	}
-	if state.Mailbox[0].To != leadAgentID(1) || state.Mailbox[1].To != "agent-orchestrator" {
-		t.Fatalf("mailbox routing = %+v", state.Mailbox)
+	routed := map[contracts.AgentID]bool{}
+	for _, m := range state.Mailbox {
+		routed[m.To] = true
+	}
+	if !routed[leadAgentID(1)] || !routed["agent-orchestrator"] {
+		t.Fatalf("mailbox routing = %+v, want one message to each lead", state.Mailbox)
 	}
 	if state.LeadCount() != 2 {
 		t.Fatalf("LeadCount() = %d, want 2", state.LeadCount())

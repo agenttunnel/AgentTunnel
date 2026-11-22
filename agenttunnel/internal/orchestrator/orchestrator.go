@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -79,6 +80,12 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 			continue
 		}
 		seen[key] = true
+		// The tool queue is thread-wide, so a pass may drain a call its peer
+		// lead issued while both ran. A lead's call is owned by that lead.
+		owner := orchID
+		if isLeadID(call.AgentID) {
+			owner = call.AgentID
+		}
 		// An empty agent id arrives from printed lines only after the lead's
 		// id was stamped on, and from curls outside an agent session, which
 		// have always been lead-equivalent; both count as the lead here.
@@ -135,7 +142,7 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 					o.refuseDispatch(threadID, call.AgentID, "dispatch refused: role \"wildcard\" needs --brief")
 					continue
 				}
-				if task, ok := o.dispatchTask(orchID, call, taken); ok {
+				if task, ok := o.dispatchTask(owner, call, taken); ok {
 					names[task.Name] = true
 					tasks = append(tasks, task)
 				}
@@ -162,7 +169,7 @@ func (o *Orchestrator) toolTasks(ctx context.Context, threadID contracts.ThreadI
 				o.runner.publishOutput(threadID, call.AgentID, contracts.LogError, line)
 				continue
 			}
-			if task, ok := o.reviveTask(ctx, threadID, orchID, call); ok {
+			if task, ok := o.reviveTask(ctx, threadID, owner, call); ok {
 				names[task.Name] = true
 				tasks = append(tasks, task)
 			}
@@ -433,15 +440,19 @@ type turn struct {
 	message  string
 	// images are the turn's attachments, handed to every lead's session.
 	images []providers.ImageInput
+	// mu orders the steps of concurrent lead passes that touch shared thread
+	// state: picking agent names and registering dispatches.
+	mu *sync.Mutex
 }
 
 // RunTurn executes one user turn end to end. The thread's team of leads takes a
-// pass each round, in order: a lead's dispatches run before the next lead
-// speaks, so its peer message reaches the next lead in the same round. The
-// round loop repeats while work is dispatched, steering or a spawn decision is
-// pending, or a lead has mail; it ends after the pass budget unless a steer is
-// still pending, which earns one more round. With
-// one lead this is the classic single-orchestrator loop.
+// pass each round, all at once: the council debates in rounds, and a round
+// ends only when every lead's pass and the work it dispatched have finished.
+// A peer's message reaches a lead at the start of its next pass, so it is
+// weighed in the following round. The round loop repeats while work is
+// dispatched, steering or a spawn decision is pending, or a lead has mail; it
+// ends after the pass budget unless a steer is still pending, which earns one
+// more round. With one lead this is the classic single-orchestrator loop.
 func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID, userMessage string, images ...providers.ImageInput) (err error) {
 	// An auto context-manager run started by this turn must finish before the
 	// turn reports done, so none of its events land after the turn.
@@ -476,7 +487,7 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}()
 	}
 
-	t := turn{threadID: threadID, role: role, message: userMessage, images: images, leads: make([]contracts.AgentID, state.LeadCount())}
+	t := turn{threadID: threadID, role: role, message: userMessage, images: images, leads: make([]contracts.AgentID, state.LeadCount()), mu: &sync.Mutex{}}
 	seed := make([]contracts.DispatchTask, 0, len(t.leads))
 	for i := range t.leads {
 		t.leads[i] = leadAgentID(i)
@@ -561,18 +572,18 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 				return err
 			}
 		}
+		passes, err := o.runLeadRound(ctx, t, pass, steering, steerImages)
+		if err != nil {
+			return err
+		}
 		dispatchedThisRound := false
-		for i := range t.leads {
-			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering, steerImages)
-			if err != nil {
-				return err
+		for _, p := range passes {
+			if strings.TrimSpace(p.text) != "" {
+				finalText = p.text
 			}
-			if strings.TrimSpace(text) != "" {
-				finalText = text
-			}
-			if len(tasks) > 0 {
+			if len(p.tasks) > 0 {
 				dispatchedThisRound = true
-				dispatched = append(dispatched, tasks...)
+				dispatched = append(dispatched, p.tasks...)
 			}
 		}
 		// A round that dispatched nothing still earns another round if the user
@@ -667,6 +678,49 @@ func priorMessages(state *domain.ThreadState, current string) []domain.Message {
 	return state.Messages
 }
 
+// leadPass is what one lead's pass said and the tasks it dispatched.
+type leadPass struct {
+	text  string
+	tasks []contracts.DispatchTask
+}
+
+// runLeadRound runs every lead's pass at once and waits for all of them,
+// subagents included. Results come back in lead order so the turn's final text
+// does not depend on which lead finished first. The first real failure cancels
+// the other passes and is the error returned.
+func (o *Orchestrator) runLeadRound(ctx context.Context, t turn, pass int, steering []string, steeringImages []providers.ImageInput) ([]leadPass, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	passes := make([]leadPass, len(t.leads))
+	errs := make([]error, len(t.leads))
+	var wg sync.WaitGroup
+	for i := range t.leads {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			text, tasks, err := o.runLeadPass(ctx, t, i, pass, steering, steeringImages)
+			passes[i] = leadPass{text: text, tasks: tasks}
+			errs[i] = err
+			if err != nil {
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	// A pass cancelled by a peer's failure reports context.Canceled; that is
+	// the echo of the real error, so prefer the first error that is not one.
+	var first error
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if first == nil || (errors.Is(first, context.Canceled) && !errors.Is(err, context.Canceled)) {
+			first = err
+		}
+	}
+	return passes, first
+}
+
 // runLeadPass runs one pass of lead i and executes whatever that pass
 // dispatched. It returns the lead's text and the tasks it dispatched.
 func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, steering []string, steeringImages []providers.ImageInput) (string, []contracts.DispatchTask, error) {
@@ -674,7 +728,9 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	// Calls that arrived while the previous wave ran — a subagent proposing a
 	// spawn, a late note, a printed peer message — fold in before the prompt is
 	// built so the lead sees them this pass rather than the next.
+	t.mu.Lock()
 	carried := o.toolTasks(ctx, t.threadID, orchID, nil, nil)
+	t.mu.Unlock()
 	inherited, _ := o.runner.inherited.Render()
 	state, err := o.runner.engine.State(ctx, t.threadID)
 	if err != nil {
@@ -730,11 +786,30 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		return "", nil, err
 	}
 
-	// Work can arrive two ways: the tool command the agent runs, or the legacy
-	// text protocol. toolTasks seeds its result with the protocol dispatches so
-	// a same-pass message can address them; the returned list is therefore the
-	// whole pass's task set, and the carried tasks join it under names the drain
-	// was told are already taken.
+	tasks, err := o.settlePass(ctx, t, orchID, calls, carried)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(tasks) == 0 {
+		return text, nil, nil
+	}
+	if err := o.runner.Run(ctx, t.threadID, tasks); err != nil {
+		return "", nil, err
+	}
+	return text, tasks, nil
+}
+
+// settlePass turns a pass's tool calls into dispatch tasks and registers them
+// as agents. Work can arrive two ways: the tool command the agent runs, or the
+// legacy text protocol. toolTasks seeds its result with the protocol dispatches
+// so a same-pass message can address them; the returned list is therefore the
+// whole pass's task set, and the carried tasks join it under names the drain
+// was told are already taken. Concurrent passes share the roster and the tool
+// queue, so this runs under the turn lock; the subagents themselves run after
+// it is released.
+func (o *Orchestrator) settlePass(ctx context.Context, t turn, orchID contracts.AgentID, calls []ToolCall, carried []contracts.DispatchTask) ([]contracts.DispatchTask, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	claimed := make(map[string]bool, len(carried))
 	for _, c := range carried {
 		claimed[c.Name] = true
@@ -744,15 +819,12 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	tasks := o.toolTasks(ctx, t.threadID, orchID, protocol, claimed)
 	tasks = append(tasks, carried...)
 	if len(tasks) == 0 {
-		return text, nil, nil
+		return nil, nil
 	}
 	if err := o.runner.Dispatch(ctx, t.threadID, tasks); err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	if err := o.runner.Run(ctx, t.threadID, tasks); err != nil {
-		return "", nil, err
-	}
-	return text, tasks, nil
+	return tasks, nil
 }
 
 // leadsHaveMail reports whether a peer wrote to a lead since that lead's last
@@ -794,7 +866,7 @@ func teamBrief(leads []contracts.AgentID, i int, peerMailbox bool) string {
 		leadName(i), i+1, len(leads), strings.Join(peers, ", "))
 	b.WriteString("The team decides together. Before anyone dispatches, agree with your peers on the plan, the task list, and how many agents to spawn. ")
 	if peerMailbox {
-		b.WriteString("Discuss it with them by direct message (see below); their replies reach you in a later pass. ")
+		b.WriteString("Discuss it with them by direct message (see below). You speak at the same time, so a peer's message reaches you at the start of your next pass. ")
 	} else {
 		b.WriteString("Peer messaging is off on this thread, so the team can only coordinate through shared notes. ")
 	}
