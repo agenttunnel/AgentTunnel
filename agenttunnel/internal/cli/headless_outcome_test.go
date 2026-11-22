@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 )
 
 // headlessEnv returns an Env with separate stdout and stderr buffers, so a
@@ -116,11 +117,14 @@ func TestFollowWithNoTurnWritesToStderrAndExitsNonZero(t *testing.T) {
 	s.results["agents.list"] = []map[string]any{}
 	s.results["thread.subscribe"] = map[string]any{"subscribed": "th_1"}
 	s.results["thread.logs"] = []contracts.LogEntry{}
+	// A thread the daemon never began: the bound fires, the daemon is asked,
+	// and an empty state confirms no turn ever started.
+	s.results["thread.get"] = domain.ThreadState{}
 	c := dialScripted(t, s)
 	env, out, errBuf := headlessEnv()
 
 	// Shortened intervals take the no-turn path without waiting out the
-	// production grace; the poll ticks are the only clock involved.
+	// production bound; the poll ticks are the only clock involved.
 	done := make(chan error, 1)
 	go func() {
 		done <- streamLogs(context.Background(), env, c, threadListRow{ID: "th_1"}, followOptions{
