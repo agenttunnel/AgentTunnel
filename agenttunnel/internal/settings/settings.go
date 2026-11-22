@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -37,7 +38,7 @@ type Store struct {
 	path          string
 	workdir       string
 	autoMode      bool
-	approved      map[string]struct{}
+	approved      map[contracts.Harness]map[string]struct{}
 	roles         map[contracts.RoleID]RoleConfig
 	disabled      map[contracts.Harness]bool
 	disabledRoles map[contracts.RoleID]bool
@@ -66,9 +67,12 @@ const (
 )
 
 type fileConfig struct {
-	Workdir           string                    `json:"workdir"`
-	AutoMode          bool                      `json:"autoMode"`
-	ApprovedModels    []string                  `json:"approvedModels"`
+	Workdir  string `json:"workdir"`
+	AutoMode bool   `json:"autoMode"`
+	// ApprovedModels is the legacy flat allowlist, read for migration only. It
+	// predates harness keys, so each model was approved for every harness.
+	ApprovedModels    []string                  `json:"approvedModels,omitempty"`
+	ApprovedByHarness map[string][]string       `json:"approvedByHarness,omitempty"`
 	Roles             map[string]fileRoleConfig `json:"roles"`
 	DisabledHarnesses []string                  `json:"disabledHarnesses"`
 	DisabledRoles     []string                  `json:"disabledRoles"`
@@ -99,7 +103,7 @@ type fileMasterRuntimeConfig struct {
 func New(workdir string) *Store {
 	return &Store{
 		workdir:       workdir,
-		approved:      map[string]struct{}{},
+		approved:      map[contracts.Harness]map[string]struct{}{},
 		roles:         map[contracts.RoleID]RoleConfig{},
 		disabled:      map[contracts.Harness]bool{},
 		disabledRoles: map[contracts.RoleID]bool{},
@@ -146,10 +150,13 @@ func (s *Store) apply(fc fileConfig) {
 		s.staleAfterMin = clampStaleMinutes(fc.StaleAfterMinutes)
 	}
 
-	s.approved = make(map[string]struct{}, len(fc.ApprovedModels))
-	for _, m := range fc.ApprovedModels {
-		if m = strings.TrimSpace(m); m != "" {
-			s.approved[m] = struct{}{}
+	s.approved = make(map[contracts.Harness]map[string]struct{}, len(fc.ApprovedByHarness))
+	for h, models := range fc.ApprovedByHarness {
+		s.setApprovedLocked(contracts.Harness(h), models)
+	}
+	if len(fc.ApprovedByHarness) == 0 {
+		for _, h := range contracts.AllHarnesses() {
+			s.setApprovedLocked(h, fc.ApprovedModels)
 		}
 	}
 
@@ -207,13 +214,28 @@ func (s *Store) AutoMode() bool {
 	return s.autoMode
 }
 
-// ApprovedModels returns the models auto mode is allowed to dispatch.
+// ApprovedModels returns the union of every harness's approved models. It is
+// the flat view clients list; use ApprovedModelsFor when the harness matters.
 func (s *Store) ApprovedModels() map[string]struct{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[string]struct{}, len(s.approved))
-	for k := range s.approved {
-		out[k] = struct{}{}
+	out := map[string]struct{}{}
+	for _, models := range s.approved {
+		for m := range models {
+			out[m] = struct{}{}
+		}
+	}
+	return out
+}
+
+// ApprovedModelsFor returns the models auto mode may dispatch on one harness.
+// An empty result means the harness has no allowlist.
+func (s *Store) ApprovedModelsFor(h contracts.Harness) map[string]struct{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]struct{}, len(s.approved[h]))
+	for m := range s.approved[h] {
+		out[m] = struct{}{}
 	}
 	return out
 }
@@ -324,17 +346,40 @@ func (s *Store) SetAutoMode(v bool) {
 	s.persistLocked()
 }
 
-// SetApprovedModels replaces the approved-model allowlist.
+// SetApprovedModels replaces every harness's allowlist with models. It is the
+// flat form of SetHarnessApprovedModels, kept for callers that have no harness.
 func (s *Store) SetApprovedModels(models []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.approved = make(map[string]struct{}, len(models))
-	for _, m := range models {
-		if m = strings.TrimSpace(m); m != "" {
-			s.approved[m] = struct{}{}
-		}
+	s.approved = make(map[contracts.Harness]map[string]struct{}, len(contracts.AllHarnesses()))
+	for _, h := range contracts.AllHarnesses() {
+		s.setApprovedLocked(h, models)
 	}
 	s.persistLocked()
+}
+
+// SetHarnessApprovedModels replaces one harness's allowlist. Other harnesses
+// keep their own lists, so a model approved on one harness stays unapproved on
+// the rest.
+func (s *Store) SetHarnessApprovedModels(h contracts.Harness, models []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.approved, h)
+	s.setApprovedLocked(h, models)
+	s.persistLocked()
+}
+
+// setApprovedLocked stores the trimmed, non-empty models under h. Caller holds mu.
+func (s *Store) setApprovedLocked(h contracts.Harness, models []string) {
+	for _, m := range models {
+		if m = strings.TrimSpace(m); m == "" {
+			continue
+		}
+		if s.approved[h] == nil {
+			s.approved[h] = map[string]struct{}{}
+		}
+		s.approved[h][m] = struct{}{}
+	}
 }
 
 // SetRoleConfig sets a role's runtime override.
@@ -494,7 +539,7 @@ func (s *Store) snapshotLocked() fileConfig {
 	fc := fileConfig{
 		Workdir:           s.workdir,
 		AutoMode:          s.autoMode,
-		ApprovedModels:    make([]string, 0, len(s.approved)),
+		ApprovedByHarness: make(map[string][]string, len(s.approved)),
 		Roles:             make(map[string]fileRoleConfig, len(s.roles)),
 		DisabledHarnesses: make([]string, 0, len(s.disabled)),
 		DisabledRoles:     make([]string, 0, len(s.disabledRoles)),
@@ -504,8 +549,13 @@ func (s *Store) snapshotLocked() fileConfig {
 		StaleAfterMinutes: s.staleAfterMin,
 		Relay:             s.relay,
 	}
-	for m := range s.approved {
-		fc.ApprovedModels = append(fc.ApprovedModels, m)
+	for h, models := range s.approved {
+		list := make([]string, 0, len(models))
+		for m := range models {
+			list = append(list, m)
+		}
+		slices.Sort(list)
+		fc.ApprovedByHarness[string(h)] = list
 	}
 	for id, rc := range s.roles {
 		fc.Roles[string(id)] = fileRoleConfig{Harness: string(rc.Harness), Model: rc.Model, Variant: rc.Variant}
