@@ -18,6 +18,12 @@ import (
 // so a long-lived TUI grows no unbounded slice.
 const tuiLogCap = 400
 
+// tuiLogBlockBytes is the text budget per block the cap allows. The byte
+// budget is the block cap times this, so a few very long replies cannot hold
+// the transcript at many megabytes, and it grows with the cap when older
+// output is loaded.
+const tuiLogBlockBytes = 8 << 10
+
 // Block kinds beyond the daemon's log kinds.
 const (
 	tuiKindUser   = "user"     // a message the user sent
@@ -48,6 +54,21 @@ type tuiBlock struct {
 	// up to tuiLogCap blocks every frame.
 	wrapW   int
 	wrapped []tuiRow
+	// sb holds the text of a streamed block, so each chunk appends in place
+	// instead of copying the whole reply again.
+	sb *strings.Builder
+}
+
+// extend appends a streamed chunk to the block's text. text stays a plain
+// string for readers; the builder is rebuilt if text was set some other way.
+func (b *tuiBlock) extend(chunk string) {
+	if b.sb == nil || b.sb.Len() != len(b.text) {
+		b.sb = &strings.Builder{}
+		b.sb.WriteString(b.text)
+	}
+	b.sb.WriteString(chunk)
+	b.text = b.sb.String()
+	b.wrapped = nil
 }
 
 // tuiStreams reports whether chunks of kind continue one another: harnesses
@@ -63,8 +84,7 @@ func tuiAppendBlock(blocks []tuiBlock, agent, kind, text string, at time.Time) [
 	if n := len(blocks); n > 0 {
 		last := &blocks[n-1]
 		if tuiStreams(kind) && last.kind == kind && last.agent == agent {
-			last.text += text
-			last.wrapped = nil
+			last.extend(text)
 			return blocks
 		}
 	}
@@ -244,19 +264,61 @@ func (m *tuiModel) appendNote(kind string, lines ...string) {
 // scrolled up stays on the rows they were reading — the offset grows by the
 // rows that arrived — while a following view (scroll zero) rides the tail.
 // The oldest blocks fall off past the cap.
+//
+// Measuring the rows that arrived renders the streaming block's markdown, so
+// it is not done per event. The height before the first unsettled append is
+// kept, and settleGrowth takes the difference once, when the view is read.
+// The difference is the same as summing every append, since the offset only
+// needs the total change.
 func (m *tuiModel) grow(appendBlocks func()) {
-	before := 0
-	if m.scroll > 0 {
-		before = m.logRows()
+	if m.scroll <= 0 {
+		m.growing = false
+	} else if !m.growing {
+		m.growFrom, m.growing = m.logRows(), true
 	}
 	appendBlocks()
+	// Settle before dropping head blocks: the offset counts rows from the
+	// tail, so the arrivals must be measured while the head is still whole.
+	// Dropping head rows then leaves the offset alone.
+	if tuiTrimCount(m.log, m.logCap) > 0 {
+		m.settleGrowth()
+	}
+	m.log = tuiTrimLog(m.log, m.logCap)
+}
+
+// settleGrowth applies the rows that arrived since the view was last read to
+// the offset of a reader scrolled up. Every reader of the offset calls it
+// first, and so does any change to the log that is not an append.
+func (m *tuiModel) settleGrowth() {
+	if !m.growing {
+		return
+	}
+	m.growing = false
 	if m.scroll > 0 {
-		m.scroll += m.logRows() - before
+		m.scroll += m.logRows() - m.growFrom
 	}
-	if over := len(m.log) - max(m.logCap, tuiLogCap); over > 0 {
-		m.log = m.log[over:]
+}
+
+// tuiTrimLog drops the oldest blocks past the block cap or the byte budget.
+// The newest block always stays, however large.
+func tuiTrimLog(blocks []tuiBlock, logCap int) []tuiBlock {
+	return blocks[tuiTrimCount(blocks, logCap):]
+}
+
+// tuiTrimCount is how many oldest blocks tuiTrimLog drops.
+func tuiTrimCount(blocks []tuiBlock, logCap int) int {
+	limit := max(logCap, tuiLogCap)
+	budget := limit * tuiLogBlockBytes
+	bytes := 0
+	for i := range blocks {
+		bytes += len(blocks[i].text)
 	}
-	m.clampScroll()
+	drop := 0
+	for drop < len(blocks)-1 && (len(blocks)-drop > limit || bytes > budget) {
+		bytes -= len(blocks[drop].text)
+		drop++
+	}
+	return drop
 }
 
 // tuiLogWidthDefault stands in for the transcript width before the first
@@ -338,6 +400,7 @@ func (m *tuiModel) speakerRow(b *tuiBlock) tuiRow {
 // stays pinned to its content. A page with less content than room pads with
 // blank rows below it.
 func (m *tuiModel) logPane(cols, height int) []tuiRow {
+	m.settleGrowth()
 	if height <= 0 {
 		return nil
 	}
@@ -370,6 +433,7 @@ func (m *tuiModel) logPane(cols, height int) []tuiRow {
 // A reader who pushes past the oldest row held asks the daemon for the page
 // before it.
 func (m *tuiModel) scrollUp(n int) {
+	m.settleGrowth()
 	want := m.scroll + n
 	m.scroll = want
 	m.clampScroll()
@@ -380,18 +444,21 @@ func (m *tuiModel) scrollUp(n int) {
 
 // scrollDown moves toward newer output; reaching the bottom resumes following.
 func (m *tuiModel) scrollDown(n int) {
+	m.settleGrowth()
 	m.scroll -= n
 	m.clampScroll()
 }
 
 // following reports whether new output stays on screen.
 func (m *tuiModel) following() bool {
+	m.settleGrowth()
 	return m.scroll == 0
 }
 
 // clampScroll keeps the offset between the tail and the point where the
 // oldest row sits at the top of the pane.
 func (m *tuiModel) clampScroll() {
+	m.settleGrowth()
 	if m.scroll <= 0 {
 		m.scroll = 0
 		return
@@ -503,6 +570,7 @@ func (m *tuiModel) loadOlder() {
 // The cap grows by what was loaded, so a reader's history is not trimmed away
 // by the next line of output.
 func (m *tuiModel) prependOlder(entries []contracts.LogEntry) {
+	m.settleGrowth()
 	if len(entries) == 0 {
 		m.older.done = true
 		return
@@ -581,6 +649,7 @@ func tuiElapsed(d time.Duration) string {
 // clock while agents work, the roster, and — when the reader scrolled up —
 // how far the view sits above the newest output.
 func (m *tuiModel) statusRow(width int) tuiRow {
+	m.settleGrowth()
 	var row tuiRow
 	if m.working() {
 		frame := tuiSpinner[int(m.now.UnixMilli()/100)%len(tuiSpinner)]
