@@ -53,6 +53,9 @@ func runJob(ctx context.Context, env *Env, args []string) error {
 	if err != nil {
 		return err
 	}
+	if opts.follow && env.JSON {
+		return usageError("agenttunnel run --json cannot follow: JSON is one document, not a stream (drop -f or --json)")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
