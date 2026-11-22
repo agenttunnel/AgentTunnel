@@ -8,9 +8,11 @@
 # Usage:
 #   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh
 #
-# Re-running the install updates in place. To uninstall, pass --uninstall. It
-# removes the binaries and the macOS app but keeps ~/.agenttunnel (threads and
-# settings):
+# Install also registers atd as an always-on service (launchd, systemd --user,
+# or Task Scheduler) through `agenttunnel daemon install`. Re-running the install
+# updates in place and restarts that service so it runs the new atd. To uninstall,
+# pass --uninstall. It stops and removes the service, then removes the binaries and
+# the macOS app, but keeps ~/.agenttunnel (threads and settings):
 #   curl -fsSL https://github.com/agenttunnel/AgentTunnel/releases/latest/download/install-agenttunnel-go.sh | sh -s -- --uninstall
 #
 # Environment:
@@ -19,6 +21,7 @@
 #   AGENTTUNNEL_APP_DIR      macOS app directory (default: ~/Applications).
 #   AGENTTUNNEL_REPO         GitHub repository (default: agenttunnel/AgentTunnel).
 #   AGENTTUNNEL_BASE_URL     Override the release download base URL.
+#   AGENTTUNNEL_NO_SERVICE   Set to 1 to skip registering the always-on service.
 set -eu
 
 repo="${AGENTTUNNEL_REPO:-agenttunnel/AgentTunnel}"
@@ -56,6 +59,18 @@ esac
 uninstall() {
   echo "uninstall: quit AgentTunnel and any running atd first; deleting files does not stop them."
   failed=0
+
+  # Remove the always-on service while its binaries still exist, so launchd,
+  # systemd, or Task Scheduler never relaunches a missing atd. If that fails,
+  # keep the binaries: the service still points at them and uninstall can rerun.
+  cli="$install_dir/agenttunnel"
+  [ -f "$cli" ] || cli="$install_dir/agenttunnel.exe"
+  if [ -x "$cli" ]; then
+    if ! "$cli" daemon uninstall; then
+      echo "uninstall: cannot remove the always-on service; binaries were kept. Fix the error above and run uninstall again." >&2
+      return 1
+    fi
+  fi
 
   if [ "$os" = "darwin" ]; then
     for dir in "$app_dir" /Applications; do
@@ -175,6 +190,8 @@ for name in atd agenttunnel agenttunnel-desktop; do
   for candidate in "$name" "$name.exe"; do
     if [ -f "$tmpdir/$candidate" ]; then
       if [ "$name" = "agenttunnel-desktop" ] && [ -n "$app_binary" ] && [ -x "$app_binary" ]; then
+        # Same rule as cp below: an old link or file must not be written through.
+        rm -f "$install_dir/agenttunnel-desktop"
         ln -sf "$app_binary" "$install_dir/agenttunnel-desktop"
       else
         # Drop any old link first: cp would write through a symlink into the app bundle.
@@ -193,6 +210,30 @@ if [ "$installed" -eq 0 ]; then
 fi
 
 echo "install: installed into ${install_dir}"
+
+# Register atd as an always-on service after the binaries are in place, so the
+# service starts the files it will run. daemon install is idempotent: it rewrites
+# the unit and restarts the service, so an upgrade runs the new atd.
+cli="$install_dir/agenttunnel"
+[ -f "$cli" ] || cli="$install_dir/agenttunnel.exe"
+if [ "${AGENTTUNNEL_NO_SERVICE:-}" = 1 ]; then
+  echo "install: always-on service skipped (AGENTTUNNEL_NO_SERVICE=1)"
+elif [ -n "${AT_AGENT_ID:-}" ]; then
+  # The CLI refuses service changes inside an agent session; registering the service is the user's call.
+  echo "install: always-on service skipped: this is an agent session (AT_AGENT_ID is set)."
+  echo "install: to register it, run from your own shell: $cli daemon install"
+elif [ ! -x "$cli" ]; then
+  echo "install: this release has no agenttunnel CLI, so the always-on service was not registered" >&2
+else
+  # Registration is optional: headless Linux, containers and WSL have no systemd --user session.
+  # The binaries are already installed, so a failure warns and the install still succeeds.
+  if ! "$cli" daemon install; then
+    echo "install: warning: cannot register the always-on service; the binaries are installed and atd still runs on demand." >&2
+    echo "install: fix the error above and run: $cli daemon install" >&2
+    echo "install: or rerun with AGENTTUNNEL_NO_SERVICE=1 to skip the service." >&2
+  fi
+fi
+
 if [ "$os" = "darwin" ] && [ -n "$app_binary" ]; then
   echo "install: launch AgentTunnel from ${app_dir}/AgentTunnel.app"
 fi
