@@ -129,6 +129,18 @@ func runAttached(state string, target daemonTarget, dir, thread string) {
 
 // runOwned starts the embedded daemon and shows a window onto it.
 func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir, thread string) {
+	// Take the daemon lock and re-check for a live daemon under it: a service
+	// manager may have started atd since main's unlocked check. Attach then.
+	lock, target, attach, err := claimStart(ctx, state, startWait)
+	if err != nil {
+		log.Fatalf("agenttunnel-desktop: wait for the daemon lock in %s: %v", state, err)
+	}
+	if attach {
+		runAttached(state, target, dir, thread)
+		return
+	}
+	defer lock.Release()
+
 	cwd, _ := os.Getwd()
 	var appRef atomic.Pointer[application.App]
 	var windowClosed atomic.Bool
@@ -175,6 +187,9 @@ func runOwned(ctx context.Context, cancel context.CancelFunc, state, dir, thread
 		log.Fatalf("agenttunnel-desktop: write launch lock: %v", err)
 	}
 	defer removeLock(state)
+	// Discovery now names this daemon, so a waiter can attach to it; release the
+	// start lock before the window blocks. A second Release is a no-op.
+	lock.Release()
 
 	conn := shellConn{
 		wsURL:        wsURL,
