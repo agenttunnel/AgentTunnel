@@ -26,7 +26,7 @@ import { useDialogFocus } from "../lib/dialogFocus";
  * refreshModels, any saved setting); only the sheet reads them. */
 export const settingsForm = createStore({
   workdir: "",
-  approvedModels: [] as string[],
+  approvedByHarness: {} as Record<string, string[]>,
   staleAfter: "30",
   saved: false,
   modelsNotice: null as string | null,
@@ -39,7 +39,7 @@ export const settingsForm = createStore({
 /** Refills the form from the daemon's settings. */
 export function fillSettingsForm(s: SettingsView) {
   settingsForm.setter("workdir")(s.workdir ?? "");
-  settingsForm.setter("approvedModels")(s.approvedModels ?? []);
+  settingsForm.setter("approvedByHarness")(s.approvedByHarness ?? {});
   settingsForm.setter("staleAfter")(String(s.staleAfterMinutes ?? 30));
 }
 
@@ -52,7 +52,7 @@ export function flashSaved() {
 }
 
 const setWorkdirInput = settingsForm.setter("workdir");
-const setApprovedModels = settingsForm.setter("approvedModels");
+const setApprovedByHarness = settingsForm.setter("approvedByHarness");
 const setStaleAfterInput = settingsForm.setter("staleAfter");
 const setAppVersion = settingsForm.setter("appVersion");
 const setDeps = settingsForm.setter("deps");
@@ -95,7 +95,7 @@ export const SettingsSheet = memo(function SettingsSheet({
   persistRole: (row: RoleConfigView) => Promise<void>;
 }) {
   const workdirInput = useStoreField(settingsForm, "workdir");
-  const approvedModels = useStoreField(settingsForm, "approvedModels");
+  const approvedByHarness = useStoreField(settingsForm, "approvedByHarness");
   const staleAfterInput = useStoreField(settingsForm, "staleAfter");
   const saved = useStoreField(settingsForm, "saved");
   const modelsNotice = useStoreField(settingsForm, "modelsNotice");
@@ -139,13 +139,18 @@ export const SettingsSheet = memo(function SettingsSheet({
   const leadSettings = settings.lead ?? {};
   const orchestratorRole = settings.roles.find((r) => r.id === "orchestrator");
   const leadHarness = leadSettings.harness || orchestratorRole?.harness || "";
+  // An empty list is the common first run (no catalog is shipped), so say what to do.
+  const modelFootNote = (harness: string) =>
+    (harnesses.models?.[harness] ?? []).length === 0
+      ? "No models yet. Use Add model to add one."
+      : "Discovered from the harness CLI";
 
   const saveEnv = async () => {
     if (!rpc) return;
     const s = await rpc.call<SettingsView>("settings.set", {
       workdir: workdirInput,
       autoMode: settings?.autoMode ?? false,
-      approvedModels,
+      approvedByHarness,
       staleAfterMinutes: staleAfterInput,
     });
     setSettings(s);
@@ -268,8 +273,8 @@ export const SettingsSheet = memo(function SettingsSheet({
             <div className="field" style={{ marginTop: 12 }}>
               <span>Approved models for auto mode</span>
               <ApprovedModelsPicker
-                value={approvedModels}
-                onChange={setApprovedModels}
+                value={approvedByHarness}
+                onChange={setApprovedByHarness}
                 models={harnesses.models}
                 harnessOrder={harnesses.all}
               />
@@ -348,7 +353,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                 searchable
                 align="end"
                 placeholder="model (default)"
-                footNote="Discovered from the harness CLI"
+                footNote={modelFootNote(leadHarness)}
                 onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
                 addLabel="Add model"
                 onAdd={(m) => {
@@ -461,7 +466,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                     searchable
                     align="end"
                     placeholder="model (default)"
-                    footNote="Discovered from the harness CLI"
+                    footNote={modelFootNote(r.harness)}
                     onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
                     addLabel="Add model"
                     onAdd={(m) => {

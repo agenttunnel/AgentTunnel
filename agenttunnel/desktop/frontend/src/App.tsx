@@ -326,6 +326,9 @@ export type RoleConfigView = {
 export type SettingsView = {
   workdir: string;
   autoMode: boolean;
+  /** Every harness key, each with its sorted approved model list. Saved per harness. */
+  approvedByHarness?: Record<string, string[]>;
+  /** Union across harnesses, kept for older readers. Do not send it back. */
   approvedModels: string[] | null;
   experimentalRoles: boolean;
   roles: RoleConfigView[];
