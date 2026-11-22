@@ -3,6 +3,7 @@
 
 import { memo, useState } from "react";
 import { useEscapeClose } from "../lib/escape";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 export const RenameDialog = memo(function RenameDialog({
   initial,
@@ -20,9 +21,10 @@ export const RenameDialog = memo(function RenameDialog({
     if (title) onRename(title);
   };
   useEscapeClose(onCancel);
+  const boxRef = useDialogFocus<HTMLDivElement>();
   return (
     <div className="overlay" onClick={onCancel}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="Rename thread" tabIndex={-1} ref={boxRef} onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
           <strong>Rename thread</strong>
           <button onClick={onCancel}>Cancel</button>

@@ -20,6 +20,7 @@ import { BrowserNotifyToggle } from "./BrowserNotifyToggle";
 import { Dropdown, type DropdownOption } from "./Dropdown";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { useEscapeClose } from "../lib/escape";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 /** The sheet's form fields and notices. App writes them (loadSettings,
  * refreshModels, any saved setting); only the sheet reads them. */
@@ -180,9 +181,10 @@ export const SettingsSheet = memo(function SettingsSheet({
   };
 
   useEscapeClose(onClose);
+  const boxRef = useDialogFocus<HTMLDivElement>();
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1} ref={boxRef} onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
           <strong>Settings</strong>
           <div className="sheet-head-right">
