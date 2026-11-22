@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import type { Rpc } from "../lib/rpc";
 
-/** How often a connected app asks for a newer release. At this rate a client
- * makes about 12 unauthenticated GitHub API calls an hour (the cap is 60). */
+/** How often a connected app asks for a newer release. The daemon memoizes the
+ * GitHub lookup for about 10 minutes and shares it across clients, so polling
+ * here costs GitHub at most one call per window, however many tabs are open. */
 const UPDATE_CHECK_MS = 5 * 60_000;
 
 /** AppUpdate checks for a release once connected and every UPDATE_CHECK_MS,
