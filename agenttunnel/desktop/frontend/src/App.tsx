@@ -513,6 +513,31 @@ function mergeThreadStates(
   return changed ? out : prev;
 }
 
+/** Structural equality for wire JSON: walks both values and stops at the first difference, allocating nothing. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameValue(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ra = a as Record<string, unknown>;
+  const rb = b as Record<string, unknown>;
+  const keys = Object.keys(ra);
+  if (keys.length !== Object.keys(rb).length) return false;
+  for (const k of keys) {
+    if (!Object.prototype.hasOwnProperty.call(rb, k) || !sameValue(ra[k], rb[k])) return false;
+  }
+  return true;
+}
+
+/** Returns `prev` when `next` holds the same data, so state setters keep the old reference and skip the re-render. */
+function keepSame<T>(prev: T, next: T): T {
+  return sameValue(prev, next) ? prev : next;
+}
+
 /** Projects opened as tabs, remembered across restarts. */
 function loadOpenProjects(): string[] {
   try {
@@ -638,6 +663,16 @@ const TOP_SHOW = 240;
 
 export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "reconnecting" | "offline">("connecting");
+  // Short drops are covered by the status popover; past this grace the live stream is visibly paused.
+  const [linkDown, setLinkDown] = useState(false);
+  useEffect(() => {
+    if (status !== "reconnecting") return;
+    const timer = window.setTimeout(() => setLinkDown(true), 2_000);
+    return () => {
+      window.clearTimeout(timer);
+      setLinkDown(false);
+    };
+  }, [status]);
   // Bumped after a dropped socket comes back: views that follow the stream
   // read their state again, since frames sent while it was down are lost.
   const [resync, setResync] = useState(0);
@@ -781,6 +816,9 @@ export default function App() {
   const [tab, setTab, setTabDefault] = useThreadScoped<
     "chat" | "review" | "files" | "graph" | "board" | "doc" | "p2p"
   >(activeId, "chat", "at.tab");
+  // The event subscription closes over the first render's tab, so it reads visibility here.
+  const diffVisibleRef = useRef(false);
+  diffVisibleRef.current = tab === "review" || asideActive === "diff";
   const [diff, setDiff] = useState<Diff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [draft, setDraft] = useThreadScoped<DraftLike | null>(activeId, null);
@@ -957,9 +995,9 @@ export default function App() {
     threadCacheRef.current[id] = state;
     // A reply for a thread the user has since left must not replace the one on screen.
     if (activeIdRef.current === id) setThread(state);
-    setThreads(list);
+    setThreads((prev) => keepSame(prev, list));
     settleDetachedTurns(list);
-    setGlobalUsage(usage);
+    setGlobalUsage((prev) => keepSame(prev, usage));
   }, [settleDetachedTurns]);
 
   // The daemon closes a question on the answer, so refresh right away: the card
@@ -1413,7 +1451,7 @@ export default function App() {
     if (!rpc) return;
     try {
       const list = await rpc.call<ThreadSummary[]>("thread.list");
-      setThreads(list);
+      setThreads((prev) => keepSame(prev, list));
       settleDetachedTurns(list);
     } catch {
       /* the next thread event or refresh reads again */
@@ -1853,6 +1891,10 @@ export default function App() {
       // finished after the last view, so extra calls stay free.
       if (ev.type === "agent.status-changed" && TERMINAL.has(String(ev.payload.status ?? ""))) {
         rpc.call("thread.markSeen", { threadId: activeId }).catch(() => undefined);
+        // The diff is a snapshot of the working tree: the lead finishing is when it goes stale.
+        const agentId = String(ev.payload.agentId ?? "");
+        const lead = (folded?.kind === "applied" ? folded.state : cached)?.agents?.[agentId];
+        if (lead?.role === "orchestrator" && diffVisibleRef.current) loadDiff(activeId);
       }
       // The daemon's thread.changed covers this too; reading here keeps an
       // older daemon without it honest about the thread on screen.
@@ -1870,7 +1912,7 @@ export default function App() {
       stale = true;
       off();
     };
-  }, [activeId, resync, refresh, scheduleRefresh, scheduleBoardReload, scheduleUsageReload]);
+  }, [activeId, resync, refresh, scheduleRefresh, scheduleBoardReload, scheduleUsageReload, loadDiff]);
 
   // The diff backs both the center Review tab and the aside Diff panel.
   useEffect(() => {
@@ -3511,6 +3553,12 @@ export default function App() {
       </div>
     );
   }
+  // Floats under the titlebar (.link-banner): it takes no grid row or flex slot, and stays clear of the composer.
+  const linkBanner = linkDown ? (
+    <div className="link-banner" role="status" aria-live="polite">
+      Reconnecting to the daemon. Live output is paused until it returns.
+    </div>
+  ) : null;
   const buildPaletteView = (): { left: PaletteSection[]; right: PaletteSection[]; rightTitle: string } => {
     const left = groupItems(
       buildPaletteCommands<AsideTabId>({
@@ -3668,6 +3716,7 @@ export default function App() {
   if (!projectId && homePage === "worktrees") {
     return (
       <div className="screen">
+        {linkBanner}
         {titlebar}
         {projectTabs}
         <div className="screen-body">
@@ -3710,6 +3759,7 @@ export default function App() {
   if (!projectId && homePage === "stats") {
     return (
       <div className="screen">
+        {linkBanner}
         {titlebar}
         {projectTabs}
         <div className="screen-body">
@@ -3736,6 +3786,7 @@ export default function App() {
   if (!projectId && homePage === "orchestrator") {
     return (
       <div className="screen">
+        {linkBanner}
         {titlebar}
         {projectTabs}
         <div className="screen-body master-page">
@@ -3767,6 +3818,7 @@ export default function App() {
   if (!projectId) {
     return (
       <div className="screen">
+        {linkBanner}
         {titlebar}
         {projectTabs}
         <div className="screen-body">
@@ -3856,6 +3908,7 @@ export default function App() {
   if (!activeId) {
     return (
       <div className="screen">
+        {linkBanner}
         {titlebar}
         {projectTabs}
         <div className="screen-body">
@@ -3975,6 +4028,7 @@ export default function App() {
         } as CSSProperties
       }
     >
+      {linkBanner}
       {titlebar}
       {projectTabs}
       {drawers.open && <div className="drawer-scrim" onClick={drawers.close} aria-hidden="true" />}
