@@ -158,6 +158,7 @@ import { ProjectThreads } from "./components/ProjectThreads";
 import { appendLive, dropSnapshotOverlap, resetLive, type ReplySource } from "./lib/liveLog";
 import { changesThreadList, foldThreadEvent, parseThreadEvent, stateVersion } from "./lib/threadFold";
 import { useAgentLog } from "./lib/useAgentLog";
+import { useDialogFocus } from "./lib/dialogFocus";
 
 type Role = {
   id: string;
@@ -418,6 +419,34 @@ const ENV_PAGES: { page: HomePage | "all"; label: string; title: string; icon: R
 
 /** How the project's threads are laid out: the card list or the status board. */
 type ThreadView = "list" | "board";
+/** A modal sheet over a dimmed overlay: role, modal, name, and focus held inside. */
+function ModalSheet({
+  label,
+  onDismiss,
+  children,
+}: {
+  label: string;
+  onDismiss: () => void;
+  children: ReactNode;
+}) {
+  const box = useDialogFocus<HTMLDivElement>();
+  return (
+    <div className="overlay" onClick={onDismiss}>
+      <div
+        ref={box}
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function loadThreadView(): ThreadView {
   if (getPref("at.threadView") === "board") return "board";
   return "list";
@@ -3332,8 +3361,7 @@ export default function App() {
         />
       )}
       {deleteTarget && (
-        <div className="overlay" onClick={() => setDeleteTarget(null)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <ModalSheet label="Delete thread" onDismiss={() => setDeleteTarget(null)}>
             <div className="sheet-head">
               <strong>Delete thread</strong>
               <button onClick={() => setDeleteTarget(null)}>Cancel</button>
@@ -3352,12 +3380,10 @@ export default function App() {
                 </button>
               </div>
             </div>
-          </div>
-        </div>
+        </ModalSheet>
       )}
       {cleanupConfirm && (
-        <div className="overlay" onClick={() => !cleaningThreads && setCleanupConfirm(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <ModalSheet label="Clean up threads" onDismiss={() => !cleaningThreads && setCleanupConfirm(false)}>
             <div className="sheet-head">
               <strong>Clean up threads</strong>
               <button disabled={cleaningThreads} onClick={() => setCleanupConfirm(false)}>
@@ -3381,8 +3407,7 @@ export default function App() {
                 </button>
               </div>
             </div>
-          </div>
-        </div>
+        </ModalSheet>
       )}
       {infoTarget && (
         <ThreadInfoDialog
@@ -3663,6 +3688,21 @@ export default function App() {
     />
   );
 
+  // Shared by the per-screen returns below. Later overlays paint over earlier
+  // ones at equal z-index, so this order is load-bearing. The main return keeps
+  // its own order: it interleaves these with the detail and release sheets.
+  const overlays = (
+    <>
+      {superViewDialog}
+      {newProjectDialog}
+      {paletteDialog}
+      {tourDialog}
+      {helpSheet}
+      {settingsSheet}
+      {pruneDialog}
+    </>
+  );
+
   // Worktrees are their own page, across every project: the checkouts are a
   // shared resource, so they are visible even with no project open.
   if (!projectId && homePage === "worktrees") {
@@ -3695,13 +3735,7 @@ export default function App() {
             onPruneMerged={pruneMergedWorktrees}
           />
         </div>
-        {superViewDialog}
-        {newProjectDialog}
-        {paletteDialog}
-        {tourDialog}
-        {helpSheet}
-        {settingsSheet}
-        {pruneDialog}
+        {overlays}
       </div>
     );
   }
@@ -3721,13 +3755,7 @@ export default function App() {
           </div>
           <StatsPage rpc={rpcRef.current} />
         </div>
-        {superViewDialog}
-        {newProjectDialog}
-        {paletteDialog}
-        {tourDialog}
-        {helpSheet}
-        {settingsSheet}
-        {pruneDialog}
+        {overlays}
       </div>
     );
   }
@@ -3752,13 +3780,7 @@ export default function App() {
             }}
           />
         </div>
-        {superViewDialog}
-        {newProjectDialog}
-        {paletteDialog}
-        {tourDialog}
-        {helpSheet}
-        {settingsSheet}
-        {pruneDialog}
+        {overlays}
       </div>
     );
   }
@@ -3841,13 +3863,7 @@ export default function App() {
           </>
           )}
         </div>
-        {superViewDialog}
-        {newProjectDialog}
-        {paletteDialog}
-        {tourDialog}
-        {helpSheet}
-        {settingsSheet}
-        {pruneDialog}
+        {overlays}
       </div>
     );
   }
@@ -3929,13 +3945,7 @@ export default function App() {
             onDelete={deleteThreadsStable}
           />
           {threadOverlays}
-          {superViewDialog}
-          {newProjectDialog}
-          {paletteDialog}
-          {tourDialog}
-          {helpSheet}
-          {settingsSheet}
-          {pruneDialog}
+          {overlays}
         </div>
       </div>
     );
@@ -4247,6 +4257,7 @@ export default function App() {
                   />
                 </div>
               )}
+              {activeId && !thread && !error && <div className="empty-state">Loading thread…</div>}
               {!setupMode && thread && (thread.messages?.length ?? 0) === 0 && running.length === 0 && (
                 <EmptyChat solo={!!thread.soloRuntime} onStarter={pickStarter} />
               )}
@@ -4335,7 +4346,7 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {error && <div className="empty err-text">{error}</div>}
+              {error && <div className="empty-state err-text">Something went wrong: {error}</div>}
               {!atBottom && (
                 <button
                   type="button"
@@ -4378,7 +4389,11 @@ export default function App() {
           </>
         ) : tab === "review" ? (
           <div className="stream" key={activeId ?? ""} ref={reviewScroll.ref} onScroll={reviewScroll.onScroll}>
-            {diffError && <div className="empty err-text">{diffError}</div>}
+            {diffError ? (
+              <div className="empty-state err-text">Could not load changes: {diffError}</div>
+            ) : diff === null ? (
+              <div className="empty-state">Loading changes…</div>
+            ) : null}
             <DiffView
               diff={diff}
               idPrefix="review-"
@@ -4830,7 +4845,11 @@ export default function App() {
         ) : (
           <>
             <div className="section diff-section">
-              {diffError && <div className="empty err-text">{diffError}</div>}
+              {diffError ? (
+                <div className="empty-state err-text">Could not load changes: {diffError}</div>
+              ) : diff === null ? (
+                <div className="empty-state">Loading changes…</div>
+              ) : null}
               <DiffView
                 diff={diff}
                 idPrefix="aside-"

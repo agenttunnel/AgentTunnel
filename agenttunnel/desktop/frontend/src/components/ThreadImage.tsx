@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { fetchImageBlob, type ImageRef } from "../lib/rpc";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 type ThreadImageProps = {
   httpUrl: string;
@@ -23,6 +24,7 @@ export const ThreadImage = memo(function ThreadImage({
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [full, setFull] = useState(false);
+  const previewRef = useDialogFocus<HTMLDivElement>(full);
 
   useEffect(() => {
     let stale = false;
@@ -72,7 +74,15 @@ export const ThreadImage = memo(function ThreadImage({
         onClick={() => setFull(true)}
       />
       {full && (
-        <div className="img-overlay" onClick={() => setFull(false)} role="dialog" aria-label="Image preview">
+        <div
+          ref={previewRef}
+          className="img-overlay"
+          onClick={() => setFull(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+          tabIndex={-1}
+        >
           <img src={url} alt={image.name ?? "attached image"} />
         </div>
       )}

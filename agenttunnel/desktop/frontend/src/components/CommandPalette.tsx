@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { filterSections, parseScope, type PaletteItem, type PaletteSection } from "../lib/palette";
 import { isPaletteKey, MOD } from "../lib/navKeys";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 /** Rows rendered per pane. Filtering is cheap; the DOM is what costs. */
 const PANE_CAP = 60;
@@ -36,6 +37,7 @@ export function CommandPalette({
   const [sel, setSel] = useState(0);
   const [files, setFiles] = useState<{ query: string; items: PaletteItem[] } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const boxRef = useDialogFocus<HTMLDivElement>();
 
   // Files come from the daemon: debounced, and a newer keystroke drops the
   // older answer. Commands-only scope (">") never asks.
@@ -135,7 +137,15 @@ export function CommandPalette({
 
   return (
     <div className="overlay palette-overlay" onMouseDown={onClose}>
-      <div className="palette" role="dialog" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        ref={boxRef}
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        tabIndex={-1}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <input
           className="palette-input"
           autoFocus
