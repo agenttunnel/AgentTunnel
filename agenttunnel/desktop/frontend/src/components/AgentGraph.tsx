@@ -38,6 +38,7 @@ import { PhaseGlyph } from "./AgentStatus";
 import { agentPhase, askingAgents, PHASE_LABEL, type AgentPhase } from "../lib/agentTree";
 import { setAgentFocus, useFocusedAgent } from "../lib/agentLive";
 import { useLatestCallback } from "../lib/store";
+import { useDialogFocus } from "../lib/dialogFocus";
 import type { AgentQuestion } from "../lib/questions";
 
 type GraphAgent = {
@@ -488,6 +489,7 @@ export function AgentGraph({
   useEffect(() => {
     if (conversation && talk.length === 0) setConversation(null);
   }, [conversation, talk]);
+  const convoBox = useDialogFocus<HTMLDivElement>(!!conversation && talk.length > 0);
 
   // Playback: one timer per step, paced by the real gap between events.
   const running = playing && replay && applied < hi;
@@ -933,7 +935,7 @@ export function AgentGraph({
 
       {conversation && talk.length > 0 && (
         <div className="overlay" onClick={() => setConversation(null)}>
-          <div className="sheet wide" onClick={(e) => e.stopPropagation()}>
+          <div className="sheet wide" role="dialog" aria-modal="true" aria-label="Agent conversation" tabIndex={-1} ref={convoBox} onClick={(e) => e.stopPropagation()}>
             <div className="sheet-head">
               <strong>
                 {nameOf(conversation.a)} ↔ {nameOf(conversation.b)}
