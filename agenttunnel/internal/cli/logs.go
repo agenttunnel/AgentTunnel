@@ -28,10 +28,11 @@ const (
 	// without a status event we saw.
 	followPollInterval = 2 * time.Second
 	// followStartGrace bounds how long a follower waits for a turn to appear
-	// before giving up. A detached turn that fails before it records an agent
-	// (a dead harness, a refused worktree) writes an error line and no agent;
-	// without this the follower would wait forever and look like a hang.
-	followStartGrace = 15 * time.Second
+	// before giving up. It is a last resort, the same as run --wait's
+	// runStartBound: a detached start cuts the worktree in the background, so a
+	// healthy start on a large repo can take minutes. Reaching the bound only
+	// fails the follow when the daemon also shows no turn for the thread.
+	followStartGrace = 5 * time.Minute
 )
 
 // logsOptions is the parsed `agenttunnel logs` invocation.
@@ -99,6 +100,9 @@ func runLogs(ctx context.Context, env *Env, args []string) error {
 	if err != nil {
 		return err
 	}
+	if opts.follow && env.JSON {
+		return usageError("agenttunnel logs --json cannot follow: JSON is one document, not a stream (drop -f or --json)")
+	}
 	c, err := connectReadOnly(ctx, env)
 	if err != nil {
 		return err
@@ -116,7 +120,7 @@ func runLogs(ctx context.Context, env *Env, args []string) error {
 		}
 		opts.agent = string(agentID)
 	}
-	if opts.follow && !env.JSON {
+	if opts.follow {
 		cancelled, stop := withInterrupt(ctx)
 		defer stop()
 		ctx = cancelled
@@ -138,6 +142,11 @@ type followOptions struct {
 	// so `run --follow` cannot mistake a previous turn's terminal roster for
 	// this turn finishing.
 	requireActivity bool
+	// pollEvery and startGrace override followPollInterval and
+	// followStartGrace when set. Tests use them to reach the no-turn path
+	// without waiting out the production intervals.
+	pollEvery  time.Duration
+	startGrace time.Duration
 	// onEvent, when set, observes every decoded event (attach uses it for
 	// questions). It must not block.
 	onEvent func(event any)
@@ -281,6 +290,10 @@ func decodeEventFrame(ev Event) (followedEvent, bool) {
 // followOutput is the live half of a tail: it prints agent output and status
 // lines for one thread until every agent is terminal. early holds frames read
 // before the backlog reply, already de-duplicated by bufferedFrames.
+//
+// The exit code reports the turn's outcome: a failed or cancelled agent, or a
+// turn that never started, is a failure, so `run --follow` in CI can tell a
+// finished job from a broken one.
 func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, early []Event, opts followOptions) error {
 	statuses, err := fetchAgentStatuses(ctx, c, row.ID)
 	if err != nil {
@@ -289,44 +302,81 @@ func followOutput(ctx context.Context, env *Env, c *Client, row threadListRow, e
 		statuses = map[string]contracts.AgentStatus{}
 	}
 	tracker := newTurnTracker(statuses, opts.requireActivity)
-	started := time.Now()
 	for _, ev := range early {
 		printFollowEvent(env, ev, row.ID, opts, tracker)
 	}
 	if tracker.ended() {
-		return nil
+		return turnOutcome(tracker)
 	}
 
-	poll := time.NewTicker(followPollInterval)
+	interval, bound := followPollInterval, followStartGrace
+	if opts.pollEvery > 0 {
+		interval = opts.pollEvery
+	}
+	if opts.startGrace > 0 {
+		bound = opts.startGrace
+	}
+	noTurn := time.NewTimer(bound)
+	defer noTurn.Stop()
+	noTurnC := noTurn.C
+	poll := time.NewTicker(interval)
 	defer poll.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-noTurnC:
+			// The bound is a last resort. Ask the daemon first: a fresh roster,
+			// then whether the thread recorded a turn at all. A turn that has
+			// begun keeps the follower waiting, as run --wait does.
+			if fresh, err := fetchAgentStatuses(ctx, c, row.ID); err == nil {
+				tracker.update(fresh)
+			}
+			if tracker.started() {
+				noTurnC = nil
+				break
+			}
+			begun, err := threadTurnBegun(ctx, c, row.ID)
+			switch {
+			case err != nil:
+				// A failed read is not evidence that the turn never started.
+				noTurn.Reset(bound)
+			case begun:
+				noTurnC = nil
+			default:
+				fmt.Fprintln(env.Err, "no turn started; see `agenttunnel logs` for errors")
+				return failure()
+			}
 		case <-poll.C:
 			if fresh, err := fetchAgentStatuses(ctx, c, row.ID); err == nil {
 				tracker.update(fresh)
 			}
-			if !tracker.started() && time.Since(started) >= followStartGrace {
-				fmt.Fprintln(env.Out, "no turn started; see `agenttunnel logs` for errors")
-				return nil
-			}
-			if tracker.ended() {
-				return nil
-			}
 		case ev, ok := <-c.Events():
 			if !ok {
-				return nil
+				// The stream dropped before the turn ended: the outcome is
+				// unknown, so it must not read as success in CI.
+				fmt.Fprintln(env.Err, "agenttunnel: event stream closed before the turn ended; the turn may still be running")
+				return failure()
 			}
 			printFollowEvent(env, ev, row.ID, opts, tracker)
-			if tracker.ended() {
-				return nil
-			}
+		}
+		if tracker.ended() {
+			return turnOutcome(tracker)
 		}
 	}
 }
 
-// printFollowEvent renders one frame if it belongs to this tail.
+// turnOutcome is the exit of a follow whose turn is over. A failed or cancelled
+// agent makes the follow fail; the status line that reported it already printed.
+func turnOutcome(tracker *turnTracker) error {
+	if tracker.failed() {
+		return failure()
+	}
+	return nil
+}
+
+// printFollowEvent renders one frame if it belongs to this tail. Lines carry
+// the frame's envelope time, so a buffered frame keeps the time it happened.
 func printFollowEvent(env *Env, ev Event, threadID string, opts followOptions, tracker *turnTracker) {
 	frame, ok := decodeEventFrame(ev)
 	if !ok || frame.ThreadID != threadID {
@@ -342,7 +392,7 @@ func printFollowEvent(env *Env, ev Event, threadID string, opts followOptions, t
 			return
 		}
 		tracker.activity = true
-		writeLogEntry(env.Out, contracts.LogEntry{AgentID: out.AgentID, Kind: out.Kind, Text: out.Text, At: time.Now()})
+		writeLogEntry(env.Out, contracts.LogEntry{AgentID: out.AgentID, Kind: out.Kind, Text: out.Text, At: frame.At})
 
 	case contracts.EvtAgentStatusChanged:
 		var status contracts.AgentStatusChanged
@@ -353,7 +403,7 @@ func printFollowEvent(env *Env, ev Event, threadID string, opts followOptions, t
 			return
 		}
 		tracker.observe(string(status.AgentID), status.Status)
-		writeStatusLine(env.Out, status)
+		writeStatusLine(env.Out, status, frame.At)
 
 	case contracts.EvtTaskDispatched:
 		var dispatch contracts.TaskDispatched

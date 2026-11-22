@@ -92,6 +92,7 @@ func (m *tuiModel) syncMention() {
 			}
 			m.mention.asking = false
 			if err != nil {
+				m.notify("files.search: " + err.Error())
 				return
 			}
 			m.mention.query, m.mention.loaded = query, true

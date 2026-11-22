@@ -600,6 +600,11 @@ func (m *tuiModel) statusRow(width int) tuiRow {
 	}
 	note := tuiText(text, tuiInk{fg: tuiColAccent})
 	if width <= note.width()+2 {
+		// Too narrow for the hint: the working segment is what must stay on
+		// screen, since a scrolled view otherwise hides that work is running.
+		if m.working() {
+			return row.fit(width)
+		}
 		return note.fit(width)
 	}
 	left := row.fit(width - note.width() - 2)
