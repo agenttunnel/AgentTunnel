@@ -88,8 +88,15 @@ func serviceArgs(s serviceSpec) []string {
 	return []string{"--port", "0", "--home-dir", s.StateDir, "--log-file", s.LogFile}
 }
 
+// Service stdio. atd --log-file bounds the output that goes through the log
+// package. The service manager also opens the log file for the process's
+// stdout and stderr, so panics and output before flag parsing are kept. Limit:
+// logrotate renames the file at 5 MB, and the inherited handle keeps writing to
+// the renamed backup until the process restarts. Stdio written after a rotation
+// therefore lands in <atd.log>.1, not the active file.
+
 // renderLaunchAgent is the LaunchAgent plist. KeepAlive restarts a failed exit
-// and ThrottleInterval bounds the restart rate.
+// and ThrottleInterval bounds the restart rate. launchd appends stdio to LogFile.
 func renderLaunchAgent(s serviceSpec) string {
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -111,6 +118,14 @@ func renderLaunchAgent(s serviceSpec) string {
 	<string>`)
 	_ = xml.EscapeText(&b, []byte(s.StateDir))
 	b.WriteString(`</string>
+	<key>StandardOutPath</key>
+	<string>`)
+	_ = xml.EscapeText(&b, []byte(s.LogFile))
+	b.WriteString(`</string>
+	<key>StandardErrorPath</key>
+	<string>`)
+	_ = xml.EscapeText(&b, []byte(s.LogFile))
+	b.WriteString(`</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
@@ -127,7 +142,8 @@ func renderLaunchAgent(s serviceSpec) string {
 }
 
 // renderSystemdUnit is the systemd --user unit. The start limit caps restarts
-// at five in five minutes, so a crash loop stops instead of spinning.
+// at five in five minutes, so a crash loop stops instead of spinning. stdout
+// and stderr append to LogFile (systemd 240+); see the service stdio note above.
 func renderSystemdUnit(s serviceSpec) string {
 	args := []string{s.Binary}
 	args = append(args, serviceArgs(s)...)
@@ -135,6 +151,8 @@ func renderSystemdUnit(s serviceSpec) string {
 	for i, a := range args {
 		quoted[i] = systemdQuote(a)
 	}
+	// Output paths are not quoted, but systemd still expands % specifiers.
+	logOut := "append:" + strings.ReplaceAll(s.LogFile, "%", "%%")
 	return `[Unit]
 Description=AgentTunnel daemon (atd)
 StartLimitIntervalSec=300
@@ -144,6 +162,8 @@ StartLimitBurst=5
 ExecStart=` + strings.Join(quoted, " ") + `
 Restart=on-failure
 RestartSec=5
+StandardOutput=` + logOut + `
+StandardError=` + logOut + `
 
 [Install]
 WantedBy=default.target

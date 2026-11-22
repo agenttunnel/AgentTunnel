@@ -7,6 +7,8 @@ StartLimitBurst=5
 ExecStart="/Applications/AgentTunnel/atd" "--port" "0" "--home-dir" "/Users/test/.agenttunnel" "--log-file" "/Users/test/.agenttunnel/atd.log"
 Restart=on-failure
 RestartSec=5
+StandardOutput=append:/Users/test/.agenttunnel/atd.log
+StandardError=append:/Users/test/.agenttunnel/atd.log
 
 [Install]
 WantedBy=default.target

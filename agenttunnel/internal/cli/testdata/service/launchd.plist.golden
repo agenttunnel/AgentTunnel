@@ -16,6 +16,10 @@
 	</array>
 	<key>WorkingDirectory</key>
 	<string>/Users/test/.agenttunnel</string>
+	<key>StandardOutPath</key>
+	<string>/Users/test/.agenttunnel/atd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/test/.agenttunnel/atd.log</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
