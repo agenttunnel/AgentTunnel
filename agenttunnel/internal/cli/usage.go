@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
 )
 
 func init() {
@@ -35,11 +37,17 @@ func connectReadOnly(ctx context.Context, env *Env) (*Client, error) {
 		c, _, err := env.Connect(ctx)
 		return c, err
 	}
-	c, _, err := env.connectExisting(ctx)
-	if err != nil {
+	c, info, err := env.dialExisting(ctx)
+	switch {
+	case err == nil:
+		return c, nil
+	case errors.Is(err, errRejected):
+		return nil, fmt.Errorf("the AgentTunnel daemon at %s rejected the token in %s; restart the daemon so it writes a fresh one", info.WSURL, discovery.Path(env.StateDir()))
+	case errors.Is(err, errUnreachable):
+		return nil, fmt.Errorf("%s names a daemon that is not answering (it may have exited or be hung); start it with `agenttunnel daemon start`", discovery.Path(env.StateDir()))
+	default:
 		return nil, fmt.Errorf("no AgentTunnel daemon is running; start one with `agenttunnel daemon start`")
 	}
-	return c, nil
 }
 
 // usageOptions is the parsed `agenttunnel usage` invocation.
