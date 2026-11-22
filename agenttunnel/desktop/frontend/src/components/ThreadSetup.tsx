@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { LeadRuntimeView, RoleConfigView, SettingsView, ThreadState, ThreadSummary } from "../App";
 import { switchProps } from "../lib/switchProps";
 import { Dropdown, type DropdownOption } from "./Dropdown";
+import { ThinkingPicker } from "./ThinkingPicker";
 
 export type ThreadSetupProps = {
   settings: SettingsView | null;
@@ -163,6 +164,12 @@ export function SoloPickers({
           setSolo({ harness: soloHarn, model: v, variant: solo?.variant ?? "" })
         }
       />
+      <ThinkingPicker
+        harness={soloHarn}
+        value={solo?.variant ?? ""}
+        disabled={!thread}
+        onChange={(v) => setSolo({ harness: soloHarn, model: solo?.model ?? "", variant: v })}
+      />
     </div>
   );
 }
@@ -229,8 +236,9 @@ function RoleTable({
               options={harnessOptionsFor(r.harness)}
               disabled={parked}
               onChange={(v) => {
-                const row = { ...r, harness: v };
-                updateRole(r.id, { harness: v });
+                // A thinking level belongs to one harness; a new harness starts at its default.
+                const row = { ...r, harness: v, variant: "" };
+                updateRole(r.id, { harness: v, variant: "" });
                 persistRole(row).catch(() => undefined);
                 refreshModels(v).catch(() => undefined);
               }}
@@ -256,6 +264,16 @@ function RoleTable({
               onChange={(v) => {
                 const row = { ...r, model: v };
                 updateRole(r.id, { model: v });
+                persistRole(row).catch(() => undefined);
+              }}
+            />
+            <ThinkingPicker
+              harness={r.harness}
+              value={r.variant}
+              disabled={parked}
+              onChange={(v) => {
+                const row = { ...r, variant: v };
+                updateRole(r.id, { variant: v });
                 persistRole(row).catch(() => undefined);
               }}
             />
@@ -344,6 +362,12 @@ function LeadsBlock({
                   .catch(() => undefined);
               }}
               onChange={(v) => setLeadRuntime(i, { harness, model: v, variant })}
+            />
+            <ThinkingPicker
+              harness={effective}
+              value={variant}
+              disabled={!thread || soloOn}
+              onChange={(v) => setLeadRuntime(i, { harness, model, variant: v })}
             />
           </div>
         );
