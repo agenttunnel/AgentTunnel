@@ -98,11 +98,45 @@ func TryAcquire(stateDir string) (*Lock, error) {
 		if !stale {
 			return nil, ErrHeld
 		}
-		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		if rerr := reap(path); rerr != nil {
 			return nil, rerr
 		}
 	}
 	return nil, ErrHeld
+}
+
+// reap removes a stale lock. Two acquirers can judge the same lock stale; if
+// both removed it blindly, the slower one could delete a lock the faster one
+// created in between. So removal happens under a gate file, and the lock is
+// judged again inside it: while the lock file exists nothing can create a new
+// one, so the re-check is authoritative. A gate left by a reaper that died
+// mid-reap is cleared once it is older than writeGrace, and the caller retries.
+func reap(path string) error {
+	gate := path + ".reap"
+	f, err := os.OpenFile(gate, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		if info, serr := os.Stat(gate); serr == nil && time.Since(info.ModTime()) > writeGrace {
+			_ = os.Remove(gate)
+		}
+		return ErrHeld
+	}
+	if err != nil {
+		return err
+	}
+	_ = f.Close()
+	defer func() { _ = os.Remove(gate) }()
+
+	stale, err := isStale(path)
+	if err != nil {
+		return err
+	}
+	if !stale {
+		return nil
+	}
+	if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return rerr
+	}
+	return nil
 }
 
 // isStale reports whether an existing lock may be replaced.
