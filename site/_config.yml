@@ -1,0 +1,20 @@
+title: AgentTunnel
+description: Documentation for AgentTunnel, a minimal GUI for coding agents.
+
+# Project pages are served at https://agenttunnel.github.io/AgentTunnel/.
+url: "https://agenttunnel.github.io"
+baseurl: "/AgentTunnel"
+
+nav:
+  - title: Overview
+    url: /
+  - title: Getting started
+    url: /getting-started.html
+  - title: Features
+    url: /features.html
+  - title: CLI
+    url: /cli.html
+  - title: Configuration
+    url: /configuration.html
+  - title: Changelog
+    url: /changelog.html

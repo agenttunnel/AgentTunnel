@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
+  <meta name="description" content="{{ site.description }}">
+  <style>
+    body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1d1d1f; background: #fff; }
+    header { border-bottom: 1px solid #e5e5ea; padding: 0.75rem 1.5rem; display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap; }
+    header .brand { font-weight: 600; color: #1d1d1f; text-decoration: none; }
+    header nav a { color: #515154; text-decoration: none; margin-right: 1rem; }
+    header nav a[aria-current="page"] { color: #1d1d1f; font-weight: 600; }
+    main { max-width: 52rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+    h1 { font-size: 2rem; margin-top: 0; }
+    h2 { margin-top: 2.5rem; border-bottom: 1px solid #e5e5ea; padding-bottom: 0.3rem; }
+    code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; background: #f5f5f7; padding: 0.1em 0.3em; border-radius: 4px; }
+    pre { background: #f5f5f7; padding: 1rem; overflow-x: auto; border-radius: 6px; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+    th, td { text-align: left; border-bottom: 1px solid #e5e5ea; padding: 0.4rem 0.6rem; vertical-align: top; }
+    footer { max-width: 52rem; margin: 0 auto; padding: 0 1.5rem 2rem; color: #6e6e73; font-size: 0.9rem; }
+    footer a { color: #6e6e73; }
+  </style>
+</head>
+<body>
+<header>
+  <a class="brand" href="{{ '/' | relative_url }}">AgentTunnel</a>
+  <nav>
+    {% for item in site.nav %}<a href="{{ item.url | relative_url }}"{% if page.url == item.url %} aria-current="page"{% endif %}>{{ item.title }}</a>{% endfor %}
+  </nav>
+</header>
+<main>
+{{ content }}
+</main>
+<footer>
+  <a href="https://github.com/agenttunnel/AgentTunnel">Source on GitHub</a> · MIT
+</footer>
+</body>
+</html>
