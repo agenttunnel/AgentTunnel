@@ -714,6 +714,17 @@ select {
 .app.compact .chat-head {
   display: none;
 }
+/* Compact drops the 900px reading width: the thread's blocks fill the window too. */
+.app.compact .msg,
+.app.compact .turn,
+.app.compact .activity,
+.app.compact .schedule-banner,
+.app.compact .controlled-link,
+.app.compact .stream > .section,
+.app.compact .question-card,
+.app.compact .setup-view {
+  max-width: none;
+}
 .titlebar {
   grid-column: 1 / -1;
   --wails-draggable: drag;
