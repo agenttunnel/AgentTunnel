@@ -95,7 +95,8 @@ import { threadStatus } from "./lib/threadStatus";
 import { recentIds, recordRecent } from "./lib/recent";
 import type { FileMatch } from "./lib/mentions";
 import { useScrollMemory } from "./lib/scrollMemory";
-import { harnessTint, type MailboxMessage } from "./lib/graph";
+import type { MailboxMessage } from "./lib/graph";
+import { soloHue } from "./lib/soloIdentity";
 import { getPref, setPref } from "./lib/prefs";
 import { applyTheme, loadTheme } from "./lib/themes";
 import {
@@ -4040,14 +4041,15 @@ export default function App() {
     lastMsg.author !== "shell" &&
     pendingQuestions === 0;
   const asideCollapsed = !layout.asideOpen || setupMode;
-  // Solo threads tint the chat-head tabs with their harness color, like the
-  // thread card and the graph node do.
-  const soloTint = thread?.soloRuntime ? harnessTint(thread.soloRuntime.harness ?? "") : "";
+  // A solo thread's identity hue tints its chat-head tabs (the card and row
+  // match) and, as the accent, the whole shell below.
+  const soloTint = thread?.soloRuntime ? `solo-identity ${soloHue(thread.id)}` : "";
+  const soloShell = thread?.soloRuntime ? ` solo-accent ${soloHue(thread.id)}` : "";
 
   return (
     <DocLinkContext.Provider value={openChatDoc}>
     <div
-      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}${drawers.className}`}
+      className={`app${layout.sidebarOpen ? "" : " sidebar-closed"}${asideCollapsed ? " aside-closed" : ""}${compact ? " compact" : ""}${drawers.className}${soloShell}`}
       ref={shellRef}
       style={
         {

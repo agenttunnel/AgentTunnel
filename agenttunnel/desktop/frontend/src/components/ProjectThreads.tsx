@@ -4,7 +4,7 @@
 
 import { memo, type MouseEvent } from "react";
 import type { ThreadSummary } from "../App";
-import { harnessTint } from "../lib/graph";
+import { soloHue } from "../lib/soloIdentity";
 import { clickable } from "../lib/switchProps";
 import { useProjectThreads } from "./Sidebar/ThreadList";
 import { ThreadBoard, type BoardIssue, type BoardIssues, type ThreadState as BoardThreadState } from "./ThreadBoard";
@@ -72,7 +72,7 @@ export const ProjectThreads = memo(function ProjectThreads({
             </span>
           </div>
           {projectThreads.map((t) => {
-            const tint = t.soloRuntime ? harnessTint(t.soloRuntime.harness ?? "") : "";
+            const tint = t.soloRuntime ? `solo-identity ${soloHue(t.id)}` : "";
             const status = threadStatus(t);
             const label = STATUS_LABEL[status];
             return (
