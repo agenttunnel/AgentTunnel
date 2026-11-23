@@ -77,7 +77,10 @@ dir=$(dirname "$0")
 } >> '` + e.log + `'
 case "$*" in
   "daemon install") [ -e '` + e.root + `/fail-install' ] && exit 1 ;;
-  "daemon uninstall") [ -e '` + e.root + `/fail-uninstall' ] && exit 1 ;;
+  "daemon uninstall")
+    # A CLI from before the always-on service has no such command: usage error, exit 2.
+    [ -e '` + e.root + `/legacy-cli' ] && exit 2
+    [ -e '` + e.root + `/fail-uninstall' ] && exit 1 ;;
 esac
 exit 0
 `
@@ -331,4 +334,27 @@ func TestUninstallKeepsBinariesWhenServiceRemovalFails(t *testing.T) {
 	// The service still points at these binaries, so they must stay.
 	e.mustBeRegularExecutable(t, "atd")
 	e.mustBeRegularExecutable(t, "agenttunnel")
+}
+
+// A binary from before the always-on service never registered one, so
+// uninstalling that install must remove the files instead of aborting.
+func TestUninstallRemovesFilesFromCLIWithoutDaemonUninstall(t *testing.T) {
+	e := newInstallEnv(t)
+	e.writeRelease(t, "v1")
+	if out, err := e.run(t, nil); err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(e.root, "legacy-cli"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := e.run(t, nil, "--uninstall")
+	if err != nil {
+		t.Fatalf("uninstall failed on a CLI without daemon uninstall: %v\n%s", err, out)
+	}
+	for _, name := range []string{"atd", "agenttunnel", "agenttunnel-desktop"} {
+		if _, err := os.Lstat(filepath.Join(e.install, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was not removed: %v", name, err)
+		}
+	}
 }
