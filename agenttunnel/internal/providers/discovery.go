@@ -265,26 +265,6 @@ func ParseCommandCodeModels(output string) []string {
 	return out
 }
 
-// ParseCursorModelList parses `cursor-agent --list-models`, whose rows are
-// "<slug> - <description>" (for example "gpt-5.3-codex-low - Codex 5.3 Low").
-func ParseCursorModelList(output string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, raw := range strings.Split(StripANSI(output), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || !strings.Contains(line, " - ") {
-			continue
-		}
-		slug := strings.TrimSpace(strings.SplitN(line, " - ", 2)[0])
-		if slug == "" || strings.ContainsAny(slug, " \t") || seen[slug] {
-			continue
-		}
-		seen[slug] = true
-		out = append(out, slug)
-	}
-	return out
-}
-
 func looksLikeModel(s string) bool {
 	return strings.ContainsAny(s, "/-._:") && !strings.Contains(s, "=")
 }

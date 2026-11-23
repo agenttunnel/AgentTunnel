@@ -20,10 +20,10 @@ func (stubLimits) Fetch(context.Context) ([]contracts.LimitWindow, string) {
 
 type missingLimits struct{}
 
-func (missingLimits) Harness() contracts.Harness { return contracts.HarnessCursor }
+func (missingLimits) Harness() contracts.Harness { return contracts.HarnessPi }
 
 func (missingLimits) Fetch(context.Context) ([]contracts.LimitWindow, string) {
-	return nil, "not signed in to Cursor"
+	return nil, "not signed in to Pi"
 }
 
 func TestUsageLimitsRPCReportsEveryHarness(t *testing.T) {
@@ -56,7 +56,7 @@ func TestUsageLimitsRPCReportsEveryHarness(t *testing.T) {
 	if got[0].Harness != "claude" || !got[0].Available || len(got[0].Windows) != 1 || got[0].Windows[0].UsedPercent != 37 {
 		t.Fatalf("claude entry = %+v", got[0])
 	}
-	if got[1].Harness != "cursor" || got[1].Available || got[1].Reason == "" || got[1].Windows != nil {
+	if got[1].Harness != "pi" || got[1].Available || got[1].Reason == "" || got[1].Windows != nil {
 		t.Fatalf("unavailable entry should still reply successfully, got %+v", got[1])
 	}
 }

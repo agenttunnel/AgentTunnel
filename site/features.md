@@ -91,13 +91,13 @@ Disable a role with the `disabledRoles` setting. The orchestrator and executor a
 
 ### Harnesses
 
-A **harness** is a provider CLI that runs an agent. The six built-in harnesses are OpenCode, Claude, Codex, Cursor, Pi, and Command Code. Each is started in its non-interactive mode, with the prompt passed as an argument. Agents therefore edit files and run commands in the worktree without asking first. Use worktrees, and review the diff before you merge it.
+A **harness** is a provider CLI that runs an agent. The six built-in harnesses are OpenCode, Claude, Codex, Pi, and Command Code. Each is started in its non-interactive mode, with the prompt passed as an argument. Agents therefore edit files and run commands in the worktree without asking first. Use worktrees, and review the diff before you merge it.
 
 Set a harness and model per role in the app, or per job in a job template ([Getting started](getting-started.html#run-a-job-from-a-file)). Harnesses that the daemon can't find are marked unavailable. Disable one with `disabledHarnesses`.
 
 ## Models
 
-Each harness reports the models it can use. OpenCode, Pi, Command Code, and Cursor list their models through their own CLIs. Claude and Codex have no usable listing command, so add their models yourself:
+Each harness reports the models it can use. OpenCode, Pi, and Command Code list their models through their own CLIs. Claude and Codex have no usable listing command, so add their models yourself:
 
 ```sh
 agenttunnel models ls                   # every known model, with its variants and role defaults

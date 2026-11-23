@@ -186,7 +186,6 @@ var tuiHarnessBase = map[string]tuiRGB{
 	"claude":      rgb(0xfab387),
 	"opencode":    rgb(0x8ca9ee),
 	"codex":       rgb(0xa6d189),
-	"cursor":      rgb(0xed8796),
 	"pi":          rgb(0xf4e794),
 	"commandcode": rgb(0xe3c471),
 	"grok":        rgb(0xabb2c4),

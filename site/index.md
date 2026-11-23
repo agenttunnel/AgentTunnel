@@ -5,7 +5,7 @@ title: Overview
 
 # AgentTunnel
 
-AgentTunnel is a minimal GUI for coding agents. A planning **orchestrator** breaks a task into jobs and dispatches them to **planner, executor, tester, and reviewer** subagents. Each agent runs on a provider CLI you already use: OpenCode, Claude, Codex, Cursor, Pi, or Command Code.
+AgentTunnel is a minimal GUI for coding agents. A planning **orchestrator** breaks a task into jobs and dispatches them to **planner, executor, tester, and reviewer** subagents. Each agent runs on a provider CLI you already use: OpenCode, Claude, Codex, Pi, or Command Code.
 
 The app is two Go programs:
 

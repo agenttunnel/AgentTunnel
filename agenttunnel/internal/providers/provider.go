@@ -45,6 +45,12 @@ type SessionSpec struct {
 	Images  []ImageInput `json:"images,omitempty"`
 	Workdir string       `json:"workdir,omitempty"`
 	Env     []string     `json:"env,omitempty"`
+	// ToolSteering asks the harness to take the user's steering between its
+	// tool calls. Each driver wires its own seam: claude and codex run a
+	// PostToolUse hook, pi and opencode run an extension or plugin. All of them
+	// run `"$AT_TOOL" tool steering` (Env must carry the tool environment). A
+	// harness without a seam ignores it, and its steering waits for the next pass.
+	ToolSteering bool `json:"toolSteering,omitempty"`
 }
 
 // Adapter is the per-provider runtime contract. Implementations translate a
@@ -70,6 +76,9 @@ type CommandSpec struct {
 	// child's stdin right after start, then closed. claude uses this to feed
 	// a stream-json user message (images as base64 blocks plus the prompt).
 	StdinJSONFrames []string
+	// Env is added to the child's environment, after the spec's own. A driver
+	// uses it for config that only a file-less harness flag cannot carry.
+	Env []string
 }
 
 // ImageSupport is the tri-state verdict on a driver's image input.

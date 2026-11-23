@@ -3,7 +3,7 @@
 AgentTunnel is a minimal GUI for coding agents: a multi-agent coding workflow
 where a planning **orchestrator** breaks a task into jobs and dispatches them to
 **planner / executor / tester / reviewer** subagents, each of which can run on
-any provider CLI (Codex, Claude, Cursor, OpenCode, Pi, Command Code).
+any provider CLI (Codex, Claude, OpenCode, Pi, Command Code).
 
 The app is a daemon plus a native desktop client, both in Go. This directory is
 the whole product; the repository root holds only CI, issue templates, and repo
@@ -219,7 +219,7 @@ Agents coordinate beyond the turn loop:
 | Subagent sub-spawns gated by the lead                         | `orchestrator/spawns.go` — proposals pend until approved                   |
 | Council (parallel debate to a synthesized outcome)            | `orchestrator/council.go`                                                  |
 | Agent graph (spawn tree, dependencies, message arcs)          | `desktop/frontend/src/lib/graph.ts`                                        |
-| Steering a running turn                                       | `thread.steer`; consumed by the lead's next pass                           |
+| Steering a running turn                                       | `thread.steer`; consumed by the lead's next pass, or between tool calls on a solo Claude or Pi thread (`steering` hook / extension) |
 | Review diff with line comments back to agents                 | `gitdiff/`, `review.*` RPC, Review tab; submitted comments start a review turn |
 | Stoppable turns and agents                                    | `thread.turn.stop`, `agents.stop` — real process-group teardown            |
 | GitHub/GitLab awareness                                       | **not yet** — next up                                                      |

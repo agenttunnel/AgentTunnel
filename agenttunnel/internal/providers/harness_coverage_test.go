@@ -17,7 +17,6 @@ var harnessCoverage = map[contracts.Harness]struct {
 	contracts.HarnessOpenCode:    {binary: "opencode", listsModel: true},
 	contracts.HarnessClaude:      {binary: "claude", listsModel: false},
 	contracts.HarnessCodex:       {binary: "codex", listsModel: false},
-	contracts.HarnessCursor:      {binary: "cursor-agent", listsModel: true},
 	contracts.HarnessPi:          {binary: "pi", listsModel: true},
 	contracts.HarnessCommandCode: {binary: "commandcode", listsModel: true},
 }

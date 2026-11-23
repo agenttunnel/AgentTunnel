@@ -22,7 +22,6 @@ Each harness shows whether its binary is available and whether it is enabled. Th
 | OpenCode | `opencode` |
 | Claude | `claude` |
 | Codex | `codex` |
-| Cursor | `cursor-agent` |
 | Pi | `pi` |
 | Command Code | `commandcode` |
 

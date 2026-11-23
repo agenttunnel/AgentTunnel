@@ -66,10 +66,7 @@ var (
 	// Harness CLIs print versions as `opencode v2.0.29` or `2.1.322`; the
 	// optional v keeps the leading word boundary from hiding `v2`.
 	defaultVersionRe = regexp.MustCompile(`\bv?(\d+\.\d+\.\d+)`)
-	cursorVersionRe  = regexp.MustCompile(`(\d{4}\.\d{2}\.\d{2}-[0-9a-f]+)`)
-	cursorDownloadRe = regexp.MustCompile(`downloads\.cursor\.com/lab/(\d{4}\.\d{2}\.\d{2}-[0-9a-f]+)/`)
 	semverRe         = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
-	cursorDateRe     = regexp.MustCompile(`^(\d{4})\.(\d{2})\.(\d{2})-[0-9a-f]+$`)
 )
 
 var pnpmGlobalPaths = []string{
@@ -92,7 +89,6 @@ type latestSource int
 const (
 	latestNone latestSource = iota
 	latestNPM
-	latestCursorInstall
 )
 
 // updateTarget is one row of the harness upgrade table.
@@ -103,7 +99,6 @@ type updateTarget struct {
 	brewFormula string
 	nativeArgs  []string
 	nativePaths []string
-	versionRe   *regexp.Regexp
 	latest      latestSource
 }
 
@@ -141,14 +136,6 @@ func updateTargets() []updateTarget {
 			latest:      latestNPM,
 		},
 		{
-			harness:     contracts.HarnessCursor,
-			binaries:    []string{"cursor-agent", "agent"},
-			nativeArgs:  []string{"update"},
-			nativePaths: []string{"/.local/share/cursor-agent/", "/.local/bin/cursor-agent", "/.local/bin/agent"},
-			versionRe:   cursorVersionRe,
-			latest:      latestCursorInstall,
-		},
-		{
 			harness:    contracts.HarnessPi,
 			binaries:   []string{"pi"},
 			npmPackage: "@earendil-works/pi-coding-agent",
@@ -173,14 +160,13 @@ func updateTargets() []updateTarget {
 // HarnessUpdaterOptions injects the updater's boundaries so tests stay
 // hermetic. Zero values fall back to real system and network access.
 type HarnessUpdaterOptions struct {
-	HTTP             *http.Client
-	NpmBase          string
-	CursorInstallURL string
-	LookPath         func(string) (string, error)
-	RealPath         func(string) (string, error)
-	Probe            func(ctx context.Context, bin string, args ...string) ([]byte, error)
-	Run              func(ctx context.Context, bin string, args ...string) ([]byte, error)
-	Now              func() time.Time
+	HTTP     *http.Client
+	NpmBase  string
+	LookPath func(string) (string, error)
+	RealPath func(string) (string, error)
+	Probe    func(ctx context.Context, bin string, args ...string) ([]byte, error)
+	Run      func(ctx context.Context, bin string, args ...string) ([]byte, error)
+	Now      func() time.Time
 }
 
 // HarnessUpdater checks installed CLI versions against their published
@@ -189,14 +175,13 @@ type HarnessUpdater struct {
 	targets []updateTarget
 	entries []*updateEntry
 
-	http             *http.Client
-	npmBase          string
-	cursorInstallURL string
-	lookPath         func(string) (string, error)
-	realPath         func(string) (string, error)
-	probe            func(ctx context.Context, bin string, args ...string) ([]byte, error)
-	run              func(ctx context.Context, bin string, args ...string) ([]byte, error)
-	now              func() time.Time
+	http     *http.Client
+	npmBase  string
+	lookPath func(string) (string, error)
+	realPath func(string) (string, error)
+	probe    func(ctx context.Context, bin string, args ...string) ([]byte, error)
+	run      func(ctx context.Context, bin string, args ...string) ([]byte, error)
+	now      func() time.Time
 
 	updateMu sync.Mutex
 }
@@ -232,9 +217,6 @@ func NewHarnessUpdater(opts HarnessUpdaterOptions) *HarnessUpdater {
 	if opts.NpmBase == "" {
 		opts.NpmBase = "https://registry.npmjs.org"
 	}
-	if opts.CursorInstallURL == "" {
-		opts.CursorInstallURL = "https://cursor.com/install"
-	}
 	if opts.LookPath == nil {
 		opts.LookPath = exec.LookPath
 	}
@@ -256,16 +238,15 @@ func NewHarnessUpdater(opts HarnessUpdaterOptions) *HarnessUpdater {
 		entries[i] = &updateEntry{}
 	}
 	return &HarnessUpdater{
-		targets:          targets,
-		entries:          entries,
-		http:             opts.HTTP,
-		npmBase:          opts.NpmBase,
-		cursorInstallURL: opts.CursorInstallURL,
-		lookPath:         opts.LookPath,
-		realPath:         opts.RealPath,
-		probe:            opts.Probe,
-		run:              opts.Run,
-		now:              opts.Now,
+		targets:  targets,
+		entries:  entries,
+		http:     opts.HTTP,
+		npmBase:  opts.NpmBase,
+		lookPath: opts.LookPath,
+		realPath: opts.RealPath,
+		probe:    opts.Probe,
+		run:      opts.Run,
+		now:      opts.Now,
 	}
 }
 
@@ -333,7 +314,7 @@ func (u *HarnessUpdater) checkOne(ctx context.Context, t *updateTarget) harnessS
 	raw, err := u.probe(probeCtx, bin, "--version")
 	cancel()
 	if err == nil {
-		st.update.Installed = parseVersion(t.versionRe, raw)
+		st.update.Installed = parseVersion(raw)
 	}
 	if st.update.Installed == "" {
 		st.failed = true
@@ -395,8 +376,6 @@ func (u *HarnessUpdater) fetchLatest(ctx context.Context, t *updateTarget) (stri
 	switch t.latest {
 	case latestNPM:
 		return u.fetchNPMLatest(ctx, t.npmPackage)
-	case latestCursorInstall:
-		return u.fetchCursorLatest(ctx)
 	default:
 		return "", nil
 	}
@@ -431,30 +410,6 @@ func (u *HarnessUpdater) fetchNPMLatest(ctx context.Context, pkg string) (string
 		return "", errors.New("npm registry: empty version")
 	}
 	return version, nil
-}
-
-func (u *HarnessUpdater) fetchCursorLatest(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.cursorInstallURL, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := u.http.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("cursor install: %s", resp.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, harnessBodyLimit))
-	if err != nil {
-		return "", err
-	}
-	match := cursorDownloadRe.FindSubmatch(body)
-	if len(match) < 2 {
-		return "", errors.New("cursor install: version not found")
-	}
-	return string(match[1]), nil
 }
 
 // Update upgrades the requested harnesses, or every affected harness when only
@@ -640,11 +595,8 @@ func matchesAnyPrefix(path string, prefixes []string) bool {
 	return false
 }
 
-func parseVersion(re *regexp.Regexp, out []byte) string {
-	if re == nil {
-		re = defaultVersionRe
-	}
-	match := re.FindSubmatch(out)
+func parseVersion(out []byte) string {
+	match := defaultVersionRe.FindSubmatch(out)
 	if len(match) < 2 {
 		return ""
 	}
@@ -661,22 +613,8 @@ const (
 )
 
 // compareVersions reports how latest sits relative to installed. Semver wins
-// when both sides parse; Cursor's date-hash versions compare by date only.
+// when both sides parse.
 func compareVersions(installed, latest string) versionComparison {
-	if a, ok := cursorDateKey(installed); ok {
-		b, ok := cursorDateKey(latest)
-		if !ok {
-			return versionUnknown
-		}
-		switch {
-		case a < b:
-			return versionNewer
-		case a > b:
-			return versionOlder
-		default:
-			return versionEqual
-		}
-	}
 	a, ok := semverKey(installed)
 	if !ok {
 		return versionUnknown
@@ -710,18 +648,6 @@ func semverKey(version string) ([3]int, bool) {
 		out[i] = n
 	}
 	return out, true
-}
-
-func cursorDateKey(version string) (int, bool) {
-	match := cursorDateRe.FindStringSubmatch(version)
-	if match == nil {
-		return 0, false
-	}
-	key, err := strconv.Atoi(match[1] + match[2] + match[3])
-	if err != nil {
-		return 0, false
-	}
-	return key, true
 }
 
 func commandError(cmd upgradeCommand, out []byte, err error) string {

@@ -31,7 +31,7 @@ func (l *stringList) Set(v string) error {
 // Run executes the `tool` subcommand and returns a process exit code.
 func Run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|thread-relaunch|thread-results|read-file|write-file|shell|agent-logs|revive> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: tool <dispatch|note|progress|done|learn|message|steer|steering|spawn|approve|reject|task-create|task-update|task-list|subthread|ask|review-comment|review-reply|review-resolve|thread-list|thread-delete|thread-relaunch|thread-results|read-file|write-file|shell|agent-logs|revive> [flags]")
 		return 2
 	}
 	kind := args[0]
@@ -189,6 +189,9 @@ func Run(args []string) int {
 			fmt.Println(reply.Message)
 			return 0
 		}
+	}
+	if kind == "steering" {
+		return printSteeringHook(resp.Body)
 	}
 	if kind == "task-list" || kind == "thread-list" {
 		// A list is the answer itself, so it is printed as the daemon sends it.
@@ -349,4 +352,31 @@ func printAnswer(body io.Reader) int {
 	}
 	fmt.Fprintf(os.Stderr, "tool ask: no answer (%s)\n", reply.Reason)
 	return 1
+}
+
+// printSteeringHook prints the steering the daemon took for a solo agent as a
+// Claude Code PostToolUse hook output: the context is added beside the tool
+// result, so the agent weighs it before its next step. Nothing pending prints
+// nothing, which the hook reads as no change.
+func printSteeringHook(body io.Reader) int {
+	var reply struct {
+		Context string `json:"context"`
+	}
+	if err := json.NewDecoder(body).Decode(&reply); err != nil {
+		fmt.Fprintf(os.Stderr, "tool steering: %v\n", err)
+		return 1
+	}
+	if reply.Context == "" {
+		return 0
+	}
+	out, err := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{
+		"hookEventName":     "PostToolUse",
+		"additionalContext": reply.Context,
+	}})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tool steering: %v\n", err)
+		return 1
+	}
+	fmt.Println(string(out))
+	return 0
 }

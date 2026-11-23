@@ -713,6 +713,12 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 		Workdir:  r.workdirFor(ctx, threadID),
 		Env:      r.toolEnv(threadID, agentID),
 	}
+	// Steering between tool calls needs the hook's call-back environment, so a
+	// pass gets that environment only when the daemon can answer the hook.
+	if r.toolPath != "" && r.endpoint != nil && r.steering != nil {
+		spec.Env = r.toolEnv(threadID, agentID)
+		spec.ToolSteering = true
+	}
 	adapter, err := r.registry.NewAdapter(spec)
 	if err != nil {
 		return "", err
@@ -983,7 +989,6 @@ func (r *Runner) harnessList() []contracts.Harness {
 		contracts.HarnessOpenCode,
 		contracts.HarnessClaude,
 		contracts.HarnessCodex,
-		contracts.HarnessCursor,
 		contracts.HarnessPi,
 		contracts.HarnessCommandCode,
 	}
@@ -1262,6 +1267,38 @@ func (r *Runner) DrainSteering(threadID contracts.ThreadID) []steering.Entry {
 		return nil
 	}
 	return r.steering.Drain(threadID)
+}
+
+// recordSteeringTaken records that the agent took these steering messages: the
+// injected count for the pending style, and the consumed ids so the transcript
+// marks them. Both the solo pass loop and the tool-call hook call it.
+func (r *Runner) recordSteeringTaken(ctx context.Context, threadID contracts.ThreadID, entries []steering.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	consumed := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.MessageID != "" {
+			consumed = append(consumed, entry.MessageID)
+		}
+	}
+	if err := r.engine.Dispatch(ctx, contracts.Command{
+		ID:       r.nextID(),
+		Type:     contracts.CmdSteeringInjected,
+		ThreadID: threadID,
+		Injected: &contracts.SteeringInjected{Count: len(entries)},
+	}); err != nil {
+		return err
+	}
+	if len(consumed) == 0 {
+		return nil
+	}
+	return r.engine.Dispatch(ctx, contracts.Command{
+		ID:              r.nextID(),
+		Type:            contracts.CmdSteeringConsume,
+		ThreadID:        threadID,
+		SteeringConsume: &contracts.SteeringConsumed{MessageIDs: consumed},
+	})
 }
 
 // HasSteering reports whether steering arrived for a thread.

@@ -99,12 +99,11 @@ func rpcNpmRegistry(t *testing.T, versions map[string]string) *httptest.Server {
 
 func rpcUpdater(env *rpcHarnessEnv, npmBase string) *providers.HarnessUpdater {
 	return providers.NewHarnessUpdater(providers.HarnessUpdaterOptions{
-		HTTP:             http.DefaultClient,
-		NpmBase:          npmBase,
-		CursorInstallURL: "http://invalid",
-		LookPath:         env.lookPath,
-		Probe:            env.probe,
-		Run:              env.run,
+		HTTP:     http.DefaultClient,
+		NpmBase:  npmBase,
+		LookPath: env.lookPath,
+		Probe:    env.probe,
+		Run:      env.run,
 	})
 }
 

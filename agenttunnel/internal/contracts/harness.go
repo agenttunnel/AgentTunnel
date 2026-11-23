@@ -10,7 +10,6 @@ const (
 	HarnessOpenCode    Harness = "opencode"
 	HarnessCodex       Harness = "codex"
 	HarnessClaude      Harness = "claude"
-	HarnessCursor      Harness = "cursor"
 	HarnessPi          Harness = "pi"
 	HarnessCommandCode Harness = "commandcode"
 )
@@ -21,7 +20,6 @@ func AllHarnesses() []Harness {
 		HarnessOpenCode,
 		HarnessCodex,
 		HarnessClaude,
-		HarnessCursor,
 		HarnessPi,
 		HarnessCommandCode,
 	}

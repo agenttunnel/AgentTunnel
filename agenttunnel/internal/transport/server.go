@@ -116,6 +116,9 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	case toolbox.KindSteer:
 		s.handleSteerCall(w, r, req)
 		return
+	case toolbox.KindSteering:
+		s.handleSteeringCall(w, r, req)
+		return
 	case toolbox.KindAgentLogs:
 		s.handleAgentLogsCall(w, r, req)
 		return
@@ -433,6 +436,23 @@ func (s *Server) handleSteerCall(w http.ResponseWriter, r *http.Request, req too
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "outcome": "queued", "message": reply})
+}
+
+// handleSteeringCall answers a solo agent's tool-call hook with the steering
+// pending on its thread, already consumed: the next pass must not weigh it
+// again. It bypasses the tool inbox for the same reason steer does.
+func (s *Server) handleSteeringCall(w http.ResponseWriter, r *http.Request, req toolCallRequest) {
+	if s.runner == nil {
+		http.Error(w, "steering is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	text, err := s.runner.TakeSoloSteering(r.Context(), req.ThreadID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"context": text})
 }
 
 // handleSubthreadCall starts a subthread for the caller's thread. Only a team

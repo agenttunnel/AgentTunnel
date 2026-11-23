@@ -71,6 +71,10 @@ const (
 	// once, not queued: the reply tells the lead whether the steer was queued
 	// for that agent's next run. See Runner.Steer.
 	KindSteer Kind = "steer"
+	// KindSteering is a solo agent's tool-call hook asking for the user's
+	// steering pending on its thread. Answered at once, not queued: the steering
+	// lands between two tool calls. See Runner.TakeSoloSteering.
+	KindSteering Kind = "steering"
 	// KindAgentLogs reads a dispatched subagent's full output log, for when a
 	// result summary is missing detail. Answered at once, and only leads may
 	// call it; see transport's handleAgentLogsCall.

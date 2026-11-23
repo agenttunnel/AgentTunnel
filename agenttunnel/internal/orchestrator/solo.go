@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -89,34 +90,13 @@ func (o *Orchestrator) runSoloTurn(ctx context.Context, threadID contracts.Threa
 		// weighs them.
 		entries := o.runner.DrainSteering(threadID)
 		steering := make([]string, len(entries))
-		consumed := make([]string, 0, len(entries))
 		var steerImages []providers.ImageInput
 		for i, entry := range entries {
 			steering[i] = entry.Text
 			steerImages = append(steerImages, entry.Images...)
-			if entry.MessageID != "" {
-				consumed = append(consumed, entry.MessageID)
-			}
 		}
-		if len(steering) > 0 {
-			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
-				ID:       o.runner.nextID(),
-				Type:     contracts.CmdSteeringInjected,
-				ThreadID: threadID,
-				Injected: &contracts.SteeringInjected{Count: len(steering)},
-			}); err != nil {
-				return err
-			}
-		}
-		if len(consumed) > 0 {
-			if err := o.runner.engine.Dispatch(ctx, contracts.Command{
-				ID:              o.runner.nextID(),
-				Type:            contracts.CmdSteeringConsume,
-				ThreadID:        threadID,
-				SteeringConsume: &contracts.SteeringConsumed{MessageIDs: consumed},
-			}); err != nil {
-				return err
-			}
+		if err := o.runner.recordSteeringTaken(ctx, threadID, entries); err != nil {
+			return err
 		}
 		state, err := o.runner.engine.State(ctx, threadID)
 		if err != nil {
@@ -184,13 +164,8 @@ func BuildSoloPrompt(history, userMessage string, steering []string, subthreads 
 	b.WriteString("\n\n## Request\n")
 	b.WriteString(userMessage)
 	if len(steering) > 0 {
-		b.WriteString("\n\n## Steering (sent by the user while you were working)\n")
-		for _, s := range steering {
-			b.WriteString("- ")
-			b.WriteString(s)
-			b.WriteString("\n")
-		}
-		b.WriteString("\nWeigh this now and adjust what you do next.")
+		b.WriteString("\n\n")
+		b.WriteString(soloSteeringSection(steering))
 	}
 	if subthreads {
 		b.WriteString("\n\n## Subthreads\n")
@@ -200,4 +175,46 @@ func BuildSoloPrompt(history, userMessage string, steering []string, subthreads 
 		b.WriteString("  \"$AT_TOOL\" tool subthread --task \"<self-contained brief for the unrelated work>\"\n")
 	}
 	return b.String()
+}
+
+// soloSteeringSection renders the steering the user sent while the solo agent
+// was working. The pass prompt and the between-tool-calls hook share it.
+func soloSteeringSection(steering []string) string {
+	var b strings.Builder
+	b.WriteString("## Steering (sent by the user while you were working)\n")
+	for _, s := range steering {
+		b.WriteString("- ")
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nWeigh this now and adjust what you do next.")
+	return b.String()
+}
+
+// TakeSoloSteering hands a solo thread's pending steering to its agent between
+// two of its tool calls, the way the tool-call hook asks for it. The drain is
+// recorded like a pass's, so the next pass does not weigh it again. It returns
+// the context block for the model, or "" when nothing is pending.
+func (r *Runner) TakeSoloSteering(ctx context.Context, threadID contracts.ThreadID) (string, error) {
+	state, err := r.engine.State(ctx, threadID)
+	if err != nil {
+		return "", err
+	}
+	if !state.Solo() {
+		return "", fmt.Errorf("thread %q is not a solo thread; its steering waits for the lead's next pass", threadID)
+	}
+	entries := r.DrainSteering(threadID)
+	if len(entries) == 0 {
+		return "", nil
+	}
+	if err := r.recordSteeringTaken(ctx, threadID, entries); err != nil {
+		return "", err
+	}
+	steering := make([]string, len(entries))
+	var images []providers.ImageInput
+	for i, entry := range entries {
+		steering[i] = entry.Text
+		images = append(images, entry.Images...)
+	}
+	return soloSteeringSection(steering) + imagesNote(images), nil
 }
