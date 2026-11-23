@@ -1,9 +1,8 @@
 ---
 layout: default
 title: CLI
+description: Every agenttunnel and atd command, flag, and exit code.
 ---
-
-# CLI reference
 
 AgentTunnel has two command-line programs:
 
@@ -128,7 +127,7 @@ Stop the thread's running turn. With `--agents`, stop its agents as well.
 
 ### `agenttunnel tui [thread]`
 
-Open the full-screen terminal UI. With a thread, open straight into it. The keys are in [Features](features.html#terminal-ui).
+Open the full-screen terminal UI. With a thread, open straight into it. The keys are in [Terminal UI](tui.html).
 
 ## Projects
 
@@ -210,7 +209,7 @@ Run the self-hosted relay that lets a phone reach a daemon with no inbound port.
 | `--state` | `~/.agenttunnel-relay/state.json` | file for instance and token hashes. Empty keeps state in memory. |
 | `--trust-proxy-header` | none | header your TLS proxy sets to the client address, such as `X-Forwarded-For` |
 
-See [Features](features.html#remote-access) for the setup.
+See [Remote access](remote-access.html) for the setup.
 
 ## Agent-only commands
 

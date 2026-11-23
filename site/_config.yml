@@ -5,16 +5,45 @@ description: Documentation for AgentTunnel, a minimal GUI for coding agents.
 url: "https://agenttunnel.github.io"
 baseurl: "/AgentTunnel"
 
+# Sidebar, in reading order. The previous and next links follow this order too.
 nav:
-  - title: Overview
-    url: /
-  - title: Getting started
-    url: /getting-started.html
-  - title: Features
-    url: /features.html
-  - title: CLI
-    url: /cli.html
-  - title: Configuration
-    url: /configuration.html
-  - title: Changelog
-    url: /changelog.html
+  - group: Get started
+    pages:
+      - title: Introduction
+        url: /
+      - title: Install
+        url: /install.html
+      - title: Quickstart
+        url: /getting-started.html
+  - group: Using AgentTunnel
+    pages:
+      - title: Desktop app
+        url: /desktop-app.html
+      - title: Threads
+        url: /threads.html
+      - title: Worktrees
+        url: /worktrees.html
+      - title: Orchestrator
+        url: /orchestrator.html
+      - title: Roles and harnesses
+        url: /roles-and-harnesses.html
+      - title: Models
+        url: /models.html
+      - title: Schedules
+        url: /schedules.html
+      - title: Job templates
+        url: /job-templates.html
+      - title: Terminal UI
+        url: /tui.html
+      - title: Integrations
+        url: /integrations.html
+      - title: Remote access
+        url: /remote-access.html
+  - group: Reference
+    pages:
+      - title: CLI
+        url: /cli.html
+      - title: Configuration
+        url: /configuration.html
+      - title: Changelog
+        url: /changelog.html
