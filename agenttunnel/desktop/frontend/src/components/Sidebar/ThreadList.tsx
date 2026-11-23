@@ -4,7 +4,7 @@
 
 import { memo, useMemo, useState, type MouseEvent } from "react";
 import type { ThreadSummary } from "../../App";
-import { harnessTint } from "../../lib/graph";
+import { soloHue } from "../../lib/soloIdentity";
 import { createStore, useStoreField } from "../../lib/store";
 import { clickable } from "../../lib/switchProps";
 import { arrangeThreads, threadSearchScore, visibleThreadRows } from "../../lib/threads";
@@ -99,7 +99,7 @@ export const ThreadList = memo(function ThreadList({
           return (
           <div
             key={t.id}
-            className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""}${attn ? " attn" : ""} ${harnessTint(t.harness ?? "")}`}
+            className={`thread-row ${t.id === activeId ? "active" : ""}${t.stale ? " stale" : ""}${t.waiting ? " scheduled" : ""}${attn ? " attn" : ""}${t.harness ? ` solo-identity ${soloHue(t.id)}` : ""}`}
             style={t.depth ? { marginLeft: t.depth * 16 } : undefined}
             {...clickable(() => {
               if (t.subthreads > 0) toggleSubthreads(t.id);
