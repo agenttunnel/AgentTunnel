@@ -1,0 +1,74 @@
+name: Docs
+
+# Builds the user docs in site/ with Jekyll and publishes them to GitHub Pages.
+#
+# Triggers:
+# - push to main, only when site/** or this file changes: build, then deploy.
+# - pull_request, only when site/** or this file changes: build only, so a broken
+#   page fails the PR. Nothing is deployed from a pull request.
+# - workflow_dispatch: build, and deploy when started from main.
+#
+# The deploy job runs only on main. Its concurrency group is set on that job, so
+# a deploy waits for an earlier deploy and PR builds never queue behind one.
+#
+# Requires Settings > Pages > Source set to "GitHub Actions".
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "site/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./site
+          destination: ./_site
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
