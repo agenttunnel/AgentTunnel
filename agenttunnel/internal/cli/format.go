@@ -132,13 +132,17 @@ func writeLogEntry(w io.Writer, e contracts.LogEntry) {
 }
 
 // writeStatusLine reports an agent lifecycle change in the same shape as an
-// output line, so a tail reads as one column.
-func writeStatusLine(w io.Writer, s contracts.AgentStatusChanged) {
+// output line, so a tail reads as one column. at is the event's envelope time.
+func writeStatusLine(w io.Writer, s contracts.AgentStatusChanged, at time.Time) {
 	suffix := ""
 	if reason := strings.TrimSpace(s.Reason); reason != "" {
 		suffix = " (" + reason + ")"
 	}
-	fmt.Fprintf(w, "%s %s status %s%s\n", time.Now().Format("15:04:05"), s.AgentID, s.Status, suffix)
+	stamp := "-"
+	if !at.IsZero() {
+		stamp = at.Local().Format("15:04:05")
+	}
+	fmt.Fprintf(w, "%s %s status %s%s\n", stamp, s.AgentID, s.Status, suffix)
 }
 
 // logKey identifies a line for backlog/live dedupe. Agent output frames carry
@@ -205,7 +209,12 @@ type turnTracker struct {
 	// it so `run --follow` waits on the turn it just started, never on a
 	// previous turn's already-terminal roster — while still noticing a turn
 	// that starts and finishes entirely between polls.
-	initial         map[string]contracts.AgentStatus
+	initial map[string]contracts.AgentStatus
+	// moved holds the agents whose status changed during this follow. An agent
+	// already terminal at follow start (an earlier turn on the same thread)
+	// counts toward the outcome only once it moves, so a previous turn's
+	// failure cannot fail this one.
+	moved           map[string]bool
 	requireActivity bool
 	activity        bool
 }
@@ -215,7 +224,20 @@ func newTurnTracker(statuses map[string]contracts.AgentStatus, requireActivity b
 	for id, status := range statuses {
 		initial[id] = status
 	}
-	return &turnTracker{statuses: statuses, initial: initial, requireActivity: requireActivity}
+	return &turnTracker{
+		statuses: statuses, initial: initial, moved: map[string]bool{}, requireActivity: requireActivity,
+	}
+}
+
+// mark records whether id's status differs from the follow-start roster and
+// reports that difference.
+func (t *turnTracker) mark(id string, status contracts.AgentStatus) bool {
+	before, ok := t.initial[id]
+	changed := !ok || before != status
+	if changed {
+		t.moved[id] = true
+	}
+	return changed
 }
 
 // update replaces the roster with a polled snapshot and records whether the
@@ -225,7 +247,7 @@ func (t *turnTracker) update(statuses map[string]contracts.AgentStatus) {
 		t.activity = true
 	}
 	for id, status := range statuses {
-		if before, ok := t.initial[id]; !ok || before != status {
+		if t.mark(id, status) {
 			t.activity = true
 		}
 	}
@@ -236,6 +258,7 @@ func (t *turnTracker) update(statuses map[string]contracts.AgentStatus) {
 // during the follow is itself proof the turn is live.
 func (t *turnTracker) observe(id string, status contracts.AgentStatus) {
 	t.statuses[id] = status
+	t.mark(id, status)
 	t.activity = true
 }
 
@@ -244,6 +267,19 @@ func (t *turnTracker) observe(id string, status contracts.AgentStatus) {
 // ends the turn.
 func (t *turnTracker) note(id string, status contracts.AgentStatus) {
 	t.statuses[id] = status
+	t.mark(id, status)
+}
+
+// failed reports whether an agent this follow saw move ended failed or
+// cancelled.
+func (t *turnTracker) failed() bool {
+	for id := range t.moved {
+		switch t.statuses[id] {
+		case contracts.AgentFailed, contracts.AgentCancelled:
+			return true
+		}
+	}
+	return false
 }
 
 func (t *turnTracker) anyActive() bool {

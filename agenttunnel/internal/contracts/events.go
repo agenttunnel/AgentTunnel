@@ -23,6 +23,7 @@ const (
 	EvtSteeringConsumed        EventType = "thread.steering-consumed"
 	EvtModelSet                EventType = "thread.model-set"
 	EvtAutoModeSet             EventType = "thread.automode-set"
+	EvtAutoApprovedModelsSet   EventType = "thread.auto-approved-models-set"
 	EvtArchiveSet              EventType = "thread.archive-set"
 	EvtThreadSeen              EventType = "thread.seen"
 	EvtStatusPeriodSet         EventType = "thread.status-period-set"
@@ -41,6 +42,7 @@ const (
 	EvtTaskDispatched          EventType = "agent.task-dispatched"
 	EvtAgentStatusChanged      EventType = "agent.status-changed"
 	EvtUsageRecorded           EventType = "agent.usage-recorded"
+	EvtAgentModelObserved      EventType = "agent.model-observed"
 	EvtSharedContextSet        EventType = "context.shared-set"
 	EvtMailboxPosted           EventType = "mailbox.posted"
 	EvtReviewCommentAdded      EventType = "review.comment-added"
@@ -140,6 +142,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
 		return decodePayload[AutoModeSet](data)
+	case EvtAutoApprovedModelsSet:
+		return decodePayload[AutoApprovedModelsSet](data)
 	case EvtArchiveSet:
 		return decodePayload[ArchiveSet](data)
 	case EvtThreadSeen:
@@ -176,6 +180,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AgentStatusChanged](data)
 	case EvtUsageRecorded:
 		return decodePayload[UsageRecorded](data)
+	case EvtAgentModelObserved:
+		return decodePayload[AgentModelObserved](data)
 	case EvtSharedContextSet:
 		return decodePayload[SharedContextSet](data)
 	case EvtMailboxPosted:
@@ -355,6 +361,13 @@ func (ModelSet) eventType() EventType { return EvtModelSet }
 type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
+
+// AutoApprovedModelsSet replaces a thread's own auto-mode allowlist, keyed by
+// harness like the environment's. An empty map clears it, so the thread falls
+// back to the environment's approved list.
+type AutoApprovedModelsSet struct{ Models map[string][]string }
+
+func (AutoApprovedModelsSet) eventType() EventType { return EvtAutoApprovedModelsSet }
 
 // ArchiveSet files a thread under Archived or brings it back. An archived
 // thread is hidden from the board's working columns but keeps its history.
@@ -547,6 +560,15 @@ type UsageRecorded struct {
 }
 
 func (UsageRecorded) eventType() EventType { return EvtUsageRecorded }
+
+// AgentModelObserved records the model a harness reported it ran, so stats show
+// the model that answered rather than the requested or default one.
+type AgentModelObserved struct {
+	AgentID AgentID `json:"agentId"`
+	Model   string  `json:"model"`
+}
+
+func (AgentModelObserved) eventType() EventType { return EvtAgentModelObserved }
 
 type SharedContextSet struct {
 	Key      string  `json:"key"`

@@ -23,6 +23,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/daemonlock"
 	"github.com/agenttunnel/agenttunnel-go/internal/discovery"
+	"github.com/agenttunnel/agenttunnel-go/internal/logrotate"
 	"github.com/agenttunnel/agenttunnel-go/internal/orchestrator"
 	"github.com/agenttunnel/agenttunnel-go/internal/toolcli"
 	"github.com/agenttunnel/agenttunnel-go/pkg/daemon"
@@ -32,22 +33,30 @@ import (
 // (-ldflags "-X main.version=..."). Local builds report "dev".
 var version = "dev"
 
-func main() {
+// Exit statuses: a clean stop, or a start that yields to a live daemon already
+// serving the state dir, exits 0 silently. Restart-on-failure service managers
+// (launchd KeepAlive SuccessfulExit=false, systemd Restart=on-failure, Task
+// Scheduler restart-on-failure) therefore never respawn a yield. Config errors
+// exit 1; the agent-session guard exits 2.
+
+func main() { os.Exit(run()) }
+
+func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "tool" {
-		os.Exit(toolcli.Run(os.Args[2:]))
+		return toolcli.Run(os.Args[2:])
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println("atd", version)
-		return
+		return 0
 	}
 	if len(os.Args) > 1 && os.Args[1] == "update" {
-		os.Exit(runUpdate(os.Args[2:]))
+		return runUpdate(os.Args[2:])
 	}
 	// The agent environment is exported to child agents, so a stray invocation
 	// from inside a session must not start another daemon.
 	if os.Getenv("AT_AGENT_ID") != "" {
 		fmt.Fprintln(os.Stderr, "atd: refusing to start a daemon inside an agent session")
-		os.Exit(2)
+		return 2
 	}
 
 	host := flag.String("host", "127.0.0.1", "interface to bind")
@@ -58,7 +67,18 @@ func main() {
 	maxPasses := flag.Int("max-passes", 3, "orchestrator passes per turn")
 	concurrency := flag.Int("concurrency", 4, "max concurrent subagents")
 	relayURL := flag.String("relay", "", "enable the outbound relay at this wss:// (or loopback ws://) URL")
+	logFile := flag.String("log-file", "", "append log output to this file, rotated to <file>.1 at 5 MB")
 	flag.Parse()
+
+	if *logFile != "" {
+		w, err := logrotate.New(*logFile, logrotate.DefaultMaxBytes)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "atd: --log-file: %v\n", err)
+			return 1
+		}
+		defer w.Close()
+		log.SetOutput(w)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -85,10 +105,9 @@ func main() {
 	}
 	defer lock.Release()
 	// Under the lock (or after the autostart handoff), re-check: another daemon
-	// may already own this state dir. Exiting 0 leaves exactly one daemon.
-	if daemonlock.Live(ctx, *homeDir, time.Second) {
-		log.Printf("atd: a daemon is already running in %s; not starting another", *homeDir)
-		return
+	// may already own this state dir. Yielding leaves exactly one daemon.
+	if yieldToLiveDaemon(ctx, *homeDir) {
+		return 0
 	}
 
 	daemon.EnrichPATH()
@@ -164,6 +183,14 @@ func main() {
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("atd: %v", err)
 	}
+	return 0
+}
+
+// yieldToLiveDaemon reports whether a daemon already answers on homeDir, so this
+// start should exit 0 without serving. It is silent: the live daemon is the
+// expected state, not an error.
+func yieldToLiveDaemon(ctx context.Context, homeDir string) bool {
+	return daemonlock.Live(ctx, homeDir, time.Second)
 }
 
 func defaultStateDir() string {

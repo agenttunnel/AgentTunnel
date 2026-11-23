@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.agenttunnel.atd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/AgentTunnel/atd</string>
+		<string>--port</string>
+		<string>0</string>
+		<string>--home-dir</string>
+		<string>/Users/test/.agenttunnel</string>
+		<string>--log-file</string>
+		<string>/Users/test/.agenttunnel/atd.log</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/test/.agenttunnel</string>
+	<key>StandardOutPath</key>
+	<string>/Users/test/.agenttunnel/atd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/test/.agenttunnel/atd.log</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+</dict>
+</plist>

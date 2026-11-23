@@ -16,7 +16,9 @@ func init() {
 		Summary: "Manage the background AgentTunnel daemon",
 		Subcommands: []Command{
 			{Name: "start", Summary: "Start a detached daemon if one is not running", Usage: "agenttunnel daemon start", Run: runDaemonStart},
-			{Name: "status", Summary: "Show whether a daemon is running", Usage: "agenttunnel daemon status", Run: runDaemonStatus},
+			{Name: "status", Summary: "Show whether a daemon is running and whether the always-on service is installed", Usage: "agenttunnel daemon status", Run: runDaemonStatusService},
+			{Name: "install", Summary: "Run atd in the background from login (launchd, systemd --user, or Task Scheduler)", Usage: "agenttunnel daemon install", Run: runDaemonInstall},
+			{Name: "uninstall", Summary: "Remove the always-on atd service", Usage: "agenttunnel daemon uninstall", Run: runDaemonUninstall},
 			{Name: "stop", Summary: "Stop the running daemon and wait for it to exit", Usage: "agenttunnel daemon stop", Run: runDaemonStop},
 		},
 	})
@@ -72,20 +74,31 @@ func runDaemonStatus(ctx context.Context, env *Env, _ []string) error {
 }
 
 func runDaemonStop(ctx context.Context, env *Env, _ []string) error {
-	// An explicit URL has no discovery file to watch: acknowledge and report.
+	// An explicit URL may be this machine's own daemon, in which case its
+	// discovery record supplies the pid. Read it before shutdown removes it.
 	if env.DaemonURL != "" {
-		c, _, err := env.Connect(ctx)
+		c, got, err := env.Connect(ctx)
 		if err != nil {
 			return err
 		}
-		defer c.Close()
-		if err := shutdownClient(ctx, c); err != nil {
+		pid := enrichInfo(env, discovery.Info{WSURL: env.DaemonURL}).PID
+		err = shutdownClient(ctx, c)
+		c.Close()
+		if err != nil {
 			return err
 		}
-		if env.JSON {
-			return env.PrintJSON(map[string]any{"ok": true, "stopped": true, "wsUrl": env.DaemonURL})
+		// Wait as the discovery path does: a script's next command must see the
+		// daemon gone. A remote URL has no file, so probe until it stops answering.
+		if err := waitFor(ctx, 10*time.Second, func() bool {
+			return !answersAt(ctx, env.DaemonURL, got.Token)
+		}); err != nil {
+			return stopTimeoutErr(ctx, err)
 		}
-		fmt.Fprintln(env.Out, "shutdown requested")
+		if env.JSON {
+			// wsUrl is the legacy key scripts read; it stays beside pid.
+			return env.PrintJSON(map[string]any{"ok": true, "stopped": true, "pid": pid, "wsUrl": env.DaemonURL})
+		}
+		fmt.Fprintln(env.Out, "daemon stopped")
 		return nil
 	}
 
@@ -108,13 +121,32 @@ func runDaemonStop(ctx context.Context, env *Env, _ []string) error {
 
 	// The reply is written before the daemon tears down; the file is removed on
 	// the way out. Wait for it so a script's next command sees a clean state.
-	deadline := time.Now().Add(10 * time.Second)
+	if err := waitFor(ctx, 10*time.Second, func() bool {
+		_, err := os.Stat(discovery.Path(env.StateDir()))
+		return errors.Is(err, os.ErrNotExist)
+	}); err != nil {
+		return stopTimeoutErr(ctx, err)
+	}
+	if env.JSON {
+		return env.PrintJSON(map[string]any{"ok": true, "stopped": true, "pid": info.PID})
+	}
+	fmt.Fprintln(env.Out, "daemon stopped")
+	return nil
+}
+
+// errWaitTimeout reports that waitFor's condition did not hold before its deadline.
+var errWaitTimeout = errors.New("timed out")
+
+// waitFor polls done every 50ms. It returns nil once done reports true,
+// errWaitTimeout at the deadline, or the context's error if it is cancelled.
+func waitFor(ctx context.Context, timeout time.Duration, done func() bool) error {
+	deadline := time.Now().Add(timeout)
 	for {
-		if _, err := os.Stat(discovery.Path(env.StateDir())); errors.Is(err, os.ErrNotExist) {
-			break
+		if done() {
+			return nil
 		}
 		if time.Now().After(deadline) {
-			return errors.New("daemon acknowledged shutdown but did not exit within 10s")
+			return errWaitTimeout
 		}
 		select {
 		case <-ctx.Done():
@@ -122,11 +154,29 @@ func runDaemonStop(ctx context.Context, env *Env, _ []string) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	if env.JSON {
-		return env.PrintJSON(map[string]any{"ok": true, "stopped": true, "pid": info.PID})
+}
+
+// stopTimeoutErr turns a waitFor failure into the message both stop paths use.
+func stopTimeoutErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	fmt.Fprintln(env.Out, "daemon stopped")
-	return nil
+	if errors.Is(err, errWaitTimeout) {
+		return errors.New("daemon acknowledged shutdown but did not exit within 10s")
+	}
+	return err
+}
+
+// answersAt reports whether a daemon at wsURL still answers RPCs.
+func answersAt(ctx context.Context, wsURL, token string) bool {
+	dctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	c, err := Dial(dctx, wsURL, token)
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	return c.Ping(dctx) == nil
 }
 
 // shutdownClient sends daemon.shutdown and verifies the acknowledgement.

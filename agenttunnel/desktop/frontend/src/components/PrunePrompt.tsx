@@ -1,5 +1,6 @@
 import type { WorktreeRow } from "../lib/worktrees";
 import { useEscapeClose } from "../lib/escape";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 /**
  * PrunePrompt is the once-a-day question: the background scan found checkouts
@@ -26,13 +27,16 @@ export function PrunePrompt({
   onDismiss: () => void;
 }) {
   useEscapeClose(onDismiss);
+  const box = useDialogFocus<HTMLElement>();
   return (
     <div className="overlay" onClick={onDismiss}>
       <section
+        ref={box}
         className="sheet prune-sheet"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="prune-title"
+        aria-label="Prune merged worktrees"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <header className="sheet-head">

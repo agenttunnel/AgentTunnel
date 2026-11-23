@@ -38,6 +38,7 @@ import { PhaseGlyph } from "./AgentStatus";
 import { agentPhase, askingAgents, PHASE_LABEL, type AgentPhase } from "../lib/agentTree";
 import { setAgentFocus, useFocusedAgent } from "../lib/agentLive";
 import { useLatestCallback } from "../lib/store";
+import { useDialogFocus } from "../lib/dialogFocus";
 import type { AgentQuestion } from "../lib/questions";
 
 type GraphAgent = {
@@ -200,8 +201,14 @@ export function AgentGraph({
   onSubmitGroup: (threadId: string, text: string) => void;
 }) {
   const feed = useGraphFeed(rpc, threadId);
-  const { events, checkpoints } = feed;
-  const total = events.length;
+  const { checkpoints } = feed;
+  // The feed's log grows in place, so this snapshot is its first `count` entries.
+  // The slice only runs on the rare render where a newer frame has already landed.
+  const total = feed.count;
+  const events = useMemo(
+    () => (feed.events.length === total ? feed.events : feed.events.slice(0, total)),
+    [feed.events, total],
+  );
   const [conversation, setConversation] = useState<{ a: string; b: string } | null>(null);
   // Playback: `cursor` is how many events are applied; null means live.
   // `turn` bounds playback to one user turn; null means the whole thread.
@@ -245,8 +252,9 @@ export function AgentGraph({
   } | null>(null);
   const birthToken = useRef(0);
 
-  const ranges = useMemo(() => turnRanges(events), [events]);
-  const markers = useMemo(() => markersOf(events), [events]);
+  // `events` keeps its identity as the log grows, so the count keys these memos.
+  const ranges = useMemo(() => turnRanges(events), [events, total]);
+  const markers = useMemo(() => markersOf(events), [events, total]);
   const range = turn === null ? null : (ranges.find((r) => r.turn === turn) ?? null);
   const lo = range?.start ?? 0;
   const hi = range?.end ?? total;
@@ -488,6 +496,7 @@ export function AgentGraph({
   useEffect(() => {
     if (conversation && talk.length === 0) setConversation(null);
   }, [conversation, talk]);
+  const convoBox = useDialogFocus<HTMLDivElement>(!!conversation && talk.length > 0);
 
   // Playback: one timer per step, paced by the real gap between events.
   const running = playing && replay && applied < hi;
@@ -933,7 +942,7 @@ export function AgentGraph({
 
       {conversation && talk.length > 0 && (
         <div className="overlay" onClick={() => setConversation(null)}>
-          <div className="sheet wide" onClick={(e) => e.stopPropagation()}>
+          <div className="sheet wide" role="dialog" aria-modal="true" aria-label="Agent conversation" tabIndex={-1} ref={convoBox} onClick={(e) => e.stopPropagation()}>
             <div className="sheet-head">
               <strong>
                 {nameOf(conversation.a)} ↔ {nameOf(conversation.b)}

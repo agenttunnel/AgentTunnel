@@ -90,6 +90,9 @@
   transform: none;
   transition: transform var(--dur-slow) var(--ease-out);
 }
+/* No ring on the whole column: a drawer focuses its panel programmatically
+   after a keyboard shortcut, which matches :focus-visible and would box the
+   full column. The controls inside keep their own focus rings. */
 .app > .col.aside:focus,
 .app > .col.sidebar:focus {
   outline: none;

@@ -159,6 +159,8 @@ export function ThreadWizard({ onStart, startLabel, ...setup }: ThreadWizardProp
             addLead={setup.addLead}
             addingLead={setup.addingLead}
             setLeadRuntime={setup.setLeadRuntime}
+            setAutoApprovedModels={setup.setAutoApprovedModels}
+            harnessInfo={setup.harnessInfo}
             updateRole={setup.updateRole}
             persistRole={setup.persistRole}
             refreshModels={setup.refreshModels}

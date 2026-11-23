@@ -485,6 +485,13 @@ type (
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Count    int                `json:"count"`
 	}
+	// setAutoApprovedModelsParams replaces a thread's auto-mode allowlist, keyed
+	// by harness. An empty object clears it, so the thread inherits the
+	// environment's lists.
+	setAutoApprovedModelsParams struct {
+		ThreadID contracts.ThreadID   `json:"threadId"`
+		Models   *map[string][]string `json:"models"`
+	}
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
@@ -1768,6 +1775,22 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true}, nil
 
+	case "thread.setAutoApprovedModels":
+		var p setAutoApprovedModelsParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Models == nil {
+			return nil, errors.New("models is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdAutoModelsSet, ThreadID: p.ThreadID,
+			AutoModels: p.Models,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
 	case "thread.setArchived":
 		var p setBoolParams
 		if err := decode(req.Params, &p); err != nil {
@@ -2248,6 +2271,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		// Validate the whole patch before mutating anything.
+		if p.ApprovedByHarness != nil {
+			for h := range *p.ApprovedByHarness {
+				if !contracts.Harness(h).Valid() {
+					return nil, fmt.Errorf("unknown harness %q", h)
+				}
+			}
+		}
 		if p.RoleEnabled != nil && !p.RoleEnabled.Enabled {
 			if role, ok := d.roles.Get(contracts.RoleID(p.RoleEnabled.ID)); ok && role.Required {
 				return nil, fmt.Errorf("required role %q cannot be disabled", role.ID)
@@ -2267,6 +2297,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if p.ApprovedModels != nil {
 			d.settings.SetApprovedModels(*p.ApprovedModels)
+		}
+		if p.ApprovedByHarness != nil {
+			for h, models := range *p.ApprovedByHarness {
+				d.settings.SetHarnessApprovedModels(contracts.Harness(h), models)
+			}
 		}
 		if p.StaleAfterMinutes != nil {
 			d.settings.SetStaleAfterMinutes(*p.StaleAfterMinutes)
@@ -2929,21 +2964,30 @@ type LeadRuntimeView struct {
 
 // SettingsView is the settings screen's payload.
 type SettingsView struct {
-	Workdir           string           `json:"workdir"`
-	AutoMode          bool             `json:"autoMode"`
-	ApprovedModels    []string         `json:"approvedModels"`
-	Roles             []RoleConfigView `json:"roles"`
-	Lead              LeadRuntimeView  `json:"lead"`
-	ConfigPath        string           `json:"configPath"`
-	StaleAfterMinutes int              `json:"staleAfterMinutes"`
-	ExperimentalRoles bool             `json:"experimentalRoles"`
+	Workdir  string `json:"workdir"`
+	AutoMode bool   `json:"autoMode"`
+	// ApprovedModels is the union across harnesses, kept for clients that
+	// predate ApprovedByHarness.
+	ApprovedModels []string `json:"approvedModels"`
+	// ApprovedByHarness lists each harness's own allowlist; every valid
+	// harness is present, with [] when it has none.
+	ApprovedByHarness map[string][]string `json:"approvedByHarness"`
+	Roles             []RoleConfigView    `json:"roles"`
+	Lead              LeadRuntimeView     `json:"lead"`
+	ConfigPath        string              `json:"configPath"`
+	StaleAfterMinutes int                 `json:"staleAfterMinutes"`
+	ExperimentalRoles bool                `json:"experimentalRoles"`
 }
 
 type settingsPatch struct {
-	Workdir           *string   `json:"workdir"`
-	AutoMode          *bool     `json:"autoMode"`
-	ApprovedModels    *[]string `json:"approvedModels"`
-	StaleAfterMinutes *int      `json:"staleAfterMinutes"`
+	Workdir  *string `json:"workdir"`
+	AutoMode *bool   `json:"autoMode"`
+	// ApprovedModels is the legacy flat form: it replaces every harness's
+	// allowlist. ApprovedByHarness replaces only the harnesses it names, and
+	// is applied after ApprovedModels when both are sent.
+	ApprovedModels    *[]string            `json:"approvedModels"`
+	ApprovedByHarness *map[string][]string `json:"approvedByHarness"`
+	StaleAfterMinutes *int                 `json:"staleAfterMinutes"`
 	Role              *struct {
 		ID      string `json:"id"`
 		Harness string `json:"harness"`
@@ -2976,6 +3020,15 @@ func (d *Dispatcher) settingsView() SettingsView {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}
 		sort.Strings(view.ApprovedModels)
+		view.ApprovedByHarness = map[string][]string{}
+		for _, h := range contracts.AllHarnesses() {
+			list := []string{}
+			for m := range d.settings.ApprovedModelsFor(h) {
+				list = append(list, m)
+			}
+			sort.Strings(list)
+			view.ApprovedByHarness[string(h)] = list
+		}
 		if cfg, ok := d.settings.RoleConfig(contracts.RoleOrchestrator); ok {
 			view.Lead.Model = cfg.Model
 			view.Lead.Variant = cfg.Variant

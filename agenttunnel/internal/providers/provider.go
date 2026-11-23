@@ -14,6 +14,9 @@ type Event struct {
 	ToolName string                `json:"toolName,omitempty"`
 	Tool     *contracts.ToolCall   `json:"tool,omitempty"`
 	Usage    *contracts.TokenUsage `json:"usage,omitempty"`
+	// Model is the model the harness reports it ran, when a frame names one.
+	// A Model-only event has no Kind and no log line.
+	Model string `json:"model,omitempty"`
 }
 
 // ImageInput is one image a harness should see, as a process-readable file

@@ -123,6 +123,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.AutoModeSet:
 		s.AutoMode = p.Enabled
 
+	case contracts.AutoApprovedModelsSet:
+		s.AutoApprovedModels = cloneHarnessModels(p.Models)
+
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
 
@@ -217,6 +220,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 				}
 			}
 		}
+		s.Agents[p.AgentID] = a
+
+	case contracts.AgentModelObserved:
+		a, ok := s.Agents[p.AgentID]
+		if !ok {
+			return fmt.Errorf("project: model for unknown agent %q", p.AgentID)
+		}
+		a.Model = p.Model
 		s.Agents[p.AgentID] = a
 
 	case contracts.UsageRecorded:
@@ -368,4 +379,17 @@ func (s *ThreadState) applyCheckpoint(p contracts.CheckpointCaptured, at time.Ti
 		c.Error = p.Error
 		c.Ready = p.Error == ""
 	}
+}
+
+// cloneHarnessModels copies a per-harness allowlist so projected state never
+// aliases the event payload. An empty input projects to nil ("inherit").
+func cloneHarnessModels(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for h, list := range in {
+		out[h] = append([]string(nil), list...)
+	}
+	return out
 }

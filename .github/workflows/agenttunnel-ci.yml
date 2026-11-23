@@ -68,6 +68,8 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: agenttunnel/desktop/frontend/package-lock.json
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
       - name: Build
         run: |
           npm ci
@@ -77,3 +79,5 @@ jobs:
           # go job compiles against the committed placeholder by design.
           mkdir -p ../../internal/webui/dist
           cp -R dist/. ../../internal/webui/dist/
+      - name: Test
+        run: npm test

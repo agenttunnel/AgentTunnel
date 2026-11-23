@@ -51,6 +51,38 @@ func TestCommandCodeTranslatesToolRunningEvent(t *testing.T) {
 	}
 }
 
+// A tool line carries the call's id so the desktop card can fold its outcome in.
+func TestCommandCodeToolRunningIsAStructuredCall(t *testing.T) {
+	evs := CommandCodeTranslator{}.Translate(commandCodeToolRunning)
+	if len(evs) != 1 || evs[0].Tool == nil {
+		t.Fatalf("got %+v, want a structured tool call", evs)
+	}
+	got := evs[0].Tool
+	if got.ID != "c1" || got.Name != "read_file" || got.Status != contracts.ToolRunning {
+		t.Fatalf("tool = %+v", got)
+	}
+}
+
+func TestCommandCodeToolCompletedFoldsIntoItsCall(t *testing.T) {
+	evs := CommandCodeTranslator{}.Translate(`{"type":"event","event":{"type":"tool_completed","toolCallId":"c1","toolName":"read_file","result":[{"type":"text","text":"package main"}]}}`)
+	if len(evs) != 1 || evs[0].Kind != contracts.LogRaw || evs[0].Text != "package main" {
+		t.Fatalf("got %+v", evs)
+	}
+	if evs[0].Tool == nil || evs[0].Tool.ID != "c1" || evs[0].Tool.Status != contracts.ToolDone {
+		t.Fatalf("tool = %+v, want done call c1", evs[0].Tool)
+	}
+}
+
+func TestCommandCodeToolErroredFailsItsCall(t *testing.T) {
+	evs := CommandCodeTranslator{}.Translate(`{"type":"event","event":{"type":"tool_errored","toolCallId":"c1","toolName":"read_file","error":"no such file"}}`)
+	if len(evs) != 1 || evs[0].Kind != contracts.LogError || evs[0].Text != "no such file" {
+		t.Fatalf("got %+v", evs)
+	}
+	if evs[0].Tool == nil || evs[0].Tool.ID != "c1" || evs[0].Tool.Status != contracts.ToolFailed {
+		t.Fatalf("tool = %+v, want failed call c1", evs[0].Tool)
+	}
+}
+
 func TestCommandCodeIgnoresUnknownEventTypes(t *testing.T) {
 	evs := CommandCodeTranslator{}.Translate(`{"type":"event","event":{"type":"tool_done","toolName":"read_file"}}`)
 	if len(evs) != 0 {

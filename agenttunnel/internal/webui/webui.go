@@ -65,6 +65,11 @@ func handler(fsys fs.FS, prefs PrefsFunc) http.Handler {
 				if strings.HasPrefix(r.URL.Path, "/assets/") {
 					w.Header().Set("Cache-Control", assetCache)
 				}
+				// Go's built-in mime table has no .webmanifest, so the file would
+				// otherwise be sniffed as text/plain and browsers ignore it.
+				if strings.HasSuffix(r.URL.Path, ".webmanifest") {
+					w.Header().Set("Content-Type", "application/manifest+json")
+				}
 				serveFiles.ServeHTTP(w, r)
 				return
 			}

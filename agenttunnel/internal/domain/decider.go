@@ -317,6 +317,35 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.AutoModeSet{Enabled: *cmd.AutoMode}}, nil
 
+	case contracts.CmdAutoModelsSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.AutoModels == nil {
+			return nil, fmt.Errorf("%w: auto approved models are required", ErrInvalidCommand)
+		}
+		// Trim and de-duplicate per harness; a harness with no models is dropped.
+		models := make(map[string][]string, len(*cmd.AutoModels))
+		for h, list := range *cmd.AutoModels {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			seen := make(map[string]struct{}, len(list))
+			for _, m := range list {
+				m = strings.TrimSpace(m)
+				if m == "" {
+					continue
+				}
+				if _, dup := seen[m]; dup {
+					continue
+				}
+				seen[m] = struct{}{}
+				models[h] = append(models[h], m)
+			}
+		}
+		return []contracts.EventPayload{contracts.AutoApprovedModelsSet{Models: models}}, nil
+
 	case contracts.CmdPRTrack:
 		if !s.Exists {
 			return nil, ErrThreadNotFound
@@ -448,9 +477,10 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if len(s.Subthreads) >= contracts.MaxSubthreads {
 			return nil, fmt.Errorf("%w: a thread starts at most %d subthreads", ErrInvalidCommand, contracts.MaxSubthreads)
 		}
-		// Subthreads report back through the peer mailbox; without it the
-		// summary would have nowhere to go, so refuse up front.
-		if !s.PeerMailbox {
+		// A team's subthreads report back through the peer mailbox; without it
+		// the summary would have nowhere to go, so refuse up front. A solo thread
+		// has no lead to read a mailbox, so its report goes to the transcript only.
+		if !s.PeerMailbox && !s.Solo() {
 			return nil, fmt.Errorf("%w: peer mailbox is disabled for this thread", ErrInvalidCommand)
 		}
 		for _, id := range s.Subthreads {
@@ -797,6 +827,24 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		return []contracts.EventPayload{contracts.QuestionClosed{
 			QuestionID: c.QuestionID, Answered: true, Selected: selected, Text: text,
 		}}, nil
+
+	case contracts.CmdAgentModelObserve:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.ModelObserved == nil {
+			return nil, fmt.Errorf("%w: model payload is required", ErrInvalidCommand)
+		}
+		obs := *cmd.ModelObserved
+		a, ok := s.Agents[obs.AgentID]
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown agent %q", ErrInvalidCommand, obs.AgentID)
+		}
+		// Every assistant frame repeats the model; only a change is an event.
+		if obs.Model == "" || a.Model == obs.Model {
+			return nil, nil
+		}
+		return []contracts.EventPayload{obs}, nil
 
 	case contracts.CmdUsageRecord:
 		if !s.Exists {
