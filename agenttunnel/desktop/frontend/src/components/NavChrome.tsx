@@ -46,6 +46,55 @@ export const Breadcrumb = memo(function Breadcrumb({
   );
 });
 
+/** Undo and redo arrows at the titlebar's left. Each names the change it
+ * would step over, so the tooltip says what the next press does. */
+export function HistoryButtons({
+  canUndo,
+  canRedo,
+  undoLabel,
+  redoLabel,
+  onUndo,
+  onRedo,
+}: {
+  canUndo: boolean;
+  canRedo: boolean;
+  undoLabel: string;
+  redoLabel: string;
+  onUndo: () => void;
+  onRedo: () => void;
+}) {
+  return (
+    <div className="history-nav">
+      <button
+        type="button"
+        className="history-btn"
+        disabled={!canUndo}
+        title={canUndo ? `Undo ${undoLabel} (${MOD}Z)` : "Nothing to undo"}
+        aria-label="Undo"
+        onClick={onUndo}
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="9 14 4 9 9 4" />
+          <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className="history-btn"
+        disabled={!canRedo}
+        title={canRedo ? `Redo ${redoLabel}` : "Nothing to redo"}
+        aria-label="Redo"
+        onClick={onRedo}
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="15 14 20 9 15 4" />
+          <path d="M4 20v-7a4 4 0 0 1 4-4h12" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 /** Opens the command palette; it is the way to jump anywhere. */
 export function PaletteButton({ onOpen }: { onOpen: () => void }) {
   return (
