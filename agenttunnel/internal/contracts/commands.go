@@ -38,6 +38,7 @@ const (
 	CmdTaskDispatch         CommandType = "agent.task.dispatch"
 	CmdAgentStatusSet       CommandType = "agent.status.set"
 	CmdUsageRecord          CommandType = "agent.usage.record"
+	CmdAgentModelObserve    CommandType = "agent.model.observe"
 	CmdSharedContextSet     CommandType = "context.shared.set"
 	CmdMailboxPost          CommandType = "mailbox.post"
 	CmdMessageAppend        CommandType = "thread.message.append"
@@ -127,6 +128,7 @@ type Command struct {
 	TaskStatus      *TaskStatusChanged         `json:"taskStatus,omitempty"`
 	Dispatch        *DispatchTask              `json:"dispatch,omitempty"`
 	Usage           *UsageRecorded             `json:"usage,omitempty"`
+	ModelObserved   *AgentModelObserved        `json:"modelObserved,omitempty"`
 	Status          *AgentStatusChanged        `json:"status,omitempty"`
 	SharedContext   *SharedContextSet          `json:"sharedContext,omitempty"`
 	Mailbox         *MailboxPosted             `json:"mailbox,omitempty"`

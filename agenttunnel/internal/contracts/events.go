@@ -42,6 +42,7 @@ const (
 	EvtTaskDispatched          EventType = "agent.task-dispatched"
 	EvtAgentStatusChanged      EventType = "agent.status-changed"
 	EvtUsageRecorded           EventType = "agent.usage-recorded"
+	EvtAgentModelObserved      EventType = "agent.model-observed"
 	EvtSharedContextSet        EventType = "context.shared-set"
 	EvtMailboxPosted           EventType = "mailbox.posted"
 	EvtReviewCommentAdded      EventType = "review.comment-added"
@@ -177,6 +178,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AgentStatusChanged](data)
 	case EvtUsageRecorded:
 		return decodePayload[UsageRecorded](data)
+	case EvtAgentModelObserved:
+		return decodePayload[AgentModelObserved](data)
 	case EvtSharedContextSet:
 		return decodePayload[SharedContextSet](data)
 	case EvtMailboxPosted:
@@ -551,6 +554,15 @@ type UsageRecorded struct {
 }
 
 func (UsageRecorded) eventType() EventType { return EvtUsageRecorded }
+
+// AgentModelObserved records the model a harness reported it ran, so stats show
+// the model that answered rather than the requested or default one.
+type AgentModelObserved struct {
+	AgentID AgentID `json:"agentId"`
+	Model   string  `json:"model"`
+}
+
+func (AgentModelObserved) eventType() EventType { return EvtAgentModelObserved }
 
 type SharedContextSet struct {
 	Key      string  `json:"key"`

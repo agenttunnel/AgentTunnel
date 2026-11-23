@@ -814,6 +814,24 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			QuestionID: c.QuestionID, Answered: true, Selected: selected, Text: text,
 		}}, nil
 
+	case contracts.CmdAgentModelObserve:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.ModelObserved == nil {
+			return nil, fmt.Errorf("%w: model payload is required", ErrInvalidCommand)
+		}
+		obs := *cmd.ModelObserved
+		a, ok := s.Agents[obs.AgentID]
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown agent %q", ErrInvalidCommand, obs.AgentID)
+		}
+		// Every assistant frame repeats the model; only a change is an event.
+		if obs.Model == "" || a.Model == obs.Model {
+			return nil, nil
+		}
+		return []contracts.EventPayload{obs}, nil
+
 	case contracts.CmdUsageRecord:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

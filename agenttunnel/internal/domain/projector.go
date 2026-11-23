@@ -200,6 +200,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 		}
 		s.Agents[p.AgentID] = a
 
+	case contracts.AgentModelObserved:
+		a, ok := s.Agents[p.AgentID]
+		if !ok {
+			return fmt.Errorf("project: model for unknown agent %q", p.AgentID)
+		}
+		a.Model = p.Model
+		s.Agents[p.AgentID] = a
+
 	case contracts.UsageRecorded:
 		cur := s.Usage[p.AgentID]
 		cur.AgentID = p.AgentID
