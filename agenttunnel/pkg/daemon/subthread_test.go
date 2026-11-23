@@ -188,3 +188,63 @@ func TestSubthreadReportReachesParentTranscript(t *testing.T) {
 		t.Fatalf("parent's last message = %+v, want the subthread report", last)
 	}
 }
+
+// TestSoloThreadSubthreadReportsToTranscriptOnly covers a solo thread's solo
+// agent starting a subthread. A solo thread has no lead reading a mailbox, so
+// the subthread's report must reach the transcript and never the mailbox. The
+// mailbox post happens before the transcript append, so seeing the transcript
+// report proves no mailbox report was ever sent.
+func TestSoloThreadSubthreadReportsToTranscriptOnly(t *testing.T) {
+	d := newTestDaemon(t)
+	c, base := dialWS(t, d)
+
+	var created struct {
+		ThreadID contracts.ThreadID `json:"threadId"`
+	}
+	json.Unmarshal(call(t, c, "1", "thread.create", map[string]any{
+		"title": "solo parent", "projectId": "proj-solo-sub",
+	}), &created)
+	parent := created.ThreadID
+	ctx := context.Background()
+	if err := d.Engine.Dispatch(ctx, contracts.Command{
+		ID: "solo-set", Type: contracts.CmdSoloRuntimeSet, ThreadID: parent,
+		SoloRuntime: &contracts.SoloRuntimeSet{Runtime: contracts.LeadRuntime{Harness: contracts.HarnessOpenCode}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, unsub := d.Engine.Subscribe(parent)
+	defer unsub()
+
+	if status, body := postToolKind(t, base, map[string]any{
+		"threadId": parent, "agentId": "agent-orchestrator", "kind": "subthread",
+		"task": "write the release notes",
+	}); status != http.StatusOK {
+		t.Fatalf("solo subthread call: status %d: %s", status, body)
+	}
+
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if m, ok := ev.Payload.(contracts.MailboxPosted); ok && string(m.From) == "subthread" {
+				t.Fatalf("solo parent got a mailbox report: %+v", m)
+			}
+			if m, ok := ev.Payload.(contracts.MessageSent); ok && m.Author == "subthread" {
+				if !strings.Contains(m.Text, "report-") {
+					t.Fatalf("transcript report = %q, want the subthread's summary", m.Text)
+				}
+				top, err := d.Engine.State(ctx, parent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !top.Solo() || len(top.Subthreads) != 1 {
+					t.Fatalf("parent solo=%v subthreads=%v, want solo with one subthread", top.Solo(), top.Subthreads)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("no subthread report reached the solo parent's transcript")
+		}
+	}
+}

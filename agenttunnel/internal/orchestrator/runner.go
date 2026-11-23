@@ -711,6 +711,7 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 		Prompt:   prompt,
 		Images:   images,
 		Workdir:  r.workdirFor(ctx, threadID),
+		Env:      r.toolEnv(threadID, agentID),
 	}
 	adapter, err := r.registry.NewAdapter(spec)
 	if err != nil {

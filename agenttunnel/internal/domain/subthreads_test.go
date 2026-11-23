@@ -152,3 +152,18 @@ func TestSubthreadLinkSurvivesReplay(t *testing.T) {
 		t.Fatalf("parent subthreads = %v, want [t2]", parent.Subthreads)
 	}
 }
+
+// A solo thread has no peer mailbox, yet may start a subthread: its report goes
+// to the transcript, not a mailbox.
+func TestDecideSubthreadSpawnAllowsSoloThread(t *testing.T) {
+	s := NewThreadState("t1")
+	s.Exists = true
+	s.SoloRuntime = &contracts.LeadRuntime{Harness: contracts.HarnessClaude}
+	evs, err := spawnSubthread(s, "t2")
+	if err != nil {
+		t.Fatalf("solo spawn refused: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("want one SubthreadSpawned, got %#v", evs)
+	}
+}

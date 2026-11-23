@@ -121,15 +121,23 @@ func (d *Dispatcher) reportSubthread(turnCtx context.Context, parent, child cont
 		body = fmt.Sprintf("Subthread %q finished. Its summary:\n%s", title, summary)
 	}
 
+	// A solo parent has no lead to read a mailbox, so the transcript is its only
+	// reader and the report goes there alone.
+	parentSolo := false
+	if pst, err := d.engine.State(ctx, parent); err == nil {
+		parentSolo = pst.Solo()
+	}
 	// The lead reads its mailbox only on a pass. When the parent's turn is already
 	// over, the report would otherwise sit there unseen, so it always lands in the
 	// transcript too, where the user can read it.
-	if err := d.runner.PostMessage(ctx, parent, subthreadSender, "orchestrator", body); err != nil {
-		// The lead has no inbox to read from (peer messaging was turned off after
-		// the subthread started).
-		d.auditLog("subthread.report", map[string]any{
-			"threadId": string(parent), "subthreadId": string(child), "error": err.Error(),
-		})
+	if !parentSolo {
+		if err := d.runner.PostMessage(ctx, parent, subthreadSender, "orchestrator", body); err != nil {
+			// The lead has no inbox to read from (peer messaging was turned off after
+			// the subthread started).
+			d.auditLog("subthread.report", map[string]any{
+				"threadId": string(parent), "subthreadId": string(child), "error": err.Error(),
+			})
+		}
 	}
 	_ = d.engine.Dispatch(ctx, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdMessageAppend, ThreadID: parent,

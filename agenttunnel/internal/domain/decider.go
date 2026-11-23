@@ -470,9 +470,10 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		if len(s.Subthreads) >= contracts.MaxSubthreads {
 			return nil, fmt.Errorf("%w: a thread starts at most %d subthreads", ErrInvalidCommand, contracts.MaxSubthreads)
 		}
-		// Subthreads report back through the peer mailbox; without it the
-		// summary would have nowhere to go, so refuse up front.
-		if !s.PeerMailbox {
+		// A team's subthreads report back through the peer mailbox; without it
+		// the summary would have nowhere to go, so refuse up front. A solo thread
+		// has no lead to read a mailbox, so its report goes to the transcript only.
+		if !s.PeerMailbox && !s.Solo() {
 			return nil, fmt.Errorf("%w: peer mailbox is disabled for this thread", ErrInvalidCommand)
 		}
 		for _, id := range s.Subthreads {
