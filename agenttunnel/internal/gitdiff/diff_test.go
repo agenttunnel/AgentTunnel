@@ -1,6 +1,11 @@
 package gitdiff
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 const sample = `diff --git a/main.go b/main.go
 index 1111111..2222222 100644
@@ -80,5 +85,32 @@ func TestClassifyStatus(t *testing.T) {
 		if got := classifyStatus(xy); got != want {
 			t.Fatalf("status %q = %q, want %q", xy, got, want)
 		}
+	}
+}
+
+func TestWorkingTreeDiffIncludesUntrackedFiles(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if _, err := run(context.Background(), dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	git("init", "-q")
+	git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := WorkingTreeDiff(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Empty || len(d.Files) != 1 {
+		t.Fatalf("files = %+v, want the one untracked file", d.Files)
+	}
+	f := d.Files[0]
+	if f.Path != "new.txt" || f.Additions != 2 || f.Deletions != 0 {
+		t.Fatalf("file = %q +%d -%d, want new.txt +2 -0", f.Path, f.Additions, f.Deletions)
 	}
 }
