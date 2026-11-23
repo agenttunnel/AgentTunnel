@@ -125,7 +125,7 @@ func TestSystemdStatusStates(t *testing.T) {
 	_ = os.WriteFile(unit, []byte("x"), 0o644)
 
 	fake := &fakeRunner{reply: func(argv []string) (string, error) {
-		switch argv[3] {
+		switch argv[2] {
 		case "is-enabled":
 			return "enabled", nil
 		case "is-active":
