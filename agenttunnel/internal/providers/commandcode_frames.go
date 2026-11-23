@@ -30,12 +30,22 @@ func (CommandCodeTranslator) Translate(line string) []Event {
 	return JSONLineTranslator{}.Translate(line)
 }
 
-// commandCodeToolEvent shows a tool as it starts, with its arguments. Other
-// event types are not user-visible and are ignored, as the CLI documents.
+// commandCodeToolEvent shows a tool as it starts, with its arguments, and
+// closes the same call when the CLI reports its outcome. Other event types are
+// not user-visible and are ignored, as the CLI documents.
 func commandCodeToolEvent(ev map[string]any) []Event {
-	if firstString(ev, "type") != "tool_running" {
-		return nil
+	switch firstString(ev, "type") {
+	case "tool_running":
+		return commandCodeToolStart(ev)
+	case "tool_completed":
+		return toolResult(firstString(ev, "toolCallId"), false, commandCodeOutput(ev["result"]), nil)
+	case "tool_errored":
+		return toolResult(firstString(ev, "toolCallId"), true, firstString(ev, "error"), nil)
 	}
+	return nil
+}
+
+func commandCodeToolStart(ev map[string]any) []Event {
 	name := firstString(ev, "toolName")
 	if name == "" {
 		return nil
@@ -48,7 +58,22 @@ func commandCodeToolEvent(ev map[string]any) []Event {
 	if len(args) == 0 {
 		args, _ = ev["input"].(map[string]any)
 	}
-	return []Event{{Kind: contracts.LogTool, Text: summary + toolDetail(args, []string{"description"}), ToolName: name}}
+	call := toolCall(firstString(ev, "toolCallId"), name, args, contracts.ToolRunning)
+	return []Event{{Kind: contracts.LogTool, Text: summary + toolDetail(args, []string{"description"}), ToolName: name, Tool: call}}
+}
+
+// commandCodeOutput joins a completed tool's text blocks into its output.
+func commandCodeOutput(result any) string {
+	blocks, _ := result.([]any)
+	var parts []string
+	for _, b := range blocks {
+		if m, ok := b.(map[string]any); ok {
+			if text := firstString(m, "text"); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // commandCodeResult emits the final answer (or the failure) and the run's usage.
