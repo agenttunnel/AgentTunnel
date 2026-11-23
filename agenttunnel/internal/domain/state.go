@@ -102,6 +102,9 @@ type ThreadState struct {
 	UpdatedAt time.Time                `json:"updatedAt"`
 	Model     contracts.ModelSelection `json:"model"`
 	AutoMode  bool                     `json:"autoMode"`
+	// AutoApprovedModels is the thread's own auto-mode allowlist, keyed by
+	// harness. Empty means the thread inherits the environment's approved models.
+	AutoApprovedModels map[string][]string `json:"autoApprovedModels,omitempty"`
 	// StatusPeriodSeconds is how often a running turn posts a workflow status
 	// report into the thread. Zero means off.
 	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`

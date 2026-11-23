@@ -310,6 +310,35 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{contracts.AutoModeSet{Enabled: *cmd.AutoMode}}, nil
 
+	case contracts.CmdAutoModelsSet:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.AutoModels == nil {
+			return nil, fmt.Errorf("%w: auto approved models are required", ErrInvalidCommand)
+		}
+		// Trim and de-duplicate per harness; a harness with no models is dropped.
+		models := make(map[string][]string, len(*cmd.AutoModels))
+		for h, list := range *cmd.AutoModels {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			seen := make(map[string]struct{}, len(list))
+			for _, m := range list {
+				m = strings.TrimSpace(m)
+				if m == "" {
+					continue
+				}
+				if _, dup := seen[m]; dup {
+					continue
+				}
+				seen[m] = struct{}{}
+				models[h] = append(models[h], m)
+			}
+		}
+		return []contracts.EventPayload{contracts.AutoApprovedModelsSet{Models: models}}, nil
+
 	case contracts.CmdPRTrack:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

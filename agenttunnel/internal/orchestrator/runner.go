@@ -1040,14 +1040,15 @@ func (r *Runner) teammateMessages(threadID contracts.ThreadID, id contracts.Agen
 //     feeds per-role models through here).
 //  4. An explicit user override (council membership) runs exactly what was
 //     asked for.
-//  5. Auto mode may pick another model, bounded by the approved list when one
-//     is configured. With no list, any model the harness actually reports is
-//     allowed — enabling auto mode is the opt-in.
+//  5. Auto mode may pick another model, bounded by the thread's own approved
+//     list, else the harness's environment list, when one is configured. With
+//     neither, any model the harness actually reports is allowed — enabling
+//     auto mode is the opt-in.
 //
 // Anything else falls back to the role's model.
 func (r *Runner) resolveModel(role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
 	roleHarness, model, _ := r.roleRuntime(role)
-	resolved, _ := r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+	resolved, _ := r.resolveModelAgainst(context.Background(), "", roleHarness, model, harness, requested, auto, override)
 	return resolved
 }
 
@@ -1056,7 +1057,7 @@ func (r *Runner) resolveModel(role contracts.Role, harness contracts.Harness, re
 // model.fallback audit line so the choice can be read back later.
 func (r *Runner) resolveModelFor(ctx context.Context, threadID contracts.ThreadID, role contracts.Role, harness contracts.Harness, requested string, auto, override bool) string {
 	roleHarness, model, _ := r.roleRuntimeFor(ctx, threadID, role)
-	resolved, reason := r.resolveModelAgainst(roleHarness, model, harness, requested, auto, override)
+	resolved, reason := r.resolveModelAgainst(ctx, threadID, roleHarness, model, harness, requested, auto, override)
 	if reason != "" && requested != "" && resolved != requested {
 		shown := resolved
 		if shown == "" {
@@ -1072,7 +1073,7 @@ func (r *Runner) resolveModelFor(ctx context.Context, threadID contracts.ThreadI
 
 // resolveModelAgainst returns the model to run and, when it is not the one
 // requested, the reason it was dropped. An empty result means the harness default.
-func (r *Runner) resolveModelAgainst(roleHarness contracts.Harness, model string, harness contracts.Harness, requested string, auto, override bool) (string, string) {
+func (r *Runner) resolveModelAgainst(ctx context.Context, threadID contracts.ThreadID, roleHarness contracts.Harness, model string, harness contracts.Harness, requested string, auto, override bool) (string, string) {
 	sameHarness := harness == roleHarness
 	if !sameHarness {
 		model = ""
@@ -1087,7 +1088,7 @@ func (r *Runner) resolveModelAgainst(roleHarness contracts.Harness, model string
 		if !auto {
 			return "", "auto mode off"
 		}
-		if r.autoAllowed(harness, requested) {
+		if r.autoAllowed(ctx, threadID, harness, requested) {
 			return requested, ""
 		}
 		return "", "model not allowed in auto mode"
@@ -1098,16 +1099,26 @@ func (r *Runner) resolveModelAgainst(roleHarness contracts.Harness, model string
 	if !auto {
 		return model, "auto mode off"
 	}
-	if !r.autoAllowed(harness, requested) {
+	if !r.autoAllowed(ctx, threadID, harness, requested) {
 		return model, "model not allowed in auto mode"
 	}
 	return requested, ""
 }
 
-// autoAllowed reports whether a model may run in auto mode on a harness: inside
-// that harness's approved list when it has one, otherwise any model the harness
-// actually reports.
-func (r *Runner) autoAllowed(harness contracts.Harness, requested string) bool {
+// autoAllowed reports whether a model may run in auto mode on a harness: a
+// thread's own allowlist wins when it has one; otherwise inside that harness's
+// approved list when it has one, otherwise any model the harness actually reports.
+func (r *Runner) autoAllowed(ctx context.Context, threadID contracts.ThreadID, harness contracts.Harness, requested string) bool {
+	if threadID != "" && r.engine != nil {
+		if st, err := r.engine.State(ctx, threadID); err == nil && st != nil && len(st.AutoApprovedModels) > 0 {
+			for _, m := range st.AutoApprovedModels[string(harness)] {
+				if m == requested {
+					return true
+				}
+			}
+			return false
+		}
+	}
 	if r.settings == nil {
 		return true
 	}

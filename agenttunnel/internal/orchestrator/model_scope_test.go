@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -13,13 +14,13 @@ func TestAutoApprovalDoesNotCrossHarnesses(t *testing.T) {
 	r.settings.SetHarnessApprovedModels(contracts.HarnessClaude, []string{"shared-model"})
 	r.settings.SetHarnessApprovedModels(contracts.HarnessCodex, []string{"codex-only"})
 
-	if !r.autoAllowed(contracts.HarnessClaude, "shared-model") {
+	if !r.autoAllowed(context.Background(), "", contracts.HarnessClaude, "shared-model") {
 		t.Fatal("claude approved shared-model but autoAllowed said no")
 	}
-	if r.autoAllowed(contracts.HarnessCodex, "shared-model") {
+	if r.autoAllowed(context.Background(), "", contracts.HarnessCodex, "shared-model") {
 		t.Fatal("shared-model was approved on claude and leaked to codex")
 	}
-	if !r.autoAllowed(contracts.HarnessCodex, "codex-only") {
+	if !r.autoAllowed(context.Background(), "", contracts.HarnessCodex, "codex-only") {
 		t.Fatal("codex's own approval was not honoured")
 	}
 }

@@ -479,6 +479,13 @@ type (
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Count    int                `json:"count"`
 	}
+	// setAutoApprovedModelsParams replaces a thread's auto-mode allowlist, keyed
+	// by harness. An empty object clears it, so the thread inherits the
+	// environment's lists.
+	setAutoApprovedModelsParams struct {
+		ThreadID contracts.ThreadID   `json:"threadId"`
+		Models   *map[string][]string `json:"models"`
+	}
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
@@ -1723,6 +1730,22 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdAutoModeSet, ThreadID: p.ThreadID, AutoMode: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setAutoApprovedModels":
+		var p setAutoApprovedModelsParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Models == nil {
+			return nil, errors.New("models is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdAutoModelsSet, ThreadID: p.ThreadID,
+			AutoModels: p.Models,
 		}); err != nil {
 			return nil, err
 		}

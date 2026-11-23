@@ -20,6 +20,7 @@ const (
 	CmdTurnStart            CommandType = "thread.turn.start"
 	CmdModelSet             CommandType = "thread.model.set"
 	CmdAutoModeSet          CommandType = "thread.automode.set"
+	CmdAutoModelsSet        CommandType = "thread.auto-approved-models.set"
 	CmdArchiveSet           CommandType = "thread.archive.set"
 	CmdThreadSeen           CommandType = "thread.seen"
 	CmdStatusPeriodSet      CommandType = "thread.status-period.set"
@@ -108,6 +109,7 @@ type Command struct {
 	ProjectID       string                     `json:"projectId,omitempty"`
 	ModelSelection  *ModelSelection            `json:"modelSelection,omitempty"`
 	AutoMode        *bool                      `json:"autoMode,omitempty"`
+	AutoModels      *map[string][]string       `json:"autoApprovedModels,omitempty"`
 	StatusPeriod    *int                       `json:"statusPeriod,omitempty"`
 	Archived        *bool                      `json:"archived,omitempty"`
 	PeerMailbox     *bool                      `json:"peerMailbox,omitempty"`

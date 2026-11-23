@@ -1,6 +1,14 @@
 import { useState, type ReactNode } from "react";
-import type { LeadRuntimeView, RoleConfigView, SettingsView, ThreadState, ThreadSummary } from "../App";
+import type {
+  HarnessInfo,
+  LeadRuntimeView,
+  RoleConfigView,
+  SettingsView,
+  ThreadState,
+  ThreadSummary,
+} from "../App";
 import { switchProps } from "../lib/switchProps";
+import { ApprovedModelsPicker } from "./ApprovedModelsPicker";
 import { Dropdown, type DropdownOption } from "./Dropdown";
 import { ThinkingPicker } from "./ThinkingPicker";
 
@@ -12,6 +20,10 @@ export type ThreadSetupProps = {
   addingLead: boolean;
   setLeadRuntime: (index: number, rt: LeadRuntimeView) => Promise<void>;
   setSolo: (rt: LeadRuntimeView | null) => Promise<void>;
+  /** Replaces this thread's auto-mode allowlist; empty inherits the environment's. */
+  setAutoApprovedModels: (models: Record<string, string[]>) => Promise<void>;
+  /** Discovered models per harness, for the per-thread auto-mode picker. */
+  harnessInfo: HarnessInfo;
   updateRole: (id: string, patch: Partial<RoleConfigView>) => void;
   persistRole: (row: RoleConfigView) => Promise<void>;
   refreshModels: (harness: string) => Promise<void>;
@@ -81,6 +93,28 @@ function AutoModeToggle({ thread, toggle }: Pick<ThreadSetupProps, "thread" | "t
       }
     >
       <span className="sw" /> Auto mode
+    </div>
+  );
+}
+
+/** The thread's own auto-mode allowlist. Empty falls back to the environment's
+ * approved models; a non-empty list is what the orchestrator may pick from. */
+function AutoModelsPicker({
+  thread,
+  setAutoApprovedModels,
+  harnessInfo,
+}: Pick<ThreadSetupProps, "thread" | "setAutoApprovedModels" | "harnessInfo">) {
+  if (!thread?.autoMode) return null;
+  return (
+    <div className="field" style={{ marginTop: 10 }}>
+      <span>Auto mode models for this thread</span>
+      <ApprovedModelsPicker
+        value={thread.autoApprovedModels ?? {}}
+        onChange={(next) => setAutoApprovedModels(next).catch(() => undefined)}
+        models={harnessInfo.models}
+        harnessOrder={harnessInfo.all}
+      />
+      <p className="hint">Empty inherits the environment's approved models.</p>
     </div>
   );
 }
@@ -424,6 +458,8 @@ export function ThreadSetup({
   addingLead,
   setLeadRuntime,
   setSolo,
+  setAutoApprovedModels,
+  harnessInfo,
   updateRole,
   persistRole,
   refreshModels,
@@ -453,6 +489,8 @@ export function ThreadSetup({
             addLead={addLead}
             addingLead={addingLead}
             setLeadRuntime={setLeadRuntime}
+            setAutoApprovedModels={setAutoApprovedModels}
+            harnessInfo={harnessInfo}
             updateRole={updateRole}
             persistRole={persistRole}
             refreshModels={refreshModels}
@@ -506,6 +544,8 @@ export type TeamSettingsProps = Pick<
   | "addLead"
   | "addingLead"
   | "setLeadRuntime"
+  | "setAutoApprovedModels"
+  | "harnessInfo"
   | "updateRole"
   | "persistRole"
   | "refreshModels"
@@ -526,6 +566,8 @@ export function TeamSettings({
   addLead,
   addingLead,
   setLeadRuntime,
+  setAutoApprovedModels,
+  harnessInfo,
   updateRole,
   persistRole,
   refreshModels,
@@ -538,6 +580,11 @@ export function TeamSettings({
   return (
     <>
       <AutoModeToggle thread={thread} toggle={toggle} />
+      <AutoModelsPicker
+        thread={thread}
+        setAutoApprovedModels={setAutoApprovedModels}
+        harnessInfo={harnessInfo}
+      />
       {children}
       <ModeHint thread={thread} />
       <RoleTable

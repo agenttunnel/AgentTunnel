@@ -116,6 +116,9 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
     case "thread.automode-set":
       n.autoMode = !!p.Enabled;
       return n;
+    case "thread.auto-approved-models-set":
+      n.autoApprovedModels = p.Models && typeof p.Models === "object" ? (p.Models as Record<string, string[]>) : {};
+      return n;
     case "thread.archive-set":
       n.archived = !!p.Archived;
       return n;

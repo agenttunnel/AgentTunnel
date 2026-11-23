@@ -23,6 +23,7 @@ const (
 	EvtSteeringConsumed        EventType = "thread.steering-consumed"
 	EvtModelSet                EventType = "thread.model-set"
 	EvtAutoModeSet             EventType = "thread.automode-set"
+	EvtAutoApprovedModelsSet   EventType = "thread.auto-approved-models-set"
 	EvtArchiveSet              EventType = "thread.archive-set"
 	EvtThreadSeen              EventType = "thread.seen"
 	EvtStatusPeriodSet         EventType = "thread.status-period-set"
@@ -138,6 +139,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
 		return decodePayload[AutoModeSet](data)
+	case EvtAutoApprovedModelsSet:
+		return decodePayload[AutoApprovedModelsSet](data)
 	case EvtArchiveSet:
 		return decodePayload[ArchiveSet](data)
 	case EvtThreadSeen:
@@ -349,6 +352,13 @@ func (ModelSet) eventType() EventType { return EvtModelSet }
 type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
+
+// AutoApprovedModelsSet replaces a thread's own auto-mode allowlist, keyed by
+// harness like the environment's. An empty map clears it, so the thread falls
+// back to the environment's approved list.
+type AutoApprovedModelsSet struct{ Models map[string][]string }
+
+func (AutoApprovedModelsSet) eventType() EventType { return EvtAutoApprovedModelsSet }
 
 // ArchiveSet files a thread under Archived or brings it back. An archived
 // thread is hidden from the board's working columns but keeps its history.

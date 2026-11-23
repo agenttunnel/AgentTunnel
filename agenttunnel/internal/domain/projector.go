@@ -101,6 +101,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.AutoModeSet:
 		s.AutoMode = p.Enabled
 
+	case contracts.AutoApprovedModelsSet:
+		s.AutoApprovedModels = cloneHarnessModels(p.Models)
+
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
 
@@ -307,4 +310,17 @@ func Project(s *ThreadState, e contracts.Event) error {
 	}
 	s.Version = e.Seq
 	return nil
+}
+
+// cloneHarnessModels copies a per-harness allowlist so projected state never
+// aliases the event payload. An empty input projects to nil ("inherit").
+func cloneHarnessModels(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for h, list := range in {
+		out[h] = append([]string(nil), list...)
+	}
+	return out
 }
