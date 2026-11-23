@@ -188,19 +188,29 @@ func Run(args []string, version string, out, errOut io.Writer) int {
 
 // exitCode maps a command's result to the process exit code, printing the
 // error when there is one to print: 0 success, 2 a usage error, 1 a failure.
+// Under --json the error goes to stderr as {"error","code"} so a script can read
+// the reason. A failure() with no message prints nothing in either mode: the
+// command already reported its outcome, and the code is the exit status.
 func exitCode(env *Env, err error) int {
 	if err == nil {
 		return 0
 	}
+	code := 1
 	var ee exitError
 	if errors.As(err, &ee) {
-		if ee.err != nil {
-			fmt.Fprintln(env.Err, "agenttunnel:", ee.err)
+		code = ee.code
+		if ee.err == nil {
+			return code
 		}
-		return ee.code
+		err = ee.err
+	}
+	if env.JSON {
+		data, _ := json.Marshal(map[string]any{"error": err.Error(), "code": code})
+		fmt.Fprintln(env.Err, string(data))
+		return code
 	}
 	fmt.Fprintln(env.Err, "agenttunnel:", err)
-	return 1
+	return code
 }
 
 // findCommand looks a command up by name.

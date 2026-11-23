@@ -21,7 +21,7 @@ export type ThreadSetupProps = {
   setLeadRuntime: (index: number, rt: LeadRuntimeView) => Promise<void>;
   setSolo: (rt: LeadRuntimeView | null) => Promise<void>;
   /** Replaces this thread's auto-mode allowlist; empty inherits the environment's. */
-  setAutoApprovedModels: (models: string[]) => Promise<void>;
+  setAutoApprovedModels: (models: Record<string, string[]>) => Promise<void>;
   /** Discovered models per harness, for the per-thread auto-mode picker. */
   harnessInfo: HarnessInfo;
   updateRole: (id: string, patch: Partial<RoleConfigView>) => void;
@@ -109,7 +109,7 @@ function AutoModelsPicker({
     <div className="field" style={{ marginTop: 10 }}>
       <span>Auto mode models for this thread</span>
       <ApprovedModelsPicker
-        value={thread.autoApprovedModels ?? []}
+        value={thread.autoApprovedModels ?? {}}
         onChange={(next) => setAutoApprovedModels(next).catch(() => undefined)}
         models={harnessInfo.models}
         harnessOrder={harnessInfo.all}

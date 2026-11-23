@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Project, ThreadSummary } from "../App";
 import { threadSearchScore } from "../lib/threads";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 /** One group of the super view: threads sharing a lifecycle state. */
 export type SuperGroups = {
@@ -122,6 +123,7 @@ export function SuperView({
   const [search, setSearch] = useState("");
   const [cursor, setCursor] = useState<string | null>(initialThreadId ?? null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const boxRef = useDialogFocus<HTMLDivElement>();
   const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name])), [projects]);
   const query = search.trim();
 
@@ -190,9 +192,12 @@ export function SuperView({
   return (
     <div className="overlay super-overlay" onClick={onClose}>
       <div
+        ref={boxRef}
         className="sheet super-sheet"
         role="dialog"
+        aria-modal="true"
         aria-label="All threads across projects"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sheet-head">

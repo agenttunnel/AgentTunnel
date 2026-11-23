@@ -109,7 +109,7 @@ type Command struct {
 	ProjectID       string                     `json:"projectId,omitempty"`
 	ModelSelection  *ModelSelection            `json:"modelSelection,omitempty"`
 	AutoMode        *bool                      `json:"autoMode,omitempty"`
-	AutoModels      *[]string                  `json:"autoApprovedModels,omitempty"`
+	AutoModels      *map[string][]string       `json:"autoApprovedModels,omitempty"`
 	StatusPeriod    *int                       `json:"statusPeriod,omitempty"`
 	Archived        *bool                      `json:"archived,omitempty"`
 	PeerMailbox     *bool                      `json:"peerMailbox,omitempty"`

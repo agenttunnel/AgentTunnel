@@ -200,6 +200,8 @@ func teaKeys(msg tea.KeyPressMsg) []tuiKey {
 			return one(keyCtrlC)
 		case 'k':
 			return one(keyCtrlK)
+		case 'b':
+			return one(keyCtrlB)
 		case 'g':
 			return one(keyEditor)
 		case 'j':

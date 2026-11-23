@@ -29,6 +29,8 @@ const (
 	keyTab
 	keyShiftTab
 	keyCtrlK
+	// keyCtrlB shows or hides the thread screen's sidebar.
+	keyCtrlB
 	// keyEditor hands the prompt to $EDITOR (ctrl+g), for text too long to
 	// write on a few rows.
 	keyEditor

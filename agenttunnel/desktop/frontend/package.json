@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build --mode production",
     "build:dev": "tsc && vite build --mode development",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "bun test tests"
   },
   "dependencies": {
     "@codemirror/view": "^6.43.15",

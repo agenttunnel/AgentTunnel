@@ -283,7 +283,7 @@ func TestThreadAutoApprovedModelsBoundAutoMode(t *testing.T) {
 	})
 	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "role-model", "")
 
-	models := []string{"thread-only"}
+	models := map[string][]string{string(contracts.HarnessOpenCode): {"thread-only"}}
 	if err := r.engine.Dispatch(ctx, contracts.Command{
 		ID: "am", Type: contracts.CmdAutoModelsSet, ThreadID: "t1", AutoModels: &models,
 	}); err != nil {

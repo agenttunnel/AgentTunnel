@@ -152,6 +152,8 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 		return err
 	}
 	var tracker *turnTracker
+	// rosterFetch and listFetch mark a poll read still in flight.
+	var rosterFetch, listFetch bool
 	if ref != "" {
 		row, err := resolveThreadRow(ctx, c, ref)
 		if err != nil {
@@ -510,8 +512,10 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 
 		case err := <-starts:
 			starting = false
-			if err != nil && m.screen == tuiScreenThread {
-				m.appendLogLines("thread.turn.start: " + err.Error())
+			if err != nil {
+				// m.notify writes to the transcript on the thread, or to the
+				// flash line once the user has left it.
+				m.notify("thread.turn.start: " + err.Error())
 				dirty = true
 			}
 
@@ -564,6 +568,8 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			if m.screen == tuiScreenThread {
 				if reopened, err := tuiReopenThread(ctx, c, m); err == nil {
 					tracker = reopened
+				} else {
+					m.notify("reopen after reconnect: " + err.Error())
 				}
 			}
 			dirty = true
@@ -577,17 +583,31 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 					if reopened, err := tuiReopenThread(ctx, c, m); err == nil {
 						tracker = reopened
 						dirty = true
+					} else {
+						m.notify("reopen after a dropped frame: " + err.Error())
+						dirty = true
 					}
 				}
 			}
-			if tracker != nil {
-				if roster, err := fetchTuiRoster(ctx, c, m.thread.ID); err == nil {
-					settled(func() {
-						tracker.update(roster.statuses)
-						m.setRoster(roster)
-					})
-					dirty = true
-				}
+			// The roster and the list are read off the loop: a poll tick queues
+			// the read and the fold applies it here, only if the reader is still
+			// where the read was taken. One read in flight per kind, so a slow
+			// daemon never stacks them.
+			if tracker != nil && !rosterFetch {
+				rosterFetch = true
+				threadID := m.thread.ID
+				m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+					roster, err := fetchTuiRoster(ctx, c, threadID)
+					return func(m *tuiModel) {
+						rosterFetch = false
+						if err == nil && tuiRosterCurrent(m, tracker, threadID) {
+							settled(func() {
+								tracker.update(roster.statuses)
+								m.setRoster(roster)
+							})
+						}
+					}
+				})
 			}
 			if v, ok := m.activeView(); ok {
 				if v.Load != nil {
@@ -596,10 +616,17 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				dirty = true
 				continue
 			}
-			if m.screen == tuiScreenList {
-				if err := tuiRefreshList(ctx, c, m); err == nil {
-					dirty = true
-				}
+			if m.screen == tuiScreenList && !listFetch {
+				listFetch = true
+				m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
+					rows, err := collectPs(ctx, c, psOptions{})
+					return func(m *tuiModel) {
+						listFetch = false
+						if err == nil && tuiListCurrent(m) {
+							m.setList(nestPsRows(rows))
+						}
+					}
+				})
 			}
 
 		case <-resize:
@@ -753,6 +780,8 @@ func tuiThreadKey(m *tuiModel, tracker **turnTracker, k tuiKey, rows int, submit
 		m.input.wordLeft()
 	case keyWordRight:
 		m.input.wordRight()
+	case keyCtrlB:
+		m.toggleSide()
 	case keyHome:
 		m.input.home()
 	case keyEnd:
@@ -803,6 +832,19 @@ func tuiPage(rows int) int {
 		return 1
 	}
 	return rows / 2
+}
+
+// tuiRosterCurrent reports whether a roster read for threadID still belongs on
+// screen: the reader is on that thread and it has a turn tracker. A read that
+// lands after the reader moved on is dropped.
+func tuiRosterCurrent(m *tuiModel, tracker *turnTracker, threadID string) bool {
+	return tracker != nil && m.onThread(threadID)
+}
+
+// tuiListCurrent reports whether a list read belongs on screen: the reader is
+// still on the list.
+func tuiListCurrent(m *tuiModel) bool {
+	return m.screen == tuiScreenList
 }
 
 // tuiRefreshList reloads the list the ps listing builds: nested rows with

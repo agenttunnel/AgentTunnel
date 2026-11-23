@@ -353,9 +353,10 @@ type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
 
-// AutoApprovedModelsSet replaces a thread's own auto-mode allowlist. An empty
-// list clears it, so the thread falls back to the environment's approved list.
-type AutoApprovedModelsSet struct{ Models []string }
+// AutoApprovedModelsSet replaces a thread's own auto-mode allowlist, keyed by
+// harness like the environment's. An empty map clears it, so the thread falls
+// back to the environment's approved list.
+type AutoApprovedModelsSet struct{ Models map[string][]string }
 
 func (AutoApprovedModelsSet) eventType() EventType { return EvtAutoApprovedModelsSet }
 
