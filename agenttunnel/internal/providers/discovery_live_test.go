@@ -88,21 +88,3 @@ func TestCommandCodeDiscoveryAgainstInstalledCLI(t *testing.T) {
 	}
 	t.Logf("%s reported %d models, e.g. %s", bin, len(got), got[0])
 }
-
-func TestCursorDiscoveryAgainstInstalledCLI(t *testing.T) {
-	requireLive(t)
-	if _, err := exec.LookPath("cursor-agent"); err != nil {
-		t.Skip("cursor-agent not installed")
-	}
-	d := NewCommandDiscoverer("cursor-agent", "--list-models").WithParser(ParseCursorModelList)
-	d.Timeout = liveProbeTimeout
-
-	got, err := d.Discover(context.Background())
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	if len(got) == 0 {
-		t.Fatal("expected models from the installed cursor-agent CLI")
-	}
-	t.Logf("cursor-agent reported %d models, e.g. %s", len(got), got[0])
-}

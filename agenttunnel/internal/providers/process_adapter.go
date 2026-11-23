@@ -61,8 +61,8 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 	if spec.Workdir != "" {
 		cmd.Dir = spec.Workdir
 	}
-	if len(spec.Env) > 0 {
-		cmd.Env = append(os.Environ(), spec.Env...)
+	if env := append(append([]string{}, spec.Env...), inv.Env...); len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
 	}
 
 	// Only open a stdin pipe when the prompt is delivered that way, or when

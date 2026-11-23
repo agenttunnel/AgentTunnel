@@ -108,7 +108,6 @@ const HARNESS_TINTS = new Set([
   "claude",
   "opencode",
   "codex",
-  "cursor",
   "pi",
   "commandcode",
   "grok",

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -26,7 +27,6 @@ func BuiltinDrivers() []Driver {
 		NewGenericDriver(contracts.HarnessOpenCode, "opencode", openCodeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessClaude, "claude", claudeInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCodex, "codex", codexInvocation, CodexTranslator{}).WithImageSupport(ImagesSupported),
-		NewGenericDriver(contracts.HarnessCursor, "cursor-agent", cursorInvocation, JSONLineTranslator{}).WithImageSupport(ImagesUnsupported),
 		NewGenericDriver(contracts.HarnessPi, "pi", piInvocation, JSONLineTranslator{}).WithImageSupport(ImagesSupported),
 		NewGenericDriver(contracts.HarnessCommandCode, "commandcode", commandCodeInvocation, CommandCodeTranslator{}).WithImageSupport(ImagesUnsupported),
 	}
@@ -39,7 +39,6 @@ func BuiltinDrivers() []Driver {
 //   - opencode:            `opencode models`
 //   - pi:                  `pi --list-models` (a fixed-width table, on stderr)
 //   - commandcode / cmd:   `--list-models` (provider/model slugs)
-//   - cursor-agent:        `--list-models` ("<slug> - <description>" rows)
 //
 // Claude and codex have no usable listing command (claude rejects
 // `--list-models`; codex's list is behind its app-server handshake), so their
@@ -59,9 +58,6 @@ func BuiltinRegistry() *Registry {
 		NewCommandDiscoverer("commandcode", "--list-models").WithParser(ParseCommandCodeModels),
 		NewCommandDiscoverer("cmd", "--list-models").WithParser(ParseCommandCodeModels),
 	))
-	// `cursor-agent --list-models` prints "<slug> - <description>" rows.
-	r.RegisterDiscoverer(contracts.HarnessCursor,
-		NewCommandDiscoverer("cursor-agent", "--list-models").WithParser(ParseCursorModelList))
 	return r
 }
 
@@ -79,7 +75,30 @@ func openCodeInvocation(spec SessionSpec) (CommandSpec, error) {
 		args = append(args, "--file", img.Path)
 	}
 	args = append(args, spec.Prompt)
+	if spec.ToolSteering {
+		env, err := openCodeSteeringEnv()
+		if err != nil {
+			return CommandSpec{}, err
+		}
+		return CommandSpec{Binary: "opencode", Args: args, PromptVia: "arg", Env: env}, nil
+	}
 	return CommandSpec{Binary: "opencode", Args: args, PromptVia: "arg"}, nil
+}
+
+// openCodeSteeringEnv loads the steering plugin by directory through
+// OPENCODE_CONFIG_CONTENT, which merges into the user's own config. It is not
+// OPENCODE_CONFIG_DIR, which replaces the config directory. Our entry comes
+// after the inherited environment, so it wins over any value the user set.
+func openCodeSteeringEnv() ([]string, error) {
+	plugin, err := writeSteeringGlue("opencode-steering", "index.js", openCodeSteeringPlugin)
+	if err != nil {
+		return nil, err
+	}
+	content, err := json.Marshal(map[string]any{"plugins": []string{filepath.Dir(plugin)}})
+	if err != nil {
+		return nil, err
+	}
+	return []string{"OPENCODE_CONFIG_CONTENT=" + string(content)}, nil
 }
 
 func claudeInvocation(spec SessionSpec) (CommandSpec, error) {
@@ -90,6 +109,9 @@ func claudeInvocation(spec SessionSpec) (CommandSpec, error) {
 		args = append(args, "--model", spec.Model)
 	}
 	args = append(args, "--dangerously-skip-permissions")
+	if spec.ToolSteering {
+		args = append(args, "--settings", claudeSteeringSettings())
+	}
 	if len(spec.Images) == 0 {
 		args = append(args, spec.Prompt)
 		return CommandSpec{Binary: "claude", Args: args, PromptVia: "arg"}, nil
@@ -102,6 +124,30 @@ func claudeInvocation(spec SessionSpec) (CommandSpec, error) {
 		return CommandSpec{}, err
 	}
 	return CommandSpec{Binary: "claude", Args: args, PromptVia: "arg", StdinJSONFrames: frames}, nil
+}
+
+// toolSteeringCommand runs after each tool call. The daemon answers with the
+// steering pending for the thread, which the hook hands to the model beside the
+// tool result: a steer lands between tool calls, not after the run ends.
+const toolSteeringCommand = `"$AT_TOOL" tool steering`
+
+// claudeSteeringSettings is the --settings JSON that wires the steering hook
+// into both tool outcomes: a failed tool call is still a tool call.
+func claudeSteeringSettings() string {
+	type hook struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Timeout int    `json:"timeout"`
+	}
+	type group struct {
+		Hooks []hook `json:"hooks"`
+	}
+	g := []group{{Hooks: []hook{{Type: "command", Command: toolSteeringCommand, Timeout: 10}}}}
+	b, _ := json.Marshal(map[string]any{"hooks": map[string]any{
+		"PostToolUse":        g,
+		"PostToolUseFailure": g,
+	}})
+	return string(b)
 }
 
 // claudeInputFrames builds the one user-message frame a stream-json input
@@ -159,6 +205,9 @@ func codexInvocation(spec SessionSpec) (CommandSpec, error) {
 	if spec.Variant != "" {
 		args = append(args, "-c", `model_reasoning_effort="`+spec.Variant+`"`)
 	}
+	if spec.ToolSteering {
+		args = append(args, codexSteeringArgs(codexExecHelpHas("--dangerously-bypass-hook-trust"))...)
+	}
 	args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	// --image attaches a file the model sees; it is repeatable.
 	for _, img := range spec.Images {
@@ -168,21 +217,21 @@ func codexInvocation(spec SessionSpec) (CommandSpec, error) {
 	return CommandSpec{Binary: "codex", Args: args, PromptVia: "arg"}, nil
 }
 
-// codexJSON remembers, per resolved codex binary, whether its `exec --help`
-// lists --json. An upgrade in place keeps the old answer until the daemon
+// codexExecHelp remembers, per resolved codex binary, the text of its
+// `exec --help`. An upgrade in place keeps the old text until the daemon
 // restarts.
-var codexJSON sync.Map
+var codexExecHelp sync.Map
 
-// codexSupportsJSON asks `codex exec --help` once per binary. A missing
-// binary reads as supported: the spawn then fails with its own error. A probe
-// that fails is not remembered, and that run falls back to plain.
-func codexSupportsJSON() bool {
+// codexExecHelpHas reports whether `codex exec --help` lists flag. A missing
+// binary reads as yes: the spawn then fails with its own error. A probe that
+// fails is not remembered, and the answer is no.
+func codexExecHelpHas(flag string) bool {
 	path, err := exec.LookPath("codex")
 	if err != nil {
 		return true
 	}
-	if known, ok := codexJSON.Load(path); ok {
-		return known.(bool)
+	if known, ok := codexExecHelp.Load(path); ok {
+		return bytes.Contains(known.([]byte), []byte(flag))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -190,9 +239,24 @@ func codexSupportsJSON() bool {
 	if err != nil {
 		return false
 	}
-	supported := bytes.Contains(out, []byte("--json"))
-	codexJSON.Store(path, supported)
-	return supported
+	codexExecHelp.Store(path, out)
+	return bytes.Contains(out, []byte(flag))
+}
+
+// codexSupportsJSON is whether this codex's exec takes --json. See codexExecHelpHas.
+func codexSupportsJSON() bool { return codexExecHelpHas("--json") }
+
+// codexSteeringArgs wires the steering hook for codex exec. The hook is a
+// config override, so no file lands in the user's codex home or project. Hooks
+// from a non-interactive run must be trusted, and exec has no review step, so
+// the bypass flag is passed when this codex has it. The hook command is the
+// daemon's own, never user-supplied.
+func codexSteeringArgs(trustFlag bool) []string {
+	args := []string{"-c", `hooks.PostToolUse=[{hooks=[{type="command",command='` + toolSteeringCommand + `',timeout=10}]}]`}
+	if trustFlag {
+		args = append(args, "--dangerously-bypass-hook-trust")
+	}
+	return args
 }
 
 func piInvocation(spec SessionSpec) (CommandSpec, error) {
@@ -209,16 +273,16 @@ func piInvocation(spec SessionSpec) (CommandSpec, error) {
 	if spec.Variant != "" {
 		args = append(args, "--thinking", spec.Variant)
 	}
-	return CommandSpec{Binary: "pi", Args: args, PromptVia: "arg"}, nil
-}
-
-func cursorInvocation(spec SessionSpec) (CommandSpec, error) {
-	args := []string{"--print"}
-	if spec.Model != "" {
-		args = append(args, "--model", spec.Model)
+	if spec.ToolSteering {
+		// -e loads the glue as an extension; auto-discovered extensions are
+		// left as the user configured them.
+		glue, err := writeSteeringGlue("pi-steering", "extension.js", piSteeringExtension)
+		if err != nil {
+			return CommandSpec{}, err
+		}
+		args = append(args, "-e", glue)
 	}
-	args = append(args, spec.Prompt)
-	return CommandSpec{Binary: "cursor-agent", Args: args, PromptVia: "arg"}, nil
+	return CommandSpec{Binary: "pi", Args: args, PromptVia: "arg"}, nil
 }
 
 func commandCodeInvocation(spec SessionSpec) (CommandSpec, error) {
@@ -228,6 +292,14 @@ func commandCodeInvocation(spec SessionSpec) (CommandSpec, error) {
 	args := []string{"-p", spec.Prompt, "--yolo", "--output-format", "json"}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
+	}
+	if spec.ToolSteering {
+		// --mod loads a file for this session only; print mode loads --mod mods.
+		mod, err := writeSteeringGlue("commandcode-steering", "steering.ts", commandCodeSteeringMod)
+		if err != nil {
+			return CommandSpec{}, err
+		}
+		args = append(args, "--mod", mod)
 	}
 	return CommandSpec{Binary: "commandcode", Args: args, PromptVia: "arg"}, nil
 }

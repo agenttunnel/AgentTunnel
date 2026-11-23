@@ -5576,11 +5576,6 @@ button.danger-text {
   background: rgba(166, 209, 137, 0.1);
   border-color: rgba(166, 209, 137, 0.45);
 }
-.graph-node.h-cursor,
-.thread-row.h-cursor {
-  background: rgba(237, 135, 150, 0.1);
-  border-color: rgba(237, 135, 150, 0.45);
-}
 /* pi is pale lemon, commandcode a warmer amber, so neighbors stay
    distinguishable. */
 .graph-node.h-pi,
@@ -5622,11 +5617,6 @@ button.danger-text {
 .tab.h-codex {
   background: rgba(166, 209, 137, 0.08);
   border-color: rgba(166, 209, 137, 0.45);
-}
-.thread-card.h-cursor,
-.tab.h-cursor {
-  background: rgba(237, 135, 150, 0.08);
-  border-color: rgba(237, 135, 150, 0.45);
 }
 .thread-card.h-pi,
 .tab.h-pi {
@@ -7715,10 +7705,6 @@ button.danger-text {
 .pc-ava.h-codex {
   background: rgba(166, 209, 137, 0.18);
   border-color: rgba(166, 209, 137, 0.5);
-}
-.pc-ava.h-cursor {
-  background: rgba(237, 135, 150, 0.18);
-  border-color: rgba(237, 135, 150, 0.5);
 }
 .pc-ava.h-pi {
   background: rgba(244, 231, 148, 0.18);

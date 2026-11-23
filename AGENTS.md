@@ -1,7 +1,7 @@
 # AgentTunnel
 
 AgentTunnel is a minimal GUI for coding agents. The Go daemon (`atd`) wraps
-provider CLIs (Codex, Claude, Cursor, OpenCode, Pi, Command Code) behind
+provider CLIs (Codex, Claude, OpenCode, Pi, Command Code) behind
 an HTTP/WebSocket surface, and a Wails v3 desktop app drives it.
 
 The Go app in `agenttunnel/` is the product. The previous TypeScript

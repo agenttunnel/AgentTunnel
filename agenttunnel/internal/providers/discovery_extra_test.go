@@ -7,22 +7,6 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
 
-func TestParseCursorModelList(t *testing.T) {
-	// A sample of real `cursor-agent --list-models` output.
-	out := `Available models
-
-auto - Auto (current, default)
-gpt-5.3-codex-low - Codex 5.3 Low
-gpt-5.3-codex-low-fast - Codex 5.3 Low Fast
-gpt-5.3-codex - Codex 5.3
-`
-	got := ParseCursorModelList(out)
-	want := []string{"auto", "gpt-5.3-codex-low", "gpt-5.3-codex-low-fast", "gpt-5.3-codex"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
 func TestParseCommandCodeModels(t *testing.T) {
 	// A sample of real `command-code --list-models` output: provider headings,
 	// slash slugs, bare short names, usage hints, and a docs footer.

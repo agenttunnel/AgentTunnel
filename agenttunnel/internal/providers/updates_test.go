@@ -192,28 +192,16 @@ func npmRegistry(t *testing.T, versions map[string]string) (*httptest.Server, *a
 	return srv, &hits
 }
 
-// cursorInstallScript mimics the public installer: the version lives in the
-// download URL.
-func cursorInstallScript(t *testing.T, version string) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "#!/bin/sh\nDOWNLOAD_URL=\"https://downloads.cursor.com/lab/%s/darwin/arm64/Cursor.tar.gz\"\n", version)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func testUpdater(t *testing.T, env *fakeHarnessEnv, npmBase, cursorURL string, clock *fakeClock) *HarnessUpdater {
+func testUpdater(t *testing.T, env *fakeHarnessEnv, npmBase string, clock *fakeClock) *HarnessUpdater {
 	t.Helper()
 	return NewHarnessUpdater(HarnessUpdaterOptions{
-		HTTP:             http.DefaultClient,
-		NpmBase:          npmBase,
-		CursorInstallURL: cursorURL,
-		LookPath:         env.lookPath,
-		RealPath:         env.realPath,
-		Probe:            env.probe,
-		Run:              env.run,
-		Now:              clock.now,
+		HTTP:     http.DefaultClient,
+		NpmBase:  npmBase,
+		LookPath: env.lookPath,
+		RealPath: env.realPath,
+		Probe:    env.probe,
+		Run:      env.run,
+		Now:      clock.now,
 	})
 }
 
@@ -248,7 +236,7 @@ func TestHarnessUpdaterReportsNewerLatest(t *testing.T) {
 	env.install(t, contracts.HarnessClaude, bin, "2.1.322 (Claude Code)")
 	srv, _ := npmRegistry(t, map[string]string{"@anthropic-ai/claude-code": "2.1.323"})
 	clock := newFakeClock()
-	u := testUpdater(t, env, srv.URL, "http://invalid", clock)
+	u := testUpdater(t, env, srv.URL, clock)
 
 	report := u.Check(context.Background(), false)
 	if len(report.Harnesses) != 1 {
@@ -277,7 +265,7 @@ func TestHarnessUpdaterIsCurrentWhenInstalledIsAhead(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), ".opencode", "bin", "opencode")
 	env.install(t, contracts.HarnessOpenCode, bin, "opencode v2.0.29")
 	srv, _ := npmRegistry(t, map[string]string{"@opencode/cli": "2.0.28"})
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	report := u.Check(context.Background(), false)
 	if len(report.Harnesses) != 1 {
@@ -306,7 +294,7 @@ func TestHarnessUpdaterOffersOpenCodeV2Update(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), ".opencode", "bin", "opencode")
 	env.install(t, contracts.HarnessOpenCode, bin, "opencode v2.0.29")
 	srv, _ := npmRegistry(t, map[string]string{"@opencode/cli": "2.2.7"})
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	row := u.Check(context.Background(), false).Harnesses[0]
 	if row.Installed != "2.0.29" || row.Latest != "2.2.7" {
@@ -326,7 +314,7 @@ func TestHarnessUpdaterCachesWithinTTL(t *testing.T) {
 	env.install(t, contracts.HarnessClaude, bin, "2.1.322")
 	srv, hits := npmRegistry(t, map[string]string{"@anthropic-ai/claude-code": "2.1.322"})
 	clock := newFakeClock()
-	u := testUpdater(t, env, srv.URL, "http://invalid", clock)
+	u := testUpdater(t, env, srv.URL, clock)
 
 	for i := 0; i < 2; i++ {
 		u.Check(context.Background(), false)
@@ -359,7 +347,7 @@ func TestHarnessUpdaterRefreshBypassesCache(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), ".local", "bin", "claude")
 	env.install(t, contracts.HarnessClaude, bin, "2.1.322")
 	srv, hits := npmRegistry(t, map[string]string{"@anthropic-ai/claude-code": "2.1.322"})
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	u.Check(context.Background(), false)
 	u.Check(context.Background(), true)
@@ -375,7 +363,7 @@ func TestHarnessUpdaterRefreshBypassesCache(t *testing.T) {
 func TestHarnessUpdaterSkipsMissingBinaries(t *testing.T) {
 	env := newFakeHarnessEnv()
 	srv, hits := npmRegistry(t, map[string]string{})
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	report := u.Check(context.Background(), false)
 	if len(report.Harnesses) != 0 {
@@ -440,7 +428,7 @@ func TestHarnessUpdaterClassifiesThroughSymlinkTarget(t *testing.T) {
 			env.realPaths[tc.bin] = tc.realPath
 			env.mu.Unlock()
 			srv, _ := npmRegistry(t, map[string]string{tc.npmPackage: tc.latest})
-			u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+			u := testUpdater(t, env, srv.URL, newFakeClock())
 
 			report := u.Check(context.Background(), false)
 			if len(report.Harnesses) != 1 {
@@ -474,7 +462,7 @@ func TestHarnessUpdaterSurvivesLatestFetchFailure(t *testing.T) {
 		http.Error(w, "registry down", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	row := u.Check(context.Background(), false).Harnesses[0]
 	if row.Installed != "2.1.322" {
@@ -488,38 +476,6 @@ func TestHarnessUpdaterSurvivesLatestFetchFailure(t *testing.T) {
 	}
 	if !row.Updatable || row.Command != "claude update" {
 		t.Fatalf("command resolution is independent of the lookup: %+v", row)
-	}
-}
-
-func TestHarnessUpdaterComparesCursorDateVersions(t *testing.T) {
-	cases := []struct {
-		name      string
-		installed string
-		latest    string
-		want      bool
-	}{
-		{name: "newer date", installed: "2026.09.28-64d2043", latest: "2026.11.11-043ef28", want: true},
-		{name: "same date newer hash", installed: "2026.09.28-64d2043", latest: "2026.09.28-043ef28", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			env := newFakeHarnessEnv()
-			bin := filepath.Join(t.TempDir(), ".local", "bin", "cursor-agent")
-			env.install(t, contracts.HarnessCursor, bin, tc.installed)
-			srv := cursorInstallScript(t, tc.latest)
-			u := testUpdater(t, env, "http://invalid", srv.URL, newFakeClock())
-
-			row := u.Check(context.Background(), false).Harnesses[0]
-			if row.UpdateAvailable != tc.want {
-				t.Fatalf("updateAvailable = %v, want %v (%+v)", row.UpdateAvailable, tc.want, row)
-			}
-			if row.Installed != tc.installed || row.Latest != tc.latest {
-				t.Fatalf("versions = %q -> %q", row.Installed, row.Latest)
-			}
-			if !row.Updatable || row.Command != "cursor-agent update" {
-				t.Fatalf("row = %+v", row)
-			}
-		})
 	}
 }
 
@@ -542,22 +498,6 @@ func TestResolveUpgradeCommandByInstallPath(t *testing.T) {
 			realPath: "/Users/u/.local/share/claude/versions/2.1.322/claude",
 			wantOK:   true,
 			wantExe:  "/Users/u/.local/bin/claude",
-			wantArgs: []string{"update"},
-		},
-		{
-			name:     "cursor native",
-			harness:  contracts.HarnessCursor,
-			path:     "/Users/u/.local/share/cursor-agent/cursor-agent",
-			wantOK:   true,
-			wantExe:  "/Users/u/.local/share/cursor-agent/cursor-agent",
-			wantArgs: []string{"update"},
-		},
-		{
-			name:     "cursor agent alias",
-			harness:  contracts.HarnessCursor,
-			path:     "/Users/u/.local/bin/agent",
-			wantOK:   true,
-			wantExe:  "/Users/u/.local/bin/agent",
 			wantArgs: []string{"update"},
 		},
 		{
@@ -646,12 +586,6 @@ func TestResolveUpgradeCommandByInstallPath(t *testing.T) {
 			wantOK:  false,
 		},
 		{
-			name:    "package-managed cursor has no npm package",
-			harness: contracts.HarnessCursor,
-			path:    "/usr/local/lib/node_modules/cursor-agent/bin/cursor-agent",
-			wantOK:  false,
-		},
-		{
 			name:    "unknown install",
 			harness: contracts.HarnessCommandCode,
 			path:    "/Applications/Tools/bin/commandcode",
@@ -691,7 +625,7 @@ func TestHarnessUpdaterUpdateRunsOnlyAffected(t *testing.T) {
 		"@anthropic-ai/claude-code":       "2.1.323",
 		"@earendil-works/pi-coding-agent": "1.5.2",
 	})
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	res, err := u.Update(context.Background(), nil)
 	if err != nil {
@@ -723,22 +657,23 @@ func TestHarnessUpdaterUpdateRunsOnlyAffected(t *testing.T) {
 func TestHarnessUpdaterUpdateContinuesAfterFailure(t *testing.T) {
 	env := newFakeHarnessEnv()
 	claudeBin := filepath.Join(t.TempDir(), ".local", "bin", "claude")
-	cursorBin := filepath.Join(t.TempDir(), ".local", "bin", "cursor-agent")
 	env.install(t, contracts.HarnessClaude, claudeBin, "2.1.322 (Claude Code)")
-	env.install(t, contracts.HarnessCursor, cursorBin, "2026.09.28-64d2043")
-	env.latestOutputs[contracts.HarnessCursor] = "2026.11.11-043ef28"
+	env.install(t, contracts.HarnessPi, "/Users/u/.bun/bin/pi", "1.5.2")
+	env.latestOutputs[contracts.HarnessPi] = "1.5.3"
 	env.runErrors[contracts.HarnessClaude] = errors.New("exit status 1")
 	env.runOutput[contracts.HarnessClaude] = []byte("npm ERR! boom")
-	srv, _ := npmRegistry(t, map[string]string{"@anthropic-ai/claude-code": "2.1.323"})
-	cursorSrv := cursorInstallScript(t, "2026.11.11-043ef28")
-	u := testUpdater(t, env, srv.URL, cursorSrv.URL, newFakeClock())
+	srv, _ := npmRegistry(t, map[string]string{
+		"@anthropic-ai/claude-code":       "2.1.323",
+		"@earendil-works/pi-coding-agent": "1.5.3",
+	})
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	res, err := u.Update(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if len(res.Updated) != 1 || res.Updated[0] != contracts.HarnessCursor {
-		t.Fatalf("updated = %v, want [cursor]", res.Updated)
+	if len(res.Updated) != 1 || res.Updated[0] != contracts.HarnessPi {
+		t.Fatalf("updated = %v, want [pi]", res.Updated)
 	}
 	if len(res.Failed) != 1 || res.Failed[0].Harness != contracts.HarnessClaude {
 		t.Fatalf("failed = %+v", res.Failed)
@@ -757,8 +692,8 @@ func TestHarnessUpdaterUpdateContinuesAfterFailure(t *testing.T) {
 	if !rows[contracts.HarnessClaude].UpdateAvailable {
 		t.Fatalf("failed harness should still be behind: %+v", rows[contracts.HarnessClaude])
 	}
-	if rows[contracts.HarnessCursor].UpdateAvailable {
-		t.Fatalf("updated harness should be current: %+v", rows[contracts.HarnessCursor])
+	if rows[contracts.HarnessPi].UpdateAvailable {
+		t.Fatalf("updated harness should be current: %+v", rows[contracts.HarnessPi])
 	}
 }
 
@@ -770,7 +705,7 @@ func TestHarnessUpdaterUpdateSkipsExplicitCurrentHarness(t *testing.T) {
 	bin := "/Users/u/.bun/bin/pi"
 	env.install(t, contracts.HarnessPi, bin, "1.5.2")
 	srv, _ := npmRegistry(t, map[string]string{"@earendil-works/pi-coding-agent": "1.5.2"})
-	u := testUpdater(t, env, srv.URL, "http://invalid", newFakeClock())
+	u := testUpdater(t, env, srv.URL, newFakeClock())
 
 	res, err := u.Update(context.Background(), []contracts.Harness{contracts.HarnessPi})
 	if err != nil {
@@ -789,7 +724,7 @@ func TestHarnessUpdaterUpdateSkipsExplicitCurrentHarness(t *testing.T) {
 
 func TestHarnessUpdaterUpdateRejectsUnknownHarness(t *testing.T) {
 	env := newFakeHarnessEnv()
-	u := testUpdater(t, env, "http://invalid", "http://invalid", newFakeClock())
+	u := testUpdater(t, env, "http://invalid", newFakeClock())
 
 	if _, err := u.Update(context.Background(), []contracts.Harness{"nope"}); err == nil {
 		t.Fatal("expected an error for an unknown harness")

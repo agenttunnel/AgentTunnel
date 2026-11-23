@@ -138,20 +138,18 @@ func TestClaudeInvocationWithoutImagesKeepsPromptArg(t *testing.T) {
 	}
 }
 
-func TestCursorAndCommandCodeIgnoreImages(t *testing.T) {
-	for _, fn := range []func(SessionSpec) (CommandSpec, error){cursorInvocation, commandCodeInvocation} {
-		cs, err := fn(imageSpec("/att/a.png"))
-		if err != nil {
-			t.Fatal(err)
+func TestCommandCodeIgnoresImages(t *testing.T) {
+	cs, err := commandCodeInvocation(imageSpec("/att/a.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range cs.Args {
+		if a == "/att/a.png" {
+			t.Fatalf("harness got an image path: %v", cs.Args)
 		}
-		for _, a := range cs.Args {
-			if a == "/att/a.png" {
-				t.Fatalf("harness got an image path: %v", cs.Args)
-			}
-		}
-		if len(cs.StdinJSONFrames) != 0 {
-			t.Fatalf("frames = %v", cs.StdinJSONFrames)
-		}
+	}
+	if len(cs.StdinJSONFrames) != 0 {
+		t.Fatalf("frames = %v", cs.StdinJSONFrames)
 	}
 }
 
@@ -162,7 +160,6 @@ func TestBuiltinImageSupportMatrix(t *testing.T) {
 		contracts.HarnessClaude:      ImagesSupported,
 		contracts.HarnessCodex:       ImagesSupported,
 		contracts.HarnessPi:          ImagesSupported,
-		contracts.HarnessCursor:      ImagesUnsupported,
 		contracts.HarnessCommandCode: ImagesUnsupported,
 	}
 	for h, expected := range want {

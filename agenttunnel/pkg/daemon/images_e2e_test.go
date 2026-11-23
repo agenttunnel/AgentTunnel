@@ -35,7 +35,7 @@ func pngBytes(t *testing.T, w, h int) []byte {
 // newImageDaemon runs every agent as a script that records each argv word on
 // its own line, so a test can see both the prompt text and how images reached
 // the harness. supported=false mirrors a harness whose invocation ignores
-// spec.Images entirely (cursor, commandcode) and degrades to a prompt note.
+// spec.Images entirely (commandcode) and degrades to a prompt note.
 func newImageDaemon(t *testing.T, captureFile string, supported bool) *Daemon {
 	t.Helper()
 	script := `: > '` + captureFile + `'
