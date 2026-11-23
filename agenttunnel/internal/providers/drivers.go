@@ -213,7 +213,9 @@ func piInvocation(spec SessionSpec) (CommandSpec, error) {
 }
 
 func cursorInvocation(spec SessionSpec) (CommandSpec, error) {
-	args := []string{"--print"}
+	// Print mode refuses to trust the workspace or run shell commands unless
+	// --yolo is set; without it cursor-agent exits with "Workspace Trust Required".
+	args := []string{"--print", "--yolo"}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}
