@@ -39,27 +39,43 @@ func TestNotebooksArePerThread(t *testing.T) {
 	}
 }
 
-// The lead is offered the subthread tool only while the thread has a free slot:
-// a child thread, or a full set of subthreads, gets no offer.
+// The lead, or a solo agent, is offered the subthread tool only while the thread
+// has a free slot: a child thread, or a full set of subthreads, gets no offer.
 func TestSubthreadsOfferedWhileASlotIsFree(t *testing.T) {
 	full := make([]contracts.ThreadID, contracts.MaxSubthreads)
 	for i := range full {
 		full[i] = contracts.ThreadID("sub-" + string(rune('a'+i)))
 	}
+	solo := &contracts.LeadRuntime{Harness: contracts.HarnessClaude}
 	cases := []struct {
 		name  string
 		state domain.ThreadState
-		peer  bool
 		want  bool
 	}{
-		{"top-level with a free slot", domain.ThreadState{Subthreads: full[:1]}, true, true},
-		{"peer mailbox off", domain.ThreadState{}, false, false},
-		{"a subthread cannot start its own", domain.ThreadState{ParentThreadID: "parent"}, true, false},
-		{"all slots used", domain.ThreadState{Subthreads: full}, true, false},
+		{"team with a free slot", domain.ThreadState{PeerMailbox: true, Subthreads: full[:1]}, true},
+		{"solo with a free slot", domain.ThreadState{SoloRuntime: solo}, true},
+		{"team with peer mailbox off", domain.ThreadState{}, false},
+		{"a subthread cannot start its own", domain.ThreadState{PeerMailbox: true, ParentThreadID: "parent"}, false},
+		{"a solo subthread cannot start its own", domain.ThreadState{SoloRuntime: solo, ParentThreadID: "parent"}, false},
+		{"all slots used", domain.ThreadState{PeerMailbox: true, Subthreads: full}, false},
+		{"solo, all slots used", domain.ThreadState{SoloRuntime: solo, Subthreads: full}, false},
 	}
 	for _, c := range cases {
-		if got := subthreadsOffered(&c.state, c.peer); got != c.want {
+		if got := subthreadsOffered(&c.state); got != c.want {
 			t.Errorf("%s: subthreadsOffered = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// A solo agent is offered the subthread tool and the reason it is for; a plain
+// solo prompt does not mention subthreads.
+func TestSoloPromptOffersSubthreadOnlyWhenAllowed(t *testing.T) {
+	with := BuildSoloPrompt("", "x", nil, true)
+	without := BuildSoloPrompt("", "x", nil, false)
+	if !strings.Contains(with, `tool subthread --task`) {
+		t.Fatalf("an allowed solo thread should document the subthread tool:\n%s", with)
+	}
+	if strings.Contains(without, "subthread") {
+		t.Fatalf("a solo thread that cannot start subthreads must not mention them:\n%s", without)
 	}
 }
