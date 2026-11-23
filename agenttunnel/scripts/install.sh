@@ -66,9 +66,18 @@ uninstall() {
   cli="$install_dir/agenttunnel"
   [ -f "$cli" ] || cli="$install_dir/agenttunnel.exe"
   if [ -x "$cli" ]; then
-    if ! "$cli" daemon uninstall; then
+    svc_status=0
+    svc_out="$("$cli" daemon uninstall 2>&1)" || svc_status=$?
+    # Exit 2 is a usage error: a CLI from before `daemon uninstall` existed never
+    # registered a service, so there is nothing to remove and its output is noise.
+    if [ "$svc_status" -eq 2 ]; then
+      :
+    elif [ "$svc_status" -ne 0 ]; then
+      printf '%s\n' "$svc_out" >&2
       echo "uninstall: cannot remove the always-on service; binaries were kept. Fix the error above and run uninstall again." >&2
       return 1
+    else
+      printf '%s\n' "$svc_out"
     fi
   fi
 
