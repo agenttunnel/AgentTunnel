@@ -20,15 +20,17 @@ import { BrowserNotifyToggle } from "./BrowserNotifyToggle";
 import { Dropdown, type DropdownOption } from "./Dropdown";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { useEscapeClose } from "../lib/escape";
+import { useDialogFocus } from "../lib/dialogFocus";
 
 /** The sheet's form fields and notices. App writes them (loadSettings,
  * refreshModels, any saved setting); only the sheet reads them. */
 export const settingsForm = createStore({
   workdir: "",
-  approvedModels: [] as string[],
+  approvedByHarness: {} as Record<string, string[]>,
   staleAfter: "30",
   saved: false,
   modelsNotice: null as string | null,
+  envError: null as string | null,
   // Read again on every open; the last answer shows meanwhile.
   appVersion: null as string | null,
   deps: null as DependencyView[] | null,
@@ -38,7 +40,7 @@ export const settingsForm = createStore({
 /** Refills the form from the daemon's settings. */
 export function fillSettingsForm(s: SettingsView) {
   settingsForm.setter("workdir")(s.workdir ?? "");
-  settingsForm.setter("approvedModels")(s.approvedModels ?? []);
+  settingsForm.setter("approvedByHarness")(s.approvedByHarness ?? {});
   settingsForm.setter("staleAfter")(String(s.staleAfterMinutes ?? 30));
 }
 
@@ -51,8 +53,9 @@ export function flashSaved() {
 }
 
 const setWorkdirInput = settingsForm.setter("workdir");
-const setApprovedModels = settingsForm.setter("approvedModels");
+const setApprovedByHarness = settingsForm.setter("approvedByHarness");
 const setStaleAfterInput = settingsForm.setter("staleAfter");
+const setEnvError = settingsForm.setter("envError");
 const setAppVersion = settingsForm.setter("appVersion");
 const setDeps = settingsForm.setter("deps");
 const setDepsError = settingsForm.setter("depsError");
@@ -94,10 +97,11 @@ export const SettingsSheet = memo(function SettingsSheet({
   persistRole: (row: RoleConfigView) => Promise<void>;
 }) {
   const workdirInput = useStoreField(settingsForm, "workdir");
-  const approvedModels = useStoreField(settingsForm, "approvedModels");
+  const approvedByHarness = useStoreField(settingsForm, "approvedByHarness");
   const staleAfterInput = useStoreField(settingsForm, "staleAfter");
   const saved = useStoreField(settingsForm, "saved");
   const modelsNotice = useStoreField(settingsForm, "modelsNotice");
+  const envError = useStoreField(settingsForm, "envError");
   // Appearance is shared by every client of this daemon through the prefs store.
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
   const appVersion = useStoreField(settingsForm, "appVersion");
@@ -138,17 +142,48 @@ export const SettingsSheet = memo(function SettingsSheet({
   const leadSettings = settings.lead ?? {};
   const orchestratorRole = settings.roles.find((r) => r.id === "orchestrator");
   const leadHarness = leadSettings.harness || orchestratorRole?.harness || "";
+  // An empty list is the common first run (no catalog is shipped), so say what to do.
+  const modelFootNote = (harness: string) =>
+    (harnesses.models?.[harness] ?? []).length === 0
+      ? "No models yet. Use Add model to add one."
+      : "Discovered from the harness CLI";
 
   const saveEnv = async () => {
     if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      workdir: workdirInput,
-      autoMode: settings?.autoMode ?? false,
-      approvedModels,
-      staleAfterMinutes: staleAfterInput,
-    });
-    setSettings(s);
-    flashSaved();
+    // The daemon decodes staleAfterMinutes as an integer, so send a number, not
+    // the input's string — a string rejects the whole patch and saves nothing.
+    const minutes = Number(staleAfterInput);
+    if (!Number.isFinite(minutes) || minutes < 1) {
+      setEnvError("Stale-after must be a whole number of minutes (1 or more).");
+      return;
+    }
+    try {
+      // Auto mode is its own immediate toggle; leaving it out of this patch
+      // keeps a slow save from reverting a toggle made while it was in flight.
+      const s = await rpc.call<SettingsView>("settings.set", {
+        workdir: workdirInput,
+        approvedByHarness,
+        staleAfterMinutes: Math.round(minutes),
+      });
+      setSettings(s);
+      setEnvError(null);
+      flashSaved();
+    } catch (e) {
+      setEnvError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  /** Persists the auto-mode toggle at once, so a later settings save or a
+   * concurrent refresh cannot revert it before "Save environment" is pressed. */
+  const toggleAutoMode = async () => {
+    if (!rpc) return;
+    try {
+      const s = await rpc.call<SettingsView>("settings.set", { autoMode: !settings.autoMode });
+      setSettings(s);
+      setEnvError(null);
+    } catch (e) {
+      setEnvError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const toggleHarness = async (id: string, enabled: boolean) => {
@@ -180,9 +215,10 @@ export const SettingsSheet = memo(function SettingsSheet({
   };
 
   useEscapeClose(onClose);
+  const boxRef = useDialogFocus<HTMLDivElement>();
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1} ref={boxRef} onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
           <strong>Settings</strong>
           <div className="sheet-head-right">
@@ -256,9 +292,7 @@ export const SettingsSheet = memo(function SettingsSheet({
             </label>
             <div
               className={`toggle ${settings.autoMode ? "on" : ""}`}
-              {...switchProps(settings.autoMode, () =>
-                setSettings({ ...settings, autoMode: !settings.autoMode }),
-              )}
+              {...switchProps(settings.autoMode, () => toggleAutoMode())}
               style={{ marginTop: 10 }}
             >
               <span className="sw" /> Auto mode — orchestrator picks each task's model
@@ -266,8 +300,8 @@ export const SettingsSheet = memo(function SettingsSheet({
             <div className="field" style={{ marginTop: 12 }}>
               <span>Approved models for auto mode</span>
               <ApprovedModelsPicker
-                value={approvedModels}
-                onChange={setApprovedModels}
+                value={approvedByHarness}
+                onChange={setApprovedByHarness}
                 models={harnesses.models}
                 harnessOrder={harnesses.all}
               />
@@ -287,6 +321,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                 Config file: <code>{settings.configPath}</code>
               </p>
             )}
+            {envError && <p className="hint warn">{envError}</p>}
             <div className="sheet-actions">
               <button className="primary" onClick={saveEnv}>
                 Save environment
@@ -346,7 +381,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                 searchable
                 align="end"
                 placeholder="model (default)"
-                footNote="Discovered from the harness CLI"
+                footNote={modelFootNote(leadHarness)}
                 onRefresh={() => leadHarness && refreshModels(leadHarness).catch(() => undefined)}
                 addLabel="Add model"
                 onAdd={(m) => {
@@ -459,7 +494,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                     searchable
                     align="end"
                     placeholder="model (default)"
-                    footNote="Discovered from the harness CLI"
+                    footNote={modelFootNote(r.harness)}
                     onRefresh={() => refreshModels(r.harness).catch(() => undefined)}
                     addLabel="Add model"
                     onAdd={(m) => {

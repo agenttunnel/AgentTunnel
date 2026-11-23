@@ -87,6 +87,11 @@ type tuiModel struct {
 	// may hold: tuiLogCap, plus whatever older output the reader loaded.
 	log    []tuiBlock
 	logCap int
+	// growing marks output appended while scrolled that the view has not
+	// measured yet; growFrom is the transcript's height before the first of
+	// it. See grow and settleGrowth.
+	growing  bool
+	growFrom int
 	// messages is what the user sent in this thread, oldest first, for placing
 	// in older output as it loads; older is the paging state.
 	messages []tuiMessageRow
@@ -420,7 +425,7 @@ func render(m *tuiModel, cols, rows int) string {
 	}
 	lines = append(lines, body...)
 	if hasFooter {
-		lines = append(lines, tuiFooter(cols, m.hints()))
+		lines = append(lines, tuiFooter(cols, m.hints(cols, bodyRows)))
 	}
 	out := make([]string, len(lines))
 	for i, row := range lines {
@@ -585,8 +590,10 @@ func tuiWindowTabs(order []string, active string, budget int) (ids []string, lef
 	return order[lo:hi], lo > 0, hi < len(order)
 }
 
-// hints are the footer's key hints for the current surface.
-func (m *tuiModel) hints() []tuiHint {
+// hints are the footer's key hints for the current surface. The sidebar's
+// toggle is named only while the sidebar is hidden, since that is when the
+// user needs to be told it exists.
+func (m *tuiModel) hints(cols, rows int) []tuiHint {
 	if m.palette != nil {
 		return []tuiHint{{"enter", "run"}, {"↑/↓", "move"}, {"esc", "close"}}
 	}
@@ -606,7 +613,11 @@ func (m *tuiModel) hints() []tuiHint {
 		return []tuiHint{{"pgup/pgdn", "scroll"}, {"esc", "close"}}
 	}
 	if m.screen == tuiScreenThread {
-		return []tuiHint{{"enter", "send"}, {"alt+enter", "newline"}, {"tab", "views"}, {"esc", "back"}, {"ctrl+k", "commands"}, {"↑", "history"}, {"pgup/pgdn", "scroll"}}
+		hints := []tuiHint{{"enter", "send"}, {"alt+enter", "newline"}, {"tab", "views"}, {"esc", "back"}}
+		if m.sideFits(rows) && !m.sideShown(cols, rows) {
+			hints = append(hints, tuiHint{"ctrl+b", "sidebar"})
+		}
+		return append(hints, tuiHint{"ctrl+k", "commands"}, tuiHint{"↑", "history"}, tuiHint{"pgup/pgdn", "scroll"})
 	}
 	if m.filtering() {
 		return []tuiHint{{"enter", "keep filter"}, {"esc", "clear"}}
@@ -724,8 +735,12 @@ func tuiListWindow(rows []psRow, cursor, height int) ([]psRow, int) {
 // conversation with quiet gutters instead of a frame, any pending question and
 // the roster, and a panel prompt pinned at the bottom.
 func (m *tuiModel) renderThread(cols, rows int) []tuiRow {
+	m.side.paintCols, m.side.paintRows = cols, rows
 	if !m.sideShown(cols, rows) {
 		return m.renderThreadMain(cols, rows)
+	}
+	if cols < tuiSideMinCols {
+		return m.sidePane(cols, rows)
 	}
 	mainCols := cols - tuiSideWidth
 	return m.withSidebar(m.renderThreadMain(mainCols, rows), mainCols, rows)

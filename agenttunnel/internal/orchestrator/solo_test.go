@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -149,8 +150,10 @@ func TestSoloReplyKeepsBlocksApartAcrossToolCalls(t *testing.T) {
 }
 
 // TestSoloPromptIsPlain pins the solo prompt's shape: history, the request,
-// and nothing from the orchestrator protocol — no AT_TOOL, no roster, no peer
-// section — and no AT_* environment at all.
+// and nothing from the orchestrator protocol — no roster, no dispatch, no peer
+// section. The one tool a solo agent is offered is subthreads, and it is
+// documented only on a thread that can start one; its tool environment comes
+// with it, the same as a lead's.
 func TestSoloPromptIsPlain(t *testing.T) {
 	var mu sync.Mutex
 	var specs []providers.SessionSpec
@@ -185,13 +188,18 @@ func TestSoloPromptIsPlain(t *testing.T) {
 			t.Fatalf("solo prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	for _, banned := range []string{"AT_TOOL", "Agents already dispatched", "Dispatching work", "Peer messages"} {
+	// The thread is top-level with no subthreads, so the subthread offer is the
+	// only tool section a solo prompt carries.
+	if !strings.Contains(prompt, "tool subthread --task") {
+		t.Fatalf("solo prompt should offer subthreads:\n%s", prompt)
+	}
+	for _, banned := range []string{"Agents already dispatched", "Dispatching work", "Peer messages", "## Roster"} {
 		if strings.Contains(prompt, banned) {
 			t.Fatalf("solo prompt leaked orchestrator section %q:\n%s", banned, prompt)
 		}
 	}
-	if len(specs[0].Env) != 0 {
-		t.Fatalf("solo spec env = %v, want none", specs[0].Env)
+	if !slices.Contains(specs[0].Env, "AT_AGENT_ID="+string(leadAgentID(0))) {
+		t.Fatalf("solo spec env = %v, want the tool environment", specs[0].Env)
 	}
 }
 

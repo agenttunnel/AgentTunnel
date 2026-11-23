@@ -170,11 +170,14 @@ func TestReviewDiffUsesThreadProject(t *testing.T) {
 	json.Unmarshal(call(t, c, "3", "review.diff", map[string]any{
 		"threadId": created.ThreadID,
 	}), &diff)
-	if diff.Empty || len(diff.Files) != 1 || diff.Files[0].Path != "main.go" {
-		t.Fatalf("diff = %+v, want the modified main.go", diff)
+	if diff.Empty || len(diff.Files) != 2 || diff.Files[0].Path != "main.go" || diff.Files[1].Path != "notes.txt" {
+		t.Fatalf("diff = %+v, want the modified main.go and the untracked notes.txt", diff)
 	}
 	if diff.Files[0].Additions != 2 {
-		t.Fatalf("additions = %d, want 2", diff.Files[0].Additions)
+		t.Fatalf("main.go additions = %d, want 2", diff.Files[0].Additions)
+	}
+	if diff.Files[1].Additions != 1 {
+		t.Fatalf("notes.txt additions = %d, want 1", diff.Files[1].Additions)
 	}
 
 	// The files.tree status overlay marks the modification and the untracked file.

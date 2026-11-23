@@ -13,6 +13,9 @@ type Message struct {
 	Text   string               `json:"text"`
 	Images []contracts.ImageRef `json:"images,omitempty"`
 	At     time.Time            `json:"at"`
+	// Turn is the turn the message belongs to. A turn-opening message (the
+	// user's, or a controller's relaunch) carries the turn it opened.
+	Turn int `json:"turn"`
 	// Consumed is set on a steering message once a pass has picked it up. A
 	// steering message that is not consumed yet is still queued.
 	Consumed bool `json:"consumed,omitempty"`
@@ -102,6 +105,9 @@ type ThreadState struct {
 	UpdatedAt time.Time                `json:"updatedAt"`
 	Model     contracts.ModelSelection `json:"model"`
 	AutoMode  bool                     `json:"autoMode"`
+	// AutoApprovedModels is the thread's own auto-mode allowlist, keyed by
+	// harness. Empty means the thread inherits the environment's approved models.
+	AutoApprovedModels map[string][]string `json:"autoApprovedModels,omitempty"`
 	// StatusPeriodSeconds is how often a running turn posts a workflow status
 	// report into the thread. Zero means off.
 	StatusPeriodSeconds int  `json:"statusPeriodSeconds"`
@@ -144,6 +150,9 @@ type ThreadState struct {
 	// thread while it stays in charge. Empty means the user runs it.
 	ControlledBy contracts.ThreadID `json:"controlledBy,omitempty"`
 	Messages     []Message          `json:"messages"`
+	// Checkpoints are the workspace snapshots of recent turns, oldest first,
+	// capped at contracts.MaxCheckpoints.
+	Checkpoints []contracts.Checkpoint `json:"checkpoints,omitempty"`
 	// Tasks is the agreed task list, in the order the leads added them.
 	Tasks []TaskItem `json:"tasks"`
 	// PullRequests lists the pull requests this thread opened, in the order they
@@ -324,6 +333,7 @@ func (s *ThreadState) Clone() *ThreadState {
 		c.LastSeenAt = &at
 	}
 	c.Messages = append([]Message(nil), s.Messages...)
+	c.Checkpoints = append([]contracts.Checkpoint(nil), s.Checkpoints...)
 	for i, m := range c.Messages {
 		if len(m.Images) > 0 {
 			c.Messages[i].Images = append([]contracts.ImageRef(nil), m.Images...)

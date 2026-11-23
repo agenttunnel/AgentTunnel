@@ -2,7 +2,9 @@ package domain
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 )
@@ -68,18 +70,38 @@ func Project(s *ThreadState, e contracts.Event) error {
 		s.ControlledBy = p.Controller
 
 	case contracts.MessageSent:
-		msg := Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At}
+		msg := Message{ID: p.MessageID, Author: p.Author, Text: p.Text, At: e.At, Turn: s.Turn}
 		if len(p.Images) > 0 {
 			msg.Images = append([]contracts.ImageRef(nil), p.Images...)
 		}
-		s.Messages = append(s.Messages, msg)
 		// A user message opens a turn, and so does a message authored by the
 		// thread's controller — a relaunch is a real turn, with its own prompt
 		// and its own spend. Steering and reports stay in the current one.
 		if p.Author == "user" || (s.ControlledBy != "" && p.Author == string(s.ControlledBy)) {
 			s.Turn++
+			msg.Turn = s.Turn
 			s.turnFor(s.Turn).At = e.At
 		}
+		s.Messages = append(s.Messages, msg)
+
+	case contracts.CheckpointCaptured:
+		s.applyCheckpoint(p, e.At)
+
+	case contracts.ThreadRewound:
+		// Replay truncates; earlier events are never edited. Usage totals are
+		// deliberately kept: money already spent stays spent.
+		cut := len(s.Messages)
+		for i, m := range s.Messages {
+			if m.ID == p.ToMessageID {
+				cut = i
+				break
+			}
+		}
+		s.Messages = s.Messages[:cut]
+		s.Turns = slices.DeleteFunc(s.Turns, func(t TurnUsage) bool { return t.Turn >= p.Turn })
+		s.Checkpoints = slices.DeleteFunc(s.Checkpoints, func(c contracts.Checkpoint) bool { return c.Turn >= p.Turn })
+		s.Turn = p.Turn - 1
+		s.UpdatedAt = e.At
 
 	case contracts.SteeringInjected:
 		// Steering is transcript and graph history; the read model keeps the
@@ -100,6 +122,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 
 	case contracts.AutoModeSet:
 		s.AutoMode = p.Enabled
+
+	case contracts.AutoApprovedModelsSet:
+		s.AutoApprovedModels = cloneHarnessModels(p.Models)
 
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
@@ -195,6 +220,14 @@ func Project(s *ThreadState, e contracts.Event) error {
 				}
 			}
 		}
+		s.Agents[p.AgentID] = a
+
+	case contracts.AgentModelObserved:
+		a, ok := s.Agents[p.AgentID]
+		if !ok {
+			return fmt.Errorf("project: model for unknown agent %q", p.AgentID)
+		}
+		a.Model = p.Model
 		s.Agents[p.AgentID] = a
 
 	case contracts.UsageRecorded:
@@ -307,4 +340,56 @@ func Project(s *ThreadState, e contracts.Event) error {
 	}
 	s.Version = e.Seq
 	return nil
+}
+
+// applyCheckpoint merges one captured phase into its checkpoint. A baseline
+// creates the entry; a result finalizes it. A result whose baseline has fallen
+// out of the capped read model is appended on its own, so the log and the
+// read model agree on what was captured.
+func (s *ThreadState) applyCheckpoint(p contracts.CheckpointCaptured, at time.Time) {
+	idx := -1
+	for i := range s.Checkpoints {
+		if s.Checkpoints[i].ID == p.CheckpointID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.Checkpoints = append(s.Checkpoints, contracts.Checkpoint{
+			ID: p.CheckpointID, Turn: p.Turn, AnchorMessageID: p.AnchorMessageID,
+		})
+		idx = len(s.Checkpoints) - 1
+		if len(s.Checkpoints) > contracts.MaxCheckpoints {
+			s.Checkpoints = s.Checkpoints[len(s.Checkpoints)-contracts.MaxCheckpoints:]
+			idx = len(s.Checkpoints) - 1
+		}
+	}
+	c := &s.Checkpoints[idx]
+	c.CapturedAt = at
+	switch p.Phase {
+	case contracts.CheckpointBaseline:
+		c.BaselineRef = p.Ref
+		c.BaselineTree = p.Tree
+	case contracts.CheckpointResult:
+		c.Ref = p.Ref
+		c.Tree = p.Tree
+		c.Files = p.Files
+		c.Additions = p.Additions
+		c.Deletions = p.Deletions
+		c.Error = p.Error
+		c.Ready = p.Error == ""
+	}
+}
+
+// cloneHarnessModels copies a per-harness allowlist so projected state never
+// aliases the event payload. An empty input projects to nil ("inherit").
+func cloneHarnessModels(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for h, list := range in {
+		out[h] = append([]string(nil), list...)
+	}
+	return out
 }

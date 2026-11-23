@@ -1,0 +1,18 @@
+{
+  "name": "AgentTunnel",
+  "short_name": "AgentTunnel",
+  "description": "A minimal GUI for coding agents.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "icons": [
+    {
+      "src": "/brand-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

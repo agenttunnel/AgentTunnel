@@ -5,6 +5,7 @@ package gitdiff
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -46,6 +47,17 @@ type Diff struct {
 	Empty bool   `json:"empty"`
 }
 
+// RangeDiff diffs two trees or commits. It reads only the object database, so
+// neither the index nor the working tree is touched and uncommitted changes
+// are not included.
+func RangeDiff(ctx context.Context, workdir, base, head string) (Diff, error) {
+	out, err := run(ctx, workdir, "diff", "--no-color", "--no-ext-diff", base, head)
+	if err != nil {
+		return Diff{}, err
+	}
+	return ParseDiff(out), nil
+}
+
 // WorkingTreeDiff diffs the working tree (staged + unstaged) against HEAD.
 func WorkingTreeDiff(ctx context.Context, workdir string) (Diff, error) {
 	out, err := run(ctx, workdir, "diff", "HEAD", "--no-color", "--no-ext-diff")
@@ -56,7 +68,39 @@ func WorkingTreeDiff(ctx context.Context, workdir string) (Diff, error) {
 			return Diff{}, err
 		}
 	}
+	// git diff skips untracked files, so a file an agent just created would
+	// never reach review. Diff each against /dev/null instead. The cap keeps a
+	// huge untracked tree (unignored build output) from spawning hundreds of git
+	// processes on every review refresh.
+	untracked, _ := run(ctx, workdir, "ls-files", "--others", "--exclude-standard", "-z")
+	n := 0
+	for _, path := range strings.Split(untracked, "\x00") {
+		if path == "" || n == maxUntrackedFiles {
+			continue
+		}
+		n++
+		if added, err := diffNewFile(ctx, workdir, path); err == nil {
+			out += added
+		}
+	}
 	return ParseDiff(out), nil
+}
+
+const maxUntrackedFiles = 200
+
+// diffNewFile renders an untracked file as an all-added diff. git diff --no-index
+// exits 1 when the files differ, which is the expected case here, not a failure.
+func diffNewFile(ctx context.Context, workdir, path string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", workdir, "diff", "--no-index", "--no-color", "--no-ext-diff", "--", os.DevNull, path)
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return string(out), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // StatusCode is a file's porcelain status: added, modified, deleted,

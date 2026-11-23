@@ -16,6 +16,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
+	"github.com/agenttunnel/agenttunnel-go/internal/checkpoint"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/deps"
@@ -82,6 +83,9 @@ type DispatcherDeps struct {
 	Relay RelayControl
 	// Attachments stores image uploads. Nil refuses image-bearing turns.
 	Attachments *attachments.Store
+	// Checkpoints snapshots worktrees around each turn. Nil runs turns with no
+	// checkpoints, and rewind is conversation-only.
+	Checkpoints *checkpoint.Store
 	// BaseCtx is the daemon's lifetime context. Detached turns run against it,
 	// so a client socket closing cannot cancel them; only the daemon going
 	// away or thread.turn.stop can. Nil falls back to context.Background.
@@ -178,6 +182,7 @@ type Dispatcher struct {
 	remote         RemoteControl
 	master         *orchestrator.Master
 	attach         *attachments.Store
+	checkpoints    *checkpoint.Store
 	prBoard        *scm.Board
 	dirtyBoard     *scm.DirtyBoard
 	baseCtx        context.Context
@@ -248,6 +253,7 @@ func NewDispatcher(d DispatcherDeps) *Dispatcher {
 		relay:          d.Relay,
 		remote:         d.Remote,
 		attach:         d.Attachments,
+		checkpoints:    d.Checkpoints,
 		clock:          d.Clock,
 		statusTick:     d.StatusTick,
 		prBoard:        scm.NewBoard(scm.Fetch, prBoardTTL),
@@ -479,6 +485,13 @@ type (
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Count    int                `json:"count"`
 	}
+	// setAutoApprovedModelsParams replaces a thread's auto-mode allowlist, keyed
+	// by harness. An empty object clears it, so the thread inherits the
+	// environment's lists.
+	setAutoApprovedModelsParams struct {
+		ThreadID contracts.ThreadID   `json:"threadId"`
+		Models   *map[string][]string `json:"models"`
+	}
 	setLeadRuntimeParams struct {
 		ThreadID contracts.ThreadID `json:"threadId"`
 		Index    int                `json:"index"`
@@ -544,9 +557,16 @@ func (d *Dispatcher) runTurn(ctx context.Context, threadID contracts.ThreadID, t
 	if err != nil {
 		return nil, err
 	}
+	// The baseline is taken before the anchor is dispatched, so the turn's
+	// changes start from this snapshot.
+	ck := d.beginCheckpoint(ctx, threadID, &cmd)
 	if err := d.engine.Dispatch(ctx, cmd); err != nil {
+		ck.abandon(ctx)
 		return nil, err
 	}
+	// Deferred after done, so the result snapshot lands before the turn slot is
+	// released: the next turn's baseline cannot race it.
+	defer ck.finish(ctx)
 	// Status reports run beside the orchestrator, not inside its pass loop, so a
 	// long pass still shows progress. The stop func joins the goroutine before
 	// the turn slot is released.
@@ -644,10 +664,13 @@ func (d *Dispatcher) startDetachedTurn(ctx context.Context, threadID contracts.T
 			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
 			return
 		}
+		ck := d.beginCheckpoint(base, threadID, &cmd)
 		if err := d.engine.Dispatch(base, cmd); err != nil {
+			ck.abandon(base)
 			d.auditLog("turn.detached.failed", map[string]any{"threadId": string(threadID), "error": err.Error()})
 			return
 		}
+		defer ck.finish(base)
 		if err := d.orch.RunTurn(turnCtx, threadID, text, inputs...); err != nil {
 			if turnCtx.Err() != nil {
 				d.auditLog("turn.detached.stopped", map[string]any{"threadId": string(threadID)})
@@ -1251,6 +1274,30 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return d.engine.State(ctx, p.ThreadID)
 
+	case "thread.checkpoints":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.checkpointList(ctx, p.ThreadID)
+
+	case "thread.checkpoint.diff":
+		var p struct {
+			ThreadID     contracts.ThreadID `json:"threadId"`
+			CheckpointID string             `json:"checkpointId"`
+		}
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.checkpointDiff(ctx, p.ThreadID, p.CheckpointID)
+
+	case "thread.rewind":
+		var p rewindParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		return d.rewindThread(ctx, p)
+
 	case "thread.events":
 		var p threadParams
 		if err := decode(req.Params, &p); err != nil {
@@ -1723,6 +1770,22 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if err := d.engine.Dispatch(ctx, contracts.Command{
 			ID: d.nextID(), Type: contracts.CmdAutoModeSet, ThreadID: p.ThreadID, AutoMode: &p.Enabled,
+		}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "thread.setAutoApprovedModels":
+		var p setAutoApprovedModelsParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.Models == nil {
+			return nil, errors.New("models is required")
+		}
+		if err := d.engine.Dispatch(ctx, contracts.Command{
+			ID: d.nextID(), Type: contracts.CmdAutoModelsSet, ThreadID: p.ThreadID,
+			AutoModels: p.Models,
 		}); err != nil {
 			return nil, err
 		}
@@ -2208,6 +2271,13 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 			return nil, err
 		}
 		// Validate the whole patch before mutating anything.
+		if p.ApprovedByHarness != nil {
+			for h := range *p.ApprovedByHarness {
+				if !contracts.Harness(h).Valid() {
+					return nil, fmt.Errorf("unknown harness %q", h)
+				}
+			}
+		}
 		if p.RoleEnabled != nil && !p.RoleEnabled.Enabled {
 			if role, ok := d.roles.Get(contracts.RoleID(p.RoleEnabled.ID)); ok && role.Required {
 				return nil, fmt.Errorf("required role %q cannot be disabled", role.ID)
@@ -2227,6 +2297,11 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		if p.ApprovedModels != nil {
 			d.settings.SetApprovedModels(*p.ApprovedModels)
+		}
+		if p.ApprovedByHarness != nil {
+			for h, models := range *p.ApprovedByHarness {
+				d.settings.SetHarnessApprovedModels(contracts.Harness(h), models)
+			}
 		}
 		if p.StaleAfterMinutes != nil {
 			d.settings.SetStaleAfterMinutes(*p.StaleAfterMinutes)
@@ -2748,6 +2823,9 @@ func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, re
 		if _, err := d.worktreeRemove(ctx, st.ProjectID, st.Worktree.Path, false); err != nil {
 			return err
 		}
+		// Checkpoint refs live in the repository, not the worktree, so they
+		// outlive the directory. Only removing the worktree drops them.
+		d.dropCheckpointRefs(ctx, st, id)
 	}
 	if err := d.engine.Dispatch(ctx, contracts.Command{
 		ID: d.nextID(), Type: contracts.CmdThreadDelete, ThreadID: id,
@@ -2886,21 +2964,30 @@ type LeadRuntimeView struct {
 
 // SettingsView is the settings screen's payload.
 type SettingsView struct {
-	Workdir           string           `json:"workdir"`
-	AutoMode          bool             `json:"autoMode"`
-	ApprovedModels    []string         `json:"approvedModels"`
-	Roles             []RoleConfigView `json:"roles"`
-	Lead              LeadRuntimeView  `json:"lead"`
-	ConfigPath        string           `json:"configPath"`
-	StaleAfterMinutes int              `json:"staleAfterMinutes"`
-	ExperimentalRoles bool             `json:"experimentalRoles"`
+	Workdir  string `json:"workdir"`
+	AutoMode bool   `json:"autoMode"`
+	// ApprovedModels is the union across harnesses, kept for clients that
+	// predate ApprovedByHarness.
+	ApprovedModels []string `json:"approvedModels"`
+	// ApprovedByHarness lists each harness's own allowlist; every valid
+	// harness is present, with [] when it has none.
+	ApprovedByHarness map[string][]string `json:"approvedByHarness"`
+	Roles             []RoleConfigView    `json:"roles"`
+	Lead              LeadRuntimeView     `json:"lead"`
+	ConfigPath        string              `json:"configPath"`
+	StaleAfterMinutes int                 `json:"staleAfterMinutes"`
+	ExperimentalRoles bool                `json:"experimentalRoles"`
 }
 
 type settingsPatch struct {
-	Workdir           *string   `json:"workdir"`
-	AutoMode          *bool     `json:"autoMode"`
-	ApprovedModels    *[]string `json:"approvedModels"`
-	StaleAfterMinutes *int      `json:"staleAfterMinutes"`
+	Workdir  *string `json:"workdir"`
+	AutoMode *bool   `json:"autoMode"`
+	// ApprovedModels is the legacy flat form: it replaces every harness's
+	// allowlist. ApprovedByHarness replaces only the harnesses it names, and
+	// is applied after ApprovedModels when both are sent.
+	ApprovedModels    *[]string            `json:"approvedModels"`
+	ApprovedByHarness *map[string][]string `json:"approvedByHarness"`
+	StaleAfterMinutes *int                 `json:"staleAfterMinutes"`
 	Role              *struct {
 		ID      string `json:"id"`
 		Harness string `json:"harness"`
@@ -2933,6 +3020,15 @@ func (d *Dispatcher) settingsView() SettingsView {
 			view.ApprovedModels = append(view.ApprovedModels, m)
 		}
 		sort.Strings(view.ApprovedModels)
+		view.ApprovedByHarness = map[string][]string{}
+		for _, h := range contracts.AllHarnesses() {
+			list := []string{}
+			for m := range d.settings.ApprovedModelsFor(h) {
+				list = append(list, m)
+			}
+			sort.Strings(list)
+			view.ApprovedByHarness[string(h)] = list
+		}
 		if cfg, ok := d.settings.RoleConfig(contracts.RoleOrchestrator); ok {
 			view.Lead.Model = cfg.Model
 			view.Lead.Variant = cfg.Variant

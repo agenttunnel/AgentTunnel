@@ -677,7 +677,8 @@ type conn struct {
 
 	writeMu sync.Mutex
 	subMu   sync.Mutex
-	unsubs  []func()
+	// subs holds one engine subscription per thread this connection follows.
+	subs map[contracts.ThreadID]func()
 }
 
 func (c *conn) send(resp Response) {
@@ -742,20 +743,31 @@ func (c *conn) handleFrame(ctx context.Context, data []byte) {
 
 func (c *conn) unsubscribeAll() {
 	c.subMu.Lock()
-	unsubs := c.unsubs
-	c.unsubs = nil
+	subs := c.subs
+	c.subs = nil
 	c.subMu.Unlock()
-	for _, u := range unsubs {
+	for _, u := range subs {
 		u()
 	}
 }
 
+// subscribe follows a thread's events on this connection. Subscribing again to
+// a thread already followed only replies: a second forwarder would send every
+// frame twice.
 func (c *conn) subscribe(ctx context.Context, req Request) {
 	var p threadParams
 	_ = json.Unmarshal(req.Params, &p)
-	events, unsub := c.engine.Subscribe(p.ThreadID)
 	c.subMu.Lock()
-	c.unsubs = append(c.unsubs, unsub)
+	if _, ok := c.subs[p.ThreadID]; ok {
+		c.subMu.Unlock()
+		c.send(Response{ID: req.ID, Result: map[string]any{"subscribed": p.ThreadID}})
+		return
+	}
+	events, unsub := c.engine.Subscribe(p.ThreadID)
+	if c.subs == nil {
+		c.subs = make(map[contracts.ThreadID]func())
+	}
+	c.subs[p.ThreadID] = unsub
 	c.subMu.Unlock()
 	c.send(Response{ID: req.ID, Result: map[string]any{"subscribed": p.ThreadID}})
 	go func() {

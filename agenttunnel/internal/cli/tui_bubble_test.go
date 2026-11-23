@@ -47,7 +47,8 @@ func TestTUIBubbleKeyMapping(t *testing.T) {
 		{"alt+backspace kills a word", press(tea.KeyBackspace, tea.ModAlt, ""), []tuiKey{{Kind: keyKillWord}}},
 		{"ctrl+u kills the line", press('u', tea.ModCtrl, ""), []tuiKey{{Kind: keyKillLine}}},
 		{"shift+tab", press(tea.KeyTab, tea.ModShift, ""), []tuiKey{{Kind: keyShiftTab}}},
-		{"unmapped", press('b', tea.ModCtrl, ""), nil},
+		{"ctrl+b toggles the sidebar", press('b', tea.ModCtrl, ""), []tuiKey{{Kind: keyCtrlB}}},
+		{"unmapped", press('y', tea.ModCtrl, ""), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

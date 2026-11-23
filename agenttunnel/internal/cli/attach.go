@@ -146,7 +146,7 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 	}
 	for _, ev := range early {
 		if handle(ev) {
-			return turnFinished(env)
+			return turnFinished(env, tracker)
 		}
 	}
 
@@ -185,7 +185,7 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 				tracker.update(fresh)
 			}
 			if tracker.ended() {
-				return turnFinished(env)
+				return turnFinished(env, tracker)
 			}
 
 		case ev, ok := <-c.Events():
@@ -196,7 +196,7 @@ func attachSession(ctx context.Context, env *Env, c *Client, row threadListRow, 
 				return nil
 			}
 			if handle(ev) {
-				return turnFinished(env)
+				return turnFinished(env, tracker)
 			}
 		}
 	}
@@ -212,10 +212,11 @@ func detachOnCancel(ctx context.Context, env *Env, err error) error {
 	return err
 }
 
-// turnFinished is the normal end of an attach: the turn it watched is over.
-func turnFinished(env *Env) error {
+// turnFinished is the end of an attach: the turn it watched is over. The exit
+// code carries the outcome, so a failed or cancelled agent fails the attach.
+func turnFinished(env *Env, tracker *turnTracker) error {
 	fmt.Fprintln(env.Out, "-- turn finished --")
-	return nil
+	return turnOutcome(tracker)
 }
 
 // handleAttachLine executes one typed line. done means the user asked to leave.
@@ -317,14 +318,14 @@ func handleAttachEvent(env *Env, ev Event, threadID string, tracker *turnTracker
 			return nil, ""
 		}
 		tracker.activity = true
-		writeLogEntry(env.Out, contracts.LogEntry{AgentID: out.AgentID, Kind: out.Kind, Text: out.Text, At: time.Now()})
+		writeLogEntry(env.Out, contracts.LogEntry{AgentID: out.AgentID, Kind: out.Kind, Text: out.Text, At: frame.At})
 	case contracts.EvtAgentStatusChanged:
 		var status contracts.AgentStatusChanged
 		if json.Unmarshal(frame.Payload, &status) != nil {
 			return nil, ""
 		}
 		tracker.observe(string(status.AgentID), status.Status)
-		writeStatusLine(env.Out, status)
+		writeStatusLine(env.Out, status, frame.At)
 	case contracts.EvtTaskDispatched:
 		var dispatch contracts.TaskDispatched
 		if json.Unmarshal(frame.Payload, &dispatch) != nil {

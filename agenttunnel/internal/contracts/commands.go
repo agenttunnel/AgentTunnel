@@ -20,6 +20,7 @@ const (
 	CmdTurnStart            CommandType = "thread.turn.start"
 	CmdModelSet             CommandType = "thread.model.set"
 	CmdAutoModeSet          CommandType = "thread.automode.set"
+	CmdAutoModelsSet        CommandType = "thread.auto-approved-models.set"
 	CmdArchiveSet           CommandType = "thread.archive.set"
 	CmdThreadSeen           CommandType = "thread.seen"
 	CmdStatusPeriodSet      CommandType = "thread.status-period.set"
@@ -37,6 +38,7 @@ const (
 	CmdTaskDispatch         CommandType = "agent.task.dispatch"
 	CmdAgentStatusSet       CommandType = "agent.status.set"
 	CmdUsageRecord          CommandType = "agent.usage.record"
+	CmdAgentModelObserve    CommandType = "agent.model.observe"
 	CmdSharedContextSet     CommandType = "context.shared.set"
 	CmdMailboxPost          CommandType = "mailbox.post"
 	CmdMessageAppend        CommandType = "thread.message.append"
@@ -50,6 +52,8 @@ const (
 	CmdQuestionClose        CommandType = "thread.question.close"
 	CmdPRTrack              CommandType = "thread.pr.track"
 	CmdSteeringInjected     CommandType = "thread.steering.injected"
+	CmdCheckpointCapture    CommandType = "thread.checkpoint.capture"
+	CmdThreadRewind         CommandType = "thread.rewind"
 )
 
 // IsBuiltinRole reports whether id names a role every daemon registers. The
@@ -108,6 +112,7 @@ type Command struct {
 	ProjectID       string                     `json:"projectId,omitempty"`
 	ModelSelection  *ModelSelection            `json:"modelSelection,omitempty"`
 	AutoMode        *bool                      `json:"autoMode,omitempty"`
+	AutoModels      *map[string][]string       `json:"autoApprovedModels,omitempty"`
 	StatusPeriod    *int                       `json:"statusPeriod,omitempty"`
 	Archived        *bool                      `json:"archived,omitempty"`
 	PeerMailbox     *bool                      `json:"peerMailbox,omitempty"`
@@ -125,6 +130,7 @@ type Command struct {
 	TaskStatus      *TaskStatusChanged         `json:"taskStatus,omitempty"`
 	Dispatch        *DispatchTask              `json:"dispatch,omitempty"`
 	Usage           *UsageRecorded             `json:"usage,omitempty"`
+	ModelObserved   *AgentModelObserved        `json:"modelObserved,omitempty"`
 	Status          *AgentStatusChanged        `json:"status,omitempty"`
 	SharedContext   *SharedContextSet          `json:"sharedContext,omitempty"`
 	Mailbox         *MailboxPosted             `json:"mailbox,omitempty"`
@@ -141,4 +147,8 @@ type Command struct {
 	QuestionClose   *QuestionClosed            `json:"questionClose,omitempty"`
 	PullRequest     *PullRequestRef            `json:"pullRequest,omitempty"`
 	Images          []ImageRef                 `json:"images,omitempty"`
+	// Checkpoint carries a turn's baseline on CmdTurnStart, or a result phase
+	// on CmdCheckpointCapture. Rewind is the CmdThreadRewind payload.
+	Checkpoint *CheckpointCapture `json:"checkpoint,omitempty"`
+	Rewind     *RewindRequest     `json:"rewind,omitempty"`
 }

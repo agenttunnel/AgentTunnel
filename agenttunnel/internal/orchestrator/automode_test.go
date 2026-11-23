@@ -262,6 +262,48 @@ func TestAutoModeRequestedModelWinsOverRoleDefault(t *testing.T) {
 	assertSpawn(t, &seen, "agent-h1", contracts.HarnessClaude, "claude-picked", "")
 }
 
+// TestThreadAutoApprovedModelsBoundAutoMode: a thread's own allowlist replaces
+// the environment's for that thread, and clearing it falls back to the
+// environment's list again.
+func TestThreadAutoApprovedModelsBoundAutoMode(t *testing.T) {
+	var seen sync.Map
+	r, ctx := autoHarnessRunner(t, &seen)
+	r.settings.SetRoleConfig(contracts.RoleExecutor, settings.RoleConfig{Model: "role-model"})
+	r.settings.SetApprovedModels([]string{"env-approved"})
+
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it", Model: "env-approved",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "env-approved", "")
+
+	// A model outside the environment list is not allowed yet.
+	seen.Clear()
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it", Model: "thread-only",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "role-model", "")
+
+	models := map[string][]string{string(contracts.HarnessOpenCode): {"thread-only"}}
+	if err := r.engine.Dispatch(ctx, contracts.Command{
+		ID: "am", Type: contracts.CmdAutoModelsSet, ThreadID: "t1", AutoModels: &models,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The thread's list wins: its model runs, the environment's no longer does.
+	seen.Clear()
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it", Model: "thread-only",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "thread-only", "")
+
+	seen.Clear()
+	runOneTask(t, r, ctx, contracts.DispatchTask{
+		Name: "h", Role: contracts.RoleExecutor, Task: "do it", Model: "env-approved",
+	})
+	assertSpawn(t, &seen, "agent-h1", contracts.HarnessOpenCode, "role-model", "")
+}
+
 // TestRoleDefaultAppliesWithoutAutoMode: with auto mode off a requested model
 // is ignored and the role's configured model runs.
 func TestRoleDefaultAppliesWithoutAutoMode(t *testing.T) {

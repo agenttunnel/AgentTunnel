@@ -116,6 +116,9 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
     case "thread.automode-set":
       n.autoMode = !!p.Enabled;
       return n;
+    case "thread.auto-approved-models-set":
+      n.autoApprovedModels = p.Models && typeof p.Models === "object" ? (p.Models as Record<string, string[]>) : {};
+      return n;
     case "thread.archive-set":
       n.archived = !!p.Archived;
       return n;
@@ -201,6 +204,13 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
         }
       }
       n.agents = { ...s.agents, [id]: a };
+      return n;
+    }
+    case "agent.model-observed": {
+      const id = str(p.agentId);
+      const prev = s.agents?.[id];
+      if (!prev) return null;
+      n.agents = { ...s.agents, [id]: { ...prev, model: str(p.model) } };
       return n;
     }
     case "agent.usage-recorded": {

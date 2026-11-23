@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
@@ -101,7 +102,7 @@ func (o *Orchestrator) runSoloTurn(ctx context.Context, threadID contracts.Threa
 		if err != nil {
 			return err
 		}
-		prompt := BuildSoloPrompt(renderHistory(priorMessages(state, userMessage)), userMessage, steering)
+		prompt := BuildSoloPrompt(renderHistory(priorMessages(state, userMessage)), userMessage, steering, subthreadsOffered(state))
 		// The turn's attachments, plus any steering images, reach the agent
 		// every pass: each pass is a fresh one-shot process. A harness that
 		// cannot take images natively gets them as a path note instead.
@@ -148,8 +149,10 @@ const soloHeader = "You are the only agent on this thread. Work the request your
 // BuildSoloPrompt assembles the solo agent's pass prompt: the thread's earlier
 // conversation, the request, and any steering the user sent while a pass was
 // running. There is no orchestrator protocol to document — no roster, no
-// dispatch, peer, or tool machinery — the agent works the request itself.
-func BuildSoloPrompt(history, userMessage string, steering []string) string {
+// dispatch, or peer machinery — the agent works the request itself. Subthreads
+// are the one exception: the solo agent may hand off unrelated work, when the
+// thread still has a slot for it.
+func BuildSoloPrompt(history, userMessage string, steering []string, subthreads bool) string {
 	var b strings.Builder
 	b.WriteString(soloHeader)
 	b.WriteString("\n")
@@ -163,6 +166,13 @@ func BuildSoloPrompt(history, userMessage string, steering []string) string {
 	if len(steering) > 0 {
 		b.WriteString("\n\n")
 		b.WriteString(soloSteeringSection(steering))
+	}
+	if subthreads {
+		b.WriteString("\n\n## Subthreads\n")
+		b.WriteString("Start a subthread only for work that is genuinely unrelated to this request and better kept in its own context. ")
+		b.WriteString("It runs as a separate thread with its own orchestrator, and its summary is posted to this thread's transcript when it finishes. ")
+		b.WriteString("Work on this request belongs to you, not a subthread. A thread starts at most " + strconv.Itoa(contracts.MaxSubthreads) + " subthreads, and a subthread cannot start its own:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool subthread --task \"<self-contained brief for the unrelated work>\"\n")
 	}
 	return b.String()
 }

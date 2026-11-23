@@ -10,6 +10,7 @@ import (
 
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/attachments"
+	"github.com/agenttunnel/agenttunnel-go/internal/checkpoint"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
@@ -147,6 +148,8 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 
 	// Image attachments live under the state dir, one directory per thread.
 	attachStore := attachments.New(filepath.Join(opts.StateDir, "attachments"))
+	// Turn snapshots keep their temporary indexes here, never in a worktree.
+	checkpointStore := checkpoint.New(filepath.Join(opts.StateDir, "checkpoints"))
 	prefsStore := prefs.Open(filepath.Join(opts.StateDir, "prefs.json"))
 
 	runner := orchestrator.NewRunner(orchestrator.Deps{
@@ -252,6 +255,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Limits:         providers.NewLimitsProvider(providers.NewClaudeLimits(), providers.NewCommandCodeLimits()),
 		Relay:          relay,
 		Attachments:    attachStore,
+		Checkpoints:    checkpointStore,
 		BaseCtx:        ctx,
 		Shutdown:       opts.OnShutdown,
 		Remote:         bridge,

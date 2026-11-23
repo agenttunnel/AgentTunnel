@@ -23,6 +23,7 @@ const (
 	EvtSteeringConsumed        EventType = "thread.steering-consumed"
 	EvtModelSet                EventType = "thread.model-set"
 	EvtAutoModeSet             EventType = "thread.automode-set"
+	EvtAutoApprovedModelsSet   EventType = "thread.auto-approved-models-set"
 	EvtArchiveSet              EventType = "thread.archive-set"
 	EvtThreadSeen              EventType = "thread.seen"
 	EvtStatusPeriodSet         EventType = "thread.status-period-set"
@@ -41,6 +42,7 @@ const (
 	EvtTaskDispatched          EventType = "agent.task-dispatched"
 	EvtAgentStatusChanged      EventType = "agent.status-changed"
 	EvtUsageRecorded           EventType = "agent.usage-recorded"
+	EvtAgentModelObserved      EventType = "agent.model-observed"
 	EvtSharedContextSet        EventType = "context.shared-set"
 	EvtMailboxPosted           EventType = "mailbox.posted"
 	EvtReviewCommentAdded      EventType = "review.comment-added"
@@ -52,6 +54,8 @@ const (
 	EvtQuestionAsked           EventType = "thread.question-asked"
 	EvtQuestionClosed          EventType = "thread.question-closed"
 	EvtPRTracked               EventType = "thread.pr-tracked"
+	EvtCheckpointCaptured      EventType = "thread.checkpoint-captured"
+	EvtThreadRewound           EventType = "thread.rewound"
 )
 
 // EventPayload is implemented by every concrete event payload. The unexported
@@ -138,6 +142,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[ModelSet](data)
 	case EvtAutoModeSet:
 		return decodePayload[AutoModeSet](data)
+	case EvtAutoApprovedModelsSet:
+		return decodePayload[AutoApprovedModelsSet](data)
 	case EvtArchiveSet:
 		return decodePayload[ArchiveSet](data)
 	case EvtThreadSeen:
@@ -174,6 +180,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[AgentStatusChanged](data)
 	case EvtUsageRecorded:
 		return decodePayload[UsageRecorded](data)
+	case EvtAgentModelObserved:
+		return decodePayload[AgentModelObserved](data)
 	case EvtSharedContextSet:
 		return decodePayload[SharedContextSet](data)
 	case EvtMailboxPosted:
@@ -194,6 +202,10 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[QuestionClosed](data)
 	case EvtPRTracked:
 		return decodePayload[PRTracked](data)
+	case EvtCheckpointCaptured:
+		return decodePayload[CheckpointCaptured](data)
+	case EvtThreadRewound:
+		return decodePayload[ThreadRewound](data)
 	default:
 		return nil, fmt.Errorf("unknown event type %q", t)
 	}
@@ -349,6 +361,13 @@ func (ModelSet) eventType() EventType { return EvtModelSet }
 type AutoModeSet struct{ Enabled bool }
 
 func (AutoModeSet) eventType() EventType { return EvtAutoModeSet }
+
+// AutoApprovedModelsSet replaces a thread's own auto-mode allowlist, keyed by
+// harness like the environment's. An empty map clears it, so the thread falls
+// back to the environment's approved list.
+type AutoApprovedModelsSet struct{ Models map[string][]string }
+
+func (AutoApprovedModelsSet) eventType() EventType { return EvtAutoApprovedModelsSet }
 
 // ArchiveSet files a thread under Archived or brings it back. An archived
 // thread is hidden from the board's working columns but keeps its history.
@@ -542,6 +561,15 @@ type UsageRecorded struct {
 
 func (UsageRecorded) eventType() EventType { return EvtUsageRecorded }
 
+// AgentModelObserved records the model a harness reported it ran, so stats show
+// the model that answered rather than the requested or default one.
+type AgentModelObserved struct {
+	AgentID AgentID `json:"agentId"`
+	Model   string  `json:"model"`
+}
+
+func (AgentModelObserved) eventType() EventType { return EvtAgentModelObserved }
+
 type SharedContextSet struct {
 	Key      string  `json:"key"`
 	Value    string  `json:"value"`
@@ -718,3 +746,35 @@ type PullRequestRef struct {
 type PRTracked struct{ PullRequest PullRequestRef }
 
 func (PRTracked) eventType() EventType { return EvtPRTracked }
+
+// CheckpointCaptured records one phase of a turn's snapshot. Phase "baseline"
+// creates the checkpoint; phase "result" finalizes it. A failed result capture
+// still records the checkpoint with Error, so the UI can say why a turn has no
+// diff instead of showing a permanent spinner.
+type CheckpointCaptured struct {
+	CheckpointID    string `json:"checkpointId"`
+	Turn            int    `json:"turn"`
+	AnchorMessageID string `json:"anchorMessageId"`
+	Phase           string `json:"phase"`
+	Ref             string `json:"ref,omitempty"`
+	Tree            string `json:"tree,omitempty"`
+	Files           int    `json:"files,omitempty"`
+	Additions       int    `json:"additions,omitempty"`
+	Deletions       int    `json:"deletions,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+func (CheckpointCaptured) eventType() EventType { return EvtCheckpointCaptured }
+
+// ThreadRewound removes the anchor message ToMessageID (turn Turn) and every
+// later message, turn and checkpoint. Turn is the rewound-to turn: the thread
+// continues as if that turn had never been asked.
+type ThreadRewound struct {
+	ToMessageID       string   `json:"toMessageId"`
+	Turn              int      `json:"turn"`
+	RestoreFiles      bool     `json:"restoreFiles"`
+	SafetyRef         string   `json:"safetyRef,omitempty"`
+	DroppedMessageIDs []string `json:"droppedMessageIds"`
+}
+
+func (ThreadRewound) eventType() EventType { return EvtThreadRewound }

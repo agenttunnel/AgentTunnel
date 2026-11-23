@@ -17,7 +17,21 @@ import (
 const (
 	tuiSideWidth   = 36
 	tuiSideMinCols = 110
+	// tuiSideMinRows is the shortest body that can hold the sidebar at all.
+	tuiSideMinRows = 8
 	tuiSideTTL     = 20 * time.Second
+)
+
+// tuiSideChoice is how the user left the sidebar's visibility. The width
+// decides while the choice is auto. ctrl+b sets an explicit choice that
+// survives resizes: a sidebar the user showed stays shown when the window
+// narrows, and one the user hid stays hidden when it widens.
+type tuiSideChoice uint8
+
+const (
+	tuiSideAuto tuiSideChoice = iota
+	tuiSideShown
+	tuiSideHidden
 )
 
 type tuiSide struct {
@@ -26,6 +40,10 @@ type tuiSide struct {
 	limits []contracts.HarnessLimits
 	cfg    tuiSettingsWire
 	loaded bool
+	choice tuiSideChoice
+	// paintCols and paintRows are the thread body's last painted size. ctrl+b
+	// flips what is visible at that size, and the key carries no size of its own.
+	paintCols, paintRows int
 }
 
 // tuiLoadSide queues a refresh of the sidebar's data; the ttl keeps it cheap
@@ -174,11 +192,52 @@ func (m *tuiModel) withSidebar(body []tuiRow, mainCols, rows int) []tuiRow {
 	rule := tuiText("│", tuiInk{fg: tuiColBorder})
 	pad := tuiText(" ", tuiInk{})
 	for i := range body {
-		body[i] = body[i].padTo(mainCols, tuiInk{}).join(rule, pad, side[i].fit(tuiSideWidth-2))
+		body[i] = body[i].padTo(mainCols, tuiInk{}).join(rule, pad, side[i].fit(tuiSideWidth-2).padTo(tuiSideWidth-2, tuiInk{}))
 	}
 	return body
 }
 
+// sideShown reports whether the thread body shows the sidebar. Too few rows
+// never shows it. Otherwise an explicit choice wins, and auto follows the width.
 func (m *tuiModel) sideShown(cols, rows int) bool {
-	return cols >= tuiSideMinCols && rows >= 8
+	if !m.sideFits(rows) {
+		return false
+	}
+	switch m.side.choice {
+	case tuiSideShown:
+		return true
+	case tuiSideHidden:
+		return false
+	}
+	return cols >= tuiSideMinCols
+}
+
+// sideFits reports whether a body this many rows tall has room for the sidebar.
+func (m *tuiModel) sideFits(rows int) bool {
+	return rows >= tuiSideMinRows
+}
+
+// toggleSide sets the choice to the opposite of what is visible now, judged at
+// the last painted size, so ctrl+b always changes what the user sees.
+func (m *tuiModel) toggleSide() {
+	if m.sideShown(m.side.paintCols, m.side.paintRows) {
+		m.side.choice = tuiSideHidden
+		return
+	}
+	m.side.choice = tuiSideShown
+}
+
+// sidePane is the sidebar at widths too narrow to sit beside the chat: it takes
+// the body above the composer, which stays usable underneath it.
+func (m *tuiModel) sidePane(cols, rows int) []tuiRow {
+	// No transcript is painted here, so scrolling must not measure one: the
+	// width is what a transcript would have, and the page height is zero.
+	m.logW, m.logH = max(cols-2, 1), 0
+	input := m.inputBox(cols, rows)
+	top := fitRows(m.sideRows(max(cols-2, 1)), max(rows-len(input), 0))
+	margin := tuiText("  ", tuiInk{})
+	for i := range top {
+		top[i] = margin.join(top[i]).fit(cols).padTo(cols, tuiInk{})
+	}
+	return append(top, input...)
 }
