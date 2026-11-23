@@ -101,6 +101,9 @@ func Project(s *ThreadState, e contracts.Event) error {
 	case contracts.AutoModeSet:
 		s.AutoMode = p.Enabled
 
+	case contracts.AutoApprovedModelsSet:
+		s.AutoApprovedModels = append([]string(nil), p.Models...)
+
 	case contracts.ArchiveSet:
 		s.Archived = p.Archived
 

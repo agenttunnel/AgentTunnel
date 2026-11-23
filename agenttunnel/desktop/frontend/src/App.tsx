@@ -214,6 +214,8 @@ export type ThreadState = {
   id: string;
   title: string;
   autoMode: boolean;
+  /** The thread's own auto-mode allowlist; empty inherits the environment's. */
+  autoApprovedModels?: string[] | null;
   peerMailbox: boolean;
   /** Seconds between workflow status reports while a turn runs; 0 is off. */
   statusPeriodSeconds?: number;
@@ -2596,6 +2598,19 @@ export default function App() {
     refresh(activeId).catch(() => undefined);
   };
 
+  /** Replaces the active thread's auto-mode allowlist; empty inherits the
+   * environment's approved models. */
+  const setAutoApprovedModels = async (models: string[]) => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) return;
+    try {
+      await rpc.call("thread.setAutoApprovedModels", { threadId: activeId, models });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    refresh(activeId).catch(() => undefined);
+  };
+
   /** Sets how often a running turn reports workflow status; 0 turns it off. */
   const setStatusPeriod = async (seconds: number) => {
     const rpc = rpcRef.current;
@@ -4229,6 +4244,8 @@ export default function App() {
                     addingLead={addingLead}
                     setLeadRuntime={setLeadRuntime}
                     setSolo={setSolo}
+                    setAutoApprovedModels={setAutoApprovedModels}
+                    harnessInfo={harnesses}
                     updateRole={updateRole}
                     persistRole={persistRole}
                     refreshModels={refreshModels}
@@ -4544,6 +4561,8 @@ export default function App() {
                 addingLead={addingLead}
                 setLeadRuntime={setLeadRuntime}
                 setSolo={setSolo}
+                setAutoApprovedModels={setAutoApprovedModels}
+                harnessInfo={harnesses}
                 updateRole={updateRole}
                 persistRole={persistRole}
                 refreshModels={refreshModels}

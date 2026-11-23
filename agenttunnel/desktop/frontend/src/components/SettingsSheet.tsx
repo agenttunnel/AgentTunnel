@@ -29,6 +29,7 @@ export const settingsForm = createStore({
   staleAfter: "30",
   saved: false,
   modelsNotice: null as string | null,
+  envError: null as string | null,
   // Read again on every open; the last answer shows meanwhile.
   appVersion: null as string | null,
   deps: null as DependencyView[] | null,
@@ -53,6 +54,7 @@ export function flashSaved() {
 const setWorkdirInput = settingsForm.setter("workdir");
 const setApprovedModels = settingsForm.setter("approvedModels");
 const setStaleAfterInput = settingsForm.setter("staleAfter");
+const setEnvError = settingsForm.setter("envError");
 const setAppVersion = settingsForm.setter("appVersion");
 const setDeps = settingsForm.setter("deps");
 const setDepsError = settingsForm.setter("depsError");
@@ -98,6 +100,7 @@ export const SettingsSheet = memo(function SettingsSheet({
   const staleAfterInput = useStoreField(settingsForm, "staleAfter");
   const saved = useStoreField(settingsForm, "saved");
   const modelsNotice = useStoreField(settingsForm, "modelsNotice");
+  const envError = useStoreField(settingsForm, "envError");
   // Appearance is shared by every client of this daemon through the prefs store.
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
   const appVersion = useStoreField(settingsForm, "appVersion");
@@ -141,14 +144,40 @@ export const SettingsSheet = memo(function SettingsSheet({
 
   const saveEnv = async () => {
     if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      workdir: workdirInput,
-      autoMode: settings?.autoMode ?? false,
-      approvedModels,
-      staleAfterMinutes: staleAfterInput,
-    });
-    setSettings(s);
-    flashSaved();
+    // The daemon decodes staleAfterMinutes as an integer, so send a number, not
+    // the input's string — a string rejects the whole patch and saves nothing.
+    const minutes = Number(staleAfterInput);
+    if (!Number.isFinite(minutes) || minutes < 1) {
+      setEnvError("Stale-after must be a whole number of minutes (1 or more).");
+      return;
+    }
+    try {
+      // Auto mode is its own immediate toggle; leaving it out of this patch
+      // keeps a slow save from reverting a toggle made while it was in flight.
+      const s = await rpc.call<SettingsView>("settings.set", {
+        workdir: workdirInput,
+        approvedModels,
+        staleAfterMinutes: Math.round(minutes),
+      });
+      setSettings(s);
+      setEnvError(null);
+      flashSaved();
+    } catch (e) {
+      setEnvError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  /** Persists the auto-mode toggle at once, so a later settings save or a
+   * concurrent refresh cannot revert it before "Save environment" is pressed. */
+  const toggleAutoMode = async () => {
+    if (!rpc) return;
+    try {
+      const s = await rpc.call<SettingsView>("settings.set", { autoMode: !settings.autoMode });
+      setSettings(s);
+      setEnvError(null);
+    } catch (e) {
+      setEnvError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const toggleHarness = async (id: string, enabled: boolean) => {
@@ -256,9 +285,7 @@ export const SettingsSheet = memo(function SettingsSheet({
             </label>
             <div
               className={`toggle ${settings.autoMode ? "on" : ""}`}
-              {...switchProps(settings.autoMode, () =>
-                setSettings({ ...settings, autoMode: !settings.autoMode }),
-              )}
+              {...switchProps(settings.autoMode, () => toggleAutoMode())}
               style={{ marginTop: 10 }}
             >
               <span className="sw" /> Auto mode — orchestrator picks each task's model
@@ -287,6 +314,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                 Config file: <code>{settings.configPath}</code>
               </p>
             )}
+            {envError && <p className="hint warn">{envError}</p>}
             <div className="sheet-actions">
               <button className="primary" onClick={saveEnv}>
                 Save environment
