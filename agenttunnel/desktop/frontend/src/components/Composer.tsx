@@ -13,7 +13,7 @@ import {
 import { uploadImage, type Conn, type Rpc } from "../lib/rpc";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
 import { useRotatingPlaceholder } from "../lib/placeholder";
-import { dropMention, mentionAt, MAX_ATTACHMENTS, type FileMatch } from "../lib/mentions";
+import { dropMention, mentionAt, MAX_ATTACHMENTS, MENTION_RESULTS, type FileMatch } from "../lib/mentions";
 import { matchCommands, slashQuery, type SlashCommand } from "../lib/commands";
 import { useStoreField } from "../lib/store";
 import {
@@ -219,7 +219,7 @@ export const Composer = memo(function Composer({
         .call<{ matches: FileMatch[] }>("files.search", {
           threadId: activeId,
           query: mentionQuery,
-          limit: 12,
+          limit: MENTION_RESULTS,
         })
         .then((res) => {
           if (!stale) setMentionResults({ query: mentionQuery, matches: res.matches });
