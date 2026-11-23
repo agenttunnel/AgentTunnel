@@ -50,6 +50,8 @@ const (
 	CmdQuestionClose        CommandType = "thread.question.close"
 	CmdPRTrack              CommandType = "thread.pr.track"
 	CmdSteeringInjected     CommandType = "thread.steering.injected"
+	CmdCheckpointCapture    CommandType = "thread.checkpoint.capture"
+	CmdThreadRewind         CommandType = "thread.rewind"
 )
 
 // IsBuiltinRole reports whether id names a role every daemon registers. The
@@ -141,4 +143,8 @@ type Command struct {
 	QuestionClose   *QuestionClosed            `json:"questionClose,omitempty"`
 	PullRequest     *PullRequestRef            `json:"pullRequest,omitempty"`
 	Images          []ImageRef                 `json:"images,omitempty"`
+	// Checkpoint carries a turn's baseline on CmdTurnStart, or a result phase
+	// on CmdCheckpointCapture. Rewind is the CmdThreadRewind payload.
+	Checkpoint *CheckpointCapture `json:"checkpoint,omitempty"`
+	Rewind     *RewindRequest     `json:"rewind,omitempty"`
 }

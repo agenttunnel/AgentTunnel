@@ -184,6 +184,13 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 			author = string(s.ControlledBy)
 		}
 		payloads = append(payloads, contracts.MessageSent{MessageID: cmd.ID, Author: author, Text: cmd.Text, Images: images})
+		if cmd.Checkpoint != nil {
+			baseline, err := decideTurnBaseline(cmd, s)
+			if err != nil {
+				return nil, err
+			}
+			payloads = append(payloads, baseline)
+		}
 		if s.Draft {
 			payloads = append(payloads, contracts.DraftStarted{})
 		}
@@ -569,6 +576,12 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		msg := *cmd.Message
 		msg.Images = images
 		return []contracts.EventPayload{msg}, nil
+
+	case contracts.CmdCheckpointCapture:
+		return decideCheckpointCapture(cmd, s)
+
+	case contracts.CmdThreadRewind:
+		return decideRewind(cmd, s)
 
 	case contracts.CmdSteeringInjected:
 		if !s.Exists {

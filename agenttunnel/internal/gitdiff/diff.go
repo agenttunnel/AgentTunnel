@@ -46,6 +46,17 @@ type Diff struct {
 	Empty bool   `json:"empty"`
 }
 
+// RangeDiff diffs two trees or commits. It reads only the object database, so
+// neither the index nor the working tree is touched and uncommitted changes
+// are not included.
+func RangeDiff(ctx context.Context, workdir, base, head string) (Diff, error) {
+	out, err := run(ctx, workdir, "diff", "--no-color", "--no-ext-diff", base, head)
+	if err != nil {
+		return Diff{}, err
+	}
+	return ParseDiff(out), nil
+}
+
 // WorkingTreeDiff diffs the working tree (staged + unstaged) against HEAD.
 func WorkingTreeDiff(ctx context.Context, workdir string) (Diff, error) {
 	out, err := run(ctx, workdir, "diff", "HEAD", "--no-color", "--no-ext-diff")

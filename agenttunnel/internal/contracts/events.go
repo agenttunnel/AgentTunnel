@@ -52,6 +52,8 @@ const (
 	EvtQuestionAsked           EventType = "thread.question-asked"
 	EvtQuestionClosed          EventType = "thread.question-closed"
 	EvtPRTracked               EventType = "thread.pr-tracked"
+	EvtCheckpointCaptured      EventType = "thread.checkpoint-captured"
+	EvtThreadRewound           EventType = "thread.rewound"
 )
 
 // EventPayload is implemented by every concrete event payload. The unexported
@@ -194,6 +196,10 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[QuestionClosed](data)
 	case EvtPRTracked:
 		return decodePayload[PRTracked](data)
+	case EvtCheckpointCaptured:
+		return decodePayload[CheckpointCaptured](data)
+	case EvtThreadRewound:
+		return decodePayload[ThreadRewound](data)
 	default:
 		return nil, fmt.Errorf("unknown event type %q", t)
 	}
@@ -718,3 +724,35 @@ type PullRequestRef struct {
 type PRTracked struct{ PullRequest PullRequestRef }
 
 func (PRTracked) eventType() EventType { return EvtPRTracked }
+
+// CheckpointCaptured records one phase of a turn's snapshot. Phase "baseline"
+// creates the checkpoint; phase "result" finalizes it. A failed result capture
+// still records the checkpoint with Error, so the UI can say why a turn has no
+// diff instead of showing a permanent spinner.
+type CheckpointCaptured struct {
+	CheckpointID    string `json:"checkpointId"`
+	Turn            int    `json:"turn"`
+	AnchorMessageID string `json:"anchorMessageId"`
+	Phase           string `json:"phase"`
+	Ref             string `json:"ref,omitempty"`
+	Tree            string `json:"tree,omitempty"`
+	Files           int    `json:"files,omitempty"`
+	Additions       int    `json:"additions,omitempty"`
+	Deletions       int    `json:"deletions,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+func (CheckpointCaptured) eventType() EventType { return EvtCheckpointCaptured }
+
+// ThreadRewound removes the anchor message ToMessageID (turn Turn) and every
+// later message, turn and checkpoint. Turn is the rewound-to turn: the thread
+// continues as if that turn had never been asked.
+type ThreadRewound struct {
+	ToMessageID       string   `json:"toMessageId"`
+	Turn              int      `json:"turn"`
+	RestoreFiles      bool     `json:"restoreFiles"`
+	SafetyRef         string   `json:"safetyRef,omitempty"`
+	DroppedMessageIDs []string `json:"droppedMessageIds"`
+}
+
+func (ThreadRewound) eventType() EventType { return EvtThreadRewound }
