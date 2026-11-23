@@ -326,3 +326,34 @@ func TestTeamStatsRanksTeamsByResolveRate(t *testing.T) {
 		t.Fatalf("team A median %.2fs p90 %.2fs tokens %.1f, want 60s, 68s, 440", a.MedianSeconds, a.P90Seconds, a.MedianTokens)
 	}
 }
+
+// TestObservedModelReplacesDefaultInModelStats checks that an agent dispatched
+// with no model (the harness default) reports the model the harness ran, and
+// that an observation for an unknown agent is refused.
+func TestObservedModelReplacesDefaultInModelStats(t *testing.T) {
+	e, ctx := newTestEngine(t)
+	mustDispatch(t, e, ctx, contracts.Command{ID: "c-t1", Type: contracts.CmdThreadCreate, ThreadID: "t1"})
+	dispatchOn(t, e, "t1", "agent-orchestrator", "", contracts.HarnessClaude)
+	recordOn(t, e, "t1", "agent-orchestrator", contracts.TokenUsage{InputTokens: 100, OutputTokens: 10})
+
+	observe := func(agent, model string) error {
+		return e.Dispatch(ctx, contracts.Command{
+			ID: "m-" + agent + model, Type: contracts.CmdAgentModelObserve, ThreadID: "t1",
+			ModelObserved: &contracts.AgentModelObserved{AgentID: contracts.AgentID(agent), Model: model},
+		})
+	}
+	if err := observe("agent-orchestrator", "claude-sonnet-5-5"); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if err := observe("agent-ghost", "claude-sonnet-5-5"); err == nil {
+		t.Fatal("observing an unknown agent should be refused")
+	}
+
+	got, err := e.ModelStats(ctx, HarnessScope{})
+	if err != nil {
+		t.Fatalf("ModelStats: %v", err)
+	}
+	if len(got) != 1 || got[0].Model != "claude-sonnet-5-5" || got[0].Agents != 1 {
+		t.Fatalf("ModelStats = %+v, want one claude-sonnet-5-5 row", got)
+	}
+}

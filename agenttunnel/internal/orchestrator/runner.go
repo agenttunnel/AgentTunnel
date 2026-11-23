@@ -451,7 +451,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	emitted := false
 	for ev := range events {
 		emitted = true
-		r.recordEvent(threadID, t.AgentID, ev)
+		r.recordEvent(ctx, threadID, t.AgentID, ev)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, t.AgentID, t.Role, false, *ev.Usage)
 		}
@@ -643,7 +643,7 @@ func (r *Runner) runOrchestratorPass(ctx context.Context, threadID contracts.Thr
 			r.publishOutput(threadID, agentID, contracts.LogTool, ev.Text)
 			continue
 		}
-		r.recordEvent(threadID, agentID, ev)
+		r.recordEvent(ctx, threadID, agentID, ev)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
 		}
@@ -733,7 +733,7 @@ func (r *Runner) runSoloPass(ctx context.Context, threadID contracts.ThreadID, a
 	emitted := false
 	for ev := range events {
 		emitted = true
-		r.recordEvent(threadID, agentID, ev)
+		r.recordEvent(ctx, threadID, agentID, ev)
 		if ev.Usage != nil {
 			r.recordUsage(ctx, threadID, agentID, contracts.RoleOrchestrator, true, *ev.Usage)
 		}
@@ -1121,6 +1121,17 @@ func (r *Runner) recordUsage(ctx context.Context, threadID contracts.ThreadID, a
 	})
 }
 
+// recordModel stores the model a harness reported for an agent. The decider
+// drops repeats, so a model repeated on every frame costs no extra events.
+func (r *Runner) recordModel(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, model string) {
+	_ = r.engine.Dispatch(ctx, contracts.Command{
+		ID:            r.nextID(),
+		Type:          contracts.CmdAgentModelObserve,
+		ThreadID:      threadID,
+		ModelObserved: &contracts.AgentModelObserved{AgentID: agent, Model: model},
+	})
+}
+
 func (r *Runner) setStatus(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, status contracts.AgentStatus, reason string) {
 	// Status writes must survive the turn ending: a cancelled turn still owes
 	// the thread its terminal status, so detach from the caller's context.
@@ -1163,7 +1174,13 @@ func (r *Runner) publishAgentOutput(threadID contracts.ThreadID, out contracts.A
 
 // recordEvent logs one adapter event and streams it, keeping its structured
 // tool call on both.
-func (r *Runner) recordEvent(threadID contracts.ThreadID, agent contracts.AgentID, ev providers.Event) {
+func (r *Runner) recordEvent(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, ev providers.Event) {
+	if ev.Model != "" {
+		r.recordModel(ctx, threadID, agent, ev.Model)
+	}
+	if ev.Kind == "" {
+		return
+	}
 	_ = r.logs.Append(threadID, contracts.LogEntry{AgentID: agent, Kind: ev.Kind, Text: ev.Text, Tool: ev.Tool, At: r.clock()})
 	r.publishAgentOutput(threadID, contracts.AgentOutput{AgentID: agent, Kind: ev.Kind, Text: ev.Text, Tool: ev.Tool})
 }

@@ -113,7 +113,13 @@ func (JSONLineTranslator) Translate(line string) []Event {
 	// adds every usage event and would double count.
 	if frameType == "assistant" || frameType == "user" {
 		if msg, ok := raw["message"].(map[string]any); ok {
-			return contentEvents(msg["content"])
+			out := contentEvents(msg["content"])
+			// The assistant frame names the model that answered, which can
+			// differ from the one requested when the harness runs its default.
+			if model := firstString(msg, "model"); frameType == "assistant" && model != "" {
+				out = append(out, Event{Model: model})
+			}
+			return out
 		}
 	}
 	if frameType == "result" {

@@ -22,8 +22,12 @@ const (
 
 func TestTranslateClaudeAssistantText(t *testing.T) {
 	evs := JSONLineTranslator{}.Translate(claudeAssistantText)
-	if len(evs) != 1 || evs[0].Kind != contracts.LogText || evs[0].Text != "ok" {
+	if len(evs) != 2 || evs[0].Kind != contracts.LogText || evs[0].Text != "ok" {
 		t.Fatalf("got %+v", evs)
+	}
+	// The frame names the model that answered; it rides as a model-only event.
+	if evs[1].Model != "claude-sonnet-5-5" || evs[1].Kind != "" {
+		t.Fatalf("model event = %+v", evs[1])
 	}
 	// Per-message usage must not be emitted: the result frame aggregates it.
 	if evs[0].Usage != nil {

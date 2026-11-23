@@ -32,3 +32,21 @@ printf '{"usage":{"input_tokens":1,"output_tokens":1}}\n'`
 		t.Fatalf("subagent harness = %q, want the executor role's %q", got, execRole.DefaultHarness)
 	}
 }
+
+// TestLeadRecordsTheModelTheHarnessReports checks that a lead dispatched with
+// no model (the harness default) records the model its harness reports, so
+// model stats name the model that ran rather than "default".
+func TestLeadRecordsTheModelTheHarnessReports(t *testing.T) {
+	script := `printf '%s\n' '{"type":"assistant","message":{"model":"claude-test-model","role":"assistant","content":[{"type":"text","text":"hi"}]}}'
+printf '{"usage":{"input_tokens":1,"output_tokens":1}}\n'`
+
+	r, eng, ctx := newHarness(t, script)
+	if err := New(r).RunTurn(ctx, "t1", "hello"); err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+
+	state, _ := eng.State(ctx, "t1")
+	if got := state.Agents["agent-orchestrator"].Model; got != "claude-test-model" {
+		t.Fatalf("lead model = %q, want the model the harness reported", got)
+	}
+}
