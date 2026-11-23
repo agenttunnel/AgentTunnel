@@ -89,7 +89,8 @@ import { SidebarFooter } from "./components/SidebarFooter";
 import { NextStep } from "./components/NextStep";
 import { EmptyChat } from "./components/EmptyChat";
 import { FirstRunTour } from "./components/FirstRunTour";
-import { Breadcrumb, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
+import { Breadcrumb, HistoryButtons, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
+import { useHistory } from "./lib/history";
 import { ALT, centerTabFromKey, centerTabHint, isPaletteKey, isTyping } from "./lib/navKeys";
 import { threadStatus } from "./lib/threadStatus";
 import { recentIds, recordRecent } from "./lib/recent";
@@ -1444,6 +1445,22 @@ export default function App() {
   // latest closure.
   scheduleBoardReloadRef.current = scheduleBoardReload;
 
+  /** Undo and redo for reversible changes. A step refreshes what it touched. */
+  const history = useHistory({
+    onError: (message) => setError(message),
+    onApplied: () => {
+      reloadThreads().catch(() => undefined);
+      if (activeIdRef.current) refresh(activeIdRef.current).catch(() => undefined);
+    },
+  });
+  /** RPC for a history step. Reads the live connection, so a step after a
+   * reconnect talks to the new one. */
+  const callDaemon = (method: string, params: unknown): Promise<void> => {
+    const rpc = rpcRef.current;
+    if (!rpc) return Promise.reject(new Error("Not connected to the daemon"));
+    return rpc.call(method, params).then(() => undefined);
+  };
+
   const beginRename = (t: ThreadSummary) => {
     setRenameTarget(t);
   };
@@ -1458,6 +1475,9 @@ export default function App() {
       return;
     }
     const renamed = renameTarget;
+    const from = renamed.title;
+    const renameTo = (name: string) => () => callDaemon("thread.rename", { threadId: renamed.id, title: name });
+    history.record({ label: "rename", undo: renameTo(from), redo: renameTo(title) });
     setRenameTarget(null);
     await reloadThreads();
     if (activeId === renamed.id) refresh(activeId).catch(() => undefined);
@@ -1469,16 +1489,34 @@ export default function App() {
   const cancelRename = useCallback(() => setRenameTarget(null), []);
 
   /** Archives or restores several threads in one go. A failure stops the batch
-   * and reports the first error; threads already changed stay changed. */
+   * and reports the first error; threads already changed stay changed and
+   * stay in the history, so undo reverts exactly what changed. */
   const setThreadsArchived = async (ids: string[], archived: boolean) => {
     const rpc = rpcRef.current;
     if (!rpc || ids.length === 0) return;
+    const wasArchived = new Map(ids.map((id) => [id, !!threads.find((t) => t.id === id)?.archived]));
+    const changed: string[] = [];
     try {
       for (const threadId of ids) {
         await rpc.call("thread.setArchived", { threadId, enabled: archived });
+        changed.push(threadId);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+    if (changed.length > 0) {
+      const n = changed.length === 1 ? "thread" : `${changed.length} threads`;
+      history.record({
+        label: `${archived ? "archive" : "restore"} ${n}`,
+        undo: async () => {
+          for (const threadId of changed) {
+            await callDaemon("thread.setArchived", { threadId, enabled: wasArchived.get(threadId) ?? false });
+          }
+        },
+        redo: async () => {
+          for (const threadId of changed) await callDaemon("thread.setArchived", { threadId, enabled: archived });
+        },
+      });
     }
     await reloadThreads();
   };
@@ -2591,8 +2629,16 @@ export default function App() {
   const toggle = async (field: "autoMode" | "peerMailbox", value: boolean) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
+    const threadId = activeId;
     const method = field === "autoMode" ? "thread.setAutoMode" : "thread.setPeerMailbox";
-    await rpc.call(method, { threadId: activeId, enabled: value });
+    await rpc.call(method, { threadId, enabled: value });
+    // Callers flip the current value, so the previous one is its negation.
+    const name = field === "autoMode" ? "auto mode" : "peer messages";
+    history.record({
+      label: `${name} ${value ? "on" : "off"}`,
+      undo: () => callDaemon(method, { threadId, enabled: !value }),
+      redo: () => callDaemon(method, { threadId, enabled: value }),
+    });
     refresh(activeId).catch(() => undefined);
   };
 
@@ -3010,6 +3056,19 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [projectId, activeId]);
+  // Cmd/Ctrl+Z steps back through reversible changes, Cmd/Ctrl+Shift+Z forward.
+  // Text fields keep their own undo, so the keystroke is ignored while typing.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.isComposing) return;
+      if (e.key.toLowerCase() !== "z" || isTyping(e.target)) return;
+      e.preventDefault();
+      if (e.shiftKey) history.redo();
+      else history.undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [history.undo, history.redo]);
   // Dictated text lands after whatever is already typed.
   // Functional update: one onresult can carry several final phrases, and each
   // must build on the previous one rather than the render-time draft.
@@ -3159,6 +3218,14 @@ export default function App() {
           Agent<b>Tunnel</b>
         </span>
       </div>
+      <HistoryButtons
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
+        undoLabel={history.undoLabel}
+        redoLabel={history.redoLabel}
+        onUndo={history.undo}
+        onRedo={history.redo}
+      />
       <Breadcrumb crumbs={crumbs} status={crumbStatus} />
       <AppUpdate rpc={rpcRef.current} />
       <HarnessUpdates rpc={rpcRef.current} />

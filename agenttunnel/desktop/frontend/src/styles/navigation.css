@@ -10,6 +10,34 @@
 .titlebar .brand {
   flex: none;
 }
+/* Undo and redo sit by the brand, as an editor's history arrows do. */
+.history-nav {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.history-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+}
+.history-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+  border: 0;
+}
+.history-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 .crumbs {
   flex: 1;
   min-width: 0;
