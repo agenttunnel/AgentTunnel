@@ -31,11 +31,13 @@ func (CommandCodeTranslator) Translate(line string) []Event {
 }
 
 // commandCodeToolEvent shows a tool as it starts, with its arguments, and
-// closes the same call when the CLI reports its outcome. Other event types are
-// not user-visible and are ignored, as the CLI documents.
+// closes the same call when the CLI reports its outcome. The arguments arrive
+// on "tool_queued" (its `input`); "tool_running" carries only the name and a
+// nullable description, so it would show an empty card. Other event types are
+// not user-visible and are ignored.
 func commandCodeToolEvent(ev map[string]any) []Event {
 	switch firstString(ev, "type") {
-	case "tool_running":
+	case "tool_queued":
 		return commandCodeToolStart(ev)
 	case "tool_completed":
 		return toolResult(firstString(ev, "toolCallId"), false, commandCodeOutput(ev["result"]), nil)

@@ -11,7 +11,7 @@ import (
 
 // Frames shaped after `command-code -p ... --output-format json`.
 const (
-	commandCodeToolRunning = `{"type":"event","event":{"type":"tool_running","toolCallId":"c1","toolName":"read_file","description":"main.go"}}`
+	commandCodeToolRunning = `{"type":"event","event":{"type":"tool_queued","toolCallId":"c1","toolName":"read_file","input":{"file_path":"main.go"}}}`
 	commandCodeResultOK    = `{"type":"result","subtype":"success","stopReason":"end_turn","finalText":"done","usage":{"input_tokens":12,"output_tokens":3},"durationMs":10,"sessionId":"s1"}`
 	commandCodeResultError = `{"type":"result","subtype":"error","error":"Not authenticated","usage":{"input_tokens":0,"output_tokens":0},"durationMs":4}`
 )
@@ -46,8 +46,25 @@ func TestCommandCodeTranslatesToolRunningEvent(t *testing.T) {
 	if len(evs) != 1 || evs[0].Kind != contracts.LogTool {
 		t.Fatalf("got %+v", evs)
 	}
-	if evs[0].Text != "→ Read_file main.go" || evs[0].ToolName != "read_file" {
+	if evs[0].Text != "→ Read_file\n  file_path: main.go" || evs[0].ToolName != "read_file" {
 		t.Fatalf("tool event = %+v", evs[0])
+	}
+}
+
+// tool_running has no arguments and a null description in the CLI's output, so
+// it must not open a second, empty card for a call tool_queued already showed.
+func TestCommandCodeToolRunningAddsNoCard(t *testing.T) {
+	evs := CommandCodeTranslator{}.Translate(`{"type":"event","event":{"type":"tool_running","toolCallId":"c1","toolName":"read_file","description":null}}`)
+	if len(evs) != 0 {
+		t.Fatalf("got %+v, want none", evs)
+	}
+}
+
+// The call's path comes from its queued arguments, so the card can show it.
+func TestCommandCodeToolQueuedCarriesArguments(t *testing.T) {
+	evs := CommandCodeTranslator{}.Translate(commandCodeToolRunning)
+	if len(evs) != 1 || evs[0].Tool == nil || evs[0].Tool.Path != "main.go" {
+		t.Fatalf("got %+v, want path main.go on the call", evs)
 	}
 }
 
