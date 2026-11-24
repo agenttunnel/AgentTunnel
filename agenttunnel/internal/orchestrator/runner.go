@@ -339,7 +339,7 @@ func (r *Runner) RunCollect(ctx context.Context, threadID contracts.ThreadID, ta
 	if len(tasks) == 0 {
 		return results, nil
 	}
-	status := make(map[string]contracts.AgentStatus, len(tasks))
+	status := r.threadStatuses(ctx, threadID, tasks)
 	for _, t := range tasks {
 		status[t.Name] = contracts.AgentPending
 	}
@@ -360,6 +360,11 @@ func (r *Runner) RunCollect(ctx context.Context, threadID contracts.ThreadID, ta
 		pending := 0
 		for _, t := range tasks {
 			if status[t.Name] != contracts.AgentPending {
+				continue
+			}
+			if d, ok := unknownDependency(t.DependsOn, status); ok {
+				status[t.Name] = contracts.AgentCancelled
+				r.setStatus(ctx, threadID, t.AgentID, contracts.AgentCancelled, "unknown dependency "+d)
 				continue
 			}
 			pending++
@@ -605,15 +610,20 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 	// A summary of only whitespace is no result at all; the trailing split of
 	// a stream ending in a newline must not become one either.
 	summary := strings.TrimSpace(strings.Join(findings, "\n"))
-	if summary != "" {
-		if curate {
+	if curate {
+		if summary != "" {
 			r.notebookFor(threadID).Set(ContextKey, summary, string(t.AgentID))
 			r.setSharedContext(ctx, threadID, ContextKey, summary, t.AgentID)
-		} else {
-			key := "result_" + t.Name
-			r.notebookFor(threadID).Append(key, summary, string(t.AgentID))
-			r.setSharedContext(ctx, threadID, key, summary, t.AgentID)
 		}
+	} else if summary != "" || werr != nil {
+		// A crashed agent's partial output must not read as a clean result.
+		stored := clipResult(summary)
+		if werr != nil {
+			stored = "[failed: " + werr.Error() + "] " + stored
+		}
+		key := "result_" + t.Name
+		r.notebookFor(threadID).Append(key, stored, string(t.AgentID))
+		r.setSharedContext(ctx, threadID, key, stored, t.AgentID)
 	}
 	return summary, werr
 }
@@ -915,9 +925,29 @@ func (r *Runner) Roster(state *domain.ThreadState) string {
 		if a.IsOrchestrator() {
 			continue
 		}
-		fmt.Fprintf(&b, "- %s (%s): %s [%s]\n", a.Name, a.Role, a.Task, a.Status)
+		fmt.Fprintf(&b, "- %s (%s): %s [%s]", a.Name, a.Role, clip(a.Task, rosterTaskBytes), a.Status)
+		if (a.Status == contracts.AgentFailed || a.Status == contracts.AgentCancelled) && strings.TrimSpace(a.Reason) != "" {
+			b.WriteString(" — " + clip(a.Reason, rosterReasonBytes))
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+const (
+	rosterTaskBytes   = 300
+	rosterReasonBytes = 200
+	// resultNotebookBytes caps one stored result_<name> entry; the full output
+	// stays in the agent's log.
+	resultNotebookBytes = 4096
+)
+
+// clipResult keeps the head of a long result and says how to read the rest.
+func clipResult(s string) string {
+	if len(s) <= resultNotebookBytes {
+		return s
+	}
+	return clipHead(s, resultNotebookBytes) + fmt.Sprintf("[clipped, %d bytes total; read the full log with tool agent-logs]", len(s))
 }
 
 // workdir is the fallback directory handed to agents.
@@ -1513,13 +1543,47 @@ func (r *Runner) maxPasses() int {
 	return 3
 }
 
-func depsSucceeded(deps []string, status map[string]contracts.AgentStatus) bool {
-	for _, d := range deps {
-		st, ok := status[d]
-		if !ok {
+// threadStatuses seeds the scheduler with the thread's agents from earlier
+// passes (latest per name wins), skipping the batch itself. An earlier agent
+// still pending or running never changes during this batch, so a dependent on
+// it is cancelled like any other unsatisfied dependency.
+func (r *Runner) threadStatuses(ctx context.Context, threadID contracts.ThreadID, tasks []contracts.DispatchTask) map[string]contracts.AgentStatus {
+	status := make(map[string]contracts.AgentStatus, len(tasks))
+	if r.engine == nil {
+		return status
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return status
+	}
+	batch := make(map[contracts.AgentID]bool, len(tasks))
+	for _, t := range tasks {
+		batch[t.AgentID] = true
+	}
+	for _, id := range st.AgentOrder {
+		a := st.Agents[id]
+		if batch[id] || a.IsOrchestrator() {
 			continue
 		}
-		if st != contracts.AgentSucceeded {
+		status[a.Name] = a.Status
+	}
+	return status
+}
+
+// unknownDependency names the first dependency that is in neither the batch
+// nor the thread, so a typo cannot read as satisfied.
+func unknownDependency(deps []string, status map[string]contracts.AgentStatus) (string, bool) {
+	for _, d := range deps {
+		if _, ok := status[d]; !ok {
+			return d, true
+		}
+	}
+	return "", false
+}
+
+func depsSucceeded(deps []string, status map[string]contracts.AgentStatus) bool {
+	for _, d := range deps {
+		if status[d] != contracts.AgentSucceeded {
 			return false
 		}
 	}
