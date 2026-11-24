@@ -353,6 +353,34 @@ func TestThreadResultsReturnsDepData(t *testing.T) {
 	}
 }
 
+func TestThreadResultsMarksClippedMessages(t *testing.T) {
+	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
+	createThread(t, eng, ctx, "t2")
+	schedDispatch(t, eng, ctx, contracts.Command{
+		ID: "m1", Type: contracts.CmdMessageAppend, ThreadID: "t2",
+		Message: &contracts.MessageSent{MessageID: "m1", Author: "user", Text: strings.Repeat("x", 1000)},
+	})
+	schedDispatch(t, eng, ctx, contracts.Command{
+		ID: "m2", Type: contracts.CmdMessageAppend, ThreadID: "t2",
+		Message: &contracts.MessageSent{MessageID: "m2", Author: "orchestrator", Text: "short"},
+	})
+	settleTrigger(t, eng, ctx, "t2")
+
+	text, err := r.ThreadResults(ctx, "t1", "agent-orchestrator", toolbox.Call{Kind: KindThreadResults, Thread: "t2"})
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if !strings.Contains(text, "…[clipped, 1000 chars total]") {
+		t.Fatalf("clipped message not marked:\n%s", text)
+	}
+	if !strings.Contains(text, "- orchestrator: short\n") && !strings.HasSuffix(text, "- orchestrator: short") {
+		t.Fatalf("short message must stay unmarked:\n%s", text)
+	}
+	if strings.Count(text, "[clipped") != 1 {
+		t.Fatalf("only the long message is clipped:\n%s", text)
+	}
+}
+
 func TestThreadResultsRefusesNonDepIds(t *testing.T) {
 	r, eng, ctx := newHarness(t, `printf '{"type":"text","text":"ok"}\n'`)
 	createThread(t, eng, ctx, "t2")
