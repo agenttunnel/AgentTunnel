@@ -12,7 +12,7 @@ import (
 func TestPromptsDocumentTheAskTool(t *testing.T) {
 	const line = `"$AT_TOOL" tool ask --kind choice|multi|text`
 	for _, mailbox := range []bool{false, true} {
-		sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "task", "", "", "", mailbox, nil, nil)
+		sub := BuildSubagentPrompt(contracts.Role{SystemPrompt: "role"}, "task", "", "", "", "", mailbox, nil, nil)
 		if !strings.Contains(sub, line) {
 			t.Fatalf("subagent prompt (peer mailbox %v) lacks the ask line:\n%s", mailbox, sub)
 		}
@@ -126,11 +126,11 @@ func TestOrchestratorPromptRoleChoices(t *testing.T) {
 // when there are some.
 func TestSubagentPromptCarriesSteering(t *testing.T) {
 	role := contracts.Role{SystemPrompt: "role"}
-	prompt := BuildSubagentPrompt(role, "task", "", "", "", false, nil, []string{"use the smaller fixture"})
+	prompt := BuildSubagentPrompt(role, "task", "", "", "", "", false, nil, []string{"use the smaller fixture"})
 	if !strings.Contains(prompt, "## Steering from the team lead") || !strings.Contains(prompt, "- use the smaller fixture") {
 		t.Fatalf("steering missing from the subagent prompt:\n%s", prompt)
 	}
-	if plain := BuildSubagentPrompt(role, "task", "", "", "", false, nil, nil); strings.Contains(plain, "Steering from the team lead") {
+	if plain := BuildSubagentPrompt(role, "task", "", "", "", "", false, nil, nil); strings.Contains(plain, "Steering from the team lead") {
 		t.Fatalf("no steers should render no section:\n%s", plain)
 	}
 }
@@ -147,5 +147,43 @@ func TestOrchestratorPromptWildcardOffer(t *testing.T) {
 	off := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go"})
 	if strings.Contains(off, "wildcard") {
 		t.Fatalf("lead without experimental roles should not see wildcard:\n%s", off)
+	}
+}
+
+// A subagent sees the user's request next to the lead's task, clipped when long
+// and absent when there is none.
+func TestSubagentPromptCarriesUserRequest(t *testing.T) {
+	role := contracts.Role{SystemPrompt: "role"}
+	got := BuildSubagentPrompt(role, "fix the parser", "make the export faster", "", "", "", false, nil, nil)
+	if !strings.Contains(got, "## User request\nmake the export faster") {
+		t.Fatalf("prompt lacks the user request section:\n%s", got)
+	}
+	if strings.Index(got, "## Task") > strings.Index(got, "## User request") {
+		t.Fatalf("user request should follow the task:\n%s", got)
+	}
+
+	long := strings.Repeat("x", userRequestClip+500)
+	got = BuildSubagentPrompt(role, "task", long, "", "", "", false, nil, nil)
+	if strings.Contains(got, long) || !strings.Contains(got, strings.Repeat("x", userRequestClip)+"…[clipped, 2500 bytes total]") {
+		t.Fatalf("long request not clipped with a marker:\n%s", got)
+	}
+
+	for _, empty := range []string{"", "  \n"} {
+		if got := BuildSubagentPrompt(role, "task", empty, "", "", "", false, nil, nil); strings.Contains(got, "User request") {
+			t.Fatalf("empty request %q should render no section:\n%s", empty, got)
+		}
+	}
+}
+
+// The lead is asked to give each task an acceptance check and to test code
+// changes; the closing pass dispatches nothing, so it does not carry the ask.
+func TestOrchestratorPromptAsksForAcceptanceChecks(t *testing.T) {
+	const line = "Put a concrete acceptance check in each --task"
+	role := contracts.Role{SystemPrompt: "lead"}
+	if got := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go"}); !strings.Contains(got, line) || !strings.Contains(got, "dispatch a tester against code changes") {
+		t.Fatalf("dispatch section lacks the acceptance line:\n%s", got)
+	}
+	if got := BuildOrchestratorPrompt(OrchestratorPrompt{Role: role, UserMessage: "go", Final: true}); strings.Contains(got, line) {
+		t.Fatalf("final pass should not carry the acceptance line:\n%s", got)
 	}
 }

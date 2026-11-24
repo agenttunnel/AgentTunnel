@@ -215,3 +215,39 @@ func TestWildcardRunUsesBriefAsPrompt(t *testing.T) {
 		t.Fatalf("env lacks AT_ROLE=wildcard: %v", seen.Env)
 	}
 }
+
+// A dispatched agent's prompt carries the thread's latest user message, so the
+// task is judged against what was asked and not only the lead's paraphrase.
+func TestDispatchedAgentPromptCarriesUserRequest(t *testing.T) {
+	var seen providers.SessionSpec
+	r, eng, ctx := newHarnessInvoking(t, func(spec providers.SessionSpec) (providers.CommandSpec, error) {
+		seen = spec
+		return providers.CommandSpec{Binary: "sh", Args: []string{"-c", `printf '{"type":"text","text":"ok"}\n'`}, PromptVia: "stdin"}, nil
+	})
+	userMessages := []struct{ id, text string }{{"m1", "first ask"}, {"m2", "ship the export fix"}}
+	for _, m := range userMessages {
+		if err := eng.Dispatch(ctx, contracts.Command{
+			ID: m.id, Type: contracts.CmdMessageAppend, ThreadID: "t1",
+			Message: &contracts.MessageSent{MessageID: m.id, Author: "user", Text: m.text},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := eng.Dispatch(ctx, contracts.Command{
+		ID: "m3", Type: contracts.CmdMessageAppend, ThreadID: "t1",
+		Message: &contracts.MessageSent{MessageID: "m3", Author: "orchestrator", Text: "working on it"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := []contracts.DispatchTask{{AgentID: "agent-u", Name: "u", Role: contracts.RoleExecutor, Task: "do it"}}
+	if err := r.Dispatch(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(ctx, "t1", tasks); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(seen.Prompt, "## User request\nship the export fix") || strings.Contains(seen.Prompt, "first ask") || strings.Contains(seen.Prompt, "working on it") {
+		t.Fatalf("prompt should carry only the latest user message:\n%s", seen.Prompt)
+	}
+}
