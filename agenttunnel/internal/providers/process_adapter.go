@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -34,6 +35,9 @@ type ProcessAdapter struct {
 	// kill is closed by Stop, asking the reaper to sweep the group.
 	kill     chan struct{}
 	killOnce sync.Once
+
+	// maxLine caps one stdout/stderr line; a field so a test can use a small cap.
+	maxLine int
 }
 
 // The reaper re-signals a stopped child's process group until its pipes close.
@@ -44,6 +48,8 @@ const (
 	reapInterval    = 10 * time.Millisecond
 	reapIntervalMax = 250 * time.Millisecond
 	reapBudget      = 10 * time.Second
+
+	maxLineBytes = 8 * 1024 * 1024
 )
 
 // NewProcessAdapter builds an adapter for a driver.
@@ -55,6 +61,7 @@ func NewProcessAdapter(driver Driver) *ProcessAdapter {
 		waitDone: make(chan struct{}),
 		killTree: killProcessGroup,
 		kill:     make(chan struct{}),
+		maxLine:  maxLineBytes,
 	}
 }
 
@@ -136,8 +143,29 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); p.pump(stdout, tr, contracts.LogText) }()
-	go func() { defer wg.Done(); p.pump(stderr, tr, contracts.LogRaw) }()
+	// A line over the cap stops its pump; the run then fails with that error
+	// instead of reading as a truncated success.
+	var pumpErr error
+	var pumpErrOnce sync.Once
+	pumpFailed := func(err error) {
+		pumpErrOnce.Do(func() {
+			pumpErr = err
+			p.emit(Event{Kind: contracts.LogError, Text: err.Error()})
+			p.killTree(cmd)
+		})
+	}
+	go func() {
+		defer wg.Done()
+		if err := p.pump(stdout, tr, contracts.LogText); err != nil {
+			pumpFailed(err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := p.pump(stderr, tr, contracts.LogRaw); err != nil {
+			pumpFailed(err)
+		}
+	}()
 	drained := make(chan struct{})
 	go func() { wg.Wait(); close(drained) }()
 	go p.reap(ctx, cmd, drained)
@@ -145,7 +173,9 @@ func (p *ProcessAdapter) Start(ctx context.Context, spec SessionSpec) error {
 	go func() {
 		<-drained // drain pipes fully before reaping
 		err := cmd.Wait()
-		if err != nil {
+		if pumpErr != nil {
+			err = pumpErr
+		} else if err != nil {
 			p.emit(Event{Kind: contracts.LogError, Text: err.Error()})
 		}
 		p.finish(err)
@@ -250,9 +280,9 @@ func (p *ProcessAdapter) Wait(ctx context.Context) error {
 	}
 }
 
-func (p *ProcessAdapter) pump(r io.Reader, tr Translator, kind contracts.LogKind) {
+func (p *ProcessAdapter) pump(r io.Reader, tr Translator, kind contracts.LogKind) error {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), p.maxLine)
 	for sc.Scan() {
 		line := sc.Text()
 		if tr == nil {
@@ -263,6 +293,10 @@ func (p *ProcessAdapter) pump(r io.Reader, tr Translator, kind contracts.LogKind
 			p.emit(ev)
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("harness output unreadable: %w", err)
+	}
+	return nil
 }
 
 func (p *ProcessAdapter) emit(ev Event) {
