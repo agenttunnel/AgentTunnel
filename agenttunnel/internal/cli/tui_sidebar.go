@@ -79,6 +79,14 @@ func (m *tuiModel) sideRows(width int) []tuiRow {
 		out = append(out, tuiHeading(s))
 	}
 
+	heading("Mode")
+	if rt := m.thread.SoloRuntime; rt != nil {
+		out = append(out, tuiText("◇ solo", tuiHarnessInk(string(rt.Harness))),
+			tuiFaint("  "+tuiRuntime(string(rt.Harness), rt.Model, rt.Variant)))
+	} else {
+		out = append(out, tuiText("orchestrator team", tuiInk{fg: tuiColText}))
+	}
+
 	heading("Usage")
 	if !m.side.loaded {
 		out = append(out, tuiFaint("loading…"))
@@ -104,6 +112,10 @@ func (m *tuiModel) sideRows(width int) []tuiRow {
 	out = append(out, m.agentTreeRows(width)...)
 
 	heading("Roles")
+	if m.thread.solo() {
+		// The solo agent runs the whole turn itself; the roles wait.
+		return append(out, tuiFaint("parked while solo"))
+	}
 	if !m.side.loaded {
 		out = append(out, tuiFaint("loading…"))
 		return out

@@ -61,6 +61,10 @@ func tuiPaneKey(m *tuiModel, k tuiKey, rows int) {
 	switch k.Kind {
 	case keyEsc:
 		m.pane = nil
+	case keyLeft:
+		m.cycleView(-1)
+	case keyRight:
+		m.cycleView(1)
 	case keyUp:
 		p.follow, p.top = false, p.top-1
 	case keyDown:

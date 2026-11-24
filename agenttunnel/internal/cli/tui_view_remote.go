@@ -292,7 +292,7 @@ func init() {
 			return tuiRemoteOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"w", "WhatsApp"}, {"o", "control"}, {"u", "check updates"}, {"A", "install update"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"w", "WhatsApp"}, {"o", "control"}, {"u", "check updates"}, {"A", "install update"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }

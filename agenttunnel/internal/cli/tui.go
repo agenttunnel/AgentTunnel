@@ -369,8 +369,10 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			switch {
 			case k.Kind == keyTab:
 				m.cycleView(1)
-			case k.Kind == keyShiftTab:
+			case k.Kind == keyShiftTab || k.Kind == keyLeft:
 				m.cycleView(-1)
+			case k.Kind == keyRight:
+				m.cycleView(1)
 			case k.Kind == keyEsc:
 				m.switchView(tuiThreadsViewID)
 			case k.Kind == keyRune && k.Rune == 'q':
@@ -390,9 +392,9 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 			return false, nil
 		}
 		switch {
-		case k.Kind == keyTab:
+		case k.Kind == keyTab || k.Kind == keyRight:
 			m.cycleView(1)
-		case k.Kind == keyShiftTab:
+		case k.Kind == keyShiftTab || k.Kind == keyLeft:
 			m.cycleView(-1)
 		case k.Kind == keyUp || k.Kind == keyWheelUp || (k.Kind == keyRune && k.Rune == 'k'):
 			m.moveCursor(-1)
@@ -421,8 +423,12 @@ func tuiSession(ctx context.Context, c *Client, m *tuiModel, ref string, keys <-
 				return false, nil
 			}
 			tracker = opened
+		case k.Kind == keyCtrlB:
+			m.toggleSide()
 		case k.Kind == keyRune && k.Rune == 'n':
 			tuiNewThread(m, "")
+		case k.Kind == keyRune && k.Rune == 's':
+			tuiNewSoloThread(m, "")
 		case k.Kind == keyRune && k.Rune == 'r':
 			_ = tuiRefreshList(ctx, c, m)
 		case k.Kind == keyRune && k.Rune == 'q':
@@ -773,8 +779,18 @@ func tuiThreadKey(m *tuiModel, tracker **turnTracker, k tuiKey, rows int, submit
 		m.input.killToStart()
 		m.slashSel = 0
 	case keyLeft:
+		// With nothing typed there is no cursor to move: the arrows walk the
+		// tabs, the way they do everywhere else a text field is not in use.
+		if m.input.empty() {
+			m.cycleView(-1)
+			return
+		}
 		m.input.left()
 	case keyRight:
+		if m.input.empty() {
+			m.cycleView(1)
+			return
+		}
 		m.input.right()
 	case keyWordLeft:
 		m.input.wordLeft()

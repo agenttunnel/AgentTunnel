@@ -15,11 +15,20 @@ description: The full-screen terminal interface, on the same daemon as the deskt
 | `↑` `↓` | prompt history, or the options of a question an agent asked |
 | `ctrl+g` | edit the prompt in `$VISUAL` or `$EDITOR` |
 | `@` | search the thread's files, then `tab` to attach a path to the turn |
-| `tab` `shift+tab` | move between views (Files, Review, PR, and so on) |
+| `←` `→` | move between tabs (Files, Review, PR, and so on) while the prompt is empty; with a draft they move the cursor |
+| `tab` `shift+tab` | the same, from anywhere (`tab` completes a `/command` or `@` path first) |
 | `pgup` `pgdn` | scroll the transcript |
 | `ctrl+k` | command palette |
 | `ctrl+b` | show or hide the sidebar |
 | `esc` | back to the thread list |
 
-On the thread list, `/` filters, `n` starts a new thread, and `r` refreshes. `q` quits.
+On the thread list, `/` filters, `n` starts a new thread, `s` starts a solo thread, and `r` refreshes. `←` `→` move between tabs, `ctrl+b` shows or hides the preview of the selected thread, and `q` quits.
+
+### Solo threads
+
+A solo thread runs one agent on one harness, with no orchestrator team. Solo threads wear a `◇ solo` mark in the list, the thread's title bar, and the sidebar.
+
+- `s` on the list asks for a project, then a harness and model, and opens the new thread ready to type.
+- `/solo` in a thread turns solo mode on, using the orchestrator's harness, or off if it is already on. `/solo off` turns it off, and `/solo <harness> [model]` turns it on with that runtime.
+- `/solo-runtime` (or the palette's "choose the solo harness and model") walks the harness and model menus.
 

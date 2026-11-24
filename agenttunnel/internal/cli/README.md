@@ -103,7 +103,11 @@ shows a PARENT column; `attach` names the parent in its header.
   steering text (`/stop`, `/detach`, `/help`). It leaves when the turn it
   watches ends, or on Ctrl-C (which detaches and leaves the turn running).
 - `tui [thread]`: full-screen UI over the same daemon. The list screen moves
-  with ↑/↓ or j/k and opens with Enter (r refreshes, q quits). The thread
+  with ↑/↓ or j/k and opens with Enter (n starts a thread, s a solo thread, r
+  refreshes, q quits; ←/→ walk the tabs from anywhere the keys are not text).
+  Solo threads (one agent, no team) carry a ◇ solo mark and are toggled with
+  `/solo`. On wide terminals the selected thread's preview sits beside the
+  list (ctrl+b hides it). The thread
   screen shows the log tail (live output follows; PgUp/PgDn scrolls back), the
   roster, and an input line: submitting text steers a running turn, starts a
   detached one on an idle thread (`/stop` stops it), and an open question owns

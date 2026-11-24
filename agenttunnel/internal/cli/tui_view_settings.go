@@ -332,7 +332,7 @@ func init() {
 		},
 		Hints: []tuiHint{
 			{"enter", "toggle"}, {"m", "add model"}, {"R", "refresh models"},
-			{"u", "update harness"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"u", "update harness"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 		Actions: []tuiAction{
 			{Title: "Settings: toggle auto mode", Run: func(m *tuiModel) {

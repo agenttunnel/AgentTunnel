@@ -98,7 +98,7 @@ func TestTUIScreenListRender(t *testing.T) {
 		{
 			name: "empty list",
 			rows: nil,
-			want: []string{"press n to start a thread"},
+			want: []string{"press n to start a thread, or s for a solo one"},
 		},
 	}
 
