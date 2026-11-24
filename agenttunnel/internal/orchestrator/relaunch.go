@@ -216,7 +216,7 @@ func (r *Runner) ThreadResults(ctx context.Context, caller contracts.ThreadID, a
 		from := max(0, n-threadResultsMessages)
 		rows := make([]string, 0, n-from)
 		for _, m := range targetState.Messages[from:] {
-			rows = append(rows, fmt.Sprintf("- %s: %s", m.Author, clipTitle(oneLine(m.Text), threadResultsMessageClip)))
+			rows = append(rows, fmt.Sprintf("- %s: %s", m.Author, clipNote(oneLine(m.Text), threadResultsMessageClip)))
 		}
 		b.WriteString(strings.Join(rows, "\n"))
 	}
@@ -224,6 +224,17 @@ func (r *Runner) ThreadResults(ctx context.Context, caller contracts.ThreadID, a
 		"threadId": string(caller), "agentId": string(agent), "target": string(targetState.ID),
 	})
 	return b.String(), nil
+}
+
+// clipNote clips like clipTitle but says so, with the full length, so the reader
+// knows the text is incomplete.
+func clipNote(s string, n int) string {
+	s = strings.TrimSpace(s)
+	total := len([]rune(s))
+	if total <= n {
+		return s
+	}
+	return clipTitle(s, n) + fmt.Sprintf("[clipped, %d chars total]", total)
 }
 
 // RenderDependencyThreads lists the threads this one was triggered by, with
