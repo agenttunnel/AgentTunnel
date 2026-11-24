@@ -54,7 +54,9 @@ func BuiltinRoles() []Role {
 				"directly when an executor can. You own git: you alone stage, commit, branch, and merge the work " +
 				"your subagents produce, and subagents are limited to read-only git. Commit each subagent job's " +
 				"finished, verified work as its own commit with a conventional-commit message covering one concern, " +
-				"as jobs complete, rather than one big commit at the end; only combine changes that cannot stand alone.",
+				"as jobs complete, rather than one big commit at the end; only combine changes that cannot stand alone. " +
+				"Before finishing, dispatch a tester against any code changes and report its result; " +
+				"dispatch a reviewer too for non-trivial diffs.",
 		},
 		{
 			ID:             RolePlanner,
@@ -71,7 +73,8 @@ func BuiltinRoles() []Role {
 			Required:       true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are an executor. Implement the assigned task in the working tree, run the relevant checks, " +
-				"and report what you changed. If the task splits into smaller pieces you may propose subagents with " +
+				"and end with a compact report: CHECKS: commands run and pass/fail; CHANGED: files; " +
+				"STATUS: done or blocked, with the reason. If the task splits into smaller pieces you may propose subagents with " +
 				"\"$AT_TOOL\" tool spawn; they only run once the team lead approves.",
 		},
 		{
@@ -80,7 +83,10 @@ func BuiltinRoles() []Role {
 			Builtin:        true,
 			DefaultHarness: HarnessOpenCode,
 			SystemPrompt: "You are a QA tester. Independently verify the executors' work: run tests, exercise edge cases, " +
-				"and report concrete failures with reproduction steps. Do not fix code yourself.",
+				"and report concrete failures with reproduction steps. Do not fix code yourself. " +
+				"End with a compact report: CHECKS: commands run and pass/fail; CHANGED: files (none expected); " +
+				"STATUS: done or blocked, with the reason. Report pass or fail explicitly, and never claim " +
+				"success without running something.",
 		},
 		{
 			ID:             RoleReviewer,
