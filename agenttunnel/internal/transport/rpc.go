@@ -2837,6 +2837,11 @@ func (d *Dispatcher) deleteThread(ctx context.Context, id contracts.ThreadID, re
 	// scheduler's index maintenance — the decider, which sees one thread at
 	// a time, has no way to notice the controller is gone.
 	d.releaseControlledThreads(ctx, id)
+	// The tombstone is the point of no return: the thread's shared notes go
+	// with it, so a later thread with the same id starts empty.
+	if d.runner != nil {
+		d.runner.DropNotebook(id)
+	}
 	return nil
 }
 

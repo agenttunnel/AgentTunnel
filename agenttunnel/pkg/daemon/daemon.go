@@ -115,6 +115,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	logs := logstore.New(filepath.Join(opts.StateDir, "logs"))
+	notebooks := contextstore.NewNotebookStore(filepath.Join(opts.StateDir, "notebooks"))
 	ledger := usage.NewLedger()
 	mailbox := contextstore.NewMailbox()
 	// The runtime box is a drained-once delivery buffer, not the gate: the
@@ -157,6 +158,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		Registry:  opts.Registry,
 		Roles:     opts.Roles,
 		Logs:      logs,
+		Notebooks: notebooks,
 		Ledger:    ledger,
 		Mailbox:   mailbox,
 		Inherited: inherited,

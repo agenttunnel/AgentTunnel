@@ -63,6 +63,9 @@ type Deps struct {
 	Endpoint  func() string
 	Clock     domain.Clock
 	Cfg       Config
+	// Notebooks persists each thread's shared notebook. Nil keeps notebooks
+	// in memory only.
+	Notebooks *contextstore.NotebookStore
 	// LaunchThreadTurn runs turns the Runner starts on other threads. Nil
 	// falls back to the Runner's own orchestrator.
 	LaunchThreadTurn LaunchThreadTurnFunc
@@ -104,8 +107,9 @@ type Runner struct {
 	// notebooks holds each thread's shared notebook. A thread's context is its
 	// own: a subthread running beside its parent must not read or write the
 	// parent's notes.
-	notebookMu sync.Mutex
-	notebooks  map[contracts.ThreadID]*contextstore.Notebook
+	notebookMu    sync.Mutex
+	notebooks     map[contracts.ThreadID]*notebookSlot
+	notebookStore *contextstore.NotebookStore
 
 	// btwSessions holds each thread's /btw side-conversation memory. The
 	// runner is shared daemon-wide, so a session is keyed by thread ID, never
@@ -134,28 +138,29 @@ func NewRunner(d Deps) *Runner {
 		d.Clock = time.Now
 	}
 	r := &Runner{
-		engine:      d.Engine,
-		registry:    d.Registry,
-		roles:       d.Roles,
-		logs:        d.Logs,
-		ledger:      d.Ledger,
-		mailbox:     d.Mailbox,
-		inherited:   d.Inherited,
-		settings:    d.Settings,
-		models:      d.Models,
-		tools:       d.Tools,
-		steering:    d.Steering,
-		audit:       d.Audit,
-		toolPath:    d.ToolPath,
-		token:       d.Token,
-		endpoint:    d.Endpoint,
-		clock:       d.Clock,
-		cfg:         d.Cfg,
-		spawns:      newSpawnStore(),
-		steers:      newSteerQueue(),
-		notebooks:   map[contracts.ThreadID]*contextstore.Notebook{},
-		btwSessions: map[contracts.ThreadID]*btwSession{},
-		launchTurn:  d.LaunchThreadTurn,
+		engine:        d.Engine,
+		registry:      d.Registry,
+		roles:         d.Roles,
+		logs:          d.Logs,
+		ledger:        d.Ledger,
+		mailbox:       d.Mailbox,
+		inherited:     d.Inherited,
+		settings:      d.Settings,
+		models:        d.Models,
+		tools:         d.Tools,
+		steering:      d.Steering,
+		audit:         d.Audit,
+		toolPath:      d.ToolPath,
+		token:         d.Token,
+		endpoint:      d.Endpoint,
+		clock:         d.Clock,
+		cfg:           d.Cfg,
+		spawns:        newSpawnStore(),
+		steers:        newSteerQueue(),
+		notebooks:     map[contracts.ThreadID]*notebookSlot{},
+		notebookStore: d.Notebooks,
+		btwSessions:   map[contracts.ThreadID]*btwSession{},
+		launchTurn:    d.LaunchThreadTurn,
 	}
 	r.background = New(r)
 	return r
@@ -172,16 +177,103 @@ func (r *Runner) Notebook(threadID contracts.ThreadID) *contextstore.Notebook {
 	return r.notebookFor(threadID)
 }
 
-// notebookFor returns the thread's notebook, creating it on first use.
+// notebookSlot is one thread's notebook. Its mutex serialises that thread's
+// open and drop; notebookMu only guards the map, so disk IO never blocks
+// another thread.
+type notebookSlot struct {
+	mu      sync.Mutex
+	nb      *contextstore.Notebook
+	dropped bool
+}
+
+// notebookFor returns the thread's notebook, loading it on first use. Concurrent
+// first callers for one thread share one slot and therefore one object.
 func (r *Runner) notebookFor(threadID contracts.ThreadID) *contextstore.Notebook {
+	for {
+		slot := r.slotFor(threadID)
+		slot.mu.Lock()
+		if slot.dropped {
+			// Dropped after the lookup. DropNotebook has already removed the slot
+			// from the map, so the next lookup creates a fresh one.
+			slot.mu.Unlock()
+			continue
+		}
+		if slot.nb == nil {
+			slot.nb = r.openNotebook(threadID)
+		}
+		nb := slot.nb
+		slot.mu.Unlock()
+		return nb
+	}
+}
+
+// slotFor returns the thread's slot, inserting an empty one if needed. It holds
+// notebookMu only for the map access.
+func (r *Runner) slotFor(threadID contracts.ThreadID) *notebookSlot {
 	r.notebookMu.Lock()
 	defer r.notebookMu.Unlock()
-	nb, ok := r.notebooks[threadID]
+	slot, ok := r.notebooks[threadID]
 	if !ok {
-		nb = contextstore.NewNotebook()
-		r.notebooks[threadID] = nb
+		slot = &notebookSlot{}
+		r.notebooks[threadID] = slot
 	}
-	return nb
+	return slot
+}
+
+// openNotebook loads a thread's persisted notebook, or makes a memory-only one
+// when the Runner has no store. The first write failure of each loaded notebook
+// is also posted to the thread's transcript, so the user sees it. The turn
+// keeps running either way.
+func (r *Runner) openNotebook(threadID contracts.ThreadID) *contextstore.Notebook {
+	if r.notebookStore == nil {
+		return contextstore.NewNotebook()
+	}
+	var notice sync.Once
+	return r.notebookStore.Open(string(threadID), func(err error) {
+		r.auditLog("notebook.error", map[string]any{"thread": string(threadID), "error": err.Error()})
+		notice.Do(func() { r.postNotebookNotice(threadID, err) })
+	})
+}
+
+// postNotebookNotice records a transcript status line for a notes failure. It is
+// authored by AuthorStatus, never "user", so it does not open a turn. It is best
+// effort: a failed dispatch is ignored.
+func (r *Runner) postNotebookNotice(threadID contracts.ThreadID, err error) {
+	_ = r.engine.Dispatch(context.Background(), contracts.Command{
+		ID:       r.nextID(),
+		Type:     contracts.CmdMessageAppend,
+		ThreadID: threadID,
+		Message: &contracts.MessageSent{
+			MessageID: r.nextID(),
+			Author:    contracts.AuthorStatus,
+			Text:      "Shared notes for this thread could not be saved to disk, so they will not survive a restart: " + err.Error(),
+		},
+	})
+}
+
+// DropNotebook forgets a deleted thread's notebook, both the cached object and
+// its file. A later thread with the same id starts with an empty notebook.
+//
+// The file is removed before the slot leaves the map, so a lookup that races
+// this drop cannot reload the old notes. No other thread waits on the disk IO.
+func (r *Runner) DropNotebook(threadID contracts.ThreadID) {
+	slot := r.slotFor(threadID)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	slot.dropped = true
+	if slot.nb != nil {
+		slot.nb.Discard()
+	}
+	if r.notebookStore != nil {
+		if err := r.notebookStore.Remove(string(threadID)); err != nil {
+			r.auditLog("notebook.error", map[string]any{"thread": string(threadID), "error": err.Error()})
+		}
+	}
+	r.notebookMu.Lock()
+	if r.notebooks[threadID] == slot {
+		delete(r.notebooks, threadID)
+	}
+	r.notebookMu.Unlock()
 }
 
 // Mailbox exposes the runtime peer mailbox.
