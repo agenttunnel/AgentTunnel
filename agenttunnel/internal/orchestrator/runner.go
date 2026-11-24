@@ -511,7 +511,7 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 		shared = curatorInput(r.notebookFor(threadID))
 	}
 	steering := r.steers.Drain(threadID, t.AgentID)
-	prompt := BuildSubagentPrompt(role, t.Task, inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox), steering)
+	prompt := BuildSubagentPrompt(role, t.Task, r.userRequestFor(ctx, threadID), inherited, shared, reviews, peerMailbox, r.teammateMessages(threadID, t.AgentID, peerMailbox), steering)
 
 	env := r.toolEnv(threadID, t.AgentID)
 	env = append(env, "AT_ROLE="+string(t.Role), "AT_TASK="+t.Task)
@@ -1130,6 +1130,25 @@ func (r *Runner) autoModeFor(ctx context.Context, threadID contracts.ThreadID) b
 		return false
 	}
 	return st.AutoMode
+}
+
+// userRequestFor is the thread's latest user-authored message, which the
+// subagent prompt carries so a task is judged against what was asked. "" when
+// there is none.
+func (r *Runner) userRequestFor(ctx context.Context, threadID contracts.ThreadID) string {
+	if r.engine == nil {
+		return ""
+	}
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil || st == nil {
+		return ""
+	}
+	for i := len(st.Messages) - 1; i >= 0; i-- {
+		if st.Messages[i].Author == "user" {
+			return st.Messages[i].Text
+		}
+	}
+	return ""
 }
 
 // peerMailboxFor reports whether peer messaging is on for a thread, reading the

@@ -17,6 +17,8 @@ import (
 const (
 	historyMessageClip = 2000
 	historyBudget      = 24000
+	// userRequestClip bounds the user's request carried into a subagent prompt.
+	userRequestClip = 2000
 )
 
 // askHelp documents the ask tool for every agent. Asking is not gated on the peer
@@ -26,17 +28,25 @@ const askHelp = "Ask the human only when you are blocked on a decision only they
 	"choice takes one option, multi takes several, text takes a free answer. The command blocks until the human answers and prints the answer, so run it as a normal foreground command. If it reports no answer, carry on on a stated assumption."
 
 // BuildSubagentPrompt assembles a subagent's prompt from its role prompt, its
-// task, the inherited context, the shared notebook and the open review threads,
+// task, the user's request the task serves (omitted when empty, clipped when
+// long, so the agent can judge its slice against what was asked), the inherited context, the shared notebook and the open review threads,
 // so every subagent starts informed by what the others have done. The peer message
 // tool is documented only when the thread has the peer mailbox enabled, and
 // messages teammates sent while this agent was waiting are carried in their own
 // section. Steers the team lead sent while the agent was not running come in a
 // steering section.
-func BuildSubagentPrompt(role contracts.Role, task, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted, steering []string) string {
+func BuildSubagentPrompt(role contracts.Role, task, userRequest, inherited, shared, reviews string, peerMailbox bool, teammates []contracts.MailboxPosted, steering []string) string {
 	var b strings.Builder
 	b.WriteString(role.SystemPrompt)
 	b.WriteString("\n\n## Task\n")
 	b.WriteString(task)
+	if req := strings.TrimSpace(userRequest); req != "" {
+		b.WriteString("\n\n## User request\n")
+		b.WriteString(clipHead(req, userRequestClip))
+		if len(req) > userRequestClip {
+			fmt.Fprintf(&b, "[clipped, %d bytes total]", len(req))
+		}
+	}
 	if strings.TrimSpace(inherited) != "" {
 		b.WriteString("\n\n## Inherited context\n")
 		b.WriteString(inherited)
@@ -219,6 +229,7 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString(" Report findings with:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
 		b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+		b.WriteString("\n\nPut a concrete acceptance check in each --task (what must be true, or which command must pass), and dispatch a tester against code changes before you finish.")
 		if in.Wildcard {
 			b.WriteString("\n\nYou can also define a custom agent when no builtin role fits. Pass --role wildcard with --brief; the brief becomes that agent's instructions:\n\n")
 			b.WriteString("  \"$AT_TOOL\" tool dispatch --role wildcard --name <short-name> --brief \"<agent definition>\" --task \"<what to do>\"")
