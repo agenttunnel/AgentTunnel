@@ -443,6 +443,9 @@ type turn struct {
 	// mu orders the steps of concurrent lead passes that touch shared thread
 	// state: picking agent names and registering dispatches.
 	mu *sync.Mutex
+	// final marks the closing round: leads read the finished work and report,
+	// and nothing they print is dispatched.
+	final bool
 }
 
 // RunTurn executes one user turn end to end. The thread's team of leads takes a
@@ -530,8 +533,11 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	// Pending spawn requests never outlive their turn, whatever the exit path.
 	defer o.runner.spawns.clear(threadID)
 
-	var finalText string
+	// Each lead keeps the last non-empty thing it said, so a later quiet pass
+	// does not erase an earlier report.
+	leadTexts := make([]string, len(t.leads))
 	var dispatched []contracts.DispatchTask
+	rounds, lastDispatched := 0, false
 	// Steering that arrives during the last budgeted pass earns one more round:
 	// the user typed it into this turn, and a queued steer would otherwise
 	// surface in an unrelated later turn. Each extra round needs a new steer.
@@ -577,15 +583,17 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 			return err
 		}
 		dispatchedThisRound := false
-		for _, p := range passes {
+		rounds++
+		for i, p := range passes {
 			if strings.TrimSpace(p.text) != "" {
-				finalText = p.text
+				leadTexts[i] = p.text
 			}
 			if len(p.tasks) > 0 {
 				dispatchedThisRound = true
 				dispatched = append(dispatched, p.tasks...)
 			}
 		}
+		lastDispatched = dispatchedThisRound
 		// A round that dispatched nothing still earns another round if the user
 		// steered while it was running, a spawn request is still undecided, or
 		// a peer is waiting on a lead's reply.
@@ -596,9 +604,28 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	}
 
 	// A reviewer weighs the answers its threads drew once the team has settled.
+	rechecked := o.runner.reviewsNeedRecheck(ctx, threadID)
 	if err := o.runner.recheckReviews(ctx, threadID); err != nil {
 		return err
 	}
+
+	// Work dispatched in the last round, or a re-check that just ran, has
+	// results no lead has read. One closing pass reads them and writes the
+	// report; whatever it prints is not dispatched.
+	if lastDispatched || rechecked {
+		closing := t
+		closing.final = true
+		passes, err := o.runLeadRound(ctx, closing, rounds, nil, nil)
+		if err != nil {
+			return err
+		}
+		for i, p := range passes {
+			if strings.TrimSpace(p.text) != "" {
+				leadTexts[i] = p.text
+			}
+		}
+	}
+	finalText := joinLeadTexts(leadTexts)
 
 	// Late peer messages have no next pass to land in. Drain once more so they
 	// surface in the final summary instead of being lost.
@@ -631,6 +658,13 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}
 	}
 
+	if note := o.outcomeNote(ctx, threadID, dispatched); note != "" {
+		if strings.TrimSpace(finalText) != "" {
+			finalText += "\n\n"
+		}
+		finalText += note
+	}
+
 	// The turn's summary is recorded before the leads are marked terminal:
 	// a terminal lead is the thread scheduler's "this turn is finished"
 	// signal, and everything the turn left behind must be durable by then or
@@ -659,6 +693,66 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 		}()
 	}
 	return nil
+}
+
+// reviewsNeedRecheck reports whether recheckReviews has a reviewer to re-run.
+func (r *Runner) reviewsNeedRecheck(ctx context.Context, threadID contracts.ThreadID) bool {
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil {
+		return false
+	}
+	for _, id := range st.AgentOrder {
+		if st.Agents[id].Role == contracts.RoleReviewer && reviewRecheckTask(st, id) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// joinLeadTexts is the turn's report: the lone lead's text as is, or each
+// speaking lead's under its name, in lead order.
+func joinLeadTexts(texts []string) string {
+	if len(texts) == 1 {
+		return texts[0]
+	}
+	var parts []string
+	for i, text := range texts {
+		if strings.TrimSpace(text) != "" {
+			parts = append(parts, leadName(i)+":\n"+text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// outcomeNote says plainly what the turn left unfinished: tasks it dispatched
+// that ended failed or cancelled (a later run under the same name supersedes an
+// earlier one), and spawn requests nobody decided before the pass budget ran
+// out. Empty when the turn finished clean.
+func (o *Orchestrator) outcomeNote(ctx context.Context, threadID contracts.ThreadID, dispatched []contracts.DispatchTask) string {
+	var lines []string
+	if state, err := o.runner.engine.State(ctx, threadID); err == nil {
+		outcome := map[string]contracts.AgentStatus{}
+		var order []string
+		for _, task := range dispatched {
+			if _, seen := outcome[task.Name]; !seen {
+				order = append(order, task.Name)
+			}
+			outcome[task.Name] = state.Agents[task.AgentID].Status
+		}
+		var bad []string
+		for _, name := range order {
+			if s := outcome[name]; s == contracts.AgentFailed || s == contracts.AgentCancelled {
+				bad = append(bad, name)
+			}
+		}
+		if len(bad) > 0 {
+			lines = append(lines, fmt.Sprintf("Note: %d task(s) failed or were cancelled: %s", len(bad), strings.Join(bad, ", ")))
+		}
+	}
+	if n := len(o.runner.spawns.list(threadID)); n > 0 {
+		lines = append(lines, fmt.Sprintf("Note: %d spawn request(s) were not decided", n))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // priorMessages returns the thread's conversation before the current turn. The
@@ -728,9 +822,12 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 	// Calls that arrived while the previous wave ran — a subagent proposing a
 	// spawn, a late note, a printed peer message — fold in before the prompt is
 	// built so the lead sees them this pass rather than the next.
-	t.mu.Lock()
-	carried := o.toolTasks(ctx, t.threadID, orchID, nil, nil)
-	t.mu.Unlock()
+	var carried []contracts.DispatchTask
+	if !t.final {
+		t.mu.Lock()
+		carried = o.toolTasks(ctx, t.threadID, orchID, nil, nil)
+		t.mu.Unlock()
+	}
 	inherited, _ := o.runner.inherited.Render()
 	state, err := o.runner.engine.State(ctx, t.threadID)
 	if err != nil {
@@ -757,6 +854,7 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		Inherited:         inherited,
 		Shared:            o.runner.notebookFor(t.threadID).Render(),
 		Roster:            o.runner.Roster(state),
+		Final:             t.final,
 		PendingSpawns:     renderPendingSpawns(state, o.runner.spawns.list(t.threadID)),
 		PeerMessages:      peerMessages,
 		PeerMailbox:       peerMailbox,
@@ -786,6 +884,9 @@ func (o *Orchestrator) runLeadPass(ctx context.Context, t turn, i, pass int, ste
 		return "", nil, err
 	}
 
+	if t.final {
+		return text, nil, nil
+	}
 	tasks, err := o.settlePass(ctx, t, orchID, calls, carried)
 	if err != nil {
 		return "", nil, err

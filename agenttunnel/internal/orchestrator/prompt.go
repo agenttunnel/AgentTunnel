@@ -144,6 +144,10 @@ type OrchestratorPrompt struct {
 	// Wildcard offers the experimental wildcard role: the lead defines the
 	// agent in a brief. Set only when experimental roles are on.
 	Wildcard bool
+	// Final makes this the closing pass: every dispatched task has finished, so
+	// the lead gets no dispatching tools and is asked to verify the results
+	// against the request and write the final report.
+	Final bool
 }
 
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including
@@ -197,37 +201,39 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString("\n\n## Your team\n")
 		b.WriteString(in.Team)
 	}
-	b.WriteString("\n\n## Dispatching work\n")
-	b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
-	b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
-	b.WriteString("The task runs as its own agent in this project, and its result comes back to you. ")
-	roleChoices := in.RoleChoices
-	if roleChoices == "" {
-		roleChoices = string(contracts.RoleExecutor)
-	}
-	b.WriteString("Use --depends-on <name> to order tasks, --role " + roleChoices + " to pick the role, ")
-	b.WriteString("--model <id> to override the model, and --harness <id> to override the harness. ")
-	b.WriteString("Model and harness overrides apply when auto mode is on for the thread.")
-	if in.DisabledRoles != "" {
-		b.WriteString("\n\nDisabled roles (do not dispatch): " + in.DisabledRoles + ".")
-	}
-	b.WriteString(" Report findings with:\n\n")
-	b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
-	b.WriteString("and progress with `tool progress --text \"<update>\"`.")
-	if in.Wildcard {
-		b.WriteString("\n\nYou can also define a custom agent when no builtin role fits. Pass --role wildcard with --brief; the brief becomes that agent's instructions:\n\n")
-		b.WriteString("  \"$AT_TOOL\" tool dispatch --role wildcard --name <short-name> --brief \"<agent definition>\" --task \"<what to do>\"")
-	}
-	if peerMailbox {
-		b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
-		b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
-		b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
-	}
-	if in.Steer {
-		b.WriteString("\n\n## Steering a subagent\n")
-		b.WriteString("Send a course correction to an agent you dispatched. A steer does not interrupt a run in progress: the agent reads it when its next run starts, so use it for work still waiting on its dependencies or for a later run. To change running work, dispatch a follow-up with --depends-on instead:\n\n")
-		b.WriteString("  \"$AT_TOOL\" tool steer --to <agent name> --text \"<adjustment>\"\n\n")
-		b.WriteString("The reply says whether the steer was queued for that agent's next run.")
+	if !in.Final {
+		b.WriteString("\n\n## Dispatching work\n")
+		b.WriteString("You have a real command for delegating. Run it from your shell:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool dispatch --role executor --name <short-name> --task \"<what to do>\"\n\n")
+		b.WriteString("The task runs as its own agent in this project, and its result comes back to you. ")
+		roleChoices := in.RoleChoices
+		if roleChoices == "" {
+			roleChoices = string(contracts.RoleExecutor)
+		}
+		b.WriteString("Use --depends-on <name> to order tasks, --role " + roleChoices + " to pick the role, ")
+		b.WriteString("--model <id> to override the model, and --harness <id> to override the harness. ")
+		b.WriteString("Model and harness overrides apply when auto mode is on for the thread.")
+		if in.DisabledRoles != "" {
+			b.WriteString("\n\nDisabled roles (do not dispatch): " + in.DisabledRoles + ".")
+		}
+		b.WriteString(" Report findings with:\n\n")
+		b.WriteString("  \"$AT_TOOL\" tool note --text \"<finding>\"\n\n")
+		b.WriteString("and progress with `tool progress --text \"<update>\"`.")
+		if in.Wildcard {
+			b.WriteString("\n\nYou can also define a custom agent when no builtin role fits. Pass --role wildcard with --brief; the brief becomes that agent's instructions:\n\n")
+			b.WriteString("  \"$AT_TOOL\" tool dispatch --role wildcard --name <short-name> --brief \"<agent definition>\" --task \"<what to do>\"")
+		}
+		if peerMailbox {
+			b.WriteString("\n\nYou can also send a direct message to an agent you have dispatched — including one still waiting on its dependencies — or reply to one that wrote to you:\n\n")
+			b.WriteString("  \"$AT_TOOL\" tool message --to <agent name> --text \"<what to tell them>\"\n\n")
+			b.WriteString("A message to a waiting agent is delivered when its work starts, so dispatch first, then message. Messages from your agents arrive under \"## Peer messages\" in a later pass of this run.")
+		}
+		if in.Steer {
+			b.WriteString("\n\n## Steering a subagent\n")
+			b.WriteString("Send a course correction to an agent you dispatched. A steer does not interrupt a run in progress: the agent reads it when its next run starts, so use it for work still waiting on its dependencies or for a later run. To change running work, dispatch a follow-up with --depends-on instead:\n\n")
+			b.WriteString("  \"$AT_TOOL\" tool steer --to <agent name> --text \"<adjustment>\"\n\n")
+			b.WriteString("The reply says whether the steer was queued for that agent's next run.")
+		}
 	}
 	if in.AgentLogs {
 		b.WriteString("\n\n## Subagent logs\n")
@@ -236,7 +242,7 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 		b.WriteString(" KB:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool agent-logs --to <agent name or id>\n")
 	}
-	if in.Revive {
+	if in.Revive && !in.Final {
 		b.WriteString("\n\n## Reviving subagents\n")
 		b.WriteString("A finished subagent's result can be missing something you needed, and its next run knows nothing of the last one. Revive it: a follow-up question re-dispatches the subagent under its own name and role, with its prior output log and your question:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool revive --to <agent name or id> --text \"<question>\"\n\n")
@@ -270,19 +276,25 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	b.WriteString("A file read returns up to about 256 KB. A command runs for 120 seconds unless you pass --timeout (at most 600), and its output is capped at about 64 KB. Its last line is the exit code. Use these for quick inspection and checks; dispatch an executor for changes that need their own review.")
 	b.WriteString("\n\n## Asking the human\n")
 	b.WriteString(askHelp)
-	if in.Subthreads {
+	if in.Subthreads && !in.Final {
 		b.WriteString("\n\n## Subthreads\n")
 		b.WriteString("Start a subthread only for work that is genuinely unrelated to this thread's plan and better kept in its own context. ")
 		b.WriteString("It runs as a separate thread with its own orchestrator, and its final summary comes back to you as a peer message. ")
 		b.WriteString("Related work belongs in dispatched tasks, not a subthread. A thread starts at most " + strconv.Itoa(contracts.MaxSubthreads) + " subthreads, and a subthread cannot start its own:\n\n")
 		b.WriteString("  \"$AT_TOOL\" tool subthread --task \"<self-contained brief for the unrelated work>\"\n")
 	}
-	if strings.TrimSpace(runtimeChoices) != "" {
+	if strings.TrimSpace(runtimeChoices) != "" && !in.Final {
 		b.WriteString("\n\n## Runtime choices\n")
 		b.WriteString("Auto mode is ON for this thread. ")
 		b.WriteString("You may pick each task's harness and model. Available runtimes:\n")
 		b.WriteString(runtimeChoices)
 		b.WriteString("\nOmit --model/--harness to use the role's default. Only dispatch harnesses from this list.")
+	}
+	if in.Final {
+		b.WriteString("\n\n## Final report\n")
+		b.WriteString("Every task you dispatched has finished; the agents above carry their results. Do not dispatch more work. ")
+		b.WriteString("Verify the results against the user request, then write the final report: which requirements are met and the evidence for each, and which are not met or unverified.")
+		return b.String()
 	}
 	b.WriteString("\n\nDispatch the work first, then summarise the outcome.")
 	if pass > 0 {

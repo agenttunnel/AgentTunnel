@@ -34,7 +34,7 @@ printf '{"usage":{"input_tokens":1,"output_tokens":1}}\n'`
 
 	found := false
 	for _, m := range state.Messages {
-		if m.Author == "orchestrator" && m.Text == "report-1" {
+		if m.Author == "orchestrator" && strings.HasPrefix(m.Text, "report-1") {
 			found = true
 		}
 	}
