@@ -1,10 +1,9 @@
 ---
 title: Changelog
 layout: default
-nav_order: last
+toc: false
+description: Release notes for each tagged version of AgentTunnel.
 ---
-
-# Changelog
 
 Tagged releases (`vX.Y.Z`) are the stable builds. `main-<sha>` prereleases are not listed here.
 

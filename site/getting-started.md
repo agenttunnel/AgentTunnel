@@ -1,11 +1,10 @@
 ---
 layout: default
-title: Getting started
+title: Quickstart
+description: Run one task from install to review, then stop it when you need to.
 ---
 
-# Getting started
-
-This walks through one task from install to review. It assumes you have [installed AgentTunnel](index.html#install).
+This walks through one task from install to review. It assumes you have [installed AgentTunnel](install.html).
 
 ## 1. Check your provider CLIs
 
@@ -25,7 +24,7 @@ Each harness shows whether its binary is available and whether it is enabled. Th
 | Pi | `pi` |
 | Command Code | `commandcode` |
 
-The default harness for the orchestrator and executor roles is OpenCode, so install it first, or point those roles at a harness you have (see [Features](features.html#roles-and-harnesses)).
+The default harness for the orchestrator and executor roles is OpenCode, so install it first, or point those roles at a harness you have (see [Roles and harnesses](roles-and-harnesses.html)).
 
 ## 2. Open a project
 
@@ -50,7 +49,7 @@ agenttunnel projects rm <id-or-path>
 
 Create a thread in the project and send a task in the composer. The first turn starts the **orchestrator**, which plans the work and dispatches subagents.
 
-If the project is a git repository, the thread gets its own worktree on a new branch, so the agents never edit your checkout directly. See [Worktrees](features.html#worktrees).
+If the project is a git repository, the thread gets its own worktree on a new branch, so the agents never edit your checkout directly. See [Worktrees](worktrees.html).
 
 A thread is saved only once something happens in it. Creating one and leaving it alone leaves nothing behind.
 
@@ -87,6 +86,7 @@ agenttunnel run refactor-auth.md -f       # starts it and follows the output
 
 ## Next
 
-- [Features](features.html): how threads, worktrees, the orchestrator, roles, and schedules work.
+- [Threads](threads.html) and [Worktrees](worktrees.html): how a turn runs and where its files live.
+- [Orchestrator](orchestrator.html): how subagents are planned and dispatched.
 - [CLI](cli.html): every command and flag.
 - [Configuration](configuration.html): settings and the state directory.

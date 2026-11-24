@@ -1,9 +1,8 @@
 ---
 layout: default
 title: Configuration
+description: Where AgentTunnel keeps its state, what the settings mean, and which environment variables it reads.
 ---
-
-# Configuration
 
 Most configuration happens in the desktop app. This page lists where AgentTunnel keeps its state, what the settings mean, and which environment variables it reads.
 
@@ -52,7 +51,7 @@ The daemon writes `settings.json`, so change settings through the desktop app or
 | `disabledRoles` | `[]` | roles that are off. The orchestrator and executor are required and ignore this. |
 | `experimentalRoles` | `false` | allow the Context Manager and Wildcard roles |
 | `staleAfterMinutes` | `30` | minutes of inactivity before a thread counts as stale (1 to 43200) |
-| `relay` | `{ "enabled": false, "url": "" }` | the outbound relay. See [Features](features.html#relay). |
+| `relay` | `{ "enabled": false, "url": "" }` | the outbound relay. See [Remote access](remote-access.html#relay). |
 | `masterRuntime` | unset | the runtime of the master chat (`harness`, `model`, `variant`) |
 | `masterReporter` | `false` | send a status report over WhatsApp whenever the connection is established |
 
