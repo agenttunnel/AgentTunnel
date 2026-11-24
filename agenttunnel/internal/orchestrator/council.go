@@ -99,7 +99,12 @@ func (o *Orchestrator) RunCouncil(ctx context.Context, threadID contracts.Thread
 		return "", err
 	}
 
+	// positions is what the table sees: a member that failed a round keeps its
+	// earlier position, marked stale. raw/spoke/failed track the real state.
 	positions := map[string]string{}
+	raw := map[string]string{}
+	spoke := map[string]int{}
+	failed := map[string]int{}
 
 	for round := 1; round <= spec.Rounds && ctx.Err() == nil; round++ {
 		var tasks []contracts.DispatchTask
@@ -128,10 +133,21 @@ func (o *Orchestrator) RunCouncil(ctx context.Context, threadID contracts.Thread
 		}
 
 		// Positions accumulate across rounds: a member that converged keeps its
-		// last position; one that failed keeps its earlier one.
+		// last position; one that failed keeps its earlier one, marked stale.
 		for i, m := range spec.Members {
 			if text := strings.TrimSpace(results[names[i]]); text != "" {
-				positions[m.Name] = text
+				raw[m.Name], spoke[m.Name] = text, round
+				delete(failed, m.Name)
+			} else {
+				failed[m.Name] = round
+			}
+			if raw[m.Name] == "" {
+				continue
+			}
+			positions[m.Name] = raw[m.Name]
+			if failed[m.Name] > 0 {
+				positions[m.Name] = fmt.Sprintf("(stale: from round %d; this member failed in round %d) %s",
+					spoke[m.Name], failed[m.Name], raw[m.Name])
 			}
 		}
 

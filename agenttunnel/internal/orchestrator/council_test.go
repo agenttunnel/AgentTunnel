@@ -115,3 +115,39 @@ func keysOf(m map[string]string) []string {
 	}
 	return out
 }
+
+// A member that fails a later round keeps its earlier position, but the table
+// and the facilitator are told it is stale.
+func TestRunCouncilMarksStalePositions(t *testing.T) {
+	r, eng, ctx := newHarness(t, `case "$AT_ROLE" in
+  facilitator) printf '{"type":"text","text":"done"}\n' ;;
+  planner) case "$AT_AGENT_ID" in
+    *-r1) printf '{"type":"text","text":"planner opening"}\n' ;;
+    *) printf 'boom\n' >&2; exit 1 ;;
+  esac ;;
+  *) printf '{"type":"text","text":"reviewer %s"}\n' "$AT_AGENT_ID" ;;
+esac`)
+	o := New(r)
+
+	if _, err := o.RunCouncil(ctx, "t1", CouncilSpec{
+		Topic:  "q",
+		Rounds: 2,
+		Members: []CouncilMember{
+			{Name: "planner", Role: contracts.RolePlanner},
+			{Name: "reviewer", Role: contracts.RoleReviewer},
+		},
+	}); err != nil {
+		t.Fatalf("RunCouncil: %v", err)
+	}
+	state, err := eng.State(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1 := state.Shared["council_round_1"]; strings.Contains(r1, "stale") {
+		t.Fatalf("round 1 must not be stale: %q", r1)
+	}
+	const marker = "(stale: from round 1; this member failed in round 2) planner opening"
+	if r2 := state.Shared["council_round_2"]; !strings.Contains(r2, marker) {
+		t.Fatalf("round 2 positions missing stale marker: %q", r2)
+	}
+}
