@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,5 +159,27 @@ func TestUsageTranslatorAccumulatesAcrossFieldNames(t *testing.T) {
 	evs := tr.Translate(`{"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
 	if len(evs) != 1 || evs[0].Usage == nil || evs[0].Usage.InputTokens != 7 || evs[0].Usage.OutputTokens != 3 {
 		t.Fatalf("events = %+v", evs)
+	}
+}
+
+func TestProcessAdapterOversizedLineFailsRun(t *testing.T) {
+	// One line far over the cap; without the fix the pump ends silently.
+	a := NewProcessAdapter(scriptDriver(`head -c 100000 /dev/zero | tr '\0' x; printf '\n'; sleep 30`))
+	a.maxLine = 4096
+	if err := a.Start(context.Background(), SessionSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	var sawError bool
+	for _, ev := range collect(t, a) {
+		if ev.Kind == contracts.LogError && strings.Contains(ev.Text, "token too long") {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("want an explicit error event for the oversized line")
+	}
+	err := a.Wait(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "token too long") {
+		t.Fatalf("wait err = %v, want explicit oversized-line error", err)
 	}
 }
