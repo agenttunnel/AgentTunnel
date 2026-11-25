@@ -33,17 +33,20 @@ func (s AgentStatus) Terminal() bool {
 // Agent is a single running (or completed) agent instance. An agent is either the
 // top-level orchestrator or a subagent dispatched by it.
 type Agent struct {
-	ID            AgentID     `json:"id"`
-	ParentAgentID AgentID     `json:"parentAgentId,omitempty"`
-	Name          string      `json:"name,omitempty"`
-	ThreadID      ThreadID    `json:"threadId"`
-	Role          RoleID      `json:"role"`
-	Harness       Harness     `json:"harness"`
-	Model         string      `json:"model"`
-	PipelineID    PipelineID  `json:"pipelineId,omitempty"`
-	Task          string      `json:"task"`
-	DependsOn     []string    `json:"dependsOn,omitempty"`
-	Status        AgentStatus `json:"status"`
+	ID            AgentID  `json:"id"`
+	ParentAgentID AgentID  `json:"parentAgentId,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	ThreadID      ThreadID `json:"threadId"`
+	Role          RoleID   `json:"role"`
+	Harness       Harness  `json:"harness"`
+	Model         string   `json:"model"`
+	// HarnessSession is the harness's own id for the agent's latest run; the
+	// harness CLI resumes that run from it.
+	HarnessSession string      `json:"harnessSession,omitempty"`
+	PipelineID     PipelineID  `json:"pipelineId,omitempty"`
+	Task           string      `json:"task"`
+	DependsOn      []string    `json:"dependsOn,omitempty"`
+	Status         AgentStatus `json:"status"`
 	// Reason says why the latest status change happened, e.g. why it failed.
 	Reason    string     `json:"reason,omitempty"`
 	StartedAt time.Time  `json:"startedAt"`

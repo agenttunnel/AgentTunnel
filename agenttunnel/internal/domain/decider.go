@@ -846,6 +846,24 @@ func Decide(cmd contracts.Command, s *ThreadState) ([]contracts.EventPayload, er
 		}
 		return []contracts.EventPayload{obs}, nil
 
+	case contracts.CmdAgentSessionObserve:
+		if !s.Exists {
+			return nil, ErrThreadNotFound
+		}
+		if cmd.SessionObserved == nil {
+			return nil, fmt.Errorf("%w: session payload is required", ErrInvalidCommand)
+		}
+		obs := *cmd.SessionObserved
+		a, ok := s.Agents[obs.AgentID]
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown agent %q", ErrInvalidCommand, obs.AgentID)
+		}
+		// Every frame of a run repeats its session id; only a new one is an event.
+		if obs.Session == "" || a.HarnessSession == obs.Session {
+			return nil, nil
+		}
+		return []contracts.EventPayload{obs}, nil
+
 	case contracts.CmdUsageRecord:
 		if !s.Exists {
 			return nil, ErrThreadNotFound

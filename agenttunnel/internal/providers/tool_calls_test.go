@@ -165,10 +165,9 @@ func TestCodexMessagesAndUsage(t *testing.T) {
 	if evs := (CodexTranslator{}).Translate(codexTurnFailed); len(evs) != 1 || evs[0].Kind != contracts.LogError {
 		t.Fatalf("turn failed = %+v", evs)
 	}
-	for _, structural := range []string{`{"type":"thread.started","thread_id":"x"}`, `{"type":"turn.started"}`} {
-		if evs := (CodexTranslator{}).Translate(structural); len(evs) != 0 {
-			t.Fatalf("%s = %+v", structural, evs)
-		}
+	// thread.started logs nothing (its thread id is the session); turn.started is silent.
+	if evs := (CodexTranslator{}).Translate(`{"type":"turn.started"}`); len(evs) != 0 {
+		t.Fatalf("turn.started = %+v", evs)
 	}
 	// A stray prose line on stderr still reaches the log.
 	if evs := (CodexTranslator{}).Translate("warning: thing"); len(evs) != 1 || evs[0].Kind != contracts.LogText {

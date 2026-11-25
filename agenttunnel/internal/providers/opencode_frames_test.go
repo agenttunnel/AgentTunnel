@@ -31,9 +31,12 @@ func TestTranslateOpenCodeReasoningFrame(t *testing.T) {
 }
 
 func TestTranslateOpenCodeStructuralFramesAreDropped(t *testing.T) {
-	// step_start carries no text and no tokens, so it yields nothing.
-	if evs := (JSONLineTranslator{}).Translate(openCodeStepStart); len(evs) != 0 {
-		t.Fatalf("expected step_start to produce no event, got %+v", evs)
+	// step_start carries no text and no tokens: it logs nothing. Its session id
+	// is the only thing it yields.
+	for _, ev := range (JSONLineTranslator{}).Translate(openCodeStepStart) {
+		if ev.Kind != "" || ev.Text != "" || ev.Usage != nil || ev.Tool != nil {
+			t.Fatalf("expected step_start to log nothing, got %+v", ev)
+		}
 	}
 }
 

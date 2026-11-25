@@ -177,6 +177,8 @@ type Agent = {
   role: string;
   harness: string;
   model: string;
+  /** The harness's own id for the latest run; set once the harness reports it. */
+  harnessSession?: string;
   task: string;
   dependsOn?: string[];
   status: string;
@@ -2850,6 +2852,15 @@ export default function App() {
   };
   const stopAgentStable = useLatestCallback(stopAgent);
 
+  /** The shell line that continues an agent's latest run in its harness CLI. */
+  const resumeAgent = async (agentId: string): Promise<string> => {
+    const rpc = rpcRef.current;
+    if (!rpc || !activeId) throw new Error("Not connected to the daemon");
+    const res = await rpc.call<{ command: string }>("agents.resume", { threadId: activeId, agentId });
+    return res.command;
+  };
+  const resumeAgentStable = useLatestCallback(resumeAgent);
+
   /** Convenes the council: members debate in parallel rounds, then a
    *  facilitator synthesizes the outcome into the thread. */
   const startCouncil = useLatestCallback(async () => {
@@ -5042,6 +5053,7 @@ export default function App() {
           questions={thread?.questions}
           initialTab={detailTab}
           onOpenAgent={openAgent}
+          onResume={resumeAgentStable}
           onClose={closeAgent}
         />
       )}

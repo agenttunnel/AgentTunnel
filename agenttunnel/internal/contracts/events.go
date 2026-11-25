@@ -43,6 +43,7 @@ const (
 	EvtAgentStatusChanged      EventType = "agent.status-changed"
 	EvtUsageRecorded           EventType = "agent.usage-recorded"
 	EvtAgentModelObserved      EventType = "agent.model-observed"
+	EvtAgentSessionObserved    EventType = "agent.session-observed"
 	EvtSharedContextSet        EventType = "context.shared-set"
 	EvtMailboxPosted           EventType = "mailbox.posted"
 	EvtReviewCommentAdded      EventType = "review.comment-added"
@@ -182,6 +183,8 @@ func UnmarshalPayload(t EventType, data []byte) (EventPayload, error) {
 		return decodePayload[UsageRecorded](data)
 	case EvtAgentModelObserved:
 		return decodePayload[AgentModelObserved](data)
+	case EvtAgentSessionObserved:
+		return decodePayload[AgentSessionObserved](data)
 	case EvtSharedContextSet:
 		return decodePayload[SharedContextSet](data)
 	case EvtMailboxPosted:
@@ -569,6 +572,16 @@ type AgentModelObserved struct {
 }
 
 func (AgentModelObserved) eventType() EventType { return EvtAgentModelObserved }
+
+// AgentSessionObserved records the harness's own session id for an agent's
+// latest run, so the run can be resumed in the harness CLI. Harnesses that
+// keep no session (pi, command code) never send one.
+type AgentSessionObserved struct {
+	AgentID AgentID `json:"agentId"`
+	Session string  `json:"session"`
+}
+
+func (AgentSessionObserved) eventType() EventType { return EvtAgentSessionObserved }
 
 type SharedContextSet struct {
 	Key      string  `json:"key"`

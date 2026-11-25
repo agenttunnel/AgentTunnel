@@ -213,6 +213,13 @@ function apply(s: Wire, ev: ThreadEvent): Wire | null {
       n.agents = { ...s.agents, [id]: { ...prev, model: str(p.model) } };
       return n;
     }
+    case "agent.session-observed": {
+      const id = str(p.agentId);
+      const prev = s.agents?.[id];
+      if (!prev) return null;
+      n.agents = { ...s.agents, [id]: { ...prev, harnessSession: str(p.session) } };
+      return n;
+    }
     case "agent.usage-recorded": {
       const id = str(p.agentId);
       const usage = { ...zeroUsage, ...(p.usage as Partial<TokenUsage> | undefined) };
