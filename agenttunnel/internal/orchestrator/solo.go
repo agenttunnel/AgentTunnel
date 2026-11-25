@@ -121,14 +121,16 @@ func (o *Orchestrator) runSoloTurn(ctx context.Context, threadID contracts.Threa
 
 	o.runner.setStatus(ctx, threadID, id, contracts.AgentSucceeded, "")
 	if strings.TrimSpace(finalText) != "" {
+		msgID := o.runner.nextID()
 		if err := o.runner.engine.Dispatch(ctx, contracts.Command{
 			ID:       o.runner.nextID(),
 			Type:     contracts.CmdMessageAppend,
 			ThreadID: threadID,
-			Message:  &contracts.MessageSent{MessageID: o.runner.nextID(), Author: soloName, Text: finalText},
+			Message:  &contracts.MessageSent{MessageID: msgID, Author: soloName, Text: finalText},
 		}); err != nil {
 			return err
 		}
+		o.runner.saveDeliverable(threadID, msgID, finalText)
 	}
 
 	// The same first-cycle retitle tail as RunTurn: the second generation

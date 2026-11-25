@@ -13,6 +13,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/checkpoint"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deliverables"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/models"
@@ -116,6 +117,8 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	logs := logstore.New(filepath.Join(opts.StateDir, "logs"))
 	notebooks := contextstore.NewNotebookStore(filepath.Join(opts.StateDir, "notebooks"))
+	// Each turn's final answer, as a markdown file per thread.
+	deliverStore := deliverables.New(filepath.Join(opts.StateDir, "deliverables"))
 	ledger := usage.NewLedger()
 	mailbox := contextstore.NewMailbox()
 	// The runtime box is a drained-once delivery buffer, not the gate: the
@@ -154,20 +157,21 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	prefsStore := prefs.Open(filepath.Join(opts.StateDir, "prefs.json"))
 
 	runner := orchestrator.NewRunner(orchestrator.Deps{
-		Engine:    eng,
-		Registry:  opts.Registry,
-		Roles:     opts.Roles,
-		Logs:      logs,
-		Notebooks: notebooks,
-		Ledger:    ledger,
-		Mailbox:   mailbox,
-		Inherited: inherited,
-		Settings:  store,
-		Tools:     box,
-		Steering:  steerBox,
-		Audit:     actions.Func(),
-		ToolPath:  toolPath,
-		Token:     opts.Token,
+		Engine:       eng,
+		Registry:     opts.Registry,
+		Roles:        opts.Roles,
+		Logs:         logs,
+		Notebooks:    notebooks,
+		Deliverables: deliverStore,
+		Ledger:       ledger,
+		Mailbox:      mailbox,
+		Inherited:    inherited,
+		Settings:     store,
+		Tools:        box,
+		Steering:     steerBox,
+		Audit:        actions.Func(),
+		ToolPath:     toolPath,
+		Token:        opts.Token,
 		Endpoint: func() string {
 			if v, ok := endpoint.Load().(string); ok {
 				return v

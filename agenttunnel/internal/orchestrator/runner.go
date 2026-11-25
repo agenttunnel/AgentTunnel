@@ -13,6 +13,7 @@ import (
 	"github.com/agenttunnel/agenttunnel-go/internal/actionlog"
 	"github.com/agenttunnel/agenttunnel-go/internal/contextstore"
 	"github.com/agenttunnel/agenttunnel-go/internal/contracts"
+	"github.com/agenttunnel/agenttunnel-go/internal/deliverables"
 	"github.com/agenttunnel/agenttunnel-go/internal/domain"
 	"github.com/agenttunnel/agenttunnel-go/internal/gitguard"
 	"github.com/agenttunnel/agenttunnel-go/internal/logstore"
@@ -66,6 +67,9 @@ type Deps struct {
 	// Notebooks persists each thread's shared notebook. Nil keeps notebooks
 	// in memory only.
 	Notebooks *contextstore.NotebookStore
+	// Deliverables writes each turn's final answer to a markdown file. Nil
+	// disables the export.
+	Deliverables *deliverables.Store
 	// LaunchThreadTurn runs turns the Runner starts on other threads. Nil
 	// falls back to the Runner's own orchestrator.
 	LaunchThreadTurn LaunchThreadTurnFunc
@@ -110,6 +114,7 @@ type Runner struct {
 	notebookMu    sync.Mutex
 	notebooks     map[contracts.ThreadID]*notebookSlot
 	notebookStore *contextstore.NotebookStore
+	deliverStore  *deliverables.Store
 
 	// btwSessions holds each thread's /btw side-conversation memory. The
 	// runner is shared daemon-wide, so a session is keyed by thread ID, never
@@ -159,6 +164,7 @@ func NewRunner(d Deps) *Runner {
 		steers:        newSteerQueue(),
 		notebooks:     map[contracts.ThreadID]*notebookSlot{},
 		notebookStore: d.Notebooks,
+		deliverStore:  d.Deliverables,
 		btwSessions:   map[contracts.ThreadID]*btwSession{},
 		launchTurn:    d.LaunchThreadTurn,
 	}
@@ -1333,6 +1339,17 @@ func (r *Runner) setSharedContext(ctx context.Context, threadID contracts.Thread
 }
 
 func (r *Runner) nextID() string { return fmt.Sprintf("cmd-%d", r.seq.Add(1)) }
+
+// saveDeliverable writes a turn's final answer to its markdown deliverable. A
+// failed write is audited, never fatal: the answer is already in the thread.
+func (r *Runner) saveDeliverable(threadID contracts.ThreadID, messageID, text string) {
+	if r.deliverStore == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if _, err := r.deliverStore.Write(string(threadID), r.clock(), messageID, text); err != nil {
+		r.auditLog("deliverable.error", map[string]any{"thread": string(threadID), "error": err.Error()})
+	}
+}
 
 // publishOutput streams one agent output line to the thread's subscribers. Only
 // human-meaningful kinds are streamed; usage and raw frames stay in the log.

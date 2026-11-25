@@ -670,14 +670,16 @@ func (o *Orchestrator) RunTurn(ctx context.Context, threadID contracts.ThreadID,
 	// signal, and everything the turn left behind must be durable by then or
 	// a dependent schedule compiles its results a beat too early.
 	if strings.TrimSpace(finalText) != "" {
+		msgID := o.runner.nextID()
 		if err := o.runner.engine.Dispatch(ctx, contracts.Command{
 			ID:       o.runner.nextID(),
 			Type:     contracts.CmdMessageAppend,
 			ThreadID: threadID,
-			Message:  &contracts.MessageSent{MessageID: o.runner.nextID(), Author: "orchestrator", Text: finalText},
+			Message:  &contracts.MessageSent{MessageID: msgID, Author: "orchestrator", Text: finalText},
 		}); err != nil {
 			return err
 		}
+		o.runner.saveDeliverable(threadID, msgID, finalText)
 	}
 	for _, id := range t.leads {
 		o.runner.setStatus(ctx, threadID, id, contracts.AgentSucceeded, "")
