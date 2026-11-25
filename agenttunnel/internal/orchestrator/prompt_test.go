@@ -187,3 +187,18 @@ func TestOrchestratorPromptAsksForAcceptanceChecks(t *testing.T) {
 		t.Fatalf("final pass should not carry the acceptance line:\n%s", got)
 	}
 }
+
+// The lead is encouraged to explain its work with a Mermaid diagram on both the
+// closing pass and an ordinary summary, since the desktop app renders the fence.
+func TestOrchestratorPromptEncouragesMermaid(t *testing.T) {
+	const fence = "```mermaid"
+	role := contracts.Role{SystemPrompt: "lead"}
+	for _, in := range []OrchestratorPrompt{
+		{Role: role, UserMessage: "go"},
+		{Role: role, UserMessage: "go", Final: true},
+	} {
+		if got := BuildOrchestratorPrompt(in); !strings.Contains(got, fence) {
+			t.Fatalf("final=%v prompt lacks the mermaid note:\n%s", in.Final, got)
+		}
+	}
+}
