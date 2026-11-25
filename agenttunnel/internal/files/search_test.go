@@ -98,17 +98,17 @@ func TestSearchSkipsHeavyDirsOutsideRepo(t *testing.T) {
 	}
 }
 
-func TestSearchCapsResults(t *testing.T) {
+func TestSearchReturnsEveryMatchUnlessLimited(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 60; i++ {
 		writeFile(t, dir, "f"+string(rune('a'+i%26))+strings.Repeat("x", i/26)+".txt", "x")
 	}
-	got, err := Search(t.Context(), dir, "", 1000)
+	got, err := Search(t.Context(), dir, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != MaxSearchResults {
-		t.Fatalf("len = %d, want cap %d", len(got), MaxSearchResults)
+	if len(got) != 60 {
+		t.Fatalf("len = %d, want all 60 files", len(got))
 	}
 	got, err = Search(t.Context(), dir, "", 5)
 	if err != nil {
@@ -116,6 +116,22 @@ func TestSearchCapsResults(t *testing.T) {
 	}
 	if len(got) != 5 {
 		t.Fatalf("len = %d, want the requested 5", len(got))
+	}
+}
+
+func TestSearchPutsCurrentLevelFirst(t *testing.T) {
+	dir := t.TempDir()
+	// The deeper file is a much tighter match for "sess"; the top-level file
+	// only matches scattered letters. Top level still comes first.
+	writeFile(t, dir, "pkg/auth/session.go", "x")
+	writeFile(t, dir, "s-e-s-s.txt", "x")
+
+	got, err := Search(t.Context(), dir, "sess", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Path != "s-e-s-s.txt" {
+		t.Fatalf("results = %v, want top-level s-e-s-s.txt first", paths(got))
 	}
 }
 
