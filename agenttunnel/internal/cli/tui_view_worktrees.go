@@ -186,7 +186,7 @@ func init() {
 			return tuiWorktreesOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"↑/↓", "select"}, {"x", "remove"}, {"P", "prune"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"↑/↓", "select"}, {"x", "remove"}, {"P", "prune"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }

@@ -514,7 +514,7 @@ func (m *tuiModel) daemonRow(withVersion bool) tuiRow {
 // when the row cannot hold all three with at least one blank before the label.
 func (m *tuiModel) headerTabs(mark, right tuiRow, cols int) tuiRow {
 	bar := tuiInk{bg: tuiColBar}
-	ids, leftCut, rightCut := tuiWindowTabs(tuiViewOrder(), m.view, cols-mark.width()-right.width()-1)
+	ids, leftCut, rightCut := tuiWindowTabs(tuiViewOrder(), m.view, cols-mark.width()-right.width()-1, m.tabBadge)
 	row := mark
 	if leftCut {
 		row = row.join(tuiText("…", tuiInk{fg: tuiColFaint, bg: tuiColBar}), tuiText(" ", bar))
@@ -524,7 +524,11 @@ func (m *tuiModel) headerTabs(mark, right tuiRow, cols int) tuiRow {
 		if id == m.view {
 			ink = tuiInk{fg: tuiColInk, bg: tuiColSelect, bold: true}
 		}
-		row = row.join(tuiText(" "+tuiTabTitle(id)+" ", ink), tuiText(" ", bar))
+		row = row.join(tuiText(" "+tuiTabTitle(id)+" ", ink))
+		if badge := m.tabBadge(id); badge != "" {
+			row = row.join(tuiText(badge+" ", tuiInk{fg: tuiColAccent, bg: tuiColBar, bold: true}))
+		}
+		row = row.join(tuiText(" ", bar))
 	}
 	if rightCut {
 		row = row.join(tuiText("…", tuiInk{fg: tuiColFaint, bg: tuiColBar}), tuiText(" ", bar))
@@ -538,19 +542,45 @@ func (m *tuiModel) headerTabs(mark, right tuiRow, cols int) tuiRow {
 
 // tuiTabCells is one tab's width in the header: a space of padding each side
 // of the title plus the separator space after it.
-func tuiTabCells(id string) int {
-	return stringCells(tuiTabTitle(id)) + 3
+func tuiTabCells(id, badge string) int {
+	cells := stringCells(tuiTabTitle(id)) + 3
+	if badge != "" {
+		cells += stringCells(badge) + 1
+	}
+	return cells
+}
+
+// tabBadge is the small count after a tab's title: the Threads tab says how
+// many threads are working, or how many are waiting to be read, so the bar
+// answers "is anything happening" from any tab.
+func (m *tuiModel) tabBadge(id string) string {
+	if id != tuiThreadsViewID {
+		return ""
+	}
+	running := 0
+	for _, row := range m.rows {
+		if row.thread.RunningAgents > 0 {
+			running++
+		}
+	}
+	if running > 0 {
+		return fmt.Sprintf("●%d", running)
+	}
+	if n := m.unreadCount(); n > 0 {
+		return fmt.Sprintf("%d new", n)
+	}
+	return ""
 }
 
 // tuiWindowTabs picks the tabs the header shows when they cannot all fit:
 // a window around the active one, with an ellipsis standing for each hidden
 // run. Two cells per possible ellipsis are reserved before fitting tabs, so
 // the markers never steal the daemon label's space.
-func tuiWindowTabs(order []string, active string, budget int) (ids []string, leftCut, rightCut bool) {
+func tuiWindowTabs(order []string, active string, budget int, badge func(string) string) (ids []string, leftCut, rightCut bool) {
 	widths := make([]int, len(order))
 	total := 0
 	for i, id := range order {
-		widths[i] = tuiTabCells(id)
+		widths[i] = tuiTabCells(id, badge(id))
 		total += widths[i]
 	}
 	if total <= budget {
@@ -607,13 +637,16 @@ func (m *tuiModel) hints(cols, rows int) []tuiHint {
 		if len(v.Hints) > 0 {
 			return v.Hints
 		}
-		return []tuiHint{{"tab", "views"}, {"esc", "threads"}, {"ctrl+k", "commands"}, {"q", "quit"}}
+		return []tuiHint{{"←/→", "tabs"}, {"esc", "threads"}, {"ctrl+k", "commands"}, {"q", "quit"}}
 	}
 	if m.pane != nil && m.screen == tuiScreenThread {
-		return []tuiHint{{"pgup/pgdn", "scroll"}, {"esc", "close"}}
+		return []tuiHint{{"pgup/pgdn", "scroll"}, {"←/→", "tabs"}, {"esc", "close"}}
 	}
 	if m.screen == tuiScreenThread {
 		hints := []tuiHint{{"enter", "send"}, {"alt+enter", "newline"}, {"tab", "views"}, {"esc", "back"}}
+		if m.input.empty() {
+			hints[2] = tuiHint{"←/→", "tabs"}
+		}
 		if m.sideFits(rows) && !m.sideShown(cols, rows) {
 			hints = append(hints, tuiHint{"ctrl+b", "sidebar"})
 		}
@@ -622,13 +655,30 @@ func (m *tuiModel) hints(cols, rows int) []tuiHint {
 	if m.filtering() {
 		return []tuiHint{{"enter", "keep filter"}, {"esc", "clear"}}
 	}
-	return []tuiHint{{"↑/↓", "select"}, {"enter", "open"}, {"n", "new"}, {"/", "filter"}, {"tab", "views"}, {"r", "refresh"}, {"ctrl+k", "commands"}, {"q", "quit"}}
+	hints := []tuiHint{{"↑/↓", "select"}, {"enter", "open"}, {"n", "new"}, {"s", "new solo"}, {"/", "filter"}, {"←/→", "tabs"}}
+	if len(m.rows) > 0 && m.sideFits(rows) && cols >= tuiPreviewMinCols {
+		hints = append(hints, tuiHint{"ctrl+b", "preview"})
+	}
+	return append(hints, tuiHint{"ctrl+k", "commands"}, tuiHint{"q", "quit"})
 }
 
 // renderList draws the thread list the way opencode's session picker looks: a
 // quiet heading, then one row per thread with the selected one washed in the
 // primary color. No frame; the rows own the width.
 func (m *tuiModel) renderList(cols, rows int) []tuiRow {
+	m.side.paintCols, m.side.paintRows = cols, rows
+	sel, ok := m.selected()
+	if !ok || !m.previewShown(cols, rows) {
+		return m.renderListRows(cols, rows)
+	}
+	// The selected thread's preview takes the sidebar's place beside the list.
+	mainCols := cols - tuiSideWidth
+	side := append([]tuiRow{nil}, m.previewRows(sel, tuiSideWidth-2)...)
+	return tuiBeside(m.renderListRows(mainCols, rows), mainCols, side, tuiSideWidth-2)
+}
+
+// renderListRows is the list itself, cols wide.
+func (m *tuiModel) renderListRows(cols, rows int) []tuiRow {
 	if rows < 1 || cols < 4 {
 		return fitRows(nil, rows)
 	}
@@ -653,7 +703,7 @@ func (m *tuiModel) renderList(cols, rows int) []tuiRow {
 	}
 	switch {
 	case len(m.rows) == 0:
-		out = append(out, m.homeRows(cols, rows-len(out), "press n to start a thread")...)
+		out = append(out, m.homeRows(cols, rows-len(out), "press n to start a thread, or s for a solo one")...)
 	case len(list) == 0:
 		out = append(out, tuiText("  no thread matches the filter · esc clears it", tuiInk{fg: tuiColFaint}).fit(cols))
 	case rows-len(out) >= 1:
@@ -694,6 +744,7 @@ func (m *tuiModel) listRow(row psRow, width int, selected bool) tuiRow {
 		tuiText("  ", tuiInk{}),
 		tuiText(title, titleInk),
 		tuiText("  ", tuiInk{}),
+		tuiSoloBadge(row.thread),
 		tuiText(row.project, tuiInk{fg: tuiColDim}),
 		tuiText("  ", tuiInk{}),
 		tuiText(status, tuiStatusInk(status)),
@@ -859,7 +910,7 @@ func (m *tuiModel) threadStatus() tuiRow {
 		}
 	}
 	status := threadRowStatus(row)
-	return tuiText("● ", tuiStatusInk(status)).join(
+	return tuiSoloBadge(row).join(tuiText("● ", tuiStatusInk(status))).join(
 		tuiText(status, tuiStatusInk(status)),
 		tuiText(fmt.Sprintf("  %d/%d agents", row.RunningAgents, row.Agents), tuiInk{fg: tuiColDim}),
 	)

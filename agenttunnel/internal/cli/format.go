@@ -28,7 +28,16 @@ type threadListRow struct {
 	RunningAgents  int       `json:"runningAgents"`
 	Stale          bool      `json:"stale"`
 	ParentThreadID string    `json:"parentThreadId,omitempty"`
+	// SoloRuntime is set while the thread runs one agent with no orchestrator
+	// team. FirstPrompt, Branch and Archived feed the list's preview pane.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
+	FirstPrompt string                 `json:"firstPrompt,omitempty"`
+	Worktree    *contracts.WorktreeRef `json:"worktree,omitempty"`
+	Archived    bool                   `json:"archived,omitempty"`
 }
+
+// solo reports whether the thread runs in solo mode.
+func (r threadListRow) solo() bool { return r.SoloRuntime != nil }
 
 // threadRowStatus is docker-ps's STATUS word: a thread with an agent in flight
 // is running, an old idle one is stale, everything else is idle.

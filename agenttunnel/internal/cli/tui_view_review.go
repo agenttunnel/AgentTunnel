@@ -294,7 +294,7 @@ func init() {
 			return tuiReviewOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"↑/↓", "move"}, {"c", "comment"}, {"s", "submit"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"↑/↓", "move"}, {"c", "comment"}, {"s", "submit"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }

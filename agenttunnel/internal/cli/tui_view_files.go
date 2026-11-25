@@ -410,7 +410,7 @@ func init() {
 		},
 		Hints: []tuiHint{
 			{"↑/↓", "move"}, {"enter", "open"}, {"h", "collapse"}, {"/", "search"},
-			{"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }

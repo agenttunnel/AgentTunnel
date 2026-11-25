@@ -84,7 +84,7 @@ func TestTUIViewTabsCycleAndRender(t *testing.T) {
 	if !strings.Contains(frame, " Notes ") || !strings.Contains(frame, "notes body") {
 		t.Fatalf("notes tab not drawn:\n%s", frame)
 	}
-	if !strings.Contains(frame, "tab views") {
+	if !strings.Contains(frame, "←/→ tabs") {
 		t.Fatalf("view footer missing the tab hint:\n%s", frame)
 	}
 
@@ -143,7 +143,8 @@ func TestTUIPaletteFiltersRunsAndCloses(t *testing.T) {
 	for _, a := range m.paletteMatches() {
 		titles = append(titles, a.Title)
 	}
-	if strings.Join(titles, "|") != "Show Notes|Notes: clear" {
+	// Loose matches of the long command names may trail; the view's own come first.
+	if len(titles) < 2 || strings.Join(titles[:2], "|") != "Show Notes|Notes: clear" {
 		t.Fatalf("filter 'notes' matched %q", titles)
 	}
 

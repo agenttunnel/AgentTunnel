@@ -264,7 +264,7 @@ func init() {
 		},
 		Hints: []tuiHint{
 			{"c", "commit"}, {"p", "push"}, {"l", "pull"}, {"n", "open request"},
-			{"d", "ready"}, {"M", "merge"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"d", "ready"}, {"M", "merge"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }

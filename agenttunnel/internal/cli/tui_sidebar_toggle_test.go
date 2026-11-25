@@ -222,7 +222,7 @@ func TestTUISidebarChoiceSurvivesResizeThroughTheSession(t *testing.T) {
 	run.term.waitNextDraw(t, containsLine("Agents"))
 
 	term.Resize(120, 30)
-	run.keys <- tuiKey{Kind: keyLeft}
+	run.keys <- tuiKey{Kind: keyHome}
 	frame := run.term.waitNextDraw(t, widthIs(120, containsLine("Agents")))
 	if !strings.Contains(frame, "Agents") {
 		t.Fatalf("the sidebar the user showed hid when the terminal widened:\n%s", frame)
@@ -232,7 +232,7 @@ func TestTUISidebarChoiceSurvivesResizeThroughTheSession(t *testing.T) {
 	run.term.waitNextDraw(t, widthIs(120, containsLine("ctrl+b sidebar")))
 
 	term.Resize(80, 30)
-	run.keys <- tuiKey{Kind: keyLeft}
+	run.keys <- tuiKey{Kind: keyHome}
 	frame = run.term.waitNextDraw(t, widthIs(80, containsLine("ctrl+b sidebar")))
 	if strings.Contains(frame, "Agents") {
 		t.Fatalf("the sidebar the user hid came back when the terminal narrowed:\n%s", frame)

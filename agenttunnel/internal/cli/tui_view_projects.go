@@ -137,7 +137,7 @@ func init() {
 			return tuiProjectsOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"↑/↓", "select"}, {"a", "add"}, {"x", "remove"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"↑/↓", "select"}, {"a", "add"}, {"x", "remove"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }
@@ -272,7 +272,7 @@ func init() {
 			return tuiIssuesOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"↑/↓", "select"}, {"enter", "details"}, {"r", "reload"}, {"tab", "views"}, {"esc", "threads"},
+			{"↑/↓", "select"}, {"enter", "details"}, {"r", "reload"}, {"←/→", "tabs"}, {"esc", "threads"},
 		},
 	})
 }

@@ -28,6 +28,7 @@ type tuiThreadCommand struct {
 func tuiThreadCommands() []tuiThreadCommand {
 	return []tuiThreadCommand{
 		{name: "new", title: "Threads: new thread", onList: true, run: tuiNewThread},
+		{name: "new-solo", title: "Threads: new solo thread", onList: true, run: tuiNewSoloThread},
 		{name: "new-project", title: "Projects: new project", onList: true, run: func(m *tuiModel, _ string) {
 			m.openNewProject(nil)
 		}},
@@ -41,7 +42,8 @@ func tuiThreadCommands() []tuiThreadCommand {
 		{name: "delete", title: "Thread: delete", run: tuiDelete},
 		{name: "auto", title: "Thread: toggle auto mode", run: tuiAutoMode},
 		{name: "peer", title: "Thread: toggle peer mailbox", run: tuiPeerMailbox},
-		{name: "solo", title: "Thread: set solo runtime", run: tuiSolo},
+		{name: "solo", args: "[off|<harness> [model]]", title: "Thread: toggle solo mode", run: tuiSolo},
+		{name: "solo-runtime", title: "Thread: choose the solo harness and model", run: tuiSoloPick},
 		{name: "lead", title: "Thread: set lead runtime", run: tuiLead},
 		{name: "role", title: "Thread: set a role's runtime", run: tuiRole},
 		{name: "schedule", title: "Thread: schedule after other threads", run: tuiSchedule},
@@ -233,14 +235,16 @@ func (m *tuiModel) resolveThreadRefs(refs string) ([]string, error) {
 
 // tuiThreadState is the part of thread.get the thread menus read.
 type tuiThreadState struct {
-	Title       string          `json:"title"`
-	Archived    bool            `json:"archived"`
-	AutoMode    bool            `json:"autoMode"`
-	PeerMailbox bool            `json:"peerMailbox"`
-	Leads       int             `json:"leads"`
-	Messages    []tuiMessageRow `json:"messages"`
-	Mailbox     []tuiMailboxRow `json:"mailbox"`
-	Tasks       []tuiTaskRow    `json:"tasks"`
+	Title       string `json:"title"`
+	Archived    bool   `json:"archived"`
+	AutoMode    bool   `json:"autoMode"`
+	PeerMailbox bool   `json:"peerMailbox"`
+	Leads       int    `json:"leads"`
+	// SoloRuntime is set while the thread runs one agent with no team.
+	SoloRuntime *contracts.LeadRuntime `json:"soloRuntime,omitempty"`
+	Messages    []tuiMessageRow        `json:"messages"`
+	Mailbox     []tuiMailboxRow        `json:"mailbox"`
+	Tasks       []tuiTaskRow           `json:"tasks"`
 }
 
 type tuiMessageRow struct {
@@ -358,11 +362,20 @@ func tuiRuntimeJob(threadID, method, ok string, rt contracts.LeadRuntime, extra 
 // pickRuntime walks the runtime menus: harness first, where the default clears
 // the runtime, then model. done receives the chosen runtime.
 func (m *tuiModel) pickRuntime(title string, done func(m *tuiModel, rt contracts.LeadRuntime)) {
+	m.pickRuntimeOrClear(title, "(default)", done)
+}
+
+// pickRuntimeOrClear is pickRuntime with the clearing entry worded for what
+// clearing means there; an empty clear omits it, so the pick must be a harness.
+func (m *tuiModel) pickRuntimeOrClear(title, clear string, done func(m *tuiModel, rt contracts.LeadRuntime)) {
 	if m.catalog == nil {
-		m.startJob(tuiCatalogJob(func(m *tuiModel) { m.pickRuntime(title, done) }))
+		m.startJob(tuiCatalogJob(func(m *tuiModel) { m.pickRuntimeOrClear(title, clear, done) }))
 		return
 	}
-	items := []tuiPickItem{{"(default)", ""}}
+	var items []tuiPickItem
+	if clear != "" {
+		items = append(items, tuiPickItem{clear, ""})
+	}
 	for _, h := range m.catalog.Enabled {
 		items = append(items, tuiPickItem{string(h), string(h)})
 	}
@@ -397,7 +410,15 @@ func (m *tuiModel) pickModel(title string, h contracts.Harness, done func(m *tui
 
 // --- Commands ---
 
-func tuiNewThread(m *tuiModel, _ string) {
+func tuiNewThread(m *tuiModel, _ string) { m.newThread(false) }
+
+// tuiNewSoloThread starts a thread that runs one agent on a harness chosen up
+// front, with no orchestrator team.
+func tuiNewSoloThread(m *tuiModel, _ string) { m.newThread(true) }
+
+// newThread picks the project, then for a solo thread its harness and model,
+// and creates the draft the composer opens on.
+func (m *tuiModel) newThread(solo bool) {
 	m.startJob(func(ctx context.Context, c cliCaller) func(*tuiModel) {
 		var projects []projectsRow
 		if err := c.Call(ctx, "project.list", nil, &projects); err != nil {
@@ -409,12 +430,25 @@ func tuiNewThread(m *tuiModel, _ string) {
 				items = append(items, tuiPickItem{projectLabel(p), p.ID})
 			}
 			items = append(items, tuiPickItem{"New project…", ""})
-			m.openPicker("new thread in", items, func(m *tuiModel, projectID string) {
-				if projectID == "" {
-					m.openNewProject(func(m *tuiModel, id string) { m.startJob(tuiDraftJob(id)) })
+			title := "new thread in"
+			if solo {
+				title = "new solo thread in"
+			}
+			create := func(m *tuiModel, projectID string) {
+				if !solo {
+					m.startJob(tuiDraftJob(projectID, nil))
 					return
 				}
-				m.startJob(tuiDraftJob(projectID))
+				m.pickRuntimeOrClear("solo harness", "", func(m *tuiModel, rt contracts.LeadRuntime) {
+					m.startJob(tuiDraftJob(projectID, &rt))
+				})
+			}
+			m.openPicker(title, items, func(m *tuiModel, projectID string) {
+				if projectID == "" {
+					m.openNewProject(create)
+					return
+				}
+				create(m, projectID)
 			})
 		}
 	})
@@ -484,13 +518,19 @@ func tuiCreateProjectJob(name, path string, then func(m *tuiModel, projectID str
 
 // tuiDraftJob creates an empty thread in a project and opens it. A draft cuts
 // its worktree on the first turn, so an unused draft leaves nothing behind.
-func tuiDraftJob(projectID string) tuiJob {
+func tuiDraftJob(projectID string, solo *contracts.LeadRuntime) tuiJob {
 	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
 		var res struct {
 			ThreadID string `json:"threadId"`
 		}
 		if err := c.Call(ctx, "thread.create", map[string]any{"projectId": projectID, "draft": true}, &res); err != nil {
 			return tuiNote("", "thread.create: "+err.Error())
+		}
+		if solo != nil {
+			params := map[string]any{"threadId": res.ThreadID, "harness": solo.Harness, "model": solo.Model, "variant": solo.Variant}
+			if err := c.Call(ctx, "thread.setSolo", params, nil); err != nil {
+				return tuiNote("", "thread.setSolo: "+err.Error())
+			}
 		}
 		return func(m *tuiModel) {
 			m.openID = res.ThreadID
@@ -731,14 +771,94 @@ func tuiPeerMailbox(m *tuiModel, _ string) {
 		func(on bool) string { return "peer mailbox " + tuiOnOff(on) }))
 }
 
-func tuiSolo(m *tuiModel, _ string) {
+// tuiSolo is /solo: with no argument it flips solo mode the way the desktop
+// toggle does, "off" turns it off, and "<harness> [model]" turns it on there.
+func tuiSolo(m *tuiModel, arg string) {
 	if m.screen != tuiScreenThread {
 		return
 	}
 	id := m.thread.ID
-	m.pickRuntime("solo runtime (default clears it)", func(m *tuiModel, rt contracts.LeadRuntime) {
-		m.startJob(tuiRuntimeJob(id, "thread.setSolo", "solo runtime updated", rt, nil))
+	fields := strings.Fields(arg)
+	switch {
+	case len(fields) == 0:
+		m.startJob(tuiSoloToggleJob(id))
+	case len(fields) == 1 && fields[0] == "off":
+		m.startJob(tuiSoloSetJob(id, contracts.LeadRuntime{}))
+	default:
+		rt := contracts.LeadRuntime{Harness: contracts.Harness(fields[0]), Model: strings.Join(fields[1:], " ")}
+		m.startJob(tuiSoloSetJob(id, rt))
+	}
+}
+
+// tuiSoloPick is /solo-runtime: the harness and model menus, with the first
+// entry turning solo mode off.
+func tuiSoloPick(m *tuiModel, _ string) {
+	if m.screen != tuiScreenThread {
+		return
+	}
+	id := m.thread.ID
+	m.pickRuntimeOrClear("solo harness", "(off: orchestrator team)", func(m *tuiModel, rt contracts.LeadRuntime) {
+		m.startJob(tuiSoloSetJob(id, rt))
 	})
+}
+
+// tuiSoloSetJob sets the thread's solo runtime and says what it is now. An
+// empty harness turns solo mode off, so the daemon's own rule is the one used.
+func tuiSoloSetJob(threadID string, rt contracts.LeadRuntime) tuiJob {
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		params := map[string]any{"threadId": threadID, "harness": rt.Harness, "model": rt.Model, "variant": rt.Variant}
+		if err := c.Call(ctx, "thread.setSolo", params, nil); err != nil {
+			return tuiNote(threadID, "thread.setSolo: "+err.Error())
+		}
+		return func(m *tuiModel) {
+			if !m.onThread(threadID) {
+				return
+			}
+			if rt.Harness == "" {
+				m.thread.SoloRuntime = nil
+				m.appendLogLines("solo mode off: the orchestrator team runs the next turn")
+				return
+			}
+			m.thread.SoloRuntime = &rt
+			m.appendLogLines("solo mode on: " + tuiRuntime(string(rt.Harness), rt.Model, rt.Variant) + " runs the next turn alone")
+		}
+	}
+}
+
+// tuiSoloToggleJob turns solo off when it is on. Turning it on picks the
+// harness the desktop does: the orchestrator role's, else the lead's, else the
+// first enabled one.
+func tuiSoloToggleJob(threadID string) tuiJob {
+	return func(ctx context.Context, c cliCaller) func(*tuiModel) {
+		st, err := fetchTuiThreadState(ctx, c, threadID)
+		if err != nil {
+			return tuiNote(threadID, "thread.get: "+err.Error())
+		}
+		if st.SoloRuntime != nil {
+			return tuiSoloSetJob(threadID, contracts.LeadRuntime{})(ctx, c)
+		}
+		var cfg tuiSettingsWire
+		var cat tuiCatalog
+		if err := c.Call(ctx, "settings.get", nil, &cfg); err != nil {
+			return tuiNote(threadID, "settings.get: "+err.Error())
+		}
+		if err := c.Call(ctx, "harness.list", nil, &cat); err != nil {
+			return tuiNote(threadID, "harness.list: "+err.Error())
+		}
+		harness := cfg.Lead.Harness
+		for _, r := range cfg.Roles {
+			if r.ID == "orchestrator" && r.Harness != "" {
+				harness = r.Harness
+			}
+		}
+		if harness == "" && len(cat.Enabled) > 0 {
+			harness = string(cat.Enabled[0])
+		}
+		if harness == "" {
+			return tuiNote(threadID, "no harness is enabled: pick one with /solo <harness>")
+		}
+		return tuiSoloSetJob(threadID, contracts.LeadRuntime{Harness: contracts.Harness(harness)})(ctx, c)
+	}
 }
 
 func tuiLead(m *tuiModel, _ string) {

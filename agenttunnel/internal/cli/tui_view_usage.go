@@ -198,7 +198,7 @@ func init() {
 			return tuiUsageOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"↑/↓", "scroll"}, {"r", "refresh limits"}, {"tab", "views"}, {"esc", "threads"}, {"q", "quit"},
+			{"↑/↓", "scroll"}, {"r", "refresh limits"}, {"←/→", "tabs"}, {"esc", "threads"}, {"q", "quit"},
 		},
 	})
 }

@@ -305,7 +305,7 @@ func init() {
 			return tuiMasterOf(m).key(m, k)
 		},
 		Hints: []tuiHint{
-			{"enter", "open / send"}, {"n", "new"}, {"d", "delete"}, {"esc", "back"}, {"pgup/pgdn", "scroll"}, {"tab", "views"},
+			{"enter", "open / send"}, {"n", "new"}, {"d", "delete"}, {"esc", "back"}, {"pgup/pgdn", "scroll"}, {"←/→", "tabs"},
 		},
 	})
 }
