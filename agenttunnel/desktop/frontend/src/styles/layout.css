@@ -281,11 +281,3 @@
   }
 }
 
-/* --- very wide: the composer keeps a readable measure ---------------------- */
-/* Messages hold a 900px column; on a 2K+ window the composer would otherwise
- * stretch two thousand pixels. It stays centered at a comfortable width. */
-@media (min-width: 1600px) {
-  .composer {
-    padding-inline: max(20px, calc((100% - 1100px) / 2));
-  }
-}
