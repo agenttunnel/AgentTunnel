@@ -1533,6 +1533,14 @@ export default function App() {
     if (!rpc) return Promise.reject(new Error("Not connected to the daemon"));
     return rpc.call(method, params).then(() => undefined);
   };
+  /** Records a change to one thread's setting: undo restores `before`, redo
+   * reapplies `after`, both through the same RPC. */
+  const recordSetting = (label: string, method: string, threadId: string, before: object, after: object) =>
+    history.record({
+      label,
+      undo: () => callDaemon(method, { threadId, ...before }),
+      redo: () => callDaemon(method, { threadId, ...after }),
+    });
 
   const beginRename = (t: ThreadSummary) => {
     setRenameTarget(t);
@@ -2330,9 +2338,19 @@ export default function App() {
   const renameDraft = (id: string, title: string) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
+    const from = threads.find((t) => t.id === id)?.title;
     rpc
       .call("thread.rename", { threadId: id, title })
-      .then(() => reloadBoardThreads())
+      .then(() => {
+        if (from && from !== title) {
+          history.record({
+            label: "rename",
+            undo: () => callDaemon("thread.rename", { threadId: id, title: from }),
+            redo: () => callDaemon("thread.rename", { threadId: id, title }),
+          });
+        }
+        return reloadBoardThreads();
+      })
       .catch((e) => setError(e instanceof Error ? e.message : String(e), null));
   };
   const newDraft = async () => {
@@ -2724,8 +2742,10 @@ export default function App() {
   const setAutoApprovedModels = async (models: Record<string, string[]>) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
+    const before = thread?.id === activeId ? (thread.autoApprovedModels ?? {}) : null;
     try {
       await rpc.call("thread.setAutoApprovedModels", { threadId: activeId, models });
+      if (before) recordSetting("auto-approved models", "thread.setAutoApprovedModels", activeId, { models: before }, { models });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -2736,8 +2756,10 @@ export default function App() {
   const setStatusPeriod = async (seconds: number) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
+    const before = thread?.id === activeId ? (thread.statusPeriodSeconds ?? 0) : null;
     try {
       await rpc.call("thread.setStatusPeriod", { threadId: activeId, seconds });
+      if (before !== null) recordSetting("status period", "thread.setStatusPeriod", activeId, { seconds: before }, { seconds });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -2750,25 +2772,42 @@ export default function App() {
   const scheduleThread = useCallback(async (dependsOn: string[], prompt: string) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
-    await rpc.call("thread.schedule", { threadId: activeId, dependsOn, prompt });
+    const threadId = activeId;
+    await rpc.call("thread.schedule", { threadId, dependsOn, prompt });
+    history.record({
+      label: "schedule",
+      undo: () => callDaemon("thread.unschedule", { threadId }),
+      redo: () => callDaemon("thread.schedule", { threadId, dependsOn, prompt }),
+    });
     refresh(activeId).catch(() => undefined);
-  }, [activeId, refresh]);
+  }, [activeId, refresh, history.record]);
 
   /** Cancels the active thread's schedule, back to a plain thread. */
   const unscheduleThread = useCallback(async () => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
-    await rpc.call("thread.unschedule", { threadId: activeId });
+    const threadId = activeId;
+    const waiting = threads.find((t) => t.id === threadId)?.waiting;
+    await rpc.call("thread.unschedule", { threadId });
+    if (waiting) {
+      history.record({
+        label: "cancel schedule",
+        undo: () => callDaemon("thread.schedule", { threadId, dependsOn: waiting.dependsOn, prompt: waiting.prompt }),
+        redo: () => callDaemon("thread.unschedule", { threadId }),
+      });
+    }
     refresh(activeId).catch(() => undefined);
-  }, [activeId, refresh]);
+  }, [activeId, refresh, threads, history.record]);
 
   /** Grows the lead team by one from the next turn on. */
   const addLead = async (count: number) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId || addingLead) return;
     setAddingLead(true);
+    const before = thread?.id === activeId ? Math.max(thread.leads ?? 1, 1) : null;
     try {
       await rpc.call("thread.setLeads", { threadId: activeId, count });
+      if (before !== null) recordSetting("lead count", "thread.setLeads", activeId, { count: before }, { count });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -2781,14 +2820,17 @@ export default function App() {
   const setLeadRuntime = async (index: number, rt: LeadRuntimeView) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
+    const runtime = (r?: LeadRuntimeView | null) => ({
+      harness: r?.harness ?? "",
+      model: r?.model ?? "",
+      variant: r?.variant ?? "",
+    });
+    const before = thread?.id === activeId ? runtime(thread.leadRuntimes?.[index]) : null;
     try {
-      await rpc.call("thread.setLeadRuntime", {
-        threadId: activeId,
-        index,
-        harness: rt.harness ?? "",
-        model: rt.model ?? "",
-        variant: rt.variant ?? "",
-      });
+      await rpc.call("thread.setLeadRuntime", { threadId: activeId, index, ...runtime(rt) });
+      if (before) {
+        recordSetting("lead runtime", "thread.setLeadRuntime", activeId, { index, ...before }, { index, ...runtime(rt) });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -2800,13 +2842,15 @@ export default function App() {
   const setSolo = async (rt: LeadRuntimeView | null) => {
     const rpc = rpcRef.current;
     if (!rpc || !activeId) return;
+    const runtime = (r?: LeadRuntimeView | null) => ({
+      harness: r?.harness ?? "",
+      model: r?.model ?? "",
+      variant: r?.variant ?? "",
+    });
+    const before = thread?.id === activeId ? runtime(thread.soloRuntime) : null;
     try {
-      await rpc.call("thread.setSolo", {
-        threadId: activeId,
-        harness: rt?.harness ?? "",
-        model: rt?.model ?? "",
-        variant: rt?.variant ?? "",
-      });
+      await rpc.call("thread.setSolo", { threadId: activeId, ...runtime(rt) });
+      if (before) recordSetting(rt ? "solo mode" : "solo mode off", "thread.setSolo", activeId, before, runtime(rt));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -3146,14 +3190,17 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [projectId, activeId]);
-  // Cmd/Ctrl+Z steps back through reversible changes, Cmd/Ctrl+Shift+Z forward.
+  // Cmd/Ctrl+Z steps back through reversible changes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) forward.
   // Text fields keep their own undo, so the keystroke is ignored while typing.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.altKey || e.isComposing) return;
-      if (e.key.toLowerCase() !== "z" || isTyping(e.target)) return;
+      const key = e.key.toLowerCase();
+      // Ctrl+Y is redo off macOS, as in VS Code.
+      const redo = key === "y" ? e.ctrlKey && !e.metaKey && !e.shiftKey : key === "z" && e.shiftKey;
+      if ((key !== "z" && !redo) || isTyping(e.target)) return;
       e.preventDefault();
-      if (e.shiftKey) history.redo();
+      if (redo) history.redo();
       else history.undo();
     };
     window.addEventListener("keydown", onKey);
@@ -3249,15 +3296,23 @@ export default function App() {
     );
   }, []);
 
-  const persistRole = useCallback(async (row: RoleConfigView) => {
+  /** Saves a role's runtime. `prev` is the row before the edit, so the change
+   * can be undone. */
+  const persistRole = useCallback(async (row: RoleConfigView, prev?: RoleConfigView) => {
     const rpc = rpcRef.current;
     if (!rpc) return;
-    const s = await rpc.call<SettingsView>("settings.set", {
-      role: { id: row.id, harness: row.harness, model: row.model, variant: row.variant },
-    });
-    setSettings(s);
-    flashSaved();
-  }, []);
+    const save = async (r: RoleConfigView) => {
+      const s = await rpc.call<SettingsView>("settings.set", {
+        role: { id: r.id, harness: r.harness, model: r.model, variant: r.variant },
+      });
+      setSettings(s);
+      flashSaved();
+    };
+    await save(row);
+    if (prev) {
+      history.record({ label: "role runtime", undo: () => save(prev), redo: () => save(row) });
+    }
+  }, [history.record]);
 
   // Required roles cannot be disabled; the daemon refuses them too.
   const toggleRoleEnabled = async (row: RoleConfigView, enabled: boolean) => {
@@ -3265,11 +3320,19 @@ export default function App() {
     if (!rpc || row.required) return;
     updateRole(row.id, { enabled });
     try {
-      const s = await rpc.call<SettingsView>("settings.set", {
-        roleEnabled: { id: row.id, enabled },
+      const setEnabled = async (value: boolean) => {
+        const s = await rpc.call<SettingsView>("settings.set", {
+          roleEnabled: { id: row.id, enabled: value },
+        });
+        setSettings(s);
+        flashSaved();
+      };
+      await setEnabled(enabled);
+      history.record({
+        label: `role ${enabled ? "on" : "off"}`,
+        undo: () => setEnabled(!enabled),
+        redo: () => setEnabled(enabled),
       });
-      setSettings(s);
-      flashSaved();
     } catch {
       // Reload so the switch shows what the daemon actually holds.
       loadSettings().catch(() => undefined);

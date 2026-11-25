@@ -2,7 +2,7 @@
 // messages). Each entry carries closures that issue the forward and inverse
 // RPCs, so the stack knows nothing about threads or the wire. A step moves the
 // entry before its RPC runs and moves it back if the RPC is refused, so a
-// failed step leaves both stacks as they were.
+// failed step leaves both stacks as they were. Steps are serialized.
 
 import { useCallback, useRef, useState } from "react";
 import { useLatestCallback } from "./store";
@@ -31,7 +31,6 @@ function shift(s: Stacks, entry: HistoryEntry, from: Dir): Stacks {
 export function useHistory({ onError, onApplied }: { onError: (message: string) => void; onApplied: () => void }) {
   const [stacks, setStacks] = useState<Stacks>({ undo: [], redo: [] });
   const ref = useRef(stacks);
-  const busy = useRef(false);
   const reportError = useLatestCallback(onError);
   const applied = useLatestCallback(onApplied);
 
@@ -49,22 +48,32 @@ export function useHistory({ onError, onApplied }: { onError: (message: string) 
     [commit],
   );
 
+  // Steps run one at a time, so quick repeated presses each take the next
+  // entry rather than being dropped. A refused step cancels the ones queued
+  // behind it, which would only hit the same entry again.
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const epoch = useRef(0);
+
   const step = useCallback(
-    async (dir: Dir) => {
-      const cur = ref.current;
-      const entry = cur[dir][cur[dir].length - 1];
-      if (!entry || busy.current) return;
-      busy.current = true;
-      commit(shift(cur, entry, dir));
-      try {
-        await entry[dir]();
-        applied();
-      } catch (e) {
-        commit(shift(ref.current, entry, dir === "undo" ? "redo" : "undo"));
-        reportError(e instanceof Error ? e.message : String(e));
-      } finally {
-        busy.current = false;
-      }
+    (dir: Dir) => {
+      const queuedAt = epoch.current;
+      const run = async () => {
+        if (queuedAt !== epoch.current) return;
+        const cur = ref.current;
+        const entry = cur[dir][cur[dir].length - 1];
+        if (!entry) return;
+        commit(shift(cur, entry, dir));
+        try {
+          await entry[dir]();
+          applied();
+        } catch (e) {
+          epoch.current++;
+          commit(shift(ref.current, entry, dir === "undo" ? "redo" : "undo"));
+          reportError(e instanceof Error ? e.message : String(e));
+        }
+      };
+      queue.current = queue.current.then(run);
+      return queue.current;
     },
     [commit, applied, reportError],
   );

@@ -94,7 +94,7 @@ export const SettingsSheet = memo(function SettingsSheet({
   refreshModels: (harness: string) => Promise<void>;
   addModel: (harness: string, model: string) => Promise<void>;
   updateRole: (id: string, patch: Partial<RoleConfigView>) => void;
-  persistRole: (row: RoleConfigView) => Promise<void>;
+  persistRole: (row: RoleConfigView, prev?: RoleConfigView) => Promise<void>;
 }) {
   const workdirInput = useStoreField(settingsForm, "workdir");
   const approvedByHarness = useStoreField(settingsForm, "approvedByHarness");
@@ -484,7 +484,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                       // A thinking level belongs to one harness; a new harness starts at its default.
                       const row = { ...r, harness: v, variant: "" };
                       updateRole(r.id, { harness: v, variant: "" });
-                      persistRole(row).catch(() => undefined);
+                      persistRole(row, r).catch(() => undefined);
                       refreshModels(v).catch(() => undefined);
                     }}
                   />
@@ -502,14 +502,14 @@ export const SettingsSheet = memo(function SettingsSheet({
                         .then(() => {
                           const row = { ...r, model: m };
                           updateRole(r.id, { model: m });
-                          persistRole(row).catch(() => undefined);
+                          persistRole(row, r).catch(() => undefined);
                         })
                         .catch(() => undefined);
                     }}
                     onChange={(v) => {
                       const row = { ...r, model: v };
                       updateRole(r.id, { model: v });
-                      persistRole(row).catch(() => undefined);
+                      persistRole(row, r).catch(() => undefined);
                     }}
                   />
                   <ThinkingPicker
@@ -518,7 +518,7 @@ export const SettingsSheet = memo(function SettingsSheet({
                     onChange={(v) => {
                       const row = { ...r, variant: v };
                       updateRole(r.id, { variant: v });
-                      persistRole(row).catch(() => undefined);
+                      persistRole(row, r).catch(() => undefined);
                     }}
                   />
                 </div>
