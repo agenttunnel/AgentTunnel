@@ -70,6 +70,31 @@ func (JSONLineTranslator) Translate(line string) []Event {
 		return []Event{{Kind: contracts.LogText, Text: line + "\n"}}
 	}
 
+	events := frameEvents(raw)
+	// Claude and opencode stamp the run's session id on the frames they print.
+	// It rides on the frame's first event; a frame with no other output is a
+	// session-only event. The orchestrator keeps only the latest id.
+	if id := harnessSessionID(raw); id != "" {
+		if len(events) == 0 {
+			events = []Event{{}}
+		}
+		events[0].HarnessSession = id
+	}
+	return events
+}
+
+// harnessSessionID is the harness's own session id on a frame, when it names one.
+func harnessSessionID(raw map[string]any) string {
+	for _, key := range []string{"session_id", "sessionID"} {
+		if id, ok := raw[key].(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// frameEvents maps one parsed JSON frame to its events.
+func frameEvents(raw map[string]any) []Event {
 	scope := raw
 	if part, ok := raw["part"].(map[string]any); ok {
 		scope = part

@@ -1312,6 +1312,47 @@ func (r *Runner) recordModel(ctx context.Context, threadID contracts.ThreadID, a
 	})
 }
 
+// recordSession keeps the harness's session id for the agent's latest run.
+func (r *Runner) recordSession(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, session string) {
+	_ = r.engine.Dispatch(ctx, contracts.Command{
+		ID:              r.nextID(),
+		Type:            contracts.CmdAgentSessionObserve,
+		ThreadID:        threadID,
+		SessionObserved: &contracts.AgentSessionObserved{AgentID: agent, Session: session},
+	})
+}
+
+// ResumeCommand is the shell line that continues an agent's latest run in its
+// harness CLI: cd to the thread's working directory, then resume the session.
+// Claude keys its sessions by directory, so the cd is part of the command.
+func (r *Runner) ResumeCommand(ctx context.Context, threadID contracts.ThreadID, agentID contracts.AgentID) (string, error) {
+	st, err := r.engine.State(ctx, threadID)
+	if err != nil {
+		return "", err
+	}
+	if !st.Exists {
+		return "", fmt.Errorf("thread %q does not exist", threadID)
+	}
+	a, ok := st.Agents[agentID]
+	if !ok {
+		return "", fmt.Errorf("agent %q is not in thread %q", agentID, threadID)
+	}
+	argv, ok := providers.ResumeArgv(a.Harness, a.HarnessSession)
+	if !ok {
+		return "", errors.New("no resumable session: the agent has not run yet, or its harness keeps no session")
+	}
+	line := strings.Join(argv, " ")
+	if wd := r.workdirFor(ctx, threadID); wd != "" {
+		line = "cd " + shellQuote(wd) + " && " + line
+	}
+	return line, nil
+}
+
+// shellQuote single-quotes s for a POSIX shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func (r *Runner) setStatus(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, status contracts.AgentStatus, reason string) {
 	// Status writes must survive the turn ending: a cancelled turn still owes
 	// the thread its terminal status, so detach from the caller's context.
@@ -1357,6 +1398,9 @@ func (r *Runner) publishAgentOutput(threadID contracts.ThreadID, out contracts.A
 func (r *Runner) recordEvent(ctx context.Context, threadID contracts.ThreadID, agent contracts.AgentID, ev providers.Event) {
 	if ev.Model != "" {
 		r.recordModel(ctx, threadID, agent, ev.Model)
+	}
+	if ev.HarnessSession != "" {
+		r.recordSession(ctx, threadID, agent, ev.HarnessSession)
 	}
 	if ev.Kind == "" {
 		return

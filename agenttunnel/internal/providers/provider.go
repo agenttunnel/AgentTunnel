@@ -17,6 +17,10 @@ type Event struct {
 	// Model is the model the harness reports it ran, when a frame names one.
 	// A Model-only event has no Kind and no log line.
 	Model string `json:"model,omitempty"`
+	// HarnessSession is the harness's own id for this run, when a frame names
+	// one. It rides on the frame's first event, or stands alone when the frame
+	// has no other output; either way the event has no Kind unless it logs.
+	HarnessSession string `json:"harnessSession,omitempty"`
 }
 
 // ImageInput is one image a harness should see, as a process-readable file

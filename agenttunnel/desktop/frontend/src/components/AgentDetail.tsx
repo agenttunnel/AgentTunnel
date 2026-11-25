@@ -8,6 +8,7 @@ import { actionText } from "../lib/agentLive";
 import { agentName, agentPhase, askingAgents, blockers, resolveDeps, workStart, type TreeAgent } from "../lib/agentTree";
 import type { AgentQuestion } from "../lib/questions";
 import { useStoreField } from "../lib/store";
+import { copyText } from "../lib/clipboard";
 
 type Usage = {
   inputTokens: number;
@@ -23,6 +24,8 @@ type Step = { at: string; usage: Usage };
 type AgentLike = TreeAgent & {
   harness: string;
   model: string;
+  /** The harness's id for the latest run; present only when it can be resumed. */
+  harnessSession?: string;
 };
 
 const fmt = (n: number) =>
@@ -88,6 +91,7 @@ export function AgentDetail({
   questions,
   initialTab = "output",
   onOpenAgent,
+  onResume,
   onClose,
 }: {
   agent: AgentLike;
@@ -99,8 +103,22 @@ export function AgentDetail({
   questions?: AgentQuestion[] | null;
   initialTab?: DetailTab;
   onOpenAgent: (id: string) => void;
+  /** Returns the shell line that resumes this agent's latest run in its harness. */
+  onResume?: (agentId: string) => Promise<string>;
   onClose: () => void;
 }) {
+  const [resumeNote, setResumeNote] = useState<string | null>(null);
+  useEffect(() => setResumeNote(null), [agent.id]);
+  const resumeInHarness = async () => {
+    if (!onResume) return;
+    try {
+      const command = await onResume(agent.id);
+      const copied = await copyText(command);
+      setResumeNote(copied ? "Command copied. Paste it in a terminal to continue this run." : "Could not copy the command.");
+    } catch (e) {
+      setResumeNote(e instanceof Error ? e.message : String(e));
+    }
+  };
   // The log comes from its store, so a streamed chunk re-renders this sheet only.
   const logs = useStoreField(agentLogStore, "entries");
   const [tab, setTab] = useState<DetailTab>(initialTab);
@@ -192,6 +210,18 @@ export function AgentDetail({
               {agent.model ? ` · ${agent.model}` : ""}
               {parent ? ` · from ${agentName(parent, roleNames)}` : ""}
             </span>
+            {agent.harnessSession && onResume && (
+              <span className="ad-resume">
+                <button
+                  type="button"
+                  onClick={resumeInHarness}
+                  title="Copies a shell command that continues this run in its harness CLI"
+                >
+                  Resume in harness
+                </button>
+                {resumeNote && <span role="status">{resumeNote}</span>}
+              </span>
+            )}
           </div>
           <button onClick={onClose} aria-label="Close agent details">
             Close

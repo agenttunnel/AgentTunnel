@@ -349,6 +349,12 @@ button.team-progress:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ad-resume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
 .ad-summary {
   display: flex;
   flex-wrap: wrap;

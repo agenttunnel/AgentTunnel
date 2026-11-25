@@ -40,7 +40,13 @@ func (CodexTranslator) Translate(line string) []Event {
 		return singleText(contracts.LogError, firstString(errObj, "message"))
 	case "error":
 		return singleText(contracts.LogError, firstString(raw, "message"))
-	case "thread.started", "turn.started":
+	case "thread.started":
+		// The thread id is the session `codex resume` continues.
+		if id := firstString(raw, "thread_id"); id != "" {
+			return []Event{{HarnessSession: id}}
+		}
+		return nil
+	case "turn.started":
 		return nil
 	}
 	return JSONLineTranslator{}.Translate(line)

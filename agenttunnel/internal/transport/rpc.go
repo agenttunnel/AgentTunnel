@@ -1540,6 +1540,23 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true, "stopped": d.runner.StopAgent(p.AgentID)}, nil
 
+	case "agents.resume":
+		var p agentLogParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if p.ThreadID == "" || p.AgentID == "" {
+			return nil, errors.New("threadId and agentId are required")
+		}
+		if d.runner == nil {
+			return nil, errors.New("runner is unavailable")
+		}
+		command, err := d.runner.ResumeCommand(ctx, p.ThreadID, p.AgentID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"command": command}, nil
+
 	case "thread.rename":
 		var p struct {
 			ThreadID contracts.ThreadID `json:"threadId"`
