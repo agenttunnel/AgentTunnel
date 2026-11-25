@@ -6,7 +6,7 @@
 
 import type { CenterTab, SlashCommand } from "./commands";
 import { fuzzyScore } from "./fuzzy";
-import { ALT, centerTabHint, MOD } from "./navKeys";
+import { ALT, MOD } from "./navKeys";
 import { STATUS_LABEL, threadStatus } from "./threadStatus";
 
 export type PaletteKind = "command" | "composer" | "thread" | "project" | "file";
@@ -77,7 +77,7 @@ export function buildCommands<P extends string>(a: PaletteActions<P>): PaletteIt
 
   if (a.hasThread) {
     for (const { tab, label } of CENTER_TABS) {
-      cmd(`tab:${tab}`, "Thread view", label, () => a.setTab(tab), { hint: centerTabHint(tab) });
+      cmd(`tab:${tab}`, "Thread view", label, () => a.setTab(tab));
     }
     cmd("view:compact", "Thread view", "Toggle compact mode", a.toggleCompact, {
       detail: a.compact ? "on" : "off",

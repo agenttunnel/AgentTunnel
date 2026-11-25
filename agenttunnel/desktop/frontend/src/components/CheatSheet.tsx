@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { HOLD_MOD_LABEL } from "../lib/dictation";
 import { getPref, setPref } from "../lib/prefs";
-import { ALT, CENTER_TAB_KEYS, MOD } from "../lib/navKeys";
+import { MOD } from "../lib/navKeys";
 import { useDialogFocus } from "../lib/dialogFocus";
 
 const SEEN_KEY = "at.cheatSheetSeen";
@@ -103,17 +103,7 @@ export function CheatSheet({ panels, onClose }: { panels: Panel[]; onClose: () =
                 or command. Start with <kbd>&gt;</kbd> for commands only, <kbd>@</kbd> for places.
               </li>
               <li>
-                {CENTER_TAB_KEYS.map((t, i) => (
-                  <span key={t.tab}>
-                    {i > 0 && ", "}
-                    <kbd>
-                      {ALT}
-                      {i + 1}
-                    </kbd>{" "}
-                    {t.label}
-                  </span>
-                ))}{" "}
-                switch the thread view, even while typing.
+                Click Chat, Review, Files, Graph, P2P or Board to switch the thread view.
               </li>
               <li>
                 <kbd>/</kbd> outside a text field searches the thread list. The header names the

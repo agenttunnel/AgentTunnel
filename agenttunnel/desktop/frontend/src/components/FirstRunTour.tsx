@@ -26,8 +26,8 @@ const CARDS: { title: string; body: ReactNode }[] = [
     title: "Review, then ship",
     body: (
       <>
-        When a turn ends, its changes are one step away: Review (<kbd>{ALT}2</kbd>), Files (
-        <kbd>{ALT}3</kbd>), and the pull request. Comment on diff lines to send the team a review.
+        When a turn ends, its changes are one click away: the Review and Files tabs, and the pull
+        request. Comment on diff lines to send the team a review.
       </>
     ),
   },

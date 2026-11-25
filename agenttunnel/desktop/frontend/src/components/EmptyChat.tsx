@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { ALT, MOD } from "../lib/navKeys";
+import { MOD } from "../lib/navKeys";
 
 const STARTERS = [
   "Explain how this codebase is organized and where to start reading.",
@@ -53,12 +53,6 @@ export const EmptyChat = memo(function EmptyChat({
             <kbd>{MOD}K</kbd>
           </dt>
           <dd>jump anywhere</dd>
-        </div>
-        <div>
-          <dt>
-            <kbd>{ALT}2</kbd>
-          </dt>
-          <dd>review changes</dd>
         </div>
         <div>
           <dt>

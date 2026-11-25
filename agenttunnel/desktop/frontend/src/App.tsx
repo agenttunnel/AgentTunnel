@@ -91,7 +91,7 @@ import { EmptyChat } from "./components/EmptyChat";
 import { FirstRunTour } from "./components/FirstRunTour";
 import { Breadcrumb, HistoryButtons, PaletteButton, StatusPopover, type Crumb } from "./components/NavChrome";
 import { useHistory } from "./lib/history";
-import { ALT, centerTabFromKey, centerTabHint, isPaletteKey, isTyping } from "./lib/navKeys";
+import { ALT, isPaletteKey, isTyping } from "./lib/navKeys";
 import { threadStatus } from "./lib/threadStatus";
 import { recentIds, recordRecent } from "./lib/recent";
 import type { FileMatch } from "./lib/mentions";
@@ -3127,18 +3127,11 @@ export default function App() {
         },
       }));
   });
-  // Alt/Option+1..6 picks a center tab, even from the composer; "/" outside
-  // text fields jumps to the thread search.
+  // "/" outside text fields jumps to the thread search.
   useEffect(() => {
     if (!activeId) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
-      const next = centerTabFromKey(e);
-      if (next) {
-        e.preventDefault();
-        setTab(next);
-        return;
-      }
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
         const search = document.querySelector<HTMLInputElement>(".sidebar .thread-filter");
         if (!search || search.offsetParent === null) return;
@@ -3149,7 +3142,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, setTab]);
+  }, [activeId]);
   // Cmd/Ctrl+S toggles compact mode on the thread screen. The files editor
   // claims this keystroke for saving (it calls preventDefault), so editing
   // still saves instead of flipping the layout. Preventing the default also
@@ -4193,14 +4186,14 @@ export default function App() {
             <div
               className={`tab ${tab === "chat" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "chat", () => setTab("chat"))}
-              title={`Chat (${centerTabHint("chat")})`}
+              title="Chat"
             >
               Chat
             </div>
             <div
               className={`tab ${tab === "review" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "review", () => setTab("review"))}
-              title={`Review (${centerTabHint("review")})`}
+              title="Review"
             >
               Review
               {comments.length > 0 && <span className="pill">{comments.length}</span>}
@@ -4208,14 +4201,14 @@ export default function App() {
             <div
               className={`tab ${tab === "files" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "files", () => setTab("files"))}
-              title={`Files (${centerTabHint("files")})`}
+              title="Files"
             >
               Files
             </div>
             <div
               className={`tab ${tab === "graph" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "graph", () => setTab("graph"))}
-              title={`Graph (${centerTabHint("graph")})`}
+              title="Graph"
             >
               Graph
               {(thread?.mailbox?.length ?? 0) > 0 && (
@@ -4225,7 +4218,7 @@ export default function App() {
             <div
               className={`tab ${tab === "p2p" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "p2p", () => setTab("p2p"))}
-              title={`Agent messages (${centerTabHint("p2p")})`}
+              title="Agent messages"
             >
               P2P
               {(thread?.mailbox?.length ?? 0) > 0 && (
@@ -4235,7 +4228,7 @@ export default function App() {
             <div
               className={`tab ${tab === "board" ? "on" : ""}${soloTint ? ` ${soloTint}` : ""}`}
               {...tabProps(tab === "board", () => setTab("board"))}
-              title={`Task board (${centerTabHint("board")})`}
+              title="Task board"
             >
               Board
               {agents.some((a) => a.role !== "orchestrator") && (
