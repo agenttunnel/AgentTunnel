@@ -38,8 +38,57 @@ function hastText(n: HastNode | undefined): string {
   return (n.children ?? []).map(hastText).join("");
 }
 
+type Mermaid = typeof import("mermaid").default;
+
+// Mermaid is large, so it loads the first time a diagram appears, not with the app.
+let mermaidLoad: Promise<Mermaid> | undefined;
+function loadMermaid(): Promise<Mermaid> {
+  mermaidLoad ??= import("mermaid").then((m) => m.default);
+  return mermaidLoad;
+}
+
+let mermaidSeq = 0;
+// Streamed text re-renders the block on every chunk; wait for a pause before drawing.
+const MERMAID_SETTLE_MS = 250;
+
+/**
+ * MermaidDiagram draws a ```mermaid fence as SVG. Mermaid runs in strict mode, which
+ * sanitizes its output. While the source is unsettled it shows the source; a source
+ * that does not parse keeps showing the source with a note, never a stale drawing.
+ */
+function MermaidDiagram({ source }: { source: string }) {
+  const [state, setState] = useState<{ svg?: string; error?: boolean }>({});
+  useEffect(() => {
+    let live = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const mermaid = await loadMermaid();
+        // solarized-light is the only light theme; every other one is dark.
+        const light = document.documentElement.dataset.theme === "solarized-light";
+        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: light ? "default" : "dark" });
+        const { svg } = await mermaid.render(`at-mermaid-${++mermaidSeq}`, source);
+        if (live) setState({ svg });
+      } catch {
+        if (live) setState({ error: true });
+      }
+    }, MERMAID_SETTLE_MS);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [source]);
+  if (state.svg) return <div className="md-mermaid" dangerouslySetInnerHTML={{ __html: state.svg }} />;
+  return (
+    <>
+      {state.error && <div className="md-mermaid-error">This diagram did not parse. Showing its source.</div>}
+      <pre className="md-mermaid-source">{source}</pre>
+    </>
+  );
+}
+
 /** A fenced block: language label and copy button over a scrolling body. The
- * label reads the fence's hint; unlabeled blocks show only the button. */
+ * label reads the fence's hint; unlabeled blocks show only the button. A
+ * ```mermaid fence draws a diagram in the body instead of its source. */
 function CodeBlock({ node, children }: ComponentProps<"pre"> & ExtraProps) {
   const code = (node as HastNode | undefined)?.children?.find((c) => c.type === "element");
   const cls = code?.properties?.className;
@@ -69,7 +118,7 @@ function CodeBlock({ node, children }: ComponentProps<"pre"> & ExtraProps) {
           {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy"}
         </button>
       </div>
-      <pre>{children}</pre>
+      {lang === "mermaid" ? <MermaidDiagram source={hastText(code).replace(/\n$/, "")} /> : <pre>{children}</pre>}
     </div>
   );
 }
@@ -161,8 +210,8 @@ const rehypePlugins: ComponentProps<typeof ReactMarkdown>["rehypePlugins"] = [
  * open the file in the viewer; see DocLinkContext.
  *
  * Tables are wrapped in a scroll container: a wide table scrolls instead of
- * crushing its columns. Memoized so a re-render of a message list only touches
- * messages whose text changed.
+ * crushing its columns. ```mermaid fences render as diagrams (see MermaidDiagram).
+ * Memoized so a re-render of a message list only touches messages whose text changed.
  */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (

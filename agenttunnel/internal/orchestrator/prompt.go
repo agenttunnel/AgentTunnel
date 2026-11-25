@@ -160,6 +160,13 @@ type OrchestratorPrompt struct {
 	Final bool
 }
 
+// visualNote asks the lead to explain its work as a picture. The desktop app draws
+// ```mermaid fences, so a small diagram often says what a paragraph cannot.
+const visualNote = "Show what was done, not only tell it: when a diagram explains the work better than prose, " +
+	"add a Mermaid diagram in a ```mermaid fenced block, such as a flowchart of the steps or the parts that changed, " +
+	"a sequence of which agent did what, or a before-and-after state. Keep it simple: a few nodes, short plain labels, " +
+	"no styling. Use one or two diagrams, and cut prose the diagram already says."
+
 // BuildOrchestratorPrompt assembles the orchestrator's pass prompt, including
 // the agents already dispatched so a later pass does not repeat work, any pending
 // spawn requests awaiting the lead's decision, any peer messages that arrived
@@ -304,10 +311,12 @@ func BuildOrchestratorPrompt(in OrchestratorPrompt) string {
 	if in.Final {
 		b.WriteString("\n\n## Final report\n")
 		b.WriteString("Every task you dispatched has finished; the agents above carry their results. Do not dispatch more work. ")
-		b.WriteString("Verify the results against the user request, then write the final report: which requirements are met and the evidence for each, and which are not met or unverified.")
+		b.WriteString("Verify the results against the user request, then write the final report: which requirements are met and the evidence for each, and which are not met or unverified. ")
+		b.WriteString(visualNote)
 		return b.String()
 	}
-	b.WriteString("\n\nDispatch the work first, then summarise the outcome.")
+	b.WriteString("\n\nDispatch the work first, then summarise the outcome. ")
+	b.WriteString(visualNote)
 	if pass > 0 {
 		b.WriteString("\n\nThis is pass ")
 		b.WriteString(strconv.Itoa(pass + 1))
