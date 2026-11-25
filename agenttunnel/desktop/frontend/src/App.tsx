@@ -966,16 +966,21 @@ export default function App() {
   // Jump-to-top pill shows once the stream is scrolled this far down.
   const [atTop, setAtTop] = useState(false);
 
+  // A thread opens at its latest message, whatever the last thread's scroll was.
+  useEffect(() => {
+    pinnedRef.current = true;
+  }, [activeId]);
+
+  // Only scroll events move pinnedRef. Measuring distance here would misread
+  // layout changes: sending shrinks the composer, which grows the stream and can
+  // bring a user who scrolled up within reach of the bottom, yanking them down.
   useEffect(() => {
     const el = streamRef.current;
     if (!el) return;
-    // Follow the stream only when the user is near the bottom; reading history
-    // wins over jumping.
-    const near = pinnedRef.current || nearBottom(el);
-    if (near) el.scrollTop = el.scrollHeight;
-    pinnedRef.current = near;
-    setAtBottom(near);
+    if (pinnedRef.current) el.scrollTop = el.scrollHeight;
+    setAtBottom(pinnedRef.current);
   }, [
+    activeId,
     thread?.messages?.length,
     thread?.messages?.[thread.messages.length - 1]?.text,
     thread?.questions?.length,
@@ -985,10 +990,8 @@ export default function App() {
   const followStream = useCallback(() => {
     const el = streamRef.current;
     if (!el) return;
-    const near = pinnedRef.current || nearBottom(el);
-    if (near) el.scrollTop = el.scrollHeight;
-    pinnedRef.current = near;
-    setAtBottom(near);
+    if (pinnedRef.current) el.scrollTop = el.scrollHeight;
+    setAtBottom(pinnedRef.current);
   }, []);
 
   const scrollToBottom = () => {
