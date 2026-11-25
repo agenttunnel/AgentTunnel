@@ -546,7 +546,27 @@ func (r *Runner) runTask(ctx context.Context, threadID contracts.ThreadID, t con
 
 	var text replyText
 	emitted := false
-	for ev := range events {
+stream:
+	for {
+		// A cancelled run stops reading at once. A harness's pipes can stay open
+		// after the harness dies (a grandchild that left its process group), so
+		// waiting for the stream to close could hang the run, and the turn that
+		// waits on a curator run with it. The rest drains in the background so
+		// the adapter can still unwind.
+		var ev providers.Event
+		select {
+		case <-ctx.Done():
+			go func() {
+				for range events {
+				}
+			}()
+			break stream
+		case e, ok := <-events:
+			if !ok {
+				break stream
+			}
+			ev = e
+		}
 		emitted = true
 		r.recordEvent(ctx, threadID, t.AgentID, ev)
 		if ev.Usage != nil {
