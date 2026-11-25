@@ -1636,6 +1636,14 @@ export default function App() {
     }
   };
 
+  /** Deletes from a thread row's ×. A thread that never had a message goes at
+   *  once; one with history asks first, since that is the work being thrown
+   *  away. */
+  const requestDeleteThread = (t: ThreadSummary) => {
+    if (t.messages === 0) void deleteThreadsById([t.id]);
+    else setDeleteTarget(t);
+  };
+
   /** Deletes every thread in the current project. Best-effort: threads that
    *  refuse deletion (for example running ones) are skipped and reported. */
   const cleanupAllProjectThreads = async () => {
@@ -2542,6 +2550,7 @@ export default function App() {
     (ids: string[], archived: boolean) => void setThreadsArchived(ids, archived),
   );
   const deleteThreadsStable = useLatestCallback((ids: string[]) => void deleteThreadsById(ids));
+  const requestDeleteThreadStable = useLatestCallback(requestDeleteThread);
 
   const send = async () => {
     const rpc = rpcRef.current;
@@ -4154,6 +4163,7 @@ export default function App() {
           activeId={activeId}
           onSelect={selectThreadStable}
           onMenu={openThreadMenuStable}
+          onDelete={requestDeleteThreadStable}
         />
         <SidebarFooter rpc={rpcRef.current} />
       </div>
