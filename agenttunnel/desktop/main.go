@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
@@ -254,8 +255,10 @@ type shellConn struct {
 
 func (c shellConn) payload() map[string]any {
 	return map[string]any{
-		"wsUrl":        c.wsURL,
-		"httpUrl":      c.httpURL,
+		"wsUrl": c.wsURL,
+		// Empty: the page calls /attachments and /prefs on its own origin, and
+		// the window proxies them to the daemon (see clientAssets).
+		"httpUrl":      "",
 		"token":        c.token,
 		"launchDir":    c.launchDir,
 		"launchThread": c.launchThread,
@@ -267,20 +270,46 @@ func (c shellConn) payload() map[string]any {
 
 // clientAssets serves the embedded SPA. The index is seeded with the saved
 // client preferences before the app's scripts run, so the window opens with
-// the theme and layout chosen on any client. Every other asset is served by
-// Wails as before.
-func clientAssets(saved webui.PrefsFunc) http.Handler {
+// the theme and layout chosen on any client. The page's HTTP calls to
+// /attachments and /prefs are proxied to the daemon. Every other asset is
+// served by Wails as before.
+func clientAssets(daemonURL, token string, saved webui.PrefsFunc) http.Handler {
 	files := application.AssetFileServerFS(assets)
 	// `all:frontend/dist` guarantees the directory exists, so fs.Sub cannot fail.
 	spa, _ := fs.Sub(assets, "frontend/dist")
 	seeded := webui.HandlerFor(spa, saved)
+	daemon := daemonProxy(daemonURL, token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+		switch r.URL.Path {
+		case "/attachments", "/prefs":
+			daemon.ServeHTTP(w, r)
+		case "/", "/index.html":
 			seeded.ServeHTTP(w, r)
-			return
+		default:
+			files.ServeHTTP(w, r)
 		}
-		files.ServeHTTP(w, r)
 	})
+}
+
+// daemonProxy forwards the page's same-origin calls to the daemon and adds its
+// bearer. The window's page is not the daemon's origin, so a direct fetch would
+// need CORS, which the daemon does not serve; the web surface proxies these
+// same routes for the same reason.
+func daemonProxy(base, token string) http.Handler {
+	target, err := url.Parse(base)
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "daemon address is invalid", http.StatusBadGateway)
+		})
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	director := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		director(r)
+		r.Host = target.Host
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	return proxy
 }
 
 // newApp creates the window and wires the shell's capability events. A nil
@@ -290,7 +319,7 @@ func newApp(conn shellConn, state string, terminateOnClose bool, onWindowClosing
 	app := application.New(application.Options{
 		Name:        "AgentTunnel",
 		Description: "Multi-agent coding workflow",
-		Assets:      application.AssetOptions{Handler: clientAssets(saved)},
+		Assets:      application.AssetOptions{Handler: clientAssets(conn.httpURL, conn.token, saved)},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: terminateOnClose,
 		},
