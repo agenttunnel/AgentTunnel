@@ -7,9 +7,6 @@ export type FileMatch = Attachment;
 /** Most attachments one turn carries; mirrors files.MaxAttachments on the daemon. */
 export const MAX_ATTACHMENTS = 20;
 
-/** Matches the @ menu asks for; mirrors files.MaxSearchResults. The menu scrolls. */
-export const MENTION_RESULTS = 50;
-
 /** An @ being typed: the @ sits at `start` and the query runs up to the caret. */
 export type MentionToken = { start: number; query: string };
 

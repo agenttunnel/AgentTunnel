@@ -11,11 +11,9 @@ import (
 // and every completed path still in the text rides with the turn as an
 // attachment, the way the desktop's chips do.
 
-// tuiMentionLimit is how many matches a search asks for; tuiMentionRows how
-// many the hint list shows at once. tuiMaxAttachments mirrors
-// files.MaxAttachments on the daemon.
+// tuiMentionRows is how many matches the hint list shows at once.
+// tuiMaxAttachments mirrors files.MaxAttachments on the daemon.
 const (
-	tuiMentionLimit   = 20
 	tuiMentionRows    = 8
 	tuiMaxAttachments = 20
 )
@@ -82,7 +80,7 @@ func (m *tuiModel) syncMention() {
 		var reply struct {
 			Matches []tuiFileMatch `json:"matches"`
 		}
-		params := map[string]any{"threadId": threadID, "query": query, "limit": tuiMentionLimit}
+		params := map[string]any{"threadId": threadID, "query": query}
 		err := c.Call(ctx, "files.search", params, &reply)
 		return func(m *tuiModel) {
 			// Only the answer to the newest question, on the thread that

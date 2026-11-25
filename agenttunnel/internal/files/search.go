@@ -7,10 +7,6 @@ import (
 	"strings"
 )
 
-// MaxSearchResults caps how many matches a search returns, so the composer's
-// @ menu stays cheap to render and to send over the socket.
-const MaxSearchResults = 50
-
 // Match is one file or folder whose name matches a search.
 type Match struct {
 	Path string `json:"path"`
@@ -18,13 +14,12 @@ type Match struct {
 }
 
 // Search fuzzy-matches query against the names of the workdir's files and
-// folders and returns the best `limit` hits. The candidate list is the same
-// one Tree uses, so .gitignore is honoured inside a repo and heavy directories
-// are skipped outside one. An empty query returns the shallowest entries.
+// folders and returns the matches, best first. A limit of zero or less returns
+// every match; a positive limit keeps only the best that many. The candidate
+// list is the same one Tree uses, so .gitignore is honoured inside a repo and
+// heavy directories are skipped outside one. An empty query returns everything,
+// top level first.
 func Search(ctx context.Context, workdir, query string, limit int) ([]Match, error) {
-	if limit <= 0 || limit > MaxSearchResults {
-		limit = MaxSearchResults
-	}
 	paths, err := trackedPaths(ctx, workdir)
 	if err != nil {
 		return nil, err
@@ -37,20 +32,10 @@ func Search(ctx context.Context, workdir, query string, limit int) ([]Match, err
 	}
 	q := strings.ToLower(strings.TrimSpace(query))
 
-	var best []scored
+	var all []scored
 	consider := func(m Match) {
-		s, ok := matchScore(q, m.Path)
-		if !ok {
-			return
-		}
-		c := scored{Match: m, score: s}
-		if len(best) == limit && !c.beats(best[len(best)-1]) {
-			return
-		}
-		best = append(best, c)
-		sort.SliceStable(best, func(i, j int) bool { return best[i].beats(best[j]) })
-		if len(best) > limit {
-			best = best[:limit]
+		if s, ok := matchScore(q, m.Path); ok {
+			all = append(all, scored{Match: m, score: s})
 		}
 	}
 	for _, p := range paths {
@@ -59,9 +44,13 @@ func Search(ctx context.Context, workdir, query string, limit int) ([]Match, err
 	for d := range dirs {
 		consider(Match{Path: d, Dir: true})
 	}
+	sort.Slice(all, func(i, j int) bool { return all[i].beats(all[j]) })
+	if limit > 0 && limit < len(all) {
+		all = all[:limit]
+	}
 
-	out := make([]Match, len(best))
-	for i, b := range best {
+	out := make([]Match, len(all))
+	for i, b := range all {
 		out[i] = b.Match
 	}
 	return out, nil
@@ -72,13 +61,17 @@ type scored struct {
 	score int
 }
 
-// beats orders results: higher score first, then shallower paths, folders
-// before files at equal depth, then alphabetical.
+// beats orders results. Entries at the workdir's top level come first, since
+// that is the level the user is working at; then higher score; then shallower
+// paths, folders before files at equal depth, then alphabetical.
 func (a scored) beats(b scored) bool {
+	da, db := strings.Count(a.Path, "/"), strings.Count(b.Path, "/")
+	if (da == 0) != (db == 0) {
+		return da == 0
+	}
 	if a.score != b.score {
 		return a.score > b.score
 	}
-	da, db := strings.Count(a.Path, "/"), strings.Count(b.Path, "/")
 	if da != db {
 		return da < db
 	}
