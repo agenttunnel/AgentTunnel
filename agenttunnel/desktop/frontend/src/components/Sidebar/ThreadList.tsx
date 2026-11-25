@@ -62,12 +62,14 @@ export const ThreadList = memo(function ThreadList({
   activeId,
   onSelect,
   onMenu,
+  onDelete,
 }: {
   threads: ThreadSummary[];
   projectId: string | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   onMenu: (t: ThreadSummary, e: MouseEvent) => void;
+  onDelete: (t: ThreadSummary) => void;
 }) {
   const { projectThreads, query } = useProjectThreads(threads, projectId);
   // Threads whose subthreads are hidden in the sidebar. Clicking a thread that
@@ -134,6 +136,21 @@ export const ThreadList = memo(function ThreadList({
                 {t.autoMode ? " · auto" : ""}
               </div>
             )}
+            <button
+              type="button"
+              className="row-del"
+              title={`Delete ${t.title}`}
+              aria-label={`Delete ${t.title}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(t);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+              }}
+            >
+              ×
+            </button>
             <div className="thread-row-foot">
               {status !== "running" && label && <span className={`status-chip ${status}`}>{label}</span>}
               <ThreadClock t={t} />

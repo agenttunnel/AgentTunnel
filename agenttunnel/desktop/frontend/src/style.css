@@ -987,6 +987,9 @@ body.is-resizing * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* A lane for the delete button, held whether or not it is showing, so
+     revealing it never re-wraps the title. */
+  padding-right: 20px;
 }
 .thread-row .m {
   color: var(--faint);
@@ -1008,6 +1011,45 @@ body.is-resizing * {
   font-size: var(--fs-2xs);
   margin-left: auto;
   white-space: nowrap;
+}
+/* Delete, revealed on the row that is under the pointer. Absolutely
+   positioned so the row's height never changes with the hover state. */
+.row-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--faint);
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+.thread-row:hover .row-del,
+.thread-row:focus-within .row-del,
+.row-del:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.row-del:hover:not(:disabled) {
+  color: var(--err);
+  background: var(--err-soft);
+  border-color: var(--err-line);
+}
+/* Touch screens have no hover to reveal the row action. */
+@media (hover: none) {
+  .row-del {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .thread-row.stale .t {
   color: var(--muted);
