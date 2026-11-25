@@ -1,6 +1,4 @@
 import { memo } from "react";
-import { centerTabHint } from "../lib/navKeys";
-
 /**
  * The quiet row under a finished turn: where the work goes next. The turn's
  * own change summary (Transcript) already offers Review when files changed;
@@ -21,7 +19,7 @@ export const NextStep = memo(function NextStep({
   return (
     <div className="next-step" role="group" aria-label="Next step">
       <span className="next-step-label">Next</span>
-      <button type="button" onClick={onFiles} title={`Browse the files (${centerTabHint("files")})`}>
+      <button type="button" onClick={onFiles} title="Browse the files">
         Files
       </button>
       <button
