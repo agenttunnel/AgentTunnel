@@ -367,3 +367,71 @@ func names(entries []os.DirEntry) []string {
 	}
 	return out
 }
+
+func TestNotebookEditAndRemoveReplayFromFile(t *testing.T) {
+	s := NewNotebookStore(t.TempDir())
+	nb := fixedNotebook(t, s, "t1")
+	nb.Append("notes", "first", "orchestrator")
+	nb.Append("notes", "second", "orchestrator")
+	nb.Append("notes", "third", "orchestrator")
+	nb.Set("result_a", "only", "agent-a")
+
+	if err := nb.Edit("notes", 1, "second, corrected", UserAuthor); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if err := nb.Remove("notes", 0); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := nb.Remove("result_a", 0); err != nil {
+		t.Fatalf("remove last entry: %v", err)
+	}
+
+	re := s.Open("t1", nil)
+	sameEntries(t, "notes", re.Get("notes"), nb.Get("notes"))
+	if got := re.Get("notes"); len(got) != 2 || got[0].Value != "second, corrected" || got[0].Author != UserAuthor {
+		t.Fatalf("notes = %+v, want edited entry attributed to the user", got)
+	}
+	if got := re.Keys(); strings.Join(got, ",") != "notes" {
+		t.Fatalf("keys = %v, want [notes]: an emptied key must leave the notebook", got)
+	}
+	// The file holds only live entries after the rewrites.
+	data, _ := os.ReadFile(filepath.Join(s.dir, "t1.jsonl"))
+	if n := strings.Count(string(data), "\n"); n != 2 {
+		t.Fatalf("file has %d records, want 2:\n%s", n, data)
+	}
+}
+
+func TestNotebookEditAndRemoveRejectBadIndex(t *testing.T) {
+	nb := NewNotebook()
+	nb.Set("k", "v", "a")
+	if err := nb.Edit("k", 1, "x", UserAuthor); err != ErrNoEntry {
+		t.Fatalf("edit out of range = %v, want ErrNoEntry", err)
+	}
+	if err := nb.Remove("missing", 0); err != ErrNoEntry {
+		t.Fatalf("remove missing key = %v, want ErrNoEntry", err)
+	}
+	if got := nb.Get("k"); len(got) != 1 || got[0].Value != "v" {
+		t.Fatalf("rejected edit changed the notebook: %+v", got)
+	}
+}
+
+func TestNotebookEditRevertsWhenFileWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	s := NewNotebookStore(dir)
+	nb := fixedNotebook(t, s, "t1")
+	nb.Set("k", "before", "a")
+
+	// A directory where the thread file should be makes the rewrite fail.
+	if err := os.Remove(filepath.Join(dir, "t1.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "t1.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := nb.Edit("k", 0, "after", UserAuthor); err == nil {
+		t.Fatal("edit succeeded although the file could not be rewritten")
+	}
+	if got := nb.Get("k"); got[0].Value != "before" {
+		t.Fatalf("memory = %q, want the value before the failed edit", got[0].Value)
+	}
+}

@@ -2893,20 +2893,14 @@ table.grid tr.rowlink:active td {
 }
 
 /* --- context / inherited ------------------------------------------------ */
-.ctx-entry {
-  margin-bottom: 12px;
-}
-.ctx-key {
+.ctx-meta {
   font-family: var(--mono);
-  font-size: 11px;
-  color: var(--accent);
-  margin-bottom: 2px;
-}
-.ctx-val {
-  font-size: 12px;
+  font-size: 10.5px;
   color: var(--muted);
-  white-space: pre-wrap;
-  word-break: break-word;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .inherited-section {
   display: flex;

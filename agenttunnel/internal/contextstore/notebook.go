@@ -2,9 +2,11 @@ package contextstore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +65,69 @@ func (n *Notebook) Append(key, value, author string) {
 	e := Entry{Author: author, Value: value, At: n.clock()}
 	n.place(key, e, false)
 	n.persist(opAppend, key, e)
+}
+
+// UserAuthor attributes entries a person edits in the notebook.
+const UserAuthor = "user"
+
+// ErrNoEntry reports a key with no entry at that index.
+var ErrNoEntry = errors.New("notebook entry not found")
+
+// Edit replaces one entry's value and restamps it as written by author now. The
+// thread file is rewritten from memory, so the superseded value is not kept.
+func (n *Notebook) Edit(key string, index int, value, author string) error {
+	value, author = clean(value), clean(author)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	entries := n.entries[key]
+	if index < 0 || index >= len(entries) {
+		return ErrNoEntry
+	}
+	prev := entries[index]
+	entries[index] = Entry{Author: author, Value: value, At: n.clock()}
+	if err := n.rewrite(); err != nil {
+		entries[index] = prev
+		return err
+	}
+	return nil
+}
+
+// Remove drops one entry. A key left with no entries leaves Keys as well.
+func (n *Notebook) Remove(key string, index int) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	entries := n.entries[key]
+	if index < 0 || index >= len(entries) {
+		return ErrNoEntry
+	}
+	order := n.order
+	n.entries[key] = append(append([]Entry(nil), entries[:index]...), entries[index+1:]...)
+	if len(n.entries[key]) == 0 {
+		delete(n.entries, key)
+		n.order = slices.DeleteFunc(slices.Clone(n.order), func(k string) bool { return k == key })
+	}
+	if err := n.rewrite(); err != nil {
+		n.entries[key] = entries
+		n.order = order
+		return err
+	}
+	return nil
+}
+
+// rewrite mirrors an edit to the thread file by rewriting it from memory. The
+// caller holds n.mu and reverts its memory change when rewrite fails.
+func (n *Notebook) rewrite() error {
+	if n.file == "" || n.removed {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(n.file), 0o755); err != nil {
+		return err
+	}
+	if err := n.compact(); err != nil {
+		return err
+	}
+	n.torn = false
+	return nil
 }
 
 // clean replaces invalid UTF-8 before the write. json.Marshal would substitute

@@ -2417,6 +2417,50 @@ func (d *Dispatcher) handle(ctx context.Context, req Request) (any, error) {
 		}
 		return map[string]any{"ok": true}, nil
 
+	case "thread.context.get":
+		var p threadParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		nb, err := d.notebook(p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"keys": notebookView(nb)}, nil
+
+	case "thread.context.entry.save":
+		var p notebookEntryParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Value) == "" {
+			return nil, errors.New("an empty entry is a delete; use thread.context.entry.delete")
+		}
+		nb, err := d.notebook(p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if err := nb.Edit(p.Key, p.Index, p.Value, contextstore.UserAuthor); err != nil {
+			return nil, err
+		}
+		d.auditLog("context.entry.save", map[string]any{"threadId": string(p.ThreadID), "key": p.Key})
+		return map[string]any{"ok": true}, nil
+
+	case "thread.context.entry.delete":
+		var p notebookEntryParams
+		if err := decode(req.Params, &p); err != nil {
+			return nil, err
+		}
+		nb, err := d.notebook(p.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if err := nb.Remove(p.Key, p.Index); err != nil {
+			return nil, err
+		}
+		d.auditLog("context.entry.delete", map[string]any{"threadId": string(p.ThreadID), "key": p.Key})
+		return map[string]any{"ok": true}, nil
+
 	case "project.list":
 		return d.projectList(ctx), nil
 
@@ -2935,6 +2979,54 @@ func (d *Dispatcher) inherited() *contextstore.InheritedContext {
 		return nil
 	}
 	return d.runner.Inherited()
+}
+
+// notebookEntryParams addresses one entry of a thread's shared notebook.
+type notebookEntryParams struct {
+	ThreadID contracts.ThreadID `json:"threadId"`
+	Key      string             `json:"key"`
+	Index    int                `json:"index"`
+	Value    string             `json:"value"`
+}
+
+// notebook returns a thread's shared notebook: the context the orchestrator,
+// the context agent, and subagents read on every dispatch.
+func (d *Dispatcher) notebook(id contracts.ThreadID) (*contextstore.Notebook, error) {
+	if d.runner == nil {
+		return nil, errors.New("thread context is unavailable")
+	}
+	return d.runner.Notebook(id), nil
+}
+
+// notebookView lists a notebook's keys in first-write order, with each entry's
+// position so an edit or delete can address it.
+func notebookView(nb *contextstore.Notebook) []notebookKeyView {
+	keys := nb.Keys()
+	out := make([]notebookKeyView, 0, len(keys))
+	for _, k := range keys {
+		entries := nb.Get(k)
+		if len(entries) == 0 {
+			continue
+		}
+		view := notebookKeyView{Key: k, Entries: make([]notebookEntryView, len(entries))}
+		for i, e := range entries {
+			view.Entries[i] = notebookEntryView{Index: i, Author: e.Author, At: e.At, Value: e.Value}
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+type notebookKeyView struct {
+	Key     string              `json:"key"`
+	Entries []notebookEntryView `json:"entries"`
+}
+
+type notebookEntryView struct {
+	Index  int       `json:"index"`
+	Author string    `json:"author"`
+	At     time.Time `json:"at"`
+	Value  string    `json:"value"`
 }
 
 func decode(raw json.RawMessage, v any) error {

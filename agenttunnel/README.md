@@ -237,7 +237,9 @@ Agents and usage: `agents.list`, `agents.logs`, `agents.stop`, `usage.get`.
 Review: `review.diff`, `review.comment`, `review.submit` (sends pending comments as a turn).
 
 Context: `context.save`, `context.inherited.get`, `context.inherited.save`,
-`context.inherited.rule.save`, `context.inherited.rule.delete`.
+`context.inherited.rule.save`, `context.inherited.rule.delete`. A thread's shared
+notebook (what its orchestrator reads on each dispatch): `thread.context.get`,
+`thread.context.entry.save`, `thread.context.entry.delete`.
 
 Desktop handoff: `thread.open` (open a thread for a directory, creating the
 project when unknown), `app.open` (broadcast an open-thread/focus request to

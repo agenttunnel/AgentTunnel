@@ -147,6 +147,7 @@ import {
 import { useLatestCallback } from "./lib/store";
 import { TurnActivity } from "./components/TurnActivity";
 import { InheritedPanel } from "./components/InheritedPanel";
+import { ThreadContextPanel } from "./components/ThreadContextPanel";
 import { CouncilPanel, councilSetup, councilTopic } from "./components/CouncilPanel";
 import { RenameDialog } from "./components/RenameDialog";
 import {
@@ -2108,10 +2109,6 @@ export default function App() {
   };
 
   const threadUsage = useMemo(() => deriveThreadUsage(thread), [thread]);
-  const sharedEntries = useMemo(
-    () => Object.entries(thread?.shared ?? {}).sort(([a], [b]) => a.localeCompare(b)),
-    [thread],
-  );
   const turns = thread?.turns ?? [];
   const totals = useMemo(() => {
     const all = addUsage(threadUsage.orchestrator, threadUsage.subagents);
@@ -4942,21 +4939,16 @@ export default function App() {
             )}
           </>
         ) : asideActive === "context" ? (
-          <div className="section">
-            <h3>Context</h3>
-            {sharedEntries.length === 0 ? (
-              <p className="hint">
-                No shared context yet. Agents record findings here as they work.
-              </p>
-            ) : (
-              sharedEntries.map(([key, value]) => (
-                <div className="ctx-entry" key={key}>
-                  <div className="ctx-key">{key}</div>
-                  <div className="ctx-val">{value}</div>
-                </div>
-              ))
-            )}
-          </div>
+          activeId ? (
+            <ThreadContextPanel
+              key={activeId}
+              rpcRef={rpcRef}
+              activeId={activeId}
+              busy={busy}
+              shared={thread?.shared}
+              onError={setError}
+            />
+          ) : null
         ) : asideActive === "inherited" ? (
           <InheritedPanel rpcRef={rpcRef} activeId={activeId} onError={setError} />
         ) : asideActive === "stats" ? (
