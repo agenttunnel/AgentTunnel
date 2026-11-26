@@ -82,7 +82,7 @@ export function HistoryButtons({
         type="button"
         className="history-btn"
         disabled={!canRedo}
-        title={canRedo ? `Redo ${redoLabel}` : "Nothing to redo"}
+        title={canRedo ? `Redo ${redoLabel} (${MOD === "⌘" ? "⇧⌘Z" : "Ctrl+Y"})` : "Nothing to redo"}
         aria-label="Redo"
         onClick={onRedo}
       >
